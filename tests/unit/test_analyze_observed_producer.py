@@ -911,6 +911,48 @@ def test_module_level_straddle_and_enclosure_denied() -> None:
     )
 
 
+def test_module_admission_digest_scope_span_collision_pin() -> None:
+    """The exact collision the digest's third input exists to prevent
+    (spec 2026-07-04): IDENTICAL added-line ranges and IDENTICAL covered
+    module-level bytes but DIFFERENT parsed scope spans must produce
+    different digests — the disjointness predicate reads the scope layout,
+    so two such files admit differently and must never share a key. A
+    generic per-component sensitivity probe passes without this pin."""
+    from outrider.agent.nodes.analyze_observed import module_admission_digest
+
+    ranges = ((0, len(_KILL_SWITCH.encode())),)
+    src_a = _KILL_SWITCH + "function a() { return 1; }\n"
+    src_b = _KILL_SWITCH + "function b(x) { if (x) { return x; } return 0; }\n"
+    parsed_a = _parsed_at(src_a, "src/index.js")
+    parsed_b = _parsed_at(src_b, "src/index.js")
+    # Preconditions: the covered slice is byte-identical; the scope layouts differ.
+    assert src_a.encode()[: ranges[0][1]] == src_b.encode()[: ranges[0][1]]
+    spans_a = {(su.byte_start, su.byte_end) for su in parsed_a.scope_units}
+    spans_b = {(su.byte_start, su.byte_end) for su in parsed_b.scope_units}
+    assert spans_a and spans_b and spans_a != spans_b
+    digest_a = module_admission_digest(ranges, parsed_a.scope_units, src_a.encode())
+    digest_b = module_admission_digest(ranges, parsed_b.scope_units, src_b.encode())
+    assert digest_a != digest_b
+
+
+def test_module_admission_digest_deterministic_and_input_sensitive() -> None:
+    """Deterministic under recomputation; moves on a range change and on a
+    covered-byte change (the other two inputs)."""
+    from outrider.agent.nodes.analyze_observed import module_admission_digest
+
+    src = _KILL_SWITCH + "const x = 1;\n"
+    data = src.encode()
+    parsed = _parsed_at(src, "src/index.js")
+    ranges = ((0, len(_KILL_SWITCH.encode())),)
+    base = module_admission_digest(ranges, parsed.scope_units, data)
+    assert base == module_admission_digest(ranges, parsed.scope_units, data)
+    # Different range set.
+    assert module_admission_digest((), parsed.scope_units, data) != base
+    # Same range, different covered bytes.
+    other = src.replace('"0"', '"1"')
+    assert module_admission_digest(ranges, parsed.scope_units, other.encode()) != base
+
+
 def test_has_module_level_eligible_match_pre_check() -> None:
     """The routing pre-check delegates to the producer's own admission chain:
     True exactly when a module-level match would be admitted."""

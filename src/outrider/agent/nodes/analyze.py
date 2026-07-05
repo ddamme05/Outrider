@@ -111,6 +111,7 @@ from outrider.agent.nodes.analyze_observed import (
     has_module_level_eligible_match,
     import_bindings_digest,
     lexical_bindings_digest,
+    module_admission_digest,
     produce_observed_findings,
     run_observed_matches,
 )
@@ -2088,6 +2089,12 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             # The shadowing guard's per-file input — bindings can live in
             # enclosing-but-not-included scopes the prompt never shows.
             lexical_bindings_digest=lexical_bindings_digest(parse_result.lexical_bindings),
+            # The module-scope arm's per-file input: added-line ranges +
+            # the module-level bytes they cover + every parsed scope span
+            # (the disjointness input) — all outside prompt bytes.
+            module_admission_digest=module_admission_digest(
+                module_added_ranges, parse_result.scope_units, content_bytes
+            ),
             profile_id=profile_id,
             reasoning_enabled=reasoning_enabled,
             profile_contract_digest=profile_contract_digest,
@@ -2210,8 +2217,13 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             # anchor (or a guarded global) at the match site.
             import_refs=parse_result.imports,
             lexical_bindings=parse_result.lexical_bindings,
-            all_scope_units=parse_result.scope_units if module_level_route else (),
-            added_line_ranges=module_added_ranges if module_level_route else (),
+            # Module-scope arm inputs, clean mode and module route alike —
+            # the with-scopes case (a changed function AND a changed
+            # module-level line in one file) admits through the same arm;
+            # `module_added_ranges` is empty for error-bearing parses and
+            # patch-less files, keeping the arm inert exactly there.
+            all_scope_units=parse_result.scope_units,
+            added_line_ranges=module_added_ranges,
         )
         if patched_file is not None and not module_level_route:
             observed_skip_event = compute_observed_skip_shadow(

@@ -44,12 +44,16 @@ from outrider.llm.base import _canonical_prompt_hash
 # `lexical_bindings_digest` — the shadowing guard reads local-binding
 # visibility spans that can live in enclosing-but-not-included scopes the
 # prompt never shows (the import digest also widened to carry the
-# value-import marker in the same arc). The recipe change self-invalidates
+# value-import marker in the same arc); v6 folds `module_admission_digest`
+# (specs/2026-07-04-module-scope-admission-arm.md) — the module-scope
+# admission arm consumes head-side added-line ranges, the module-level
+# bytes they cover, and every parsed scope span, all outside prompt
+# bytes. The recipe change self-invalidates
 # old rows on its own, but the explicit version is the legible, replay-durable
 # marker #056 mandates ("the analyze cache-keyed version bumps") and gives
 # future non-parser recipe changes a home without overloading
 # ANALYZE_PARSER_VERSION's admission-only scope.
-ANALYZE_CACHE_KEY_VERSION: Final = "analyze-cache-key-v5"
+ANALYZE_CACHE_KEY_VERSION: Final = "analyze-cache-key-v6"
 
 
 def compute_analyze_cache_key(
@@ -71,13 +75,14 @@ def compute_analyze_cache_key(
     from_import_map_digest: str,
     import_bindings_digest: str,
     lexical_bindings_digest: str,
+    module_admission_digest: str,
     profile_id: str | None,
     reasoning_enabled: bool | None,
     profile_contract_digest: str | None,
 ) -> str:
-    """The analyze-cache key: twenty length-prefixed fields — the recipe
+    """The analyze-cache key: length-prefixed fields — the recipe
     version (`ANALYZE_CACHE_KEY_VERSION`) first, then the canonical prompt
-    digest, then the eighteen explicit scope/version/identity components — as
+    digest, then the explicit scope/version/identity components — as
     one SHA-256 hex digest. `from_import_map_digest`
     (#024 from-import correction) pins the analyzed file's from-import
     name→module map: corrected sibling candidates depend on module-level
@@ -97,6 +102,14 @@ def compute_analyze_cache_key(
     can live in enclosing-but-not-included scopes the prompt never shows;
     without it a shadowing edit outside the shown scopes would serve the
     pre-edit admitted-finding set.
+    `module_admission_digest`
+    (specs/2026-07-04-module-scope-admission-arm.md) pins the module-scope
+    arm's per-file input: the head-side added-line byte ranges, the
+    module-level bytes they cover, and every parsed scope span (the
+    disjointness predicate's input) — all outside prompt bytes, so two
+    reviews with byte-identical prompts but a different module-level
+    change (or a different scope layout around it) must never share an
+    entry.
     `subsumes_digest` (DECISIONS.md#055) pins the
     `SUBSUMES` cross-type relation's CONTENT: cross-type subsumption drops an
     admitted OBSERVED finding under a same-span JUDGED subsumer, so a relation
@@ -177,6 +190,7 @@ def compute_analyze_cache_key(
         from_import_map_digest,
         import_bindings_digest,
         lexical_bindings_digest,
+        module_admission_digest,
         profile_id if profile_id is not None else "",
         reasoning_component,
         profile_contract_digest if profile_contract_digest is not None else "",

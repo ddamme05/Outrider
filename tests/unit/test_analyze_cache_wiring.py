@@ -30,6 +30,7 @@ from outrider.agent.nodes.analyze_observed import (
     OBSERVED_PRODUCER_VERSION,
     import_bindings_digest,
     lexical_bindings_digest,
+    module_admission_digest,
 )
 from outrider.agent.nodes.analyze_parser import ANALYZE_PARSER_VERSION, from_import_map_digest
 from outrider.agent.nodes.cache_config import CacheMode
@@ -43,6 +44,7 @@ from outrider.ast_facts.registry import parse_source
 from outrider.ast_facts.triviality import TRIVIAL_FILTER_VERSION
 from outrider.audit.events import compute_finding_content_hash
 from outrider.cache import CacheEntry, CacheScope, CacheStoreError, compute_analyze_cache_key
+from outrider.coordinates import added_line_byte_ranges, lookup_patched_file
 from outrider.llm.anthropic_provider import (
     _ANTHROPIC_CONTRACT_DIGEST,
     _ANTHROPIC_PROFILE_ID,
@@ -355,6 +357,13 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
         # Python adapter stubs lexical bindings to () (shadowing-guard spec
         # non-goal) — the node digests the same empty tuple.
         lexical_bindings_digest=lexical_bindings_digest(()),
+        # The module-scope arm's input — mirror the node: the patch's
+        # added-line ranges over the head bytes + the parse's scope spans.
+        module_admission_digest=module_admission_digest(
+            added_line_byte_ranges(lookup_patched_file(_PATCH, "src/cached.py"), _HEAD),
+            parse_python(_HEAD.encode("utf-8"), "src/cached.py", MagicMock()).scope_units,
+            _HEAD.encode("utf-8"),
+        ),
         profile_id=None,
         reasoning_enabled=None,
         profile_contract_digest=None,
@@ -908,6 +917,12 @@ async def test_javascript_clean_file_is_cache_keyed() -> None:
         # node by digesting the same parse the JS pipeline produces.
         lexical_bindings_digest=lexical_bindings_digest(
             parse_source(_JS_HEAD.encode("utf-8"), "src/cached.js", MagicMock()).lexical_bindings
+        ),
+        # Module-scope arm input, mirrored the same way as the Python case.
+        module_admission_digest=module_admission_digest(
+            added_line_byte_ranges(lookup_patched_file(_JS_PATCH, "src/cached.js"), _JS_HEAD),
+            parse_source(_JS_HEAD.encode("utf-8"), "src/cached.js", MagicMock()).scope_units,
+            _JS_HEAD.encode("utf-8"),
         ),
         profile_id=None,
         reasoning_enabled=None,

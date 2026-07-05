@@ -423,6 +423,36 @@ def lexical_bindings_digest(lexical_bindings: tuple[LexicalBinding, ...]) -> str
     return h.hexdigest()
 
 
+def module_admission_digest(
+    added_line_ranges: tuple[tuple[int, int], ...],
+    all_scope_units: tuple[ScopeUnit, ...],
+    content_bytes: bytes,
+) -> str:
+    """SHA-256 over the module-scope arm's per-file admission inputs — the
+    third digest sibling (specs/2026-07-04-module-scope-admission-arm.md).
+
+    Covers ALL THREE inputs `_module_level_admits` consumes, none of which
+    the rendered prompt carries (included clipped hunks are per included
+    scope): the head-side added-line byte ranges, the module-level bytes
+    those ranges cover, and every parsed scope span — the disjointness
+    predicate's input, so identical ranges/bytes under a DIFFERENT scope
+    layout (which admit differently) never share a key. Ranges fold in
+    order (they are patch-derived and deterministic); scope spans fold
+    sorted (order/duplicate-insensitive, matching the sibling digests'
+    discipline)."""
+    h = hashlib.sha256()
+    h.update(f"{len(added_line_ranges)}:".encode())
+    for range_start, range_end in added_line_ranges:
+        covered = content_bytes[range_start:range_end]
+        h.update(f"{range_start}:{range_end}:{len(covered)}:".encode())
+        h.update(covered)
+    spans = sorted({(su.byte_start, su.byte_end) for su in all_scope_units})
+    h.update(f"{len(spans)}:".encode())
+    for span_start, span_end in spans:
+        h.update(f"{span_start}:{span_end}:".encode())
+    return h.hexdigest()
+
+
 def _module_level_admits(
     observed: ObservedQuery,
     span: QueryMatchSpan,
