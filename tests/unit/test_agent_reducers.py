@@ -11,8 +11,17 @@ calls with the same key_fn (sanity).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import UUID, uuid4
 
-from outrider.agent.reducers import append_with_dedup_by
+import pytest
+from pydantic import BaseModel, Field
+
+from outrider.agent.reducers import (
+    SlotDivergenceError,
+    append_with_dedup_by,
+    append_with_slot_guard,
+    semantic_digest,
+)
 
 
 @dataclass(frozen=True)
@@ -108,3 +117,80 @@ def test_reducer_is_stable_across_calls() -> None:
     # stateless function over its two args.
     assert merged_a[0].payload == "x"
     assert merged_b[0].payload == "y"
+
+
+# ---------------------------------------------------------------------------
+# Slot-guard reducer + semantic digest (DECISIONS.md#063 amendment).
+# ---------------------------------------------------------------------------
+
+
+class _StandInFinding(BaseModel):
+    finding_id: UUID = Field(default_factory=uuid4)
+    title: str = "t"
+    severity: str = "low"
+
+
+class _SlotOutcome(BaseModel):
+    """Stand-in worker outcome: a positional slot + semantic content + a
+    generated identity nested at depth (the ReviewFinding pattern)."""
+
+    path: str
+    pass_index: int
+    findings: tuple[_StandInFinding, ...] = ()
+    description: str = ""
+
+
+_EXCLUDED: frozenset[str] = frozenset({"finding_id"})
+
+
+def _slot(o: _SlotOutcome) -> tuple[str, int]:
+    return (o.path, o.pass_index)
+
+
+def _digest(o: _SlotOutcome) -> str:
+    return semantic_digest(o, exclude_fields=_EXCLUDED)
+
+
+def test_same_semantics_different_uuids_dedup_as_noop() -> None:
+    """THE #063 pin: an identical retry carries fresh generated UUIDs
+    (ReviewFinding.finding_id is default_factory=uuid4); raw equality would
+    falsely reject it, but the semantic digest excludes generated identities,
+    so replay re-application is an idempotent no-op."""
+    first = _SlotOutcome(path="a.py", pass_index=0, findings=(_StandInFinding(title="x"),))
+    retry = _SlotOutcome(path="a.py", pass_index=0, findings=(_StandInFinding(title="x"),))
+    assert first.findings[0].finding_id != retry.findings[0].finding_id  # fresh UUIDs
+    reducer = append_with_slot_guard(_slot, _digest)
+    merged = reducer([first], [retry])
+    assert merged == [first]  # no-op; first occupant retained
+
+
+def test_divergent_same_slot_fails_loud_never_first_wins() -> None:
+    """Same slot, different semantic content → SlotDivergenceError. Silently
+    keeping the first would fork state from the audit stream's record of the
+    retry."""
+    first = _SlotOutcome(path="a.py", pass_index=0, description="found nothing")
+    diverged = _SlotOutcome(path="a.py", pass_index=0, description="found a bug")
+    reducer = append_with_slot_guard(_slot, _digest)
+    with pytest.raises(SlotDivergenceError, match="a.py"):
+        reducer([first], [diverged])
+
+
+def test_distinct_slots_append_and_replay_is_idempotent() -> None:
+    reducer = append_with_slot_guard(_slot, _digest)
+    a = _SlotOutcome(path="a.py", pass_index=0)
+    b = _SlotOutcome(path="b.py", pass_index=0)
+    a_pass1 = _SlotOutcome(path="a.py", pass_index=1)  # same file, later pass
+    merged = reducer([a], [b, a_pass1])
+    assert merged == [a, b, a_pass1]
+    # Full-delta re-application (checkpoint replay) is a no-op.
+    assert reducer(merged, [a, b, a_pass1]) == merged
+
+
+def test_semantic_digest_excludes_named_fields_at_any_depth() -> None:
+    """Exclusion is by-name-anywhere: the generated identity nests inside the
+    findings list, not at the top level."""
+    one = _SlotOutcome(path="a.py", pass_index=0, findings=(_StandInFinding(title="x"),))
+    two = _SlotOutcome(path="a.py", pass_index=0, findings=(_StandInFinding(title="x"),))
+    three = _SlotOutcome(path="a.py", pass_index=0, findings=(_StandInFinding(title="y"),))
+    assert _digest(one) == _digest(two)  # UUIDs differ, semantics equal
+    assert _digest(one) != _digest(three)  # semantic change moves the digest
