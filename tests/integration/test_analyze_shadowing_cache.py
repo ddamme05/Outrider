@@ -179,3 +179,121 @@ async def test_shadowed_and_value_variants_never_cross_serve(migrated_db: str) -
         assert shadowed_row.payload != value_row.payload
     finally:
         await engine.dispose()
+
+
+# The module-scope arm's with-scopes fixtures
+# (specs/2026-07-04-module-scope-admission-arm.md): one changed function plus a
+# module-level line that differs ONLY at module level — the kill switch (an
+# inert parse fixture) vs a benign constant. Byte-identical prompt stand-ins;
+# `module_admission_digest` is the splitting input.
+_MODULE_KILL = (
+    'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+    "export function f(secret) {\n"
+    "  return secret.length;\n"
+    "}\n"
+)
+_MODULE_BENIGN = (
+    'const banner = "hello";\nexport function f(secret) {\n  return secret.length;\n}\n'
+)
+
+
+def _module_matches_and_key(source: str) -> tuple[tuple, str]:
+    """The live with-scopes module-arm chain: parse → admit (module inputs
+    threaded, whole-file added range) → compose the key from the same facts."""
+    from unittest.mock import MagicMock
+
+    parsed = parse_source(source.encode("utf-8"), "src/config.mjs", MagicMock())
+    assert parsed.parser_outcome == "clean"
+    ranges = ((0, len(source.encode("utf-8"))),)
+    matches = run_observed_matches(
+        file_path="src/config.mjs",
+        head_content=source,
+        included_scope_units=parsed.scope_units,
+        import_refs=parsed.imports,
+        lexical_bindings=parsed.lexical_bindings,
+        all_scope_units=parsed.scope_units,
+        added_line_ranges=ranges,
+    )
+    key = compute_analyze_cache_key(
+        system_prompt="system",
+        user_prompt="identical prompt bytes",
+        installation_id=_INSTALLATION_ID,
+        repo_id=100,
+        model="claude-haiku-4-5",
+        prompt_template_version="analyze-v4",
+        trivial_filter_version="trivial-filter-v1",
+        query_registry_digest=QUERY_REGISTRY_DIGEST,
+        active_policy_version="policy-v1",
+        analyze_parser_version=ANALYZE_PARSER_VERSION,
+        response_format_digest="c" * 64,
+        parameterized_call_scan_digest="d" * 64,
+        observed_producer_version=OBSERVED_PRODUCER_VERSION,
+        subsumes_digest=SUBSUMES_DIGEST,
+        from_import_map_digest=from_import_map_digest(parsed.imports),
+        import_bindings_digest=import_bindings_digest(parsed.imports),
+        lexical_bindings_digest=lexical_bindings_digest(parsed.lexical_bindings),
+        module_admission_digest=module_admission_digest(
+            ranges, parsed.scope_units, source.encode("utf-8")
+        ),
+        profile_id=None,
+        reasoning_enabled=None,
+        profile_contract_digest=None,
+    )
+    return matches, key
+
+
+@pytest.mark.asyncio
+async def test_module_level_variants_never_cross_serve(migrated_db: str) -> None:
+    """With-scopes clean-mode fixtures differing ONLY at module level: the
+    kill-switch variant admits the module-level OBSERVED finding, the benign
+    variant admits nothing, their keys differ under byte-identical prompts
+    (the module-admission digest is the splitting input), and a real-store
+    lookup under one key never returns the other's payload."""
+    kill_matches, kill_key = _module_matches_and_key(_MODULE_KILL)
+    benign_matches, benign_key = _module_matches_and_key(_MODULE_BENIGN)
+
+    assert [m.query_match_id for m in kill_matches] == ["javascript.tls_env_verify_disabled"]
+    assert benign_matches == ()
+    assert kill_key != benign_key
+
+    engine = create_async_engine(migrated_db)
+    try:
+        review_id = await _seed_review(engine)
+        store = AnalyzeCacheStore(async_sessionmaker(engine, expire_on_commit=False))
+        scope = await store.resolve_scope(review_id)
+        assert scope is not None
+
+        def _write_kwargs(cache_key: str, payload: dict) -> dict:
+            return {
+                "cache_key": cache_key,
+                "scope": scope,
+                "source_review_id": review_id,
+                "file_path": "src/config.mjs",
+                "payload": payload,
+                "model": "claude-haiku-4-5",
+                "prompt_template_version": "analyze-v4",
+                "trivial_filter_version": "trivial-filter-v1",
+                "query_registry_digest": QUERY_REGISTRY_DIGEST,
+                "active_policy_version": "policy-v1",
+                "analyze_parser_version": ANALYZE_PARSER_VERSION,
+                "prompt_hash": "b" * 64,
+            }
+
+        await store.write(
+            **_write_kwargs(
+                kill_key,
+                {
+                    "findings": [{"query_match_id": "javascript.tls_env_verify_disabled"}],
+                    "trace_candidates": [],
+                },
+            )
+        )
+        await store.write(**_write_kwargs(benign_key, {"findings": [], "trace_candidates": []}))
+
+        kill_row = await store.lookup(kill_key, is_eval=False)
+        benign_row = await store.lookup(benign_key, is_eval=False)
+        assert kill_row is not None and kill_row.payload["findings"] != []
+        assert benign_row is not None and benign_row.payload["findings"] == []
+        assert kill_row.payload != benign_row.payload
+    finally:
+        await engine.dispose()
