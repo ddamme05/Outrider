@@ -44,6 +44,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from outrider.agent.nodes.analyze_observed import (
+    module_admission_inputs_whole_file,
     produce_observed_findings,
     run_observed_matches,
 )
@@ -269,19 +270,19 @@ def _observe_file(corpus_root: Path, rel_file: str) -> _FileObservation:
                 if line_start is not None:
                     raw[(query_id, line_start)] += 1
 
+    module_scope_units, module_ranges = module_admission_inputs_whole_file(parsed, data)
     admitted_matches = run_observed_matches(
         file_path=rel_file,
         head_content=head_content,
         included_scope_units=parsed.scope_units,
         import_refs=parsed.imports,
         lexical_bindings=parsed.lexical_bindings,
-        # The corpus grades a whole file as changed, so the module-scope arm
-        # (DECISIONS.md#062) sees every parsed
-        # scope for disjointness and the whole file as its added range —
-        # production-faithful under producer v7 (a module-level match on an
-        # ELIGIBLE query admits; ineligible queries stay containment-gated).
-        all_scope_units=parsed.scope_units,
-        added_line_ranges=((0, len(data)),),
+        # The corpus grades a whole file as changed: the module-scope arm's
+        # inputs derive through the whole-file sibling of the production
+        # gate (DECISIONS.md#062) — the SAME error-free proof precondition,
+        # with the entire file as the added range.
+        all_scope_units=module_scope_units,
+        added_line_ranges=module_ranges,
     )
     admitted = Counter((m.query_match_id, m.line_start) for m in admitted_matches)
 

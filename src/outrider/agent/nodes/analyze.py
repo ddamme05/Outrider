@@ -120,6 +120,7 @@ from outrider.agent.nodes.analyze_observed import (
     import_bindings_digest,
     lexical_bindings_digest,
     module_admission_digest,
+    module_admission_inputs,
     produce_observed_findings,
     run_observed_matches,
 )
@@ -1830,18 +1831,13 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # branch first) and on head content (the module arm anchors on
     # head-side added ranges). The ranges are computed once and
     # reused by the producer call below on the module route.
-    module_added_ranges: tuple[tuple[int, int], ...] = ()
-    if (
-        patched_file is not None
-        and changed_file.content_head is not None
-        and not parse_result.error_lines
-        and not any(parse_result.has_error.values())
-    ):
-        module_added_ranges = added_line_byte_ranges(patched_file, content)
+    module_all_scope_units, module_added_ranges = module_admission_inputs(
+        parse_result, patched_file, changed_file.content_head
+    )
     module_level_candidate = bool(module_added_ranges) and has_module_level_eligible_match(
         file_path=changed_file.path,
         head_content=content,
-        all_scope_units=parse_result.scope_units,
+        all_scope_units=module_all_scope_units,
         added_line_ranges=module_added_ranges,
         import_refs=parse_result.imports,
         lexical_bindings=parse_result.lexical_bindings,
@@ -2110,7 +2106,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             # the module-level bytes they cover + every parsed scope span
             # (the disjointness input) — all outside prompt bytes.
             module_admission_digest=module_admission_digest(
-                module_added_ranges, parse_result.scope_units, content_bytes
+                module_added_ranges, module_all_scope_units, content_bytes
             ),
             profile_id=profile_id,
             reasoning_enabled=reasoning_enabled,
@@ -2242,7 +2238,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             # module-level line in one file) admits through the same arm;
             # `module_added_ranges` is empty for error-bearing parses and
             # patch-less files, keeping the arm inert exactly there.
-            all_scope_units=parse_result.scope_units,
+            all_scope_units=module_all_scope_units,
             added_line_ranges=module_added_ranges,
         )
         if patched_file is not None and not module_level_route:

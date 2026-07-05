@@ -1857,6 +1857,36 @@ async def test_syntax_error_beats_module_candidate_and_emits_zero_observed(
 
 
 @pytest.mark.asyncio
+async def test_patch_head_misalignment_does_not_abort_the_review(
+    deps: dict[str, Any],
+) -> None:
+    """#1 regression pin at node level: a patch whose added lines exceed the
+    fetched head content (force-push race) must not abort analyze — the
+    module arm goes inert for the file and the file resolves normally
+    (here: NO_CHANGED_SCOPE_UNITS skip, one FileExaminationEvent, no raise)."""
+    cf = _build_changed_file(
+        path="src/index.js",
+        content=b"const x = 1;\n",
+        patch=(
+            "--- a/src/index.js\n+++ b/src/index.js\n"
+            "@@ -0,0 +1,3 @@\n+const a = 1;\n+const b = 2;\n+const c = 3;\n"
+        ),
+        content_base="",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(cf,)),
+        triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
+    )
+
+    result = await analyze(state, **deps)
+
+    fe_events = deps["file_examination_sink"].events
+    assert len(fe_events) == 1
+    assert fe_events[0].parse_status == "skipped"
+    assert result["analysis_rounds"][0].findings == ()
+
+
+@pytest.mark.asyncio
 async def test_module_only_diff_without_eligible_match_still_skips(
     deps: dict[str, Any],
 ) -> None:
