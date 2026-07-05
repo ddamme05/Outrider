@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from outrider.ast_facts.models import SkipReason
 from outrider.coordinates import validate_diff_path
+from outrider.policy import EvidenceTier
 from outrider.schemas.observed_subsumption import ObservedSubsumedMatch
 from outrider.schemas.review_finding import ReviewFinding
 from outrider.schemas.trace_candidate import TraceCandidate
@@ -190,6 +191,77 @@ class AnalyzeWorkerOutcome(BaseModel):
                     f"AnalyzeWorkerOutcome: subsumed match names "
                     f"{match.file_path!r} but the worker's file is {self.path!r}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_skip_findings_are_observed_only(self) -> Self:
+        """Every real findings-on-skip path is the deterministic producer
+        (enforced coverage skip; budget/trivial ride-outs) — a skipped
+        outcome carrying a JUDGED or INFERRED finding is a shape no
+        sequential path can produce, and the proof boundary must not gain
+        one through the fan-out."""
+        if self.parse_status == "skipped":
+            for finding in self.admitted_findings:
+                if finding.evidence_tier is not EvidenceTier.OBSERVED:
+                    raise ValueError(
+                        f"AnalyzeWorkerOutcome: a skipped outcome carries only "
+                        f"OBSERVED findings; got {finding.evidence_tier} for "
+                        f"{finding.content_hash}"
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_branch_union(self) -> Self:
+        """The sequential branches are a union: parser XOR cache-serve XOR
+        observed-skip. Served findings coexisting with an LLM call — or any
+        proposal-lifecycle counter on a no-LLM outcome — is unrepresentable
+        there and stays unrepresentable here."""
+        if self.llm_called and self.counters.n_findings_served:
+            raise ValueError(
+                "AnalyzeWorkerOutcome: cache-served findings cannot coexist "
+                "with llm_called=True (sequential branch union)"
+            )
+        if not self.llm_called and (
+            self.counters.n_proposals_seen
+            or self.counters.n_proposals_rejected
+            or self.counters.n_responses_rejected
+            or self.counters.n_proposals_superseded_by_observed
+        ):
+            raise ValueError(
+                "AnalyzeWorkerOutcome: proposal-lifecycle counters require an "
+                "LLM call (no parser ran)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_worker_accounting(self) -> Self:
+        """Per-worker halves of AnalyzeCompletedEvent's proposal equation, so
+        errors cannot cancel ACROSS workers at the aggregate: (a) emitted
+        findings are exactly the admitted set (worker-local, pre-aggregate
+        dedup/cap); (b) `seen == (emitted - served - observed) + rejected +
+        superseded` — the canonical equation WITHOUT the drop term, because
+        `n_proposals_dropped` is computed at the aggregate over the
+        post-dedup kept set, never per worker."""
+        c = self.counters
+        if c.n_findings_emitted != len(self.admitted_findings):
+            raise ValueError(
+                f"AnalyzeWorkerOutcome: n_findings_emitted={c.n_findings_emitted} "
+                f"but {len(self.admitted_findings)} findings admitted"
+            )
+        lhs = c.n_proposals_seen
+        rhs = (
+            c.n_findings_emitted
+            - c.n_findings_served
+            - c.n_findings_observed
+            + c.n_proposals_rejected
+            + c.n_proposals_superseded_by_observed
+        )
+        if lhs != rhs:
+            raise ValueError(
+                f"AnalyzeWorkerOutcome: proposal accounting violated: "
+                f"n_proposals_seen={lhs} != (emitted - served - observed) + "
+                f"rejected + superseded = {rhs}"
+            )
         return self
 
     @model_validator(mode="after")
