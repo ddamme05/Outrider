@@ -18,11 +18,12 @@ specs/2026-06-14-observed-query-library-v1.md added:
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from outrider.ast_facts.errors import UnknownQueryMatchId
 from outrider.policy.severity import SEVERITY_POLICY, FindingType
 from outrider.queries import registry
-from outrider.queries.observed import BindingRule, QueryClass
+from outrider.queries.observed import BindingRule, ObservedQuery, QueryClass
 
 
 def test_observed_query_count() -> None:
@@ -267,22 +268,34 @@ def test_module_scope_eligibility_seeded_exactly_once() -> None:
 
 
 def test_module_scope_eligible_requires_binding_none() -> None:
-    """The registry rejects an eligible query carrying a BindingRule at load
-    (module-level admission would weaken an import-join proof). The live
-    catalog satisfies the rule; the raise path is pinned on the validator's
-    own predicate since the module-level check runs at import."""
-    violating = [
-        oq.query_match_id
-        for oq in registry.OBSERVED_QUERIES.values()
-        if oq.module_scope_eligible and oq.binding is not None
-    ]
-    assert violating == []
-    # The model itself permits the combination (the gate is registry-load
-    # policy, not schema) — pin that the registry check is what rejects it.
-    probe = next(iter(registry.OBSERVED_QUERIES.values())).model_copy(
-        update={
-            "module_scope_eligible": True,
-            "binding": BindingRule(mode="module_presence", modules=("probe",)),
-        }
-    )
-    assert probe.module_scope_eligible and probe.binding is not None
+    """The SCHEMA floor rejects an eligible query carrying a BindingRule
+    (DECISIONS.md#062: module-level admission would weaken an import-join
+    proof) — a model_validator, so DIRECT construction cannot bypass it
+    (revert-the-fold: deleting the validator fails this, unlike the prior
+    registry-load loop whose deletion kept the suite green)."""
+    base = next(iter(registry.OBSERVED_QUERIES.values()))
+    with pytest.raises(ValidationError, match="module_scope_eligible requires binding=None"):
+        ObservedQuery(
+            **{
+                **base.model_dump(exclude={"binding"}),
+                "module_scope_eligible": True,
+                "binding": BindingRule(mode="module_presence", modules=("probe",)),
+            }
+        )
+
+
+def test_module_scope_eligible_rejects_skip_safe() -> None:
+    """Eligibility may not combine with SKIP_SAFE promotion: module-arm
+    matches are excluded from #049 skip coverage (diff-anchored proof, not
+    scope-coverage-shaped), so a skip_safe eligible query would create
+    coverage the skip contract forbids — rejected at the schema floor."""
+    base = next(iter(registry.OBSERVED_QUERIES.values()))
+    with pytest.raises(ValidationError, match="may not combine with SKIP_SAFE"):
+        ObservedQuery(
+            **{
+                **base.model_dump(exclude={"binding"}),
+                "binding": None,
+                "module_scope_eligible": True,
+                "query_class": QueryClass.SKIP_SAFE,
+            }
+        )

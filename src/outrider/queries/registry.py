@@ -574,21 +574,11 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
     )
 }
 
-# Module-scope eligibility is reserved for import-free, self-proving queries:
-# the module-level arm admits on disjointness + changed-line containment
-# alone, which would WEAKEN an import-join proof — an eligible query carrying
-# a BindingRule is an authoring error, rejected at import (the loud-failure
-# sibling of the anchor/guard capture validators below).
-_module_scope_with_binding = sorted(
-    q.query_match_id
-    for q in _OBSERVED_QUERIES.values()
-    if q.module_scope_eligible and q.binding is not None
-)
-if _module_scope_with_binding:
-    raise ValueError(
-        f"module_scope_eligible requires binding=None (module-level admission "
-        f"weakens an import-join proof): {_module_scope_with_binding}"
-    )
+# Module-scope eligibility constraints (eligible ⇒ binding=None; eligible ⇒
+# never SKIP_SAFE) are enforced at the SCHEMA floor by
+# `ObservedQuery._enforce_module_scope_constraints` — the model validator
+# fires for every construction path, including this dict's entries at import,
+# so no registry-load loop is needed (a loop would only guard this one dict).
 
 
 # ---------------------------------------------------------------------------
