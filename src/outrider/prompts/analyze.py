@@ -798,9 +798,10 @@ max 8192 chars of text) to cap the degraded-path cost.
 # prompt must not tell the model a clean-parse file "could not be parsed"
 # (specs/2026-07-04-module-scope-admission-arm.md: `module_level_observed_match`
 # is a ROUTING degradation over a clean parse). Closed, code-side mapping keyed
-# by the typed `_DegradationReason` value; unknown/future reasons fall back to
-# the parse-defect sentence (the pre-v9 wording), which is the conservative
-# claim for any parse-caused reason.
+# by the typed `_DegradationReason` value, indexed FAIL-LOUD in
+# `render_degraded`: a future reason without a provenance sentence is a
+# KeyError at the first degraded call, never a silently-wrong claim — the
+# totality test pins this mapping against the `_DegradationReason` literal.
 _DEGRADATION_CONTEXT_PARSE_DEFECT: Final[str] = (
     "This file could not be parsed structurally (or has tree-sitter errors\n"
     "intersecting the changed regions)."
@@ -1098,9 +1099,9 @@ def render_degraded(
         file_path=file_path,
         pass_index=pass_index,
         degradation_reason=degradation_reason,
-        degradation_context=_DEGRADATION_CONTEXT.get(
-            degradation_reason, _DEGRADATION_CONTEXT_PARSE_DEFECT
-        ),
+        # Fail-loud: an unmapped reason is a KeyError here, not a silently
+        # wrong provenance claim (the totality test pins the mapping).
+        degradation_context=_DEGRADATION_CONTEXT[degradation_reason],
         bounded_hunks=safe_code_fence(bounded_hunks, lang="diff"),
     )
     return AnalyzePromptParts(system_prompt=SYSTEM_PROMPT_STABLE_PREFIX, user_prompt=user_prompt)

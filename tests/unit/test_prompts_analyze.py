@@ -860,6 +860,31 @@ def test_render_degraded_user_prompt_signals_degraded_mode() -> None:
     assert "parse_failed" in parts.user_prompt
 
 
+def test_degradation_context_mapping_is_total_over_reasons() -> None:
+    """Every `_DegradationReason` literal has a provenance sentence, and the
+    mapping carries no stale keys. `render_degraded` indexes the mapping
+    FAIL-LOUD, so a future reason added to the literal without a sentence
+    here would KeyError on its first degraded call — this pin moves that
+    failure to test time and rejects fail-open drift in either direction."""
+    from typing import get_args
+
+    from outrider.agent.nodes.degradation import _DegradationReason  # noqa: PLC2701
+    from outrider.prompts.analyze import _DEGRADATION_CONTEXT  # noqa: PLC2701
+
+    assert set(_DEGRADATION_CONTEXT) == set(get_args(_DegradationReason))
+
+
+def test_render_degraded_unknown_reason_fails_loud() -> None:
+    """An unmapped reason raises rather than rendering wrong provenance."""
+    with pytest.raises(KeyError):
+        render_degraded(
+            file_path="src/x.py",
+            bounded_hunks="",
+            pass_index=0,
+            degradation_reason="future_unmapped_reason",
+        )
+
+
 def test_render_degraded_provenance_is_reason_aware() -> None:
     """The v9 provenance rule: parse-defect reasons keep the "could not be
     parsed" sentence; the module-scope routing reason
