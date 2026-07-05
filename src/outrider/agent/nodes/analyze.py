@@ -2401,8 +2401,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         )
 
     # Deterministic OBSERVED-tier findings (Cost Lever 3): augment the LLM's
-    # JUDGED findings with structural security-query matches. Clean-parse only
-    # (the producer never runs in degraded mode); merged into
+    # JUDGED findings with structural security-query matches. Runs in clean
+    # mode and on the ONE clean-parse degraded route
+    # (`module_level_observed_match` — the module-scope arm's whole point);
+    # the error-caused degraded routes keep the producer off. Merged into
     # `parser_result.admitted_findings` BEFORE the emit/cache/return below, so
     # they ride the audit stream, the cache payload (serve reconstructs them),
     # and the round identically to LLM findings. Collapsed by content_hash —
