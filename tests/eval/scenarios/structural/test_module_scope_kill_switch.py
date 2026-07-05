@@ -41,22 +41,25 @@ def _observe(patch: str):
 
     from outrider.agent.nodes.analyze_observed import (
         has_module_level_eligible_match,
+        module_admission_inputs,
         run_observed_matches,
     )
     from outrider.agent.nodes.degradation import decide_degradation
     from outrider.ast_facts.registry import parse_source
-    from outrider.coordinates import added_line_byte_ranges, lookup_patched_file
+    from outrider.coordinates import lookup_patched_file
 
     parsed = parse_source(SOURCE.encode(), "src/index.js", MagicMock())
     assert parsed.parser_outcome == "clean"
     assert not parsed.error_lines
     patched_file = lookup_patched_file(patch, "src/index.js")
     assert patched_file is not None
-    ranges = added_line_byte_ranges(patched_file, SOURCE)
-    candidate = has_module_level_eligible_match(
+    # The production derivation path: the helper owns the error-free proof
+    # gate + the patch/head-misalignment containment (DECISIONS.md#062).
+    all_scope_units, ranges = module_admission_inputs(parsed, patched_file, SOURCE)
+    candidate = bool(ranges) and has_module_level_eligible_match(
         file_path="src/index.js",
         head_content=SOURCE,
-        all_scope_units=parsed.scope_units,
+        all_scope_units=all_scope_units,
         added_line_ranges=ranges,
         import_refs=parsed.imports,
         lexical_bindings=parsed.lexical_bindings,
@@ -68,7 +71,7 @@ def _observe(patch: str):
         included_scope_units=decision.included_scope_units,
         import_refs=parsed.imports,
         lexical_bindings=parsed.lexical_bindings,
-        all_scope_units=parsed.scope_units,
+        all_scope_units=all_scope_units,
         added_line_ranges=ranges,
     )
     return decision, matches

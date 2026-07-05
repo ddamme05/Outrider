@@ -982,6 +982,66 @@ def test_module_admission_digest_deterministic_and_input_sensitive() -> None:
     assert module_admission_digest(ranges, parsed.scope_units, other.encode()) != base
 
 
+def test_module_admission_inputs_owns_the_proof_gate() -> None:
+    """The ONE derivation path for the module arm's inputs
+    (DECISIONS.md#062): happy path yields all parsed scopes + the patch's
+    added ranges; ANY parse error (error_lines or has_error) denies; no
+    patch / no head content denies — so a second caller cannot anchor
+    module-level proof on an error-recovered tree by forgetting the gate."""
+    from outrider.agent.nodes.analyze_observed import module_admission_inputs
+    from outrider.coordinates import lookup_patched_file
+
+    source = _KILL_SWITCH + "const x = 1;\n"
+    parsed = _parsed_at(source, "src/index.js")
+    patch = '@@ -1,1 +1,2 @@\n+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n const x = 1;\n'
+    patched = lookup_patched_file(patch, "src/index.js")
+    assert patched is not None
+
+    scopes, ranges = module_admission_inputs(parsed, patched, source)
+    assert scopes == tuple(parsed.scope_units)
+    assert ranges and ranges[0][0] == 0
+
+    # Error-bearing parse (JS pins parser_outcome="clean" but sets
+    # error_lines) → deny.
+    broken = _parsed_at("function f( {\n" + _KILL_SWITCH, "src/index.js")
+    assert module_admission_inputs(broken, patched, source) == ((), ())
+    # No patch / no head content → deny.
+    assert module_admission_inputs(parsed, None, source) == ((), ())
+    assert module_admission_inputs(parsed, patched, None) == ((), ())
+
+
+def test_module_admission_inputs_contains_patch_head_misalignment() -> None:
+    """#1 regression pin: a patch whose added target lines exceed the head
+    source (force-push between the pinned-head content fetch and the live
+    files-list patch) must NOT raise out of the derivation — the module arm
+    goes inert for the file and the review continues (pre-arm behavior)."""
+    from outrider.agent.nodes.analyze_observed import module_admission_inputs
+    from outrider.coordinates import lookup_patched_file
+
+    head = "const x = 1;\n"  # one line
+    parsed = _parsed_at(head, "src/index.js")
+    misaligned = lookup_patched_file(
+        "@@ -0,0 +1,3 @@\n+const a = 1;\n+const b = 2;\n+const c = 3;\n", "src/index.js"
+    )
+    assert misaligned is not None
+    assert module_admission_inputs(parsed, misaligned, head) == ((), ())
+
+
+def test_module_admission_inputs_whole_file_applies_the_same_gate() -> None:
+    """The corpus/structural sibling: whole file as the added range on a
+    clean parse; the SAME error-free denial on a broken one."""
+    from outrider.agent.nodes.analyze_observed import module_admission_inputs_whole_file
+
+    source = _KILL_SWITCH + "const x = 1;\n"
+    parsed = _parsed_at(source, "src/index.js")
+    scopes, ranges = module_admission_inputs_whole_file(parsed, source.encode())
+    assert scopes == tuple(parsed.scope_units)
+    assert ranges == ((0, len(source.encode())),)
+
+    broken = _parsed_at("function f( {\n", "src/broken.js")
+    assert module_admission_inputs_whole_file(broken, b"function f( {\n") == ((), ())
+
+
 def test_has_module_level_eligible_match_pre_check() -> None:
     """The routing pre-check delegates to the producer's own admission chain:
     True exactly when a module-level match would be admitted."""

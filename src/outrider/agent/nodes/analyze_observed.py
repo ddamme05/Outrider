@@ -45,6 +45,7 @@ skip that consumes it is wired in `analyze._process_one_file` behind that flag
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Final, Literal, assert_never
@@ -57,6 +58,7 @@ from outrider.audit.events import (
 )
 from outrider.coordinates import (
     CoordinateError,
+    added_line_byte_ranges,
     changed_line_spans,
     query_span_to_source_lines,
 )
@@ -80,6 +82,7 @@ if TYPE_CHECKING:
     from outrider.ast_facts.models import (
         ImportRef,
         LexicalBinding,
+        ParseResult,
         QueryCaptureSpan,
         QueryMatchSpan,
         ScopeUnit,
@@ -147,6 +150,8 @@ OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v7"
 # >2000-char matches (which previously crashed, so never reached the cache), so it
 # needs no OBSERVED_PRODUCER_VERSION bump.
 _EVIDENCE_MAX_CHARS: Final[int] = 2000
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,12 +445,14 @@ def module_admission_digest(
     """SHA-256 over the module-scope arm's per-file admission inputs — the
     third digest sibling (DECISIONS.md#062).
 
-    Covers ALL THREE inputs `_module_level_admits` consumes, none of which
-    the rendered prompt carries (included clipped hunks are per included
-    scope): the head-side added-line byte ranges, the module-level bytes
-    those ranges cover, and every parsed scope span — the disjointness
-    predicate's input, so identical ranges/bytes under a DIFFERENT scope
-    layout (which admit differently) never share a key. Ranges fold in
+    Covers ALL THREE inputs the module ARM's admission depends on, none of
+    which the rendered prompt carries (included clipped hunks are per
+    included scope): the head-side added-line byte ranges and every parsed
+    scope span (the two inputs `_module_level_admits` compares), plus the
+    module-level bytes those ranges cover — which enter admission through
+    match PRODUCTION (they are the bytes the queries fire over), not through
+    the predicate, and must fold explicitly so identical ranges/scope layouts
+    over different module-level content never share a key. Ranges fold in
     order (they are patch-derived and deterministic); scope spans fold
     sorted (order/duplicate-insensitive, matching the sibling digests'
     discipline)."""
@@ -460,6 +467,64 @@ def module_admission_digest(
     for span_start, span_end in spans:
         h.update(f"{span_start}:{span_end}:".encode())
     return h.hexdigest()
+
+
+def module_admission_inputs(
+    parse_result: ParseResult,
+    patched_file: PatchedFile | None,
+    head_content: str | None,
+) -> tuple[tuple[ScopeUnit, ...], tuple[tuple[int, int], ...]]:
+    """The module-scope arm's `(all_scope_units, added_line_ranges)` inputs,
+    derived through the ONE gate that owns the arm's proof precondition
+    (DECISIONS.md#062): a FULLY error-free parse — the arm never anchors proof
+    on a tree carrying any error/MISSING node, because disjointness is
+    unprovable when scope recovery is untrustworthy. Returns empty inputs
+    (deny) when the parse is not clean or carries errors, when there is no
+    patch or head content to anchor on, and — containment, never an abort —
+    when the patch and head content are misaligned (`added_line_byte_ranges`
+    raises CoordinateError on a target line beyond the head source, e.g. a
+    force-push between the pinned-head content fetch and the live files-list
+    patch): the file falls back to pre-arm behavior with the module arm inert,
+    logged for observability. Production callers derive the arm's inputs ONLY
+    through this helper (or its whole-file sibling); hand-threading kwargs
+    into `run_observed_matches` bypasses the gate and is reserved for tests
+    pinning the mechanism itself."""
+    if (
+        patched_file is None
+        or head_content is None
+        or parse_result.parser_outcome != "clean"
+        or parse_result.error_lines
+        or any(parse_result.has_error.values())
+    ):
+        return (), ()
+    try:
+        ranges = added_line_byte_ranges(patched_file, head_content)
+    except CoordinateError:
+        logger.warning(
+            "module-scope arm: patch/head-content misalignment for %s — "
+            "module admission inert for this file (review continues)",
+            patched_file.path,
+        )
+        return (), ()
+    if not ranges:
+        return (), ()
+    return tuple(parse_result.scope_units), ranges
+
+
+def module_admission_inputs_whole_file(
+    parse_result: ParseResult, content_bytes: bytes
+) -> tuple[tuple[ScopeUnit, ...], tuple[tuple[int, int], ...]]:
+    """Whole-file-changed frame of `module_admission_inputs` (the eval corpus
+    + structural harnesses grade whole files as changed): the SAME error-free
+    proof gate, with the entire file as the single added range."""
+    if (
+        parse_result.parser_outcome != "clean"
+        or parse_result.error_lines
+        or any(parse_result.has_error.values())
+        or not content_bytes
+    ):
+        return (), ()
+    return tuple(parse_result.scope_units), ((0, len(content_bytes)),)
 
 
 def _module_level_admits(
