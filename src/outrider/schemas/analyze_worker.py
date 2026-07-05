@@ -117,6 +117,12 @@ class AnalyzeWorkerOutcome(BaseModel):
     # inferred from evidence tier): content hashes of the findings the
     # deterministic OBSERVED producer made THIS pass. A model-cited
     # OBSERVED proposal is a proposal — admitted, but not listed here.
+    # The schema verifies tier + subset; ORIGIN TRUTHFULNESS cannot be
+    # schema-verified (a model-cited structural finding is
+    # indistinguishable by shape) — it is the worker's write obligation,
+    # pinned at the wiring increment where the list is constructed
+    # directly from produce_observed_findings output, the only code path
+    # that knows.
     producer_observed_hashes: tuple[str, ...] = ()
     # Content hashes of CACHE-SERVED findings (produced in a PRIOR pass,
     # reconstructed without an LLM call). Identity, not count: the
@@ -204,8 +210,15 @@ class AnalyzeWorkerOutcome(BaseModel):
                     "AnalyzeWorkerOutcome: subsumption records require a parser "
                     "(a #055 subsumer is JUDGED)"
                 )
-            if self.trace_candidates:
-                raise ValueError("AnalyzeWorkerOutcome: trace candidates require source='parser'")
+            # Cache hits RESTORE prior-pass candidates into state (the
+            # sequential serve branch extends state without counting them
+            # as newly emitted — the aggregate derives this-pass emission
+            # from parser-source outcomes only); skips carry none.
+            if self.trace_candidates and self.source != "cache_serve":
+                raise ValueError(
+                    "AnalyzeWorkerOutcome: trace candidates exist only on "
+                    "parser and cache_serve sources"
+                )
         if self.n_responses_rejected and self.n_proposals_seen:
             raise ValueError(
                 "AnalyzeWorkerOutcome: a rejected response yields zero proposals "
@@ -276,6 +289,26 @@ class AnalyzeWorkerOutcome(BaseModel):
                 raise ValueError(
                     f"AnalyzeWorkerOutcome: subsumed match names "
                     f"{match.file_path!r} but the worker's file is {self.path!r}"
+                )
+        if self.source == "parser":
+            # The exact per-worker proposal equation, every term an identity
+            # count (no derived counters to trust): worker-locally, emitted
+            # is the admitted set, observed is the producer list, served is
+            # zero — so seen == (admitted - producer) + rejected +
+            # superseded. Aggregate-only accounting would let invalid
+            # tallies cancel across files; this pins each worker.
+            lhs = self.n_proposals_seen
+            rhs = (
+                len(self.admitted_findings)
+                - len(self.producer_observed_hashes)
+                + self.n_proposals_rejected
+                + self.n_proposals_superseded_by_observed
+            )
+            if lhs != rhs:
+                raise ValueError(
+                    f"AnalyzeWorkerOutcome: proposal accounting violated: "
+                    f"n_proposals_seen={lhs} != (admitted - producer) + "
+                    f"rejected + superseded = {rhs}"
                 )
         return self
 
