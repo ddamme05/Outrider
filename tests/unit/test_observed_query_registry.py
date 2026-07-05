@@ -182,6 +182,9 @@ def test_digest_folds_every_non_excluded_field() -> None:
         # Same admission-affecting property: adding/removing a guarded
         # global changes which matches the shadow guard denies.
         "shadow_guard": ("digest_probe_global",),
+        # Eligibility flips which matches the module-scope arm admits —
+        # a cached row from before the flip must not serve after it.
+        "module_scope_eligible": not orig.module_scope_eligible,
     }
     assert folded_fields <= set(mutations), (
         f"new folded field(s) {folded_fields - set(mutations)} need a mutation case here"
@@ -249,3 +252,37 @@ def test_binding_none_javascript_queries_declare_a_shadow_guard() -> None:
         f"either guard their text-constrained globals or update this pin with "
         f"the rationale."
     )
+
+
+def test_module_scope_eligibility_seeded_exactly_once() -> None:
+    """The module-scope admission arm is opt-in and seeded on the one
+    producer-pinned veto case (specs/2026-07-04-module-scope-admission-arm.md):
+    the tls_env kill switch. Widening eligibility is an evidence-gated,
+    deliberate act — a new eligible query updates this pin with its rationale,
+    never rides in silently."""
+    eligible = sorted(
+        oq.query_match_id for oq in registry.OBSERVED_QUERIES.values() if oq.module_scope_eligible
+    )
+    assert eligible == ["javascript.tls_env_verify_disabled"]
+
+
+def test_module_scope_eligible_requires_binding_none() -> None:
+    """The registry rejects an eligible query carrying a BindingRule at load
+    (module-level admission would weaken an import-join proof). The live
+    catalog satisfies the rule; the raise path is pinned on the validator's
+    own predicate since the module-level check runs at import."""
+    violating = [
+        oq.query_match_id
+        for oq in registry.OBSERVED_QUERIES.values()
+        if oq.module_scope_eligible and oq.binding is not None
+    ]
+    assert violating == []
+    # The model itself permits the combination (the gate is registry-load
+    # policy, not schema) — pin that the registry check is what rejects it.
+    probe = next(iter(registry.OBSERVED_QUERIES.values())).model_copy(
+        update={
+            "module_scope_eligible": True,
+            "binding": BindingRule(mode="module_presence", modules=("probe",)),
+        }
+    )
+    assert probe.module_scope_eligible and probe.binding is not None

@@ -158,6 +158,15 @@ class ObservedQuery(BaseModel):
     # argument. Checked for every query, independent of binding mode;
     # digest auto-folds it (FUP-181). See DECISIONS.md#060.
     shadow_guard: tuple[str, ...] = ()
+    # Opt-in to the producer's module-scope admission arm
+    # (specs/2026-07-04-module-scope-admission-arm.md): a match whose envelope
+    # is DISJOINT from every parsed scope and fully inside a head-side
+    # added-line byte range is admitted without an enclosing ScopeUnit.
+    # Reserved for import-free, self-proving queries — the registry rejects
+    # an eligible query that carries a `binding` at load (module-level
+    # admission would weaken an import-join proof). Digest auto-folds it
+    # (FUP-181), so flipping eligibility invalidates cached analyze rows.
+    module_scope_eligible: bool = False
 
     @field_validator("shadow_guard")
     @classmethod
