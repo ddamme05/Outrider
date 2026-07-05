@@ -305,6 +305,32 @@ def test_worker_local_equation_from_identities() -> None:
     assert ok.n_proposals_seen == 2
 
 
+def test_trace_candidate_evidence_implies_proposals_seen() -> None:
+    """Candidates are processed only inside the parser's proposal loop —
+    both the well-formed and malformed forms imply seen > 0."""
+    from outrider.policy.canonical import compute_candidate_id, compute_identity_hash
+
+    source_proposal_hash = compute_identity_hash({"prop": "x"})
+    candidate = TraceCandidate(
+        candidate_id=compute_candidate_id(
+            source_proposal_hash=source_proposal_hash,
+            import_string="app.services.db",
+            reason="r",
+        ),
+        source_proposal_hash=source_proposal_hash,
+        import_string="app.services.db",
+        reason="r",
+    )
+    with pytest.raises(ValidationError, match="imply n_proposals_seen"):
+        _outcome(n_proposals_seen=0, admitted_findings=(), trace_candidates=(candidate,))
+    with pytest.raises(ValidationError, match="imply n_proposals_seen"):
+        _outcome(
+            n_proposals_seen=0,
+            admitted_findings=(),
+            n_trace_candidates_dropped_malformed=1,
+        )
+
+
 def test_plain_skip_carries_nothing() -> None:
     with pytest.raises(ValidationError, match="plain_skip carries nothing"):
         _observed_skip(source="plain_skip")
