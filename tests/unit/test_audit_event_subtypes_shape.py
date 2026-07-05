@@ -671,3 +671,62 @@ def test_llm_call_event_rejects_duplicate_context_summary_entries() -> None:
             system_prompt_hash="b" * 64,
             degraded_mode=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# V1.5 parallel-analyze phase attribution (DECISIONS.md#064)
+# ---------------------------------------------------------------------------
+
+
+def test_phase_key_present_on_exactly_the_analyze_emitted_carriers() -> None:
+    """The ten analyze-emitted event types carry nullable `phase_key`
+    (default None — sequential-era rows), and non-carriers do NOT gain it:
+    the field is per-carrier phase attribution, not an AuditEventBase-wide
+    column. Both directions pinned so a future type joins (or leaves) the
+    carrier set deliberately."""
+    from outrider.audit.events import (
+        AnalyzeCompletedEvent,
+        AnalyzeResponseRejectedEvent,
+        CacheLookupEvent,
+        CacheServeEvent,
+        FindingProposalRejectedEvent,
+        HITLRequestEvent,
+        ObservedSkipShadowEvent,
+        PublishEvent,
+        ScopeExclusionEvent,
+        TraceDecisionEvent,
+    )
+
+    carriers = (
+        LLMCallEvent,
+        FileExaminationEvent,
+        FindingEvent,
+        CacheLookupEvent,
+        CacheServeEvent,
+        ScopeExclusionEvent,
+        ObservedSkipShadowEvent,
+        FindingProposalRejectedEvent,
+        AnalyzeResponseRejectedEvent,
+        AnalyzeCompletedEvent,
+    )
+    for cls in carriers:
+        assert "phase_key" in cls.model_fields, cls.__name__
+        assert cls.model_fields["phase_key"].default is None, cls.__name__
+    for cls in (TraceDecisionEvent, HITLRequestEvent, PublishEvent, ReviewPhaseEvent):
+        if cls is ReviewPhaseEvent:
+            continue  # ReviewPhaseEvent has carried phase_key since #018-era forward-compat.
+        assert "phase_key" not in cls.model_fields, cls.__name__
+
+
+def test_phase_key_accepts_a_worker_key_and_survives_round_trip() -> None:
+    """A worker-stamped key round-trips through the JSON payload unchanged."""
+    event = FileExaminationEvent(
+        review_id=uuid4(),
+        file_path="src/foo.py",
+        examination_type="analyze",
+        node_id="analyze",
+        parse_status="clean",
+        phase_key="file:src/foo.py#0",
+    )
+    assert event.phase_key == "file:src/foo.py#0"
+    assert type(event).model_validate_json(event.model_dump_json()).phase_key == event.phase_key

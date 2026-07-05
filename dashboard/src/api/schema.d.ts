@@ -568,6 +568,8 @@ export interface components {
              * @default false
              */
             is_eval: boolean;
+            /** Phase Key */
+            phase_key?: string | null;
             /** Pass Index */
             pass_index: number;
             /**
@@ -690,6 +692,8 @@ export interface components {
              * @default false
              */
             is_eval: boolean;
+            /** Phase Key */
+            phase_key?: string | null;
             /**
              * Node Id
              * @default analyze
@@ -763,6 +767,8 @@ export interface components {
              * @default false
              */
             is_eval: boolean;
+            /** Phase Key */
+            phase_key?: string | null;
             /** File Path */
             file_path: string;
             /**
@@ -841,6 +847,8 @@ export interface components {
              * @default false
              */
             is_eval: boolean;
+            /** Phase Key */
+            phase_key?: string | null;
             /** File Path */
             file_path: string;
             /**
@@ -1005,6 +1013,8 @@ export interface components {
              * @default false
              */
             is_eval: boolean;
+            /** Phase Key */
+            phase_key?: string | null;
             /** File Path */
             file_path: string;
             /**
@@ -1060,6 +1070,8 @@ export interface components {
              * @default false
              */
             is_eval: boolean;
+            /** Phase Key */
+            phase_key?: string | null;
             /**
              * Finding Id
              * Format: uuid
@@ -1131,6 +1143,8 @@ export interface components {
              * @default false
              */
             is_eval: boolean;
+            /** Phase Key */
+            phase_key?: string | null;
             /**
              * Node Id
              * @default analyze
@@ -1468,6 +1482,8 @@ export interface components {
              * @default false
              */
             is_eval: boolean;
+            /** Phase Key */
+            phase_key?: string | null;
             /** Model */
             model: string;
             /**
@@ -1648,6 +1664,8 @@ export interface components {
              * @default false
              */
             is_eval: boolean;
+            /** Phase Key */
+            phase_key?: string | null;
             /**
              * Node Id
              * @default analyze
@@ -2570,6 +2588,8 @@ export interface components {
              * @default false
              */
             is_eval: boolean;
+            /** Phase Key */
+            phase_key?: string | null;
             /** File Path */
             file_path: string;
             /**

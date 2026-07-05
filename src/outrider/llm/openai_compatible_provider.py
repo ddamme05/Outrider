@@ -450,6 +450,7 @@ class OpenAICompatibleProvider:
             system_prompt_hash=system_prompt_hash,
             degraded_mode=request.degraded_mode,
             degradation_reason=request.degradation_reason,
+            phase_key=request.phase_key,
             response_format_digest=request.response_format_digest,
             # Triad mirrored from the response (single source) so the persister cross-check
             # (a later step-4 commit) is trivially consistent (DECISIONS.md#056).

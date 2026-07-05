@@ -1493,6 +1493,7 @@ async def test_audit_context_fields_pass_through(monkeypatch: pytest.MonkeyPatch
         prompt_template_version="analyze@2.0.0",
         degraded_mode=True,
         degradation_reason="parse_failed",
+        phase_key="file:src/foo.py#0",
     )
     with _patched_create():
         await provider.complete(request)
@@ -1507,6 +1508,10 @@ async def test_audit_context_fields_pass_through(monkeypatch: pytest.MonkeyPatch
     # assertion a regression that drops the field mid-pipeline would
     # silently pass the pass-through contract test.
     assert event.degradation_reason == "parse_failed"
+    # V1.5 phase attribution rides the same pass-through contract: the
+    # provider constructs LLMCallEvent, so a dropped phase_key would lose
+    # worker ownership for every LLM call (DECISIONS.md#064).
+    assert event.phase_key == "file:src/foo.py#0"
 
 
 @pytest.mark.asyncio

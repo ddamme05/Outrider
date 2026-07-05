@@ -1148,6 +1148,17 @@
             "title": "Is Eval",
             "default": false
           },
+          "phase_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Key"
+          },
           "pass_index": {
             "type": "integer",
             "minimum": 0.0,
@@ -1393,6 +1404,17 @@
             "title": "Is Eval",
             "default": false
           },
+          "phase_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Key"
+          },
           "node_id": {
             "type": "string",
             "const": "analyze",
@@ -1471,6 +1493,17 @@
             "title": "Is Eval",
             "default": false
           },
+          "phase_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Key"
+          },
           "file_path": {
             "type": "string",
             "maxLength": 1024,
@@ -1545,6 +1578,17 @@
             "type": "boolean",
             "title": "Is Eval",
             "default": false
+          },
+          "phase_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Key"
           },
           "file_path": {
             "type": "string",
@@ -1779,6 +1823,17 @@
             "title": "Is Eval",
             "default": false
           },
+          "phase_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Key"
+          },
           "file_path": {
             "type": "string",
             "maxLength": 1024,
@@ -1871,6 +1926,17 @@
             "type": "boolean",
             "title": "Is Eval",
             "default": false
+          },
+          "phase_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Key"
           },
           "finding_id": {
             "type": "string",
@@ -2006,6 +2072,17 @@
             "type": "boolean",
             "title": "Is Eval",
             "default": false
+          },
+          "phase_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Key"
           },
           "node_id": {
             "type": "string",
@@ -2637,6 +2714,17 @@
             "title": "Is Eval",
             "default": false
           },
+          "phase_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Key"
+          },
           "model": {
             "type": "string",
             "title": "Model"
@@ -2956,6 +3044,17 @@
             "type": "boolean",
             "title": "Is Eval",
             "default": false
+          },
+          "phase_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Key"
           },
           "node_id": {
             "type": "string",
@@ -5095,6 +5194,17 @@
             "type": "boolean",
             "title": "Is Eval",
             "default": false
+          },
+          "phase_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Key"
           },
           "file_path": {
             "type": "string",
