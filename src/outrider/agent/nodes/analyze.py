@@ -108,6 +108,7 @@ from outrider.agent.nodes.analyze_observed import (
     OBSERVED_PRODUCER_VERSION,
     ObservedMatch,
     compute_observed_skip_shadow,
+    has_module_level_eligible_match,
     import_bindings_digest,
     lexical_bindings_digest,
     produce_observed_findings,
@@ -1801,13 +1802,42 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # degraded prompt below also needs `patched_file`.
     patched_file = lookup_patched_file(changed_file.patch, changed_file.path)
 
+    # Module-scope routing pre-check (specs/2026-07-04-module-scope-admission-arm.md):
+    # would an eligible OBSERVED query admit a module-level match on the added
+    # lines? Delegates to the producer's own admission chain
+    # (`has_module_level_eligible_match`), so True always yields an OBSERVED
+    # emission downstream — never a degraded LLM pass that then emits nothing.
+    # Gated on an ERROR-FREE parse (parse-error precedence: OBSERVED never
+    # runs on an error-recovered tree; `decide_degradation` additionally
+    # orders its error branch first) and on head content (the module arm
+    # anchors on head-side added ranges). The ranges are computed once and
+    # reused by the producer call below on the module route.
+    module_added_ranges: tuple[tuple[int, int], ...] = ()
+    if (
+        patched_file is not None
+        and changed_file.content_head is not None
+        and not parse_result.error_lines
+        and not any(parse_result.has_error.values())
+    ):
+        module_added_ranges = added_line_byte_ranges(patched_file, content)
+    module_level_candidate = bool(module_added_ranges) and has_module_level_eligible_match(
+        file_path=changed_file.path,
+        head_content=content,
+        all_scope_units=parse_result.scope_units,
+        added_line_ranges=module_added_ranges,
+        import_refs=parse_result.imports,
+        lexical_bindings=parse_result.lexical_bindings,
+    )
+
     # Outcome determination (skip / degraded / clean) for a PARSED file lives in the
     # pure `decide_degradation` (degradation.py) — extracted so structural eval
     # scenarios can exercise it LLM-free. This node is the only place that turns the
     # decision into behavior. The `"failed"` degraded branch is V1-unreachable
     # (intake gates invalid UTF-8 with SkipReason.OVERSIZED); retained for the
     # raw-bytes intake path (FUP-053) + audit/prompt-wiring tests.
-    decision = decide_degradation(parse_result, patched_file)
+    decision = decide_degradation(
+        parse_result, patched_file, module_level_observed_candidate=module_level_candidate
+    )
     if decision.mode == "skip":
         skip_reason = decision.skip_reason
         if skip_reason is None:  # DegradationDecision guard makes this impossible; narrows mypy.
@@ -2161,7 +2191,15 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # with no catalog selects zero queries (inert producer, the
     # dispatch-era safety preserved by registration). No queries ever
     # execute over bytes of another language's grammar.
-    if not degraded_mode and changed_file.content_head is not None:
+    # The module-scope degraded route (`module_level_observed_match`) is the
+    # ONE degraded reason under which the producer runs — its module-level
+    # arm only (no included scopes exist on that route, so the containment
+    # arm is naturally inert). Every other degraded reason keeps the producer
+    # OFF (an error-recovered/failed tree is not trusted for structural
+    # proof). Skip-shadow telemetry stays clean-mode-only: module-level
+    # matches are excluded from #049 skip coverage by spec non-goal.
+    module_level_route = degradation_reason == "module_level_observed_match"
+    if changed_file.content_head is not None and (not degraded_mode or module_level_route):
         observed_matches = run_observed_matches(
             file_path=changed_file.path,
             head_content=content,
@@ -2172,8 +2210,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             # anchor (or a guarded global) at the match site.
             import_refs=parse_result.imports,
             lexical_bindings=parse_result.lexical_bindings,
+            all_scope_units=parse_result.scope_units if module_level_route else (),
+            added_line_ranges=module_added_ranges if module_level_route else (),
         )
-        if patched_file is not None:
+        if patched_file is not None and not module_level_route:
             observed_skip_event = compute_observed_skip_shadow(
                 observed_matches,
                 file_path=changed_file.path,
@@ -2365,10 +2405,13 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # below and threaded out for the per-pass `AnalyzeCompletedEvent`; stays empty
     # in degraded mode and when nothing is subsumed.
     subsumed_matches: list[ObservedSubsumedMatch] = []
-    if not degraded_mode and changed_file.content_head is not None:
+    if changed_file.content_head is not None and (not degraded_mode or module_level_route):
         # `observed_matches` was computed PRE-LLM (Step 3b-mechanism) so an enforced
         # `would_skip` could short-circuit the LLM; reuse the same matches here for the
         # findings producer + the #054 merge (a single deterministic OBSERVED query pass).
+        # On the module-scope degraded route the same merge applies: the producer's
+        # module-level OBSERVED findings join (and #054-evict colliding JUDGED from)
+        # the degraded pass's admitted findings.
         observed_findings = produce_observed_findings(
             observed_matches,
             file_path=changed_file.path,

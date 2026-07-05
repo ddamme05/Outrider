@@ -1485,7 +1485,7 @@ export interface components {
             /** Degraded Mode */
             degraded_mode: boolean;
             /** Degradation Reason */
-            degradation_reason?: ("parse_failed" | "tree_has_error_in_changed_regions" | "tree_has_error_no_scope") | null;
+            degradation_reason?: ("parse_failed" | "tree_has_error_in_changed_regions" | "tree_has_error_no_scope" | "module_level_observed_match") | null;
             /** Response Format Digest */
             response_format_digest?: string | null;
             /** Profile Id */

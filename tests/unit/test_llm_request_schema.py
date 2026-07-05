@@ -279,7 +279,13 @@ def test_degradation_reason_defaults_none() -> None:
 
 
 @pytest.mark.parametrize(
-    "reason", ["parse_failed", "tree_has_error_in_changed_regions", "tree_has_error_no_scope"]
+    "reason",
+    [
+        "parse_failed",
+        "tree_has_error_in_changed_regions",
+        "tree_has_error_no_scope",
+        "module_level_observed_match",
+    ],
 )
 def test_analyze_degraded_with_typed_reason_admits_empty_context(reason: str) -> None:
     """Matrix row: analyze + degraded_mode=True + reason + empty context → ADMIT.
