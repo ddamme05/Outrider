@@ -485,7 +485,10 @@ def module_admission_inputs(
     raises CoordinateError on a target line beyond the head source, e.g. a
     force-push between the pinned-head content fetch and the live files-list
     patch): the file falls back to pre-arm behavior with the module arm inert,
-    logged for observability. Production callers derive the arm's inputs ONLY
+    logged for observability. The deny is proof-correct (misaligned ranges are
+    an unsound proof anchor — do not admit through this branch); the log-only
+    visibility is the documented residual, FUP-217 (audit-visible misalignment
+    signal). Production callers derive the arm's inputs ONLY
     through this helper (or its whole-file sibling); hand-threading kwargs
     into `run_observed_matches` bypasses the gate and is reserved for tests
     pinning the mechanism itself."""
