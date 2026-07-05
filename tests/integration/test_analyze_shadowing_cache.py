@@ -23,6 +23,7 @@ from outrider.agent.nodes.analyze_observed import (
     OBSERVED_PRODUCER_VERSION,
     import_bindings_digest,
     lexical_bindings_digest,
+    module_admission_digest,
     run_observed_matches,
 )
 from outrider.agent.nodes.analyze_parser import ANALYZE_PARSER_VERSION, from_import_map_digest
@@ -107,6 +108,12 @@ def _matches_and_key(source: str) -> tuple[tuple, str]:
         from_import_map_digest=from_import_map_digest(parsed.imports),
         import_bindings_digest=import_bindings_digest(parsed.imports),
         lexical_bindings_digest=lexical_bindings_digest(parsed.lexical_bindings),
+        # This probe drives the SHADOWING split (function-scope variants, no
+        # module-level change): empty added ranges keep the module arm inert,
+        # composed from the same parse facts as the node would.
+        module_admission_digest=module_admission_digest(
+            (), parsed.scope_units, source.encode("utf-8")
+        ),
         profile_id=None,
         reasoning_enabled=None,
         profile_contract_digest=None,
