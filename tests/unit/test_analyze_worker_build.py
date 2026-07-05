@@ -26,6 +26,7 @@ from outrider.policy import EvidenceTier
 from outrider.policy.dimensions import lookup_dimension
 from outrider.policy.severity import FindingType, lookup_severity
 from outrider.policy.versions import ACTIVE_POLICY_VERSION
+from outrider.queries.registry import OBSERVED_QUERIES
 from outrider.schemas.review_finding import ReviewFinding
 from outrider.schemas.triage_result import ReviewTier
 
@@ -39,13 +40,17 @@ def _finding(
     tier: EvidenceTier = EvidenceTier.JUDGED,
     query_match_id: str = "python.sql_injection_string_concat",
 ) -> ReviewFinding:
-    """OBSERVED fixtures default to a real Python SECURITY id (producer
-    output); the model-cited case must use a STRUCTURAL id — the
-    model-citable set is structural-only, and empty for JS/TS entirely
-    (the dispatch-arc security anchor), so a security-id or JS-id
-    "cited" fixture would model an input production admission cannot
-    create."""
+    """Production-possible OBSERVED shapes only. Producer fixtures default
+    to a real Python SECURITY id and take their finding_type FROM THE
+    REGISTRY BINDING (the producer maps query → type; a mismatched pair is
+    an impossible raw producer object). The model-cited case must use a
+    STRUCTURAL id — the model-citable set is structural-only, and empty
+    for JS/TS entirely (the dispatch-arc security anchor); a structural
+    citation carries whatever type the model proposed, so the default
+    type stands there."""
     finding_type = FindingType.HARDCODED_SECRET
+    if tier is EvidenceTier.OBSERVED and query_match_id in OBSERVED_QUERIES:
+        finding_type = OBSERVED_QUERIES[query_match_id].finding_type
     return ReviewFinding(
         review_id=_REVIEW_ID,
         installation_id=42,
