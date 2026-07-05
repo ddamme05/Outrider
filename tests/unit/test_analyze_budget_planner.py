@@ -242,3 +242,69 @@ def test_bytes_per_token_locksteps_with_the_worker_estimator() -> None:
     from outrider.agent.nodes.analyze import _BYTES_PER_TOKEN
 
     assert BYTES_PER_TOKEN == _BYTES_PER_TOKEN
+
+
+def test_plan_construction_rejects_compensating_negative_draws() -> None:
+    """The totals equation alone admits a plan whose books balance while a
+    worker overspends (one draw negative, another over-drawn). Per-allocation
+    validation kills the class: negative draws, unfunded draws, funded
+    allocation != estimate, and benign reserve-draws each fail locally."""
+    negative = FileAllocation(
+        path="a.py",
+        estimate_tokens=100,
+        is_high_risk=False,
+        funded=True,
+        from_reserved_tokens=0,
+        from_general_tokens=-100,
+    )
+    overdrawn = FileAllocation(
+        path="b.py",
+        estimate_tokens=200,
+        is_high_risk=False,
+        funded=True,
+        from_reserved_tokens=0,
+        from_general_tokens=200,
+    )
+    with pytest.raises(ValueError, match="negative draw"):
+        BudgetPlan(
+            allocations=(negative, overdrawn),
+            general_pool_tokens=100,
+            reserved_pool_tokens=0,
+            general_remainder_tokens=0,  # books balance: -100 + 200 + 0 == 100
+            reserved_remainder_tokens=0,
+        )
+
+
+def test_plan_construction_rejects_unfunded_draw_and_benign_reserve_draw() -> None:
+    unfunded_draw = FileAllocation(
+        path="c.py",
+        estimate_tokens=50,
+        is_high_risk=False,
+        funded=False,
+        from_reserved_tokens=0,
+        from_general_tokens=50,
+    )
+    with pytest.raises(ValueError, match="unfunded draw"):
+        BudgetPlan(
+            allocations=(unfunded_draw,),
+            general_pool_tokens=50,
+            reserved_pool_tokens=0,
+            general_remainder_tokens=0,
+            reserved_remainder_tokens=0,
+        )
+    benign_reserve = FileAllocation(
+        path="d.py",
+        estimate_tokens=50,
+        is_high_risk=False,
+        funded=True,
+        from_reserved_tokens=50,
+        from_general_tokens=0,
+    )
+    with pytest.raises(ValueError, match="benign file drew reserve"):
+        BudgetPlan(
+            allocations=(benign_reserve,),
+            general_pool_tokens=0,
+            reserved_pool_tokens=50,
+            general_remainder_tokens=0,
+            reserved_remainder_tokens=0,
+        )
