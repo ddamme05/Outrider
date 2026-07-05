@@ -565,9 +565,30 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             # `process` binding whose visibility span contains the match
             # is a mock/parameter, not the global — the producer denies it.
             shadow_guard=("process",),
+            # The kill switch's canonical real-world form is module
+            # top-level (index.js/config, before any connection) — the one
+            # import-free, self-proving query the module-scope admission
+            # arm exists for (specs/2026-07-04-module-scope-admission-arm.md).
+            module_scope_eligible=True,
         ),
     )
 }
+
+# Module-scope eligibility is reserved for import-free, self-proving queries:
+# the module-level arm admits on disjointness + changed-line containment
+# alone, which would WEAKEN an import-join proof — an eligible query carrying
+# a BindingRule is an authoring error, rejected at import (the loud-failure
+# sibling of the anchor/guard capture validators below).
+_module_scope_with_binding = sorted(
+    q.query_match_id
+    for q in _OBSERVED_QUERIES.values()
+    if q.module_scope_eligible and q.binding is not None
+)
+if _module_scope_with_binding:
+    raise ValueError(
+        f"module_scope_eligible requires binding=None (module-level admission "
+        f"weakens an import-join proof): {_module_scope_with_binding}"
+    )
 
 
 # ---------------------------------------------------------------------------
