@@ -10,8 +10,8 @@ ran, and the containment gate dropped module-level matches otherwise.
 LLM-free, exercising the real surfaces end-to-end:
 - `coordinates.added_line_byte_ranges` — the diff anchor (the same ranges the
   degraded JUDGED admission gates against).
-- `analyze_observed.has_module_level_eligible_match` — the routing pre-check,
-  delegating to the producer's own admission chain.
+- `analyze_observed.module_level_observed_matches` — the routing sweep,
+  delegating to the producer's own admission chain (matches reused on the route).
 - `agent/nodes/degradation.decide_degradation` — the module-only diff degrades
   (`module_level_observed_match`, parse_status truthfully `clean`) instead of
   skipping; parse-error precedence keeps the error branch first.
@@ -40,8 +40,8 @@ def _observe(patch: str):
     from unittest.mock import MagicMock
 
     from outrider.agent.nodes.analyze_observed import (
-        has_module_level_eligible_match,
         module_admission_inputs,
+        module_level_observed_matches,
         run_observed_matches,
     )
     from outrider.agent.nodes.degradation import decide_degradation
@@ -56,7 +56,7 @@ def _observe(patch: str):
     # The production derivation path: the helper owns the error-free proof
     # gate + the patch/head-misalignment containment (DECISIONS.md#062).
     all_scope_units, ranges = module_admission_inputs(parsed, patched_file, SOURCE)
-    candidate = bool(ranges) and has_module_level_eligible_match(
+    routing_matches = module_level_observed_matches(
         file_path="src/index.js",
         head_content=SOURCE,
         all_scope_units=all_scope_units,
@@ -64,7 +64,9 @@ def _observe(patch: str):
         import_refs=parsed.imports,
         lexical_bindings=parsed.lexical_bindings,
     )
-    decision = decide_degradation(parsed, patched_file, module_level_observed_candidate=candidate)
+    decision = decide_degradation(
+        parsed, patched_file, module_level_observed_candidate=bool(routing_matches)
+    )
     matches = run_observed_matches(
         file_path="src/index.js",
         head_content=SOURCE,

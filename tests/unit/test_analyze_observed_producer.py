@@ -1042,15 +1042,16 @@ def test_module_admission_inputs_whole_file_applies_the_same_gate() -> None:
     assert module_admission_inputs_whole_file(broken, b"function f( {\n") == ((), ())
 
 
-def test_has_module_level_eligible_match_pre_check() -> None:
-    """The routing pre-check delegates to the producer's own admission chain:
-    True exactly when a module-level match would be admitted."""
-    from outrider.agent.nodes.analyze_observed import has_module_level_eligible_match
+def test_module_level_observed_matches_routing_sweep() -> None:
+    """The routing sweep delegates to the producer's own admission chain and
+    RETURNS the admitted matches (the module route reuses them — one sweep,
+    zero drift): non-empty exactly when a module-level match admits."""
+    from outrider.agent.nodes.analyze_observed import module_level_observed_matches
 
-    def pre_check(source: str) -> bool:
-        parsed = _parsed_at(source, "src/index.js")
-        return has_module_level_eligible_match(
-            file_path="src/index.js",
+    def sweep(source: str, file_path: str = "src/index.js"):
+        parsed = _parsed_at(source, file_path)
+        return module_level_observed_matches(
+            file_path=file_path,
             head_content=source,
             all_scope_units=parsed.scope_units,
             added_line_ranges=((0, len(source.encode())),),
@@ -1058,11 +1059,36 @@ def test_has_module_level_eligible_match_pre_check() -> None:
             lexical_bindings=parsed.lexical_bindings,
         )
 
-    assert pre_check(_KILL_SWITCH + "const x = 1;\n")
+    (match,) = sweep(_KILL_SWITCH + "const x = 1;\n")
+    assert match.query_match_id == "javascript.tls_env_verify_disabled"
+    assert match.module_level is True
     # Shadowed global: the full chain (not just a raw match) decides.
-    assert not pre_check("const process = mockProcess;\n" + _KILL_SWITCH)
+    assert sweep("const process = mockProcess;\n" + _KILL_SWITCH) == ()
     # No eligible match at all.
-    assert not pre_check("const x = 1;\n")
+    assert sweep("const x = 1;\n") == ()
+
+
+def test_module_level_sweep_short_circuits_ineligible_languages() -> None:
+    """A language whose catalog has no module_scope_eligible query (all of
+    Python today) returns () WITHOUT executing any query — the sweep must
+    not pay a full catalog pass for a structurally-impossible result. Pinned
+    behaviorally: a module-level os.system line that WOULD raw-match the
+    Python catalog still yields () under the sweep."""
+    from outrider.agent.nodes.analyze_observed import module_level_observed_matches
+
+    source = "import os\nos.system(cmd)\n"
+    parsed = _parsed_at(source, "src/tool.py")
+    assert (
+        module_level_observed_matches(
+            file_path="src/tool.py",
+            head_content=source,
+            all_scope_units=parsed.scope_units,
+            added_line_ranges=((0, len(source.encode())),),
+            import_refs=parsed.imports,
+            lexical_bindings=parsed.lexical_bindings,
+        )
+        == ()
+    )
 
 
 # ---------------------------------------------------------------------------

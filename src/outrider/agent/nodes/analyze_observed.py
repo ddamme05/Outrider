@@ -704,7 +704,7 @@ def run_observed_matches(
     return tuple(matches)
 
 
-def has_module_level_eligible_match(
+def module_level_observed_matches(
     *,
     file_path: str,
     head_content: str,
@@ -712,28 +712,35 @@ def has_module_level_eligible_match(
     added_line_ranges: tuple[tuple[int, int], ...],
     import_refs: tuple[ImportRef, ...],
     lexical_bindings: tuple[LexicalBinding, ...],
-) -> bool:
-    """Routing pre-check for the module-only degraded route
-    (DECISIONS.md#062): does at least one
-    `module_scope_eligible` query admit a module-level match on the changed
-    lines? Delegates to `run_observed_matches` with NO included scopes, so
-    the only admissible matches are module-level ones — the exact admission
-    chain (eligibility, disjointness, changed-range containment, shadow
-    guard) the producer runs; one implementation, zero drift, and a True
-    here never buys a degraded LLM pass that then emits nothing. The analyze
-    node computes this before `decide_degradation` so a module-only diff
-    carrying an eligible match degrades instead of skipping.
+) -> tuple[ObservedMatch, ...]:
+    """The module-only routing sweep (DECISIONS.md#062): the matches at
+    least one `module_scope_eligible` query admits at module level on the
+    changed lines. Delegates to `run_observed_matches` with NO included
+    scopes, so the only admissible matches are module-level ones — the exact
+    admission chain (eligibility, disjointness, changed-range containment,
+    shadow guard) the producer runs; one implementation, zero drift, and the
+    RETURNED matches are the module route's final admitted set (the node
+    reuses them instead of running the sweep twice). Short-circuits without
+    executing any query when the file's language has no eligible query
+    (every Python file today) — a language whose catalog cannot admit at
+    module level must not pay the sweep for a structurally-impossible
+    result. The analyze node calls this LAZILY: only when the file would
+    otherwise skip at NO_CHANGED_SCOPE_UNITS, the one branch that consults
+    the routing candidate.
     """
-    return bool(
-        run_observed_matches(
-            file_path=file_path,
-            head_content=head_content,
-            included_scope_units=(),
-            import_refs=import_refs,
-            lexical_bindings=lexical_bindings,
-            all_scope_units=all_scope_units,
-            added_line_ranges=added_line_ranges,
-        )
+    language = query_registry.query_language_for_path(file_path)
+    if language is None or not any(
+        q.module_scope_eligible for q in query_registry.observed_queries_for(language).values()
+    ):
+        return ()
+    return run_observed_matches(
+        file_path=file_path,
+        head_content=head_content,
+        included_scope_units=(),
+        import_refs=import_refs,
+        lexical_bindings=lexical_bindings,
+        all_scope_units=all_scope_units,
+        added_line_ranges=added_line_ranges,
     )
 
 
