@@ -217,6 +217,7 @@ def test_producer_listed_findings_must_be_observed_tier() -> None:
     judged = _finding()  # JUDGED
     with pytest.raises(ValidationError, match="OBSERVED-tier"):
         _outcome(
+            n_proposals_seen=0,
             admitted_findings=(judged,),
             producer_observed_hashes=(judged.content_hash,),
         )
@@ -227,6 +228,7 @@ def test_identity_lists_are_canonical_and_subsets() -> None:
         _outcome(producer_observed_hashes=("nope",))
     with pytest.raises(ValidationError, match="subset"):
         _outcome(producer_observed_hashes=("b" * 64,))
+    # (format/subset errors fire before the accounting equation)
     with pytest.raises(ValidationError, match="subset"):
         _cache_serve(served_content_hashes=("b" * 64,))
     finding = _finding()
@@ -255,6 +257,43 @@ def test_observed_skip_findings_are_all_producer_origin() -> None:
             admitted_findings=(_finding(),),  # JUDGED
             producer_observed_hashes=(_finding().content_hash,),
         )
+
+
+def test_cache_serve_restores_prior_pass_trace_candidates() -> None:
+    """The sequential serve branch extends state with the cached
+    candidates WITHOUT counting them as newly emitted — a serve outcome
+    carrying candidates is valid, and the aggregate derives this-pass
+    emission from parser sources only."""
+    from outrider.policy.canonical import compute_candidate_id, compute_identity_hash
+
+    source_proposal_hash = compute_identity_hash({"prop": "cached"})
+    candidate = TraceCandidate(
+        candidate_id=compute_candidate_id(
+            source_proposal_hash=source_proposal_hash,
+            import_string="app.services.db",
+            reason="cached",
+        ),
+        source_proposal_hash=source_proposal_hash,
+        import_string="app.services.db",
+        reason="cached",
+    )
+    outcome = _cache_serve(trace_candidates=(candidate,))
+    assert outcome.trace_candidates
+    with pytest.raises(ValidationError, match="parser and cache_serve"):
+        _observed_skip(trace_candidates=(candidate,))
+
+
+def test_worker_local_equation_from_identities() -> None:
+    """seen == (admitted − producer) + rejected + superseded, every term an
+    identity count — aggregate-only accounting would let invalid tallies
+    cancel across files."""
+    with pytest.raises(ValidationError, match="proposal accounting"):
+        _outcome(n_proposals_seen=2)  # 1 admitted, 0 producer, 0 rejected
+    ok = _outcome(
+        n_proposals_seen=2,
+        n_proposals_rejected=1,
+    )
+    assert ok.n_proposals_seen == 2
 
 
 def test_plain_skip_carries_nothing() -> None:

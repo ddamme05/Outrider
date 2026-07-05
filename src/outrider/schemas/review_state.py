@@ -158,10 +158,15 @@ class ReviewState(BaseModel):
     # #063 slot guard, not first-wins dedup: identical-digest retries are
     # replay no-ops, divergent same-slot content raises (state must not
     # fork from audit). The digest recomputes over the canonical dump at
-    # merge time (generated finding_ids excluded) — the
-    # AnalysisRound.round_id precedent: state is never mutated
+    # merge time (generated finding_ids excluded); state is never mutated
     # post-insertion, and a mutation that DID happen fails loud as
     # divergence rather than passing silently as an identical retry.
+    # NON-ALIASING OBLIGATION (3b-2): recompute safety additionally
+    # requires that no live object mutated elsewhere is ALIASED into an
+    # outcome — workers clone findings into outcomes (model_validate
+    # round-trip, the validator-safe clone) and an aggregate-level test
+    # asserts no object identity is shared between
+    # analyze_worker_outcomes and analysis_rounds findings.
     analyze_worker_outcomes: Annotated[
         list[AnalyzeWorkerOutcome],
         append_with_slot_guard(
