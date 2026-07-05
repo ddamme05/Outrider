@@ -45,7 +45,7 @@ from outrider.llm.base import _canonical_prompt_hash
 # visibility spans that can live in enclosing-but-not-included scopes the
 # prompt never shows (the import digest also widened to carry the
 # value-import marker in the same arc); v6 folds `module_admission_digest`
-# (specs/2026-07-04-module-scope-admission-arm.md) — the module-scope
+# (DECISIONS.md#062) — the module-scope
 # admission arm consumes head-side added-line ranges, the module-level
 # bytes they cover, and every parsed scope span, all outside prompt
 # bytes. The recipe change self-invalidates
@@ -103,7 +103,7 @@ def compute_analyze_cache_key(
     without it a shadowing edit outside the shown scopes would serve the
     pre-edit admitted-finding set.
     `module_admission_digest`
-    (specs/2026-07-04-module-scope-admission-arm.md) pins the module-scope
+    (DECISIONS.md#062) pins the module-scope
     arm's per-file input: the head-side added-line byte ranges, the
     module-level bytes they cover, and every parsed scope span (the
     disjointness predicate's input) — all outside prompt bytes, so two

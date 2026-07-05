@@ -256,7 +256,7 @@ def test_binding_none_javascript_queries_declare_a_shadow_guard() -> None:
 
 def test_module_scope_eligibility_seeded_exactly_once() -> None:
     """The module-scope admission arm is opt-in and seeded on the one
-    producer-pinned veto case (specs/2026-07-04-module-scope-admission-arm.md):
+    producer-pinned veto case (DECISIONS.md#062):
     the tls_env kill switch. Widening eligibility is an evidence-gated,
     deliberate act — a new eligible query updates this pin with its rationale,
     never rides in silently."""

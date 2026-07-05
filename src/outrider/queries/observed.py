@@ -159,7 +159,7 @@ class ObservedQuery(BaseModel):
     # digest auto-folds it (FUP-181). See DECISIONS.md#060.
     shadow_guard: tuple[str, ...] = ()
     # Opt-in to the producer's module-scope admission arm
-    # (specs/2026-07-04-module-scope-admission-arm.md): a match whose envelope
+    # (DECISIONS.md#062): a match whose envelope
     # is DISJOINT from every parsed scope and fully inside a head-side
     # added-line byte range is admitted without an enclosing ScopeUnit.
     # Reserved for import-free, self-proving queries — the registry rejects

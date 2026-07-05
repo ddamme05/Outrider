@@ -487,7 +487,7 @@ class LLMRequest(BaseModel):
     # `"tree_has_error_no_scope"` added per DECISIONS.md#033 (no-scope syntax error:
     # changed addable line intersects a tree error with no recovered scope).
     # `"module_level_observed_match"` is the module-scope ROUTING reason
-    # (specs/2026-07-04-module-scope-admission-arm.md) — the one degraded
+    # (DECISIONS.md#062) — the one degraded
     # cause that is not a parse defect (the parse is clean; a module-only
     # diff carries an eligible OBSERVED match), set by `decide_degradation`,
     # never by the parser.

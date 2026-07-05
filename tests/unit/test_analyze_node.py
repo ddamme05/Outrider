@@ -1763,7 +1763,7 @@ async def test_module_scope_route_cross_event_pairing_and_observed_emission(
     deps: dict[str, Any],
 ) -> None:
     """The module-scope degraded route end-to-end
-    (specs/2026-07-04-module-scope-admission-arm.md): a module-only JS diff
+    (DECISIONS.md#062): a module-only JS diff
     adding the TLS kill switch (an inert parse fixture) degrades instead of
     skipping, the producer's module-level OBSERVED finding reaches the round,
     and the audit stream carries the CROSS-EVENT pairing — the

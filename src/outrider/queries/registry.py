@@ -568,7 +568,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             # The kill switch's canonical real-world form is module
             # top-level (index.js/config, before any connection) — the one
             # import-free, self-proving query the module-scope admission
-            # arm exists for (specs/2026-07-04-module-scope-admission-arm.md).
+            # arm exists for (DECISIONS.md#062).
             module_scope_eligible=True,
         ),
     )
