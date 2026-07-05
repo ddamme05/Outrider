@@ -2645,13 +2645,14 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                         admitted_list[collide_idx] = observed_finding
                         n_superseded += 1
                     # else: incumbent already carries its own proof artifact —
-                    # keep it, drop the producer duplicate. In V1 the reachable
-                    # incumbent here is INFERRED (a pass-1+ trace finding on a
-                    # security finding_type); an OBSERVED incumbent cannot collide,
-                    # since the model-citable registry is structural-only and the
-                    # producer registry security-only, and content_hash carries
-                    # finding_type (queries/registry.py REGISTERED_QUERY_IDS vs
-                    # OBSERVED_QUERIES).
+                    # keep it, drop the producer duplicate. The reachable
+                    # incumbent here is a MODEL-CITED structural OBSERVED:
+                    # content_hash excludes query_match_id and the model
+                    # chooses finding_type freely, so a structural citation
+                    # with a security type at the producer's line collides.
+                    # INFERRED cannot reach this merge — pass 0 rejects every
+                    # INFERRED proposal (no trace context), and pass 1 never
+                    # runs the OBSERVED producer.
                 elif content_hash not in fresh_hashes:
                     fresh.append(observed_finding)
                     fresh_hashes.add(content_hash)

@@ -114,11 +114,19 @@ def test_origin_derives_from_merge_object_placement_not_tier() -> None:
         line=2, tier=EvidenceTier.OBSERVED, query_match_id="python.function_definition"
     )
     dropped_producer = _finding(line=3, tier=EvidenceTier.OBSERVED)
-    # A REAL #054 collision: content_hash includes finding_type, so the
-    # incumbent must share the producer's type AND line — and be
-    # non-JUDGED (INFERRED, the reachable V1 incumbent) so the merge
-    # keeps it and drops the producer duplicate rather than evicting.
-    incumbent = _finding(line=3, tier=EvidenceTier.INFERRED, finding_type=FindingType.SQL_INJECTION)
+    # A REAL #054 collision at the pass where the producer merge RUNS:
+    # pass 0 rejects INFERRED (no trace context) and pass 1 never runs
+    # the producer, so the reachable non-JUDGED incumbent is a
+    # MODEL-CITED structural OBSERVED — content_hash excludes the query
+    # id and the model chooses finding_type freely, so a structural
+    # citation with the producer's type and line collides. The merge
+    # keeps it (already carries proof) and drops the producer duplicate.
+    incumbent = _finding(
+        line=3,
+        tier=EvidenceTier.OBSERVED,
+        query_match_id="python.function_definition",
+        finding_type=FindingType.SQL_INJECTION,
+    )
     assert incumbent.content_hash == dropped_producer.content_hash  # collision is real
     admitted = (model_cited, incumbent, producer_survivor)  # post-#054 merge
     outcome = worker_outcome_from_parser(
