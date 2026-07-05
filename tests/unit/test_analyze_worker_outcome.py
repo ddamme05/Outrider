@@ -1,12 +1,13 @@
 # Worker-outcome model pins per specs/2026-07-05-parallel-analyze.md + DECISIONS.md#063.
-"""`AnalyzeWorkerOutcome` shape, digest, and state-reducer wiring pins.
+"""`AnalyzeWorkerOutcome` shape, source-coherence, digest, and reducer pins.
 
-The three load-bearing contracts: (1) the outcome is pure JSON-round-trip
-state with NO generated identities of its own; (2) the semantic digest
-treats identical retries (fresh nested finding UUIDs) as equal and any
-semantic change as divergent, with the exclusion-path list pinned
-one-for-one against the models' generated fields; (3) `ReviewState`
-carries the field under the slot-guard reducer, not first-wins dedup.
+The load-bearing contracts: (1) pure JSON-round-trip state with NO
+generated identities of its own; (2) the discriminated `source` makes the
+sequential branch union explicit and every counter/finding coherence rule
+hangs off it; (3) the #063 merge digest is snapshotted at construction —
+nested findings are mutable by design, and a post-insertion mutation must
+never falsely diverge a legitimate retry; (4) `ReviewState` carries the
+field under the slot-guard reducer comparing stored snapshots.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from outrider.agent.reducers import SlotDivergenceError, semantic_digest
+from outrider.agent.reducers import SlotDivergenceError
 from outrider.ast_facts.models import SkipReason
 from outrider.audit.events import compute_finding_content_hash
 from outrider.policy import EvidenceTier
@@ -88,9 +89,11 @@ def _observed_finding(title: str = "t") -> ReviewFinding:
 
 
 def _outcome(**overrides: Any) -> AnalyzeWorkerOutcome:
+    """A valid parser-source outcome; override per test."""
     base: dict[str, Any] = {
         "path": "src/app.py",
         "pass_index": 0,
+        "source": "parser",
         "parse_status": "clean",
         "review_tier": ReviewTier.DEEP,
         "llm_called": True,
@@ -104,66 +107,137 @@ def _outcome(**overrides: Any) -> AnalyzeWorkerOutcome:
     return AnalyzeWorkerOutcome(**base)
 
 
-def _digest(o: AnalyzeWorkerOutcome) -> str:
-    return semantic_digest(o, exclude_paths=WORKER_OUTCOME_EXCLUDE_PATHS)
+def _observed_skip(**overrides: Any) -> AnalyzeWorkerOutcome:
+    """A valid observed_skip (ride-out) outcome."""
+    base: dict[str, Any] = {
+        "path": "src/app.py",
+        "pass_index": 0,
+        "source": "observed_skip",
+        "parse_status": "skipped",
+        "skip_reason": SkipReason.COST_BUDGET_EXHAUSTED,
+        "review_tier": ReviewTier.DEEP,
+        "llm_called": False,
+        "counters": AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_observed=1),
+        "admitted_findings": (_observed_finding(),),
+    }
+    base.update(overrides)
+    return AnalyzeWorkerOutcome(**base)
+
+
+def _cache_serve(**overrides: Any) -> AnalyzeWorkerOutcome:
+    """A valid cache_serve outcome."""
+    finding = _finding()
+    base: dict[str, Any] = {
+        "path": "src/app.py",
+        "pass_index": 0,
+        "source": "cache_serve",
+        "parse_status": "clean",
+        "review_tier": ReviewTier.DEEP,
+        "llm_called": False,
+        "counters": AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_served=1),
+        "admitted_findings": (finding,),
+        "served_content_hashes": (finding.content_hash,),
+    }
+    base.update(overrides)
+    return AnalyzeWorkerOutcome(**base)
+
+
+def _state_reducer() -> Any:
+    hints = get_type_hints(ReviewState, include_extras=True)
+    metadata = get_args(hints["analyze_worker_outcomes"])[1:]
+    reducers = [m for m in metadata if callable(m)]
+    assert reducers, "analyze_worker_outcomes carries no reducer — LangGraph would concat"
+    return reducers[0]
 
 
 # ---------------------------------------------------------------------------
-# Shape + validators.
+# Shape + skip coherence.
 # ---------------------------------------------------------------------------
-
-
-_NO_SPEND: dict[str, Any] = {
-    "llm_called": False,
-    "input_tokens": 0,
-    "output_tokens": 0,
-    "cache_read_tokens": 0,
-    "cache_write_tokens": 0,
-    "cost": Decimal("0"),
-}
 
 
 def test_skip_coherence_iff_contract_both_directions() -> None:
-    """skip_reason non-None iff parse_status='skipped' (the #018 iff shape)."""
     with pytest.raises(ValidationError, match="iff"):
-        _outcome(parse_status="skipped", **_NO_SPEND)  # skipped, no reason
+        _observed_skip(skip_reason=None)  # skipped, no reason
     with pytest.raises(ValidationError, match="iff"):
         _outcome(skip_reason=SkipReason.COST_BUDGET_EXHAUSTED)  # reason, not skipped
 
 
-def test_skipped_file_never_made_an_llm_call() -> None:
-    with pytest.raises(ValidationError, match="never makes an LLM call"):
-        _outcome(
-            parse_status="skipped",
-            skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
-            llm_called=True,
-        )
+def test_skipped_iff_skip_source_and_llm_iff_parser() -> None:
+    with pytest.raises(ValidationError, match="does not match source"):
+        _outcome(source="observed_skip")  # clean status, skip source
+    with pytest.raises(ValidationError, match="contradicts"):
+        _observed_skip(llm_called=True)  # skip source, LLM call
 
 
 def test_ride_out_shape_is_legal_findings_on_a_skip() -> None:
-    """The module-arm ride-out: a budget skip carrying OBSERVED findings is a
-    legitimate outcome and must construct."""
-    outcome = _outcome(
-        parse_status="skipped",
-        skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
-        admitted_findings=(_observed_finding(),),
-        counters=AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_observed=1),
-        **_NO_SPEND,
-    )
-    assert outcome.admitted_findings
+    """The module-arm ride-out: a budget skip carrying OBSERVED findings."""
+    assert _observed_skip().admitted_findings
 
 
 def test_skip_findings_must_be_observed_tier() -> None:
-    """A JUDGED finding on a skip is a shape no sequential path produces —
-    the ride-out and enforced-coverage paths emit the deterministic
-    producer's OBSERVED findings only."""
-    with pytest.raises(ValidationError, match="only.*OBSERVED|OBSERVED findings"):
+    """A JUDGED finding on a skip is a shape no sequential path produces."""
+    with pytest.raises(ValidationError, match="OBSERVED"):
+        _observed_skip(admitted_findings=(_finding(),))
+
+
+def test_plain_skip_carries_nothing() -> None:
+    with pytest.raises(ValidationError, match="plain_skip carries nothing"):
+        _observed_skip(source="plain_skip")
+
+
+def test_path_is_canonicalized_like_analysis_round() -> None:
+    outcome = _outcome(path="./src/app.py")
+    assert outcome.path == "src/app.py"
+    assert worker_outcome_slot(outcome) == ("src/app.py", 0)
+
+
+def test_json_round_trip_is_exact_including_decimal_cost_and_snapshot() -> None:
+    outcome = _outcome(cost=Decimal("0.123456789"))
+    restored = AnalyzeWorkerOutcome.model_validate_json(outcome.model_dump_json())
+    assert restored.cost == Decimal("0.123456789")
+    assert isinstance(restored.cost, Decimal)
+    assert restored.admitted_findings == outcome.admitted_findings
+    assert restored.semantic_snapshot == outcome.semantic_snapshot  # verified, not re-minted
+
+
+# ---------------------------------------------------------------------------
+# Source coherence: counters derived from the findings they describe.
+# ---------------------------------------------------------------------------
+
+
+def test_observed_counter_must_match_observed_tier_findings() -> None:
+    """A JUDGED finding counted as observed breaks the accounting
+    subtraction — the counter is DERIVED, not asserted."""
+    with pytest.raises(ValidationError, match="OBSERVED-tier"):
         _outcome(
-            parse_status="skipped",
-            skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
-            admitted_findings=(_finding(),),  # JUDGED
-            counters=AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_observed=1),
-            **_NO_SPEND,
+            counters=AnalyzeWorkerCounters(
+                n_proposals_seen=0, n_findings_emitted=1, n_findings_observed=1
+            ),
+        )  # base finding is JUDGED
+
+
+def test_response_rejection_is_exclusive() -> None:
+    """A rejected response yields zero proposals, findings, and candidates
+    (the parser's all-zero exclusive shape)."""
+    ok = _outcome(
+        counters=AnalyzeWorkerCounters(n_responses_rejected=1),
+        admitted_findings=(),
+    )
+    assert ok.counters.n_responses_rejected == 1
+    with pytest.raises(ValidationError, match="exclusive"):
+        _outcome(
+            counters=AnalyzeWorkerCounters(
+                n_responses_rejected=1, n_proposals_seen=1, n_findings_emitted=1
+            ),
+        )
+
+
+def test_trace_counter_tied_to_candidates_tuple() -> None:
+    with pytest.raises(ValidationError, match="candidates carried"):
+        _outcome(
+            counters=AnalyzeWorkerCounters(
+                n_proposals_seen=1, n_findings_emitted=1, n_trace_candidates_emitted=2
+            ),
         )
 
 
@@ -176,153 +250,55 @@ def test_served_findings_cannot_coexist_with_an_llm_call() -> None:
             counters=AnalyzeWorkerCounters(
                 n_proposals_seen=0, n_findings_emitted=1, n_findings_served=1
             ),
-            llm_called=True,
         )
 
 
-def test_worker_accounting_equation_and_cardinality() -> None:
-    """Per-worker halves of the canonical proposal equation, so errors
-    cannot cancel across workers at the aggregate."""
-    with pytest.raises(ValidationError, match="findings admitted"):
-        _outcome(counters=AnalyzeWorkerCounters(n_proposals_seen=2, n_findings_emitted=2))
-    with pytest.raises(ValidationError, match="proposal accounting"):
-        _outcome(counters=AnalyzeWorkerCounters(n_proposals_seen=2, n_findings_emitted=1))
+def test_no_parser_means_no_proposal_or_trace_counters() -> None:
     with pytest.raises(ValidationError, match="require an LLM call"):
-        _outcome(
-            counters=AnalyzeWorkerCounters(n_proposals_seen=1, n_findings_emitted=1),
-            **_NO_SPEND,
+        _cache_serve(
+            counters=AnalyzeWorkerCounters(
+                n_proposals_seen=1, n_findings_emitted=1, n_findings_served=1
+            ),
         )
 
 
-def test_no_llm_call_means_zero_spend() -> None:
-    """llm_called=False with nonzero provider tokens or cost would let the
-    aggregate's accounting contradict the LLMCallEvent stream."""
-    observed_shape: dict[str, Any] = {
-        "admitted_findings": (_observed_finding(),),
-        "counters": AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_observed=1),
-    }
-    with pytest.raises(ValidationError, match="zero provider"):
-        _outcome(llm_called=False, **observed_shape)  # base tokens + cost survive
-    with pytest.raises(ValidationError, match="zero provider"):
-        _outcome(**{**_NO_SPEND, "cost": Decimal("0.01")}, **observed_shape)
-
-
-def test_path_is_canonicalized_like_analysis_round() -> None:
-    """Two spellings of one path must not occupy two slots."""
-    outcome = _outcome(path="./src/app.py")
-    assert outcome.path == "src/app.py"
-    assert worker_outcome_slot(outcome) == ("src/app.py", 0)
-
-
-def test_json_round_trip_is_exact_including_decimal_cost() -> None:
-    outcome = _outcome(cost=Decimal("0.123456789"))
-    restored = AnalyzeWorkerOutcome.model_validate_json(outcome.model_dump_json())
-    assert restored.cost == Decimal("0.123456789")
-    assert isinstance(restored.cost, Decimal)
-    assert restored.admitted_findings == outcome.admitted_findings
+def test_cache_serve_hashes_must_be_exactly_the_admitted_set() -> None:
+    with pytest.raises(ValidationError, match="exactly the admitted"):
+        _cache_serve(
+            served_content_hashes=(),
+            counters=AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_served=0),
+        )
 
 
 # ---------------------------------------------------------------------------
-# Semantic digest (#063).
+# Served-hash canonical form (primitive checks fire before source rules).
 # ---------------------------------------------------------------------------
-
-
-def test_identical_retry_with_fresh_finding_uuids_digests_equal() -> None:
-    """THE #063 case on the real model: a retry's findings carry fresh
-    generated finding_ids; the digest must not see them."""
-    first = _outcome(admitted_findings=(_finding("x"),))
-    retry = _outcome(admitted_findings=(_finding("x"),))
-    assert first.admitted_findings[0].finding_id != retry.admitted_findings[0].finding_id
-    assert _digest(first) == _digest(retry)
-
-
-def test_any_semantic_change_moves_the_digest() -> None:
-    base = _outcome()
-    assert _digest(base) != _digest(_outcome(admitted_findings=(_finding("other"),)))
-    assert _digest(base) != _digest(_outcome(output_tokens=51))
-    assert _digest(base) != _digest(_outcome(cost=Decimal("0.0124")))
-
-
-def test_exclusion_paths_match_generated_fields_one_for_one() -> None:
-    """The two-directional #063 pin: every default_factory-generated field in
-    the outcome's model tree appears in WORKER_OUTCOME_EXCLUDE_PATHS, and
-    every excluded path points at such a field. A generated field the list
-    misses makes identical retries digest-divergent (crash on legitimate
-    replay); a semantic field wrongly listed is silently ignored."""
-    generated: set[str] = set()
-    for model, prefix in (
-        (AnalyzeWorkerOutcome, ""),
-        (AnalyzeWorkerCounters, "counters."),
-        (ReviewFinding, "admitted_findings.[]."),
-        (TraceCandidate, "trace_candidates.[]."),
-        (ObservedSubsumedMatch, "subsumed_matches.[]."),
-    ):
-        for name, field in model.model_fields.items():
-            if field.default_factory is not None and field.default_factory is not tuple:
-                generated.add(f"{prefix}{name}")
-    assert generated == set(WORKER_OUTCOME_EXCLUDE_PATHS)
-
-
-# ---------------------------------------------------------------------------
-# ReviewState wiring: the slot-guard reducer, not first-wins dedup.
-# ---------------------------------------------------------------------------
-
-
-def _state_reducer() -> Any:
-    hints = get_type_hints(ReviewState, include_extras=True)
-    metadata = get_args(hints["analyze_worker_outcomes"])[1:]
-    reducers = [m for m in metadata if callable(m)]
-    assert reducers, "analyze_worker_outcomes carries no reducer — LangGraph would concat"
-    return reducers[0]
-
-
-def test_state_field_merges_identical_retries_and_rejects_divergence() -> None:
-    reducer = _state_reducer()
-    first = _outcome(admitted_findings=(_finding("x"),))
-    retry = _outcome(admitted_findings=(_finding("x"),))  # fresh UUIDs, same semantics
-    assert reducer([first], [retry]) == [first]
-    diverged = _outcome(admitted_findings=(_finding("y"),))
-    with pytest.raises(SlotDivergenceError):
-        reducer([first], [diverged])
 
 
 def test_served_hashes_canonical_form_enforced() -> None:
-    """SHA-hex, sorted-unique, subset-of-admitted, counter-coupled — each
-    direction pinned. Sorted-unique is digest stability (emission-order
-    encodings would falsely diverge identical retries); subset + coupling is
-    the post-cap kept_served accounting."""
     finding = _finding()
     h = finding.content_hash
-    ok = _outcome(
-        admitted_findings=(finding,),
-        served_content_hashes=(h,),
-        counters=AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_served=1),
-        **_NO_SPEND,
-    )
-    assert ok.served_content_hashes == (h,)
     with pytest.raises(ValidationError, match="SHA-256 hex"):
-        _outcome(served_content_hashes=("nope",))
+        _cache_serve(served_content_hashes=("nope",))
     with pytest.raises(ValidationError, match="sorted and unique"):
-        _outcome(
-            admitted_findings=(finding,),
+        _cache_serve(
             served_content_hashes=(h, h),
             counters=AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_served=2),
-            **_NO_SPEND,
         )
     with pytest.raises(ValidationError, match="subset"):
-        _outcome(served_content_hashes=("b" * 64,))
+        _cache_serve(served_content_hashes=("b" * 64,))
     with pytest.raises(ValidationError, match="n_findings_served"):
-        _outcome(
-            admitted_findings=(finding,),
-            served_content_hashes=(h,),
+        _cache_serve(
             counters=AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_served=0),
-            **_NO_SPEND,
         )
+
+
+# ---------------------------------------------------------------------------
+# Cross-file attribution + accounting + spend.
+# ---------------------------------------------------------------------------
 
 
 def test_cross_file_attribution_is_unrepresentable() -> None:
-    """A worker outcome must not be able to express what the sequential
-    per-file loop cannot: findings or subsumption records for another file."""
     with pytest.raises(ValidationError, match="worker's file"):
         _outcome(path="src/other.py")  # base finding names src/app.py
     match = ObservedSubsumedMatch(
@@ -347,3 +323,92 @@ def test_cross_file_attribution_is_unrepresentable() -> None:
     )
     with pytest.raises(ValidationError, match="worker's file"):
         _outcome(subsumed_matches=(match,))
+
+
+def test_worker_accounting_equation_and_cardinality() -> None:
+    with pytest.raises(ValidationError, match="findings admitted"):
+        _outcome(counters=AnalyzeWorkerCounters(n_proposals_seen=2, n_findings_emitted=2))
+    with pytest.raises(ValidationError, match="proposal accounting"):
+        _outcome(counters=AnalyzeWorkerCounters(n_proposals_seen=2, n_findings_emitted=1))
+
+
+def test_no_llm_call_means_zero_spend() -> None:
+    with pytest.raises(ValidationError, match="zero provider"):
+        _cache_serve(input_tokens=100)
+    with pytest.raises(ValidationError, match="zero provider"):
+        _observed_skip(cost=Decimal("0.01"))
+
+
+# ---------------------------------------------------------------------------
+# The #063 semantic snapshot.
+# ---------------------------------------------------------------------------
+
+
+def test_identical_retry_with_fresh_finding_uuids_snapshots_equal() -> None:
+    first = _outcome(admitted_findings=(_finding("x"),))
+    retry = _outcome(admitted_findings=(_finding("x"),))
+    assert first.admitted_findings[0].finding_id != retry.admitted_findings[0].finding_id
+    assert first.semantic_snapshot == retry.semantic_snapshot
+
+
+def test_any_semantic_change_moves_the_snapshot() -> None:
+    base = _outcome()
+    assert (
+        base.semantic_snapshot != _outcome(admitted_findings=(_finding("other"),)).semantic_snapshot
+    )
+    assert base.semantic_snapshot != _outcome(output_tokens=51).semantic_snapshot
+    assert base.semantic_snapshot != _outcome(cost=Decimal("0.0124")).semantic_snapshot
+
+
+def test_snapshot_is_immutable_at_birth_despite_nested_mutation() -> None:
+    """THE F4 pin: nested findings are mutable by design; a post-insertion
+    mutation must not change the stored snapshot, so the slot guard never
+    falsely diverges a legitimate retry against mutated existing state."""
+    original = _outcome(admitted_findings=(_finding("x"),))
+    snapshot_at_birth = original.semantic_snapshot
+    original.admitted_findings[0].title = "mutated-after-insertion"
+    assert original.semantic_snapshot == snapshot_at_birth
+    retry = _outcome(admitted_findings=(_finding("x"),))  # pre-mutation semantics
+    reducer = _state_reducer()
+    assert reducer([original], [retry]) == [original]  # replay no-op, no false divergence
+
+
+def test_tampered_snapshot_is_verified_not_trusted() -> None:
+    outcome = _outcome()
+    payload = outcome.model_dump(mode="json")
+    payload["semantic_snapshot"] = "f" * 64
+    with pytest.raises(ValidationError, match="does not match"):
+        AnalyzeWorkerOutcome.model_validate(payload)
+
+
+def test_exclusion_paths_match_generated_fields_plus_self_reference() -> None:
+    """Two-directional #063 pin: the exclusion list is exactly the model
+    tree's default_factory-generated fields PLUS the digest's own storage
+    field (self-referential — a digest cannot cover itself)."""
+    generated: set[str] = set()
+    for model, prefix in (
+        (AnalyzeWorkerOutcome, ""),
+        (AnalyzeWorkerCounters, "counters."),
+        (ReviewFinding, "admitted_findings.[]."),
+        (TraceCandidate, "trace_candidates.[]."),
+        (ObservedSubsumedMatch, "subsumed_matches.[]."),
+    ):
+        for name, field in model.model_fields.items():
+            if field.default_factory is not None and field.default_factory is not tuple:
+                generated.add(f"{prefix}{name}")
+    assert generated | {"semantic_snapshot"} == set(WORKER_OUTCOME_EXCLUDE_PATHS)
+
+
+# ---------------------------------------------------------------------------
+# ReviewState wiring: the slot-guard reducer over stored snapshots.
+# ---------------------------------------------------------------------------
+
+
+def test_state_field_merges_identical_retries_and_rejects_divergence() -> None:
+    reducer = _state_reducer()
+    first = _outcome(admitted_findings=(_finding("x"),))
+    retry = _outcome(admitted_findings=(_finding("x"),))  # fresh UUIDs, same semantics
+    assert reducer([first], [retry]) == [first]
+    diverged = _outcome(admitted_findings=(_finding("y"),))
+    with pytest.raises(SlotDivergenceError):
+        reducer([first], [diverged])
