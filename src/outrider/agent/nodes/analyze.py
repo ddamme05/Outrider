@@ -183,6 +183,7 @@ from outrider.coordinates import (
     changed_line_spans,
     extract_scope_unit_body,
     lookup_patched_file,
+    patched_file_has_added_lines,
     patched_file_has_removed_lines,
 )
 from outrider.llm.base import LLMRequest, _canonical_prompt_hash
@@ -1879,13 +1880,23 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # the file is unsound against mismatched content: the degraded span veto
     # recomputes these ranges AFTER the LLM call (an uncontained raise there
     # aborted the whole review), the module-scope arm denies on them, and a
-    # "clean" review would hand publish wrong-line comment locations. The
-    # honest outcome is an audit-visible skip — the same `content` the
-    # downstream consumers use, so probe and consumers never disagree.
+    # "clean" review would hand publish wrong-line comment locations. Added
+    # lines are HEAD-side coordinates, so the probe anchors on head content
+    # ONLY: when head is absent, an added-line patch has nothing to anchor
+    # against and skips as the same misalignment class — probing the base
+    # fallback would validate head coordinates against the wrong text and
+    # pass wrongly. Deletion-only patches over base content (removed files)
+    # carry no added lines and proceed unprobed, unchanged.
     if patched_file is not None:
-        try:
-            added_line_byte_ranges(patched_file, content)
-        except CoordinateError:
+        if changed_file.content_head is None:
+            misaligned = patched_file_has_added_lines(patched_file)
+        else:
+            try:
+                added_line_byte_ranges(patched_file, changed_file.content_head)
+                misaligned = False
+            except CoordinateError:
+                misaligned = True
+        if misaligned:
             logger.warning(
                 "patch/head-content misalignment for %s — file skipped "
                 "(PATCH_HEAD_MISALIGNED; review continues)",

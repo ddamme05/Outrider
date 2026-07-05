@@ -2013,6 +2013,85 @@ async def test_misaligned_degraded_route_file_skips_instead_of_aborting(
 
 
 @pytest.mark.asyncio
+async def test_head_missing_with_added_lines_skips_as_misaligned(
+    deps: dict[str, Any],
+) -> None:
+    """FUP-217 head-anchor pin: added lines are head-side coordinates, so a
+    file whose head content is ABSENT but whose patch carries added lines has
+    nothing to anchor against — probing the base fallback would validate head
+    coordinates against the wrong text and pass wrongly. The ChangedFile
+    schema makes this reachable only via a removed-status file (base-only)
+    whose vendor patch anomalously carries added lines — the patch string is
+    not cross-validated against status. Must skip as the misalignment class,
+    zero LLM spend."""
+    cf = ChangedFile(
+        path="src/index.js",
+        status="removed",
+        additions=0,
+        deletions=1,
+        patch=(
+            "--- a/src/index.js\n+++ b/src/index.js\n"
+            "@@ -1,1 +1,1 @@\n-const old = 1;\n+const updated = 1;\n"
+        ),
+        content_base="const old = 1;\n",
+        content_head=None,
+        previous_path=None,
+        language="javascript",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(cf,)),
+        triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
+    )
+
+    result = await analyze(state, **deps)
+
+    fe_events = deps["file_examination_sink"].events
+    assert len(fe_events) == 1
+    assert fe_events[0].parse_status == "skipped"
+    assert fe_events[0].skip_reason is SkipReason.PATCH_HEAD_MISALIGNED
+    assert deps["provider"].calls == []
+    assert result["analysis_rounds"][0].findings == ()
+
+
+@pytest.mark.asyncio
+async def test_deletion_only_base_content_file_proceeds_unprobed(
+    deps: dict[str, Any],
+) -> None:
+    """FUP-217 head-anchor control: a removed file (base content only,
+    deletion-only patch — no added lines) has nothing that anchors on head
+    coordinates, so the probe does not fire and pre-probe behavior is
+    preserved exactly (here: NO_CHANGED_SCOPE_UNITS skip, not a misalignment
+    skip)."""
+    cf = ChangedFile(
+        path="src/index.js",
+        status="removed",
+        additions=0,
+        deletions=1,
+        patch=(
+            "--- a/src/index.js\n+++ b/src/index.js\n"
+            "@@ -1,2 +1,1 @@\n-const gone = 1;\n const kept = 2;\n"
+        ),
+        content_base="const gone = 1;\nconst kept = 2;\n",
+        content_head=None,
+        previous_path=None,
+        language="javascript",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(cf,)),
+        triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
+    )
+
+    result = await analyze(state, **deps)
+
+    fe_events = deps["file_examination_sink"].events
+    assert len(fe_events) == 1
+    assert fe_events[0].parse_status == "skipped"
+    assert fe_events[0].skip_reason is SkipReason.NO_CHANGED_SCOPE_UNITS
+    assert deps["provider"].calls == []
+    assert result["analysis_rounds"][0].findings == ()
+
+
+@pytest.mark.asyncio
 async def test_module_only_diff_without_eligible_match_still_skips(
     deps: dict[str, Any],
 ) -> None:
