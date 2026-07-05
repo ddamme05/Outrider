@@ -608,6 +608,8 @@ def _analyze_router(state: ReviewState) -> str:
     `len(state.analysis_rounds) == 1`), route to trace to consume the
     accumulated trace_candidates. After analyze pass 2 (depth-2 limit),
     route straight to synthesize — no further trace work allowed.
+    Round count IS the depth counter — which is why a round is one
+    analyze PASS, never one parallel worker (see DECISIONS.md#063).
     Synthesize folds findings into a ReviewReport; HITL then partitions
     by severity (empty gate-set passes through to publish without an
     interrupt).

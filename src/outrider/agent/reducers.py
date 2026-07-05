@@ -8,7 +8,8 @@ Dedup-keyed merge is idempotent — items already present (by key) are
 skipped on re-emission.
 
 Consumers:
-- `ReviewState.analysis_rounds` — keyed on `AnalysisRound.round_id`.
+- `ReviewState.analysis_rounds` — keyed on `AnalysisRound.round_id`; one
+  round per analyze PASS, never per worker (see DECISIONS.md#063).
 - `ReviewState.trace_candidates` — keyed on `TraceCandidate.candidate_id`.
 
 The factory is generic so future state fields with content-derived
