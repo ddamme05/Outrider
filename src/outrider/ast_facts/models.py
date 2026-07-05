@@ -149,9 +149,9 @@ class SkipReason(StrEnum):
     # file — degraded span veto, module-scope admission, publish line
     # mapping — is unsound against mismatched content, so the file skips
     # with the data-integrity cause audit-visible instead of aborting or
-    # silently reviewing on wrong coordinates (FUP-217; `DECISIONS.md#018`
-    # taxonomy). Best-effort detection: a misalignment whose line numbers
-    # still fit the fetched source is not detectable here.
+    # silently reviewing on wrong coordinates. Per `DECISIONS.md#018`
+    # Amended 2026-07-05 (FUP-217). Best-effort detection: a misalignment
+    # whose line numbers still fit the fetched source is not detectable here.
     PATCH_HEAD_MISALIGNED = "PATCH_HEAD_MISALIGNED"
 
     def stage(self) -> Literal["parser", "analyze"]:
