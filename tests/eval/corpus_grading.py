@@ -276,7 +276,7 @@ def _observe_file(corpus_root: Path, rel_file: str) -> _FileObservation:
         import_refs=parsed.imports,
         lexical_bindings=parsed.lexical_bindings,
         # The corpus grades a whole file as changed, so the module-scope arm
-        # (specs/2026-07-04-module-scope-admission-arm.md) sees every parsed
+        # (DECISIONS.md#062) sees every parsed
         # scope for disjointness and the whole file as its added range —
         # production-faithful under producer v7 (a module-level match on an
         # ELIGIBLE query admits; ineligible queries stay containment-gated).

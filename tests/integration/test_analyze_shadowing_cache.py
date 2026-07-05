@@ -182,7 +182,7 @@ async def test_shadowed_and_value_variants_never_cross_serve(migrated_db: str) -
 
 
 # The module-scope arm's with-scopes fixtures
-# (specs/2026-07-04-module-scope-admission-arm.md): one changed function plus a
+# (DECISIONS.md#062): one changed function plus a
 # module-level line that differs ONLY at module level — the kill switch (an
 # inert parse fixture) vs a benign constant. Byte-identical prompt stand-ins;
 # `module_admission_digest` is the splitting input.

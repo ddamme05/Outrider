@@ -305,7 +305,7 @@ def added_line_byte_ranges(patched_file: PatchedFile, source: str) -> tuple[tupl
     content the patch actually added/modified, not arbitrary in-file bytes the model
     fabricates from prompt context. The SAME ranges anchor the OBSERVED producer's
     module-scope admission arm (`analyze_observed._module_level_admits`,
-    specs/2026-07-04-module-scope-admission-arm.md): a `module_scope_eligible`
+    DECISIONS.md#062): a `module_scope_eligible`
     query's scope-disjoint match must sit fully inside one range — both consumers
     gate against one deterministic diff anchor. Reads `unidiff.Line` (`is_added` /
     `target_line_no`), the boundary owner's job per

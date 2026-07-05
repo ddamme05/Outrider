@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 # a changed addable line intersects a tree error but no scope recovered there
 # (distinct from `"tree_has_error_in_changed_regions"`, which needs a recovered scope).
 # `"module_level_observed_match"` is the module-scope routing reason
-# (specs/2026-07-04-module-scope-admission-arm.md) and the one reason that is
+# (DECISIONS.md#062) and the one reason that is
 # NOT a parse defect: the parse is CLEAN, but a module-only diff carries an
 # eligible OBSERVED match, so the file degrades (bounded-hunks JUDGED review +
 # module-level OBSERVED emission) instead of skipping at NO_CHANGED_SCOPE_UNITS.
@@ -137,7 +137,7 @@ def decide_degradation(
       eligible OBSERVED query admits a module-level match on the added lines) →
       `degraded` (`module_level_observed_match`, parse_status stays `clean` — a
       routing choice, not a parse defect;
-      specs/2026-07-04-module-scope-admission-arm.md). Parse-error precedence: the
+      DECISIONS.md#062). Parse-error precedence: the
       error-lines check runs FIRST, so a syntax-error file degrades as
       `tree_has_error_no_scope` and the candidate flag is never consulted.
     - `clean` with a changed scope unit that carries a tree error → `degraded`

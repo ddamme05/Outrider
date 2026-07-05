@@ -1648,3 +1648,18 @@ Admission (`agent/nodes/analyze_observed.py`): a match is denied when any bindin
 **Consequences.** The registry's ledger comment is rewritten to state the claim-scoped trigger (back-pointer in the same commit). Historical `query_match_id`s keep resolving and content-hash verification is untouched. The named residual: a source-rematch of an old review under a newer body may not re-match — accepted, documented here as an input requirement for #031's stronger-verify mode. Corpus-arc precision edits proceed in place, evidence-gated, one digest move per batch.
 
 **Referenced from.** `src/outrider/queries/registry.py`.
+
+## 062. Module-scope OBSERVED admission: diff-anchored proof + degrade-don't-skip routing
+
+**Status:** Accepted, 2026-07-04.
+
+**Context.** The OBSERVED producer's containment gate admits matches only inside an extracted `ScopeUnit`, and analyze skips module-only diffs at `NO_CHANGED_SCOPE_UNITS` before the producer runs — so `javascript.tls_env_verify_disabled`'s canonical form, the module-top-level `NODE_TLS_REJECT_UNAUTHORIZED` kill switch, received zero review through both paths (producer-pinned veto, FUP-214). Loosening containment broadly was rejected: it excludes straddling and unchanged-code matches by design.
+
+**Decision.** Two coupled rules for import-free, self-proving OBSERVED queries (`ObservedQuery.module_scope_eligible`; the registry rejects an eligible query carrying a `BindingRule`; seeded on tls_env only):
+
+- **Module-scope admission is diff-anchored.** A match admits without an enclosing scope iff its envelope is DISJOINT from every parsed scope (proven against ALL parsed scopes, not the included set; overlap or enclosure of a scope boundary is a straddle and stays denied) AND fully inside a head-side `coordinates.added_line_byte_ranges` range — the same deterministic ranges the degraded JUDGED admission already gates against. Shadow-guard and byte→line checks still apply.
+- **Module-only diffs with an eligible match degrade instead of skip.** `decide_degradation` returns `module_level_observed_match` after the error branches, and the candidate is gated on a fully error-free parse (the module ARM never anchors proof on a tree carrying error nodes — stricter than normal scope-contained production, which still runs in clean mode when errors sit outside the included changed scopes), with `parse_status="clean"`, truthfully: the first degraded reason that is a routing choice, not a parse defect. The reason rides `LLMCallEvent`, and the cross-event pairing (clean `FileExaminationEvent` + reasoned `LLMCallEvent`) distinguishes the route. This preserves #049 verbatim — the OBSERVED emission always accompanies a real (bounded-hunks, JUDGED-only) LLM pass, with cost bounded by the pre-check running the producer's own admission chain.
+
+**Consequences.** `OBSERVED_PRODUCER_VERSION` v7. `module_admission_digest` joins the analyze cache key (recipe v6), covering added-line ranges, the module-level bytes they cover, and every parsed scope span. The degraded prompt's provenance sentence became reason-aware (`analyze-v9`, fail-loud mapping) — the module route must not be described to the model as a parse failure. The module-only degraded route is non-cacheable (existing degraded mechanics) and excluded from #049 skip coverage. Matches on unchanged module-level lines are never admitted — the diff anchors the proof. Eligibility widening is evidence-gated (exactly-once catalog pin). Python parity stays FUP-184.
+
+**Referenced from.** `src/outrider/agent/nodes/degradation.py`, `src/outrider/agent/nodes/analyze_observed.py`, `src/outrider/queries/observed.py`, `src/outrider/cache/key.py`, `src/outrider/prompts/analyze.py`.

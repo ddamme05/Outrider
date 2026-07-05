@@ -1,6 +1,6 @@
 """Structural eval scenario: the module-scope admission arm on the TLS kill switch.
 
-Per specs/2026-07-04-module-scope-admission-arm.md: the kill switch's canonical
+Per DECISIONS.md#062: the kill switch's canonical
 real-world form — `process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"` at module top
 level, an inert parse fixture here (SYNTHETIC coverage; the vendored Juice Shop
 corpus carries no upstream kill-switch file) — historically got ZERO review: a

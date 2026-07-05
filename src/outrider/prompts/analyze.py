@@ -98,7 +98,7 @@ if TYPE_CHECKING:
 
 # Bumped 2026-07-04 (was "analyze-v8") to make the DEGRADED user template's
 # provenance sentence reason-aware: `module_level_observed_match` (the module-scope
-# routing degradation, specs/2026-07-04-module-scope-admission-arm.md) is a CLEAN
+# routing degradation, DECISIONS.md#062) is a CLEAN
 # parse, and the fixed "could not be parsed" sentence was false provenance for it.
 # The parse-defect reasons keep the prior sentence verbatim. The tuned
 # SYSTEM_PROMPT_STABLE_PREFIX is untouched — no conservatism/ssrf re-probe owed
@@ -796,7 +796,7 @@ max 8192 chars of text) to cap the degraded-path cost.
 
 # Reason-aware provenance for the degraded template's opening sentence — the
 # prompt must not tell the model a clean-parse file "could not be parsed"
-# (specs/2026-07-04-module-scope-admission-arm.md: `module_level_observed_match`
+# (DECISIONS.md#062: `module_level_observed_match`
 # is a ROUTING degradation over a clean parse). Closed, code-side mapping keyed
 # by the typed `_DegradationReason` value, indexed FAIL-LOUD in
 # `render_degraded`: a future reason without a provenance sentence is a

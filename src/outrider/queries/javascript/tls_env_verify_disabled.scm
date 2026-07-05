@@ -20,7 +20,7 @@
 ; process.env; env.NODE_TLS_... = "0"`), and `globalThis.process.env` —
 ; the receiver is constrained to the literal `process.env` chain.
 ;
-; Module-top-level reach (specs/2026-07-04-module-scope-admission-arm.md):
+; Module-top-level reach (DECISIONS.md#062):
 ; the CANONICAL real-world form of this kill switch — a module-top-level
 ; statement in index.js/config — is admitted by the producer's module-scope
 ; arm (this query is `module_scope_eligible`): a match disjoint from every

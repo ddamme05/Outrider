@@ -797,7 +797,7 @@ def test_module_arm_denies_when_module_inputs_not_threaded() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Module-scope admission arm (specs/2026-07-04-module-scope-admission-arm.md):
+# Module-scope admission arm (DECISIONS.md#062):
 # a `module_scope_eligible` query's match admits without an enclosing scope
 # iff its envelope is DISJOINT from every parsed scope and fully inside a
 # head-side added-line byte range. `_KILL_SWITCH` is detection-target

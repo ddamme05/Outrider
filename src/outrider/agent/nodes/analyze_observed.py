@@ -131,7 +131,7 @@ if TYPE_CHECKING:
 # kill-switch query, and `import type { Pool } from "pg"` proved DB
 # presence.
 # v7: module-scope admission arm
-# (specs/2026-07-04-module-scope-admission-arm.md). A `module_scope_eligible`
+# (DECISIONS.md#062). A `module_scope_eligible`
 # query's match (binding=None by registry validation) is admitted WITHOUT an
 # enclosing ScopeUnit when its envelope is DISJOINT from every parsed scope
 # and fully inside a head-side added-line byte range. Under v6 the
@@ -433,7 +433,7 @@ def module_admission_digest(
     content_bytes: bytes,
 ) -> str:
     """SHA-256 over the module-scope arm's per-file admission inputs — the
-    third digest sibling (specs/2026-07-04-module-scope-admission-arm.md).
+    third digest sibling (DECISIONS.md#062).
 
     Covers ALL THREE inputs `_module_level_admits` consumes, none of which
     the rendered prompt carries (included clipped hunks are per included
@@ -464,7 +464,7 @@ def _module_level_admits(
     all_scope_ranges: tuple[tuple[int, int], ...],
     added_line_ranges: tuple[tuple[int, int], ...],
 ) -> bool:
-    """Module-scope admission arm (specs/2026-07-04-module-scope-admission-arm.md).
+    """Module-scope admission arm (DECISIONS.md#062).
 
     A `module_scope_eligible` query's match admits WITHOUT an enclosing scope
     when its envelope is (a) DISJOINT from every parsed scope — overlap or
@@ -515,7 +515,7 @@ def run_observed_matches(
     envelopes and spans that fail the byte->line mapping are dropped.
 
     The MODULE-SCOPE arm (`_module_level_admits`,
-    specs/2026-07-04-module-scope-admission-arm.md) is the one exception to
+    DECISIONS.md#062) is the one exception to
     containment: a `module_scope_eligible` query's match admits without an
     enclosing scope when its envelope is disjoint from every parsed scope
     (`all_scope_units`) and fully inside a head-side added-line byte range
@@ -641,7 +641,7 @@ def has_module_level_eligible_match(
     lexical_bindings: tuple[LexicalBinding, ...],
 ) -> bool:
     """Routing pre-check for the module-only degraded route
-    (specs/2026-07-04-module-scope-admission-arm.md): does at least one
+    (DECISIONS.md#062): does at least one
     `module_scope_eligible` query admit a module-level match on the changed
     lines? Delegates to `run_observed_matches` with NO included scopes, so
     the only admissible matches are module-level ones — the exact admission

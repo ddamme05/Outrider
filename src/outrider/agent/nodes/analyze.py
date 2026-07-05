@@ -1817,7 +1817,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # degraded prompt below also needs `patched_file`.
     patched_file = lookup_patched_file(changed_file.patch, changed_file.path)
 
-    # Module-scope routing pre-check (specs/2026-07-04-module-scope-admission-arm.md):
+    # Module-scope routing pre-check (DECISIONS.md#062):
     # would an eligible OBSERVED query admit a module-level match on the added
     # lines? Delegates to the producer's own admission chain
     # (`has_module_level_eligible_match`), so True always yields an OBSERVED

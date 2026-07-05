@@ -889,7 +889,7 @@ def test_render_degraded_provenance_is_reason_aware() -> None:
     """The v9 provenance rule: parse-defect reasons keep the "could not be
     parsed" sentence; the module-scope routing reason
     (`module_level_observed_match`, a CLEAN parse —
-    specs/2026-07-04-module-scope-admission-arm.md) must say the file parsed
+    DECISIONS.md#062) must say the file parsed
     cleanly and must NOT claim a parse failure — false provenance biases the
     model's judged review of a perfectly parseable file."""
     for parse_reason in (

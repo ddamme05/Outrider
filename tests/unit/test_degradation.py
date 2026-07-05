@@ -124,7 +124,7 @@ def test_decide_degradation_no_scope_error_line_degrades() -> None:
 
 
 def test_decide_degradation_module_candidate_degrades_with_clean_parse_status() -> None:
-    """Module-scope routing (specs/2026-07-04-module-scope-admission-arm.md):
+    """Module-scope routing (DECISIONS.md#062):
     a module-only diff (clean parse, no changed scope units) with the
     precomputed eligible-match flag degrades as `module_level_observed_match`
     — and `parse_status` stays truthfully `clean` (a routing choice, not a
