@@ -23,10 +23,12 @@ into:
   per-file context here is what makes the system prefix cross-file
   stable.
 
-For degraded calls (parse failure or `has_error` nodes intersecting
-changed regions), the prompt swaps to a `judged`-only directive set;
-the registry/walk context is empty by construction, so the user prompt
-carries bounded changed hunks instead of scope-unit-clipped ones. The
+For degraded calls (parse failure, `has_error` nodes intersecting
+changed regions, or the clean-parse module-scope route
+`module_level_observed_match`), the prompt swaps to a `judged`-only
+directive set with a reason-aware provenance sentence; the registry/walk
+context is empty by construction, so the user prompt carries bounded
+changed hunks instead of scope-unit-clipped ones. The
 system prompt is the SAME stable prefix — degraded calls share the
 pass-0 cache entry.
 
