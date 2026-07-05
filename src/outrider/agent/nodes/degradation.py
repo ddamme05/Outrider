@@ -39,10 +39,16 @@ if TYPE_CHECKING:
 # `"tree_has_error_no_scope"` is the no-scope syntax-error case per DECISIONS.md#033:
 # a changed addable line intersects a tree error but no scope recovered there
 # (distinct from `"tree_has_error_in_changed_regions"`, which needs a recovered scope).
+# `"module_level_observed_match"` is the module-scope routing reason
+# (specs/2026-07-04-module-scope-admission-arm.md) and the one reason that is
+# NOT a parse defect: the parse is CLEAN, but a module-only diff carries an
+# eligible OBSERVED match, so the file degrades (bounded-hunks JUDGED review +
+# module-level OBSERVED emission) instead of skipping at NO_CHANGED_SCOPE_UNITS.
 _DegradationReason = Literal[
     "parse_failed",
     "tree_has_error_in_changed_regions",
     "tree_has_error_no_scope",
+    "module_level_observed_match",
 ]
 
 # `FileExaminationEvent.parse_status` values for the analyze node.
@@ -113,7 +119,10 @@ def _intersect_changed_scope_units(
 
 
 def decide_degradation(
-    parse_result: ParseResult, patched_file: PatchedFile | None
+    parse_result: ParseResult,
+    patched_file: PatchedFile | None,
+    *,
+    module_level_observed_candidate: bool = False,
 ) -> DegradationDecision:
     """Decide skip / degraded / clean for one changed file from its parse + patch.
 
@@ -123,7 +132,14 @@ def decide_degradation(
 
     - `failed` (V1-unreachable) with no addable text → `skip` NO_REVIEWABLE_CONTEXT;
       with addable text → `degraded` (`parse_failed`), no scope context.
-    - `clean` with no patch / no changed scope units → `skip` NO_CHANGED_SCOPE_UNITS.
+    - `clean` with no patch / no changed scope units → `skip` NO_CHANGED_SCOPE_UNITS,
+      UNLESS `module_level_observed_candidate` is set (the node precomputed that an
+      eligible OBSERVED query admits a module-level match on the added lines) →
+      `degraded` (`module_level_observed_match`, parse_status stays `clean` — a
+      routing choice, not a parse defect;
+      specs/2026-07-04-module-scope-admission-arm.md). Parse-error precedence: the
+      error-lines check runs FIRST, so a syntax-error file degrades as
+      `tree_has_error_no_scope` and the candidate flag is never consulted.
     - `clean` with a changed scope unit that carries a tree error → `degraded`
       (`tree_has_error_in_changed_regions`).
     - `clean` otherwise → `clean`, carrying the changed scope units + hunks.
@@ -176,6 +192,21 @@ def decide_degradation(
                 degradation_reason="tree_has_error_no_scope",
                 # No scope recovered → no scope context; the degraded prompt uses the
                 # bounded diff hunks, so included_scope_units/hunks stay ().
+            )
+        if module_level_observed_candidate:
+            # Module-scope admission arm: an eligible OBSERVED query admits a
+            # module-level match on the added lines, so the file gets a
+            # degraded (bounded-hunks, JUDGED-only) LLM review plus the
+            # module-level OBSERVED emission instead of a silent skip. The
+            # parse IS clean — parse_status stays truthful; the reason rides
+            # LLMCallEvent. Ordered AFTER the error-lines check (parse-error
+            # precedence: the producer never runs on an error-recovered tree;
+            # the node additionally gates the candidate on an error-free
+            # parse, so this branch is unreachable for error-bearing files).
+            return DegradationDecision(
+                mode="degraded",
+                parse_status="clean",
+                degradation_reason="module_level_observed_match",
             )
         return DegradationDecision(
             mode="skip", parse_status="clean", skip_reason=SkipReason.NO_CHANGED_SCOPE_UNITS

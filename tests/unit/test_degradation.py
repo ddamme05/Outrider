@@ -123,6 +123,48 @@ def test_decide_degradation_no_scope_error_line_degrades() -> None:
     assert decision.included_scope_units == ()
 
 
+def test_decide_degradation_module_candidate_degrades_with_clean_parse_status() -> None:
+    """Module-scope routing (specs/2026-07-04-module-scope-admission-arm.md):
+    a module-only diff (clean parse, no changed scope units) with the
+    precomputed eligible-match flag degrades as `module_level_observed_match`
+    — and `parse_status` stays truthfully `clean` (a routing choice, not a
+    parse defect)."""
+    parse_result = ParseResult(parser_outcome="clean")
+    patched_file = lookup_patched_file("@@ -1 +1,2 @@\n a\n+b\n", "x.js")
+    assert patched_file is not None
+    decision = decide_degradation(parse_result, patched_file, module_level_observed_candidate=True)
+    assert decision.mode == "degraded"
+    assert decision.degradation_reason == "module_level_observed_match"
+    assert decision.parse_status == "clean"
+    assert decision.included_scope_units == ()
+
+
+def test_decide_degradation_without_module_candidate_skip_unchanged() -> None:
+    """Revert-the-fold control: the flag defaulting False keeps today's
+    NO_CHANGED_SCOPE_UNITS skip for module-only diffs with no eligible match."""
+    parse_result = ParseResult(parser_outcome="clean")
+    patched_file = lookup_patched_file("@@ -1 +1,2 @@\n a\n+b\n", "x.js")
+    assert patched_file is not None
+    decision = decide_degradation(parse_result, patched_file)
+    assert decision.mode == "skip"
+    assert decision.skip_reason == SkipReason.NO_CHANGED_SCOPE_UNITS
+
+
+def test_decide_degradation_parse_error_precedence_over_module_candidate() -> None:
+    """Parse-error precedence: a syntax-error file (error_lines intersecting
+    the added line) degrades as `tree_has_error_no_scope` even when the module
+    candidate flag is set — the error branch runs first, so OBSERVED stays off
+    error-recovered trees (revert-the-precedence: evaluating the module branch
+    first fails this pin)."""
+    parse_result = ParseResult(parser_outcome="clean", error_lines=frozenset({2}))
+    patched_file = lookup_patched_file("@@ -1 +1,2 @@\n a\n+b\n", "x.js")
+    assert patched_file is not None
+    decision = decide_degradation(parse_result, patched_file, module_level_observed_candidate=True)
+    assert decision.mode == "degraded"
+    assert decision.degradation_reason == "tree_has_error_no_scope"
+    assert decision.parse_status == "degraded"
+
+
 def test_decide_degradation_no_scope_deletion_only_stays_skip() -> None:
     # An error line exists but the change is a pure DELETION (no added target line)
     # → no addable line intersects error_lines → still NO_CHANGED_SCOPE_UNITS skip

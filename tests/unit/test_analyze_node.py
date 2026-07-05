@@ -55,6 +55,7 @@ from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.models import SkipReason
 from outrider.llm.anthropic_provider import _ANTHROPIC_CONTRACT_DIGEST, _ANTHROPIC_PROFILE_ID
 from outrider.llm.base import LLMRequest, LLMResponse
+from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import ACTIVE_POLICY_VERSION, FindingSeverity
 from outrider.schemas import ReviewState
 from outrider.schemas.pr_context import ChangedFile, PRContext
@@ -1755,6 +1756,92 @@ async def test_degraded_path_when_has_error_in_changed_scope_unit(
     assert request.context_summary == ()
     # The user_prompt uses the degraded template signal.
     assert "DEGRADED" in request.user_prompt
+
+
+@pytest.mark.asyncio
+async def test_module_scope_route_cross_event_pairing_and_observed_emission(
+    deps: dict[str, Any],
+) -> None:
+    """The module-scope degraded route end-to-end
+    (specs/2026-07-04-module-scope-admission-arm.md): a module-only JS diff
+    adding the TLS kill switch (an inert parse fixture) degrades instead of
+    skipping, the producer's module-level OBSERVED finding reaches the round,
+    and the audit stream carries the CROSS-EVENT pairing — the
+    FileExaminationEvent reports parse_status="clean" (the parse IS clean;
+    degradation is a routing choice) while the LLM request/call carries
+    degradation_reason="module_level_observed_match". Pre-arm behavior was a
+    NO_CHANGED_SCOPE_UNITS skip: no LLM call, no finding, one skip event."""
+    content = b'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\nconst x = 1;\n'
+    patch = (
+        "--- a/src/index.js\n"
+        "+++ b/src/index.js\n"
+        "@@ -1,1 +1,2 @@\n"
+        '+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        " const x = 1;\n"
+    )
+    cf = _build_changed_file(
+        path="src/index.js",
+        content=content,
+        patch=patch,
+        content_base="const x = 1;\n",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(cf,)),
+        triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
+    )
+
+    result = await analyze(state, **deps)
+
+    # Cross-event pairing: clean parse status + the module-scope reason.
+    fe_events = deps["file_examination_sink"].events
+    assert len(fe_events) == 1
+    assert fe_events[0].parse_status == "clean"
+    assert fe_events[0].skip_reason is None
+    request = deps["provider"].calls[0]
+    assert request.degraded_mode is True
+    assert request.degradation_reason == "module_level_observed_match"
+    assert request.context_summary == ()
+    assert "DEGRADED" in request.user_prompt
+
+    # The module-level OBSERVED finding reaches the round.
+    round_ = result["analysis_rounds"][0]
+    observed = [
+        f for f in round_.findings if f.query_match_id == "javascript.tls_env_verify_disabled"
+    ]
+    assert len(observed) == 1
+    assert observed[0].evidence_tier is EvidenceTier.OBSERVED
+    assert observed[0].line_start == 1
+
+
+@pytest.mark.asyncio
+async def test_module_only_diff_without_eligible_match_still_skips(
+    deps: dict[str, Any],
+) -> None:
+    """Revert-the-fold control: a module-only JS diff with NO eligible match
+    keeps today's NO_CHANGED_SCOPE_UNITS skip — no LLM call, no findings."""
+    content = b"const y = 2;\nconst x = 1;\n"
+    patch = (
+        "--- a/src/index.js\n+++ b/src/index.js\n@@ -1,1 +1,2 @@\n+const y = 2;\n const x = 1;\n"
+    )
+    cf = _build_changed_file(
+        path="src/index.js",
+        content=content,
+        patch=patch,
+        content_base="const x = 1;\n",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(cf,)),
+        triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
+    )
+
+    result = await analyze(state, **deps)
+
+    fe_events = deps["file_examination_sink"].events
+    assert len(fe_events) == 1
+    assert fe_events[0].parse_status == "skipped"
+    assert fe_events[0].skip_reason is SkipReason.NO_CHANGED_SCOPE_UNITS
+    assert deps["provider"].calls == []
+    assert result["analysis_rounds"][0].findings == ()
 
 
 # ---------------------------------------------------------------------------

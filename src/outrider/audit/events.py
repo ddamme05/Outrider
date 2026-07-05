@@ -440,11 +440,18 @@ class LLMCallEvent(AuditEventBase):
     # replay reconstruction.
     # `"tree_has_error_no_scope"` added per DECISIONS.md#033, in lockstep with
     # `LLMRequest.degradation_reason` and `_DegradationReason` (degradation.py).
+    # `"module_level_observed_match"` (specs/2026-07-04-module-scope-admission-arm.md)
+    # is the one degraded cause that is NOT a parse defect: the review's
+    # FileExaminationEvent reports parse_status="clean" while this event
+    # carries the reason — the cross-event pairing that distinguishes the
+    # module-scope route from both a normal clean review and a
+    # parse-degraded one.
     degradation_reason: (
         Literal[
             "parse_failed",
             "tree_has_error_in_changed_regions",
             "tree_has_error_no_scope",
+            "module_level_observed_match",
         ]
         | None
     ) = None

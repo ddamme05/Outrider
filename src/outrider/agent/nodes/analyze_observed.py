@@ -26,8 +26,11 @@ text. Construction goes through `ReviewFinding(...)` so `enforce_proof_boundary`
 (OBSERVED ⇒ non-empty `query_match_id`) and `_verify_content_hash` validate at
 the schema floor.
 
-CLEAN-parse only: the caller gates on `degraded_mode` (no OBSERVED findings on a
-degraded/failed parse). In the default/production config OBSERVED findings AUGMENT
+CLEAN-parse only: the caller gates on `degraded_mode` — no OBSERVED findings on
+an error-recovered or failed parse — with ONE exception: the module-scope
+degraded route (`module_level_observed_match`), whose parse IS clean and whose
+whole point is the module-level OBSERVED emission alongside the bounded-hunks
+JUDGED pass. In the default/production config OBSERVED findings AUGMENT
 the LLM pass and never skip it (the registry seeds zero `skip_safe` queries and
 `analyze_observed_skip_enforced` defaults False). `compute_observed_skip_shadow`
 records the per-file `would_skip` / `not_eligible` decision; the ENFORCED pre-LLM
