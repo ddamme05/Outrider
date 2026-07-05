@@ -15,7 +15,13 @@ proposal_hash)` admission dedup, content-hash collapse (first-wins),
 the gated-aware severity cap, and the post-cap counter recompute — with
 outcomes folded in SORTED PATH ORDER so worker completion order can
 never change the round (`round_id` is content-derived; a
-completion-order-dependent fold would break replay idempotence).
+completion-order-dependent fold would break replay idempotence). This
+canonicalization is the ONE documented divergence from the sequential
+loop, which iterates tier-descending (a budget-pressure ordering that is
+a planner concern, not round identity): same round content, different
+tuple ordering, therefore different `round_id` values across the two
+implementations — harmless, because historical rounds replay from state
+and are never recomputed cross-version.
 
 One deliberate, documented divergence: the sequential post-cap recompute
 classifies producer-OBSERVED findings by a HEURISTIC (tier + registry
