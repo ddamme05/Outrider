@@ -1180,13 +1180,17 @@ class _ServedResult:
 
 @dataclass(frozen=True, slots=True)
 class _ObservedSkipResult:
-    """Deterministic OBSERVED findings for a file whose ENFORCED skip fired (Step
-    3b-mechanism): every changed scope was covered by `skip_safe` OBSERVED matches, so
-    the LLM was NOT called. Populated on `_FileOutcome` INSTEAD of `parser_result`
-    (which stays None). The main loop admits these like the augment path's OBSERVED
-    findings — `n_findings_emitted` (real FindingEvents fired) AND `n_findings_observed`
-    (the proposal-accounting subtraction channel; OBSERVED findings have no proposal
-    lifecycle) — with NO LLM call counted. They still flow to synthesize + HITL."""
+    """Deterministic OBSERVED findings for a file whose LLM pass did NOT run.
+    Three producers: the ENFORCED coverage skip (Step 3b-mechanism — every
+    changed scope covered by `skip_safe` matches), and the two module-arm
+    early-skip ride-outs (DECISIONS.md#062 as amended: COST_BUDGET_EXHAUSTED
+    and ALL_SCOPES_TRIVIAL skips carry the zero-token module-level findings
+    instead of dropping them). Populated on `_FileOutcome` INSTEAD of
+    `parser_result` (which stays None). The main loop admits these like the
+    augment path's OBSERVED findings — `n_findings_emitted` (real
+    FindingEvents fired) AND `n_findings_observed` (the proposal-accounting
+    subtraction channel; OBSERVED findings have no proposal lifecycle) — with
+    NO LLM call counted. They still flow to synthesize + HITL."""
 
     admitted_findings: tuple[ReviewFinding, ...]
 
@@ -1993,18 +1997,36 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         + analyze_prompt.MAX_TOKENS
     )
     if estimated_tokens > per_file_cap_tokens or estimated_tokens > remaining_budget_tokens:
-        if module_matches:
-            # Module route under budget exhaustion (DECISIONS.md#062): the
-            # LLM pass is skipped — and counted, the COST_BUDGET_EXHAUSTED
-            # accounting stands — but the routing sweep's OBSERVED findings
-            # cost zero tokens and must not be dropped with it.
+        # Budget exhaustion must not drop the module arm's zero-token
+        # OBSERVED findings (DECISIONS.md#062 as amended: the early-skip
+        # ride-out). Two shapes reach here: the module ROUTE already carries
+        # its routing-sweep matches; a WITH-SCOPES clean-route file (changed
+        # function + changed module-level line) never ran the sweep — run it
+        # now, lazily, only because the gate actually fired (the sweep
+        # short-circuits ineligible languages and empty ranges).
+        budget_module_matches = module_matches or (
+            module_level_observed_matches(
+                file_path=changed_file.path,
+                head_content=content,
+                all_scope_units=module_all_scope_units,
+                added_line_ranges=module_added_ranges,
+                import_refs=parse_result.imports,
+                lexical_bindings=parse_result.lexical_bindings,
+            )
+            if module_added_ranges
+            else ()
+        )
+        if budget_module_matches:
+            # The LLM pass is skipped — and counted, the
+            # COST_BUDGET_EXHAUSTED accounting stands — but the
+            # deterministic findings cost zero tokens and ride out.
             return await _emit_skip_with_module_findings(
                 file_examination_sink=file_examination_sink,
                 review_id=review_id,
                 is_eval=is_eval,
                 file_path=changed_file.path,
                 skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
-                module_matches=module_matches,
+                module_matches=budget_module_matches,
                 installation_id=installation_id,
                 active_policy_version=active_policy_version,
             )
