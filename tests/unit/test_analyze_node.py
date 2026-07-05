@@ -1857,6 +1857,50 @@ async def test_syntax_error_beats_module_candidate_and_emits_zero_observed(
 
 
 @pytest.mark.asyncio
+async def test_budget_exhausted_module_route_still_emits_the_observed_finding(
+    deps: dict[str, Any],
+) -> None:
+    """A budget-exhausted module-routed file skips the LLM (and counts toward
+    COST_BUDGET_EXHAUSTED accounting) but must NOT drop the zero-LLM-cost
+    OBSERVED finding — the deterministic kill-switch detection is exactly
+    what the module route exists to emit (DECISIONS.md#062). Revert-the-fold:
+    without the ride-out, this round is empty and the canonical kill switch
+    posts nothing on large PRs late in the budget."""
+    deps["total_review_budget_tokens"] = 100  # below any degraded-prompt estimate
+    content = b'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\nconst x = 1;\n'
+    patch = (
+        "--- a/src/index.js\n+++ b/src/index.js\n"
+        "@@ -1,1 +1,2 @@\n"
+        '+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        " const x = 1;\n"
+    )
+    cf = _build_changed_file(
+        path="src/index.js", content=content, patch=patch, content_base="const x = 1;\n"
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(cf,)),
+        triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
+    )
+
+    result = await analyze(state, **deps)
+
+    # The LLM pass skipped for budget, with the skip recorded...
+    assert deps["provider"].calls == []
+    fe_events = deps["file_examination_sink"].events
+    assert len(fe_events) == 1
+    assert fe_events[0].parse_status == "skipped"
+    assert fe_events[0].skip_reason is SkipReason.COST_BUDGET_EXHAUSTED
+    # ...and the zero-cost OBSERVED finding still reached the round.
+    round_ = result["analysis_rounds"][0]
+    (finding,) = round_.findings
+    assert finding.query_match_id == "javascript.tls_env_verify_disabled"
+    assert finding.evidence_tier is EvidenceTier.OBSERVED
+    # Zero LLM cost is proven by the empty provider-call list above; the
+    # file counts as skipped, not examined.
+    assert "src/index.js" in round_.files_skipped
+
+
+@pytest.mark.asyncio
 async def test_patch_head_misalignment_does_not_abort_the_review(
     deps: dict[str, Any],
 ) -> None:
