@@ -377,7 +377,13 @@ def test_llm_call_event_reason_without_degraded_raises() -> None:
 
 
 @pytest.mark.parametrize(
-    "reason", ["parse_failed", "tree_has_error_in_changed_regions", "tree_has_error_no_scope"]
+    "reason",
+    [
+        "parse_failed",
+        "tree_has_error_in_changed_regions",
+        "tree_has_error_no_scope",
+        "module_level_observed_match",
+    ],
 )
 def test_llm_call_event_degraded_with_typed_reason_admits(reason: str) -> None:
     """The happy path: both flags set consistently."""

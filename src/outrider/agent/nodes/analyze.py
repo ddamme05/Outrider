@@ -32,7 +32,12 @@ backstops drift; producer-side correctness is the contract.
   nodes intersect a changed scope unit (`degradation_reason=
   "tree_has_error_in_changed_regions"`) OR a changed addable line
   intersects a tree error with no recovered scope
-  (`degradation_reason="tree_has_error_no_scope"`, DECISIONS#033). Parser
+  (`degradation_reason="tree_has_error_no_scope"`, DECISIONS#033) OR — the
+  one non-parse-defect cause — a module-only diff carries an eligible
+  module-level OBSERVED match (`degradation_reason=
+  "module_level_observed_match"`, the module-scope admission arm: the
+  producer RUNS on this route and its OBSERVED findings merge with the
+  degraded pass; `parse_status` stays "clean"). Parser
   admits JUDGED only, gated on `span_within_file` AND
   `span_within_degraded_context` (FUP-138).
 - `skipped+NO_REVIEWABLE_CONTEXT` — both `content_head` and
@@ -1808,10 +1813,13 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # lines? Delegates to the producer's own admission chain
     # (`has_module_level_eligible_match`), so True always yields an OBSERVED
     # emission downstream — never a degraded LLM pass that then emits nothing.
-    # Gated on an ERROR-FREE parse (parse-error precedence: OBSERVED never
-    # runs on an error-recovered tree; `decide_degradation` additionally
-    # orders its error branch first) and on head content (the module arm
-    # anchors on head-side added ranges). The ranges are computed once and
+    # Gated on a FULLY error-free parse (parse-error precedence for THIS
+    # arm: the module arm never anchors proof on a tree carrying ANY
+    # error/MISSING node — stricter than normal scope-contained production,
+    # which still runs in clean mode when errors sit outside the included
+    # changed scopes; `decide_degradation` additionally orders its error
+    # branch first) and on head content (the module arm anchors on
+    # head-side added ranges). The ranges are computed once and
     # reused by the producer call below on the module route.
     module_added_ranges: tuple[tuple[int, int], ...] = ()
     if (
