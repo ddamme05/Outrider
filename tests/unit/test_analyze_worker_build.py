@@ -39,6 +39,7 @@ def _finding(
     line: int = 3,
     tier: EvidenceTier = EvidenceTier.JUDGED,
     query_match_id: str = "python.sql_injection_string_concat",
+    finding_type: FindingType | None = None,
 ) -> ReviewFinding:
     """Production-possible OBSERVED shapes only. Producer fixtures default
     to a real Python SECURITY id and take their finding_type FROM THE
@@ -48,9 +49,10 @@ def _finding(
     for JS/TS entirely (the dispatch-arc security anchor); a structural
     citation carries whatever type the model proposed, so the default
     type stands there."""
-    finding_type = FindingType.HARDCODED_SECRET
-    if tier is EvidenceTier.OBSERVED and query_match_id in OBSERVED_QUERIES:
-        finding_type = OBSERVED_QUERIES[query_match_id].finding_type
+    if finding_type is None:
+        finding_type = FindingType.HARDCODED_SECRET
+        if tier is EvidenceTier.OBSERVED and query_match_id in OBSERVED_QUERIES:
+            finding_type = OBSERVED_QUERIES[query_match_id].finding_type
     return ReviewFinding(
         review_id=_REVIEW_ID,
         installation_id=42,
@@ -65,6 +67,7 @@ def _finding(
         dimension=lookup_dimension(finding_type),
         evidence_tier=tier,
         query_match_id=(query_match_id if tier is EvidenceTier.OBSERVED else None),
+        trace_path=(("caller",) if tier is EvidenceTier.INFERRED else None),
         policy_version=ACTIVE_POLICY_VERSION,
         content_hash=compute_finding_content_hash(
             path, line_start=line, line_end=line, finding_type=finding_type
@@ -111,7 +114,12 @@ def test_origin_derives_from_merge_object_placement_not_tier() -> None:
         line=2, tier=EvidenceTier.OBSERVED, query_match_id="python.function_definition"
     )
     dropped_producer = _finding(line=3, tier=EvidenceTier.OBSERVED)
-    incumbent = _finding(line=3)  # kept over the producer duplicate
+    # A REAL #054 collision: content_hash includes finding_type, so the
+    # incumbent must share the producer's type AND line — and be
+    # non-JUDGED (INFERRED, the reachable V1 incumbent) so the merge
+    # keeps it and drops the producer duplicate rather than evicting.
+    incumbent = _finding(line=3, tier=EvidenceTier.INFERRED, finding_type=FindingType.SQL_INJECTION)
+    assert incumbent.content_hash == dropped_producer.content_hash  # collision is real
     admitted = (model_cited, incumbent, producer_survivor)  # post-#054 merge
     outcome = worker_outcome_from_parser(
         admitted_findings=admitted,
