@@ -219,10 +219,27 @@ class AnalyzeWorkerOutcome(BaseModel):
                     "AnalyzeWorkerOutcome: trace candidates exist only on "
                     "parser and cache_serve sources"
                 )
-        if self.n_responses_rejected and self.n_proposals_seen:
+        # One worker = one LLM call, so the rejected-response shape is
+        # binary and total: 0/1, and a rejection produced NOTHING from the
+        # response — no proposals, no trace candidates (well-formed or
+        # malformed), no subsumption records (a subsumer is a response
+        # proposal). Producer-OBSERVED augmentation is unaffected; the
+        # identity equation below covers the proposal terms.
+        if self.n_responses_rejected > 1:
             raise ValueError(
-                "AnalyzeWorkerOutcome: a rejected response yields zero proposals "
-                "(parser contract); producer-OBSERVED augmentation is unaffected"
+                "AnalyzeWorkerOutcome: one worker makes one LLM call; "
+                "n_responses_rejected is 0 or 1"
+            )
+        if self.n_responses_rejected and (
+            self.n_proposals_seen
+            or self.trace_candidates
+            or self.n_trace_candidates_dropped_malformed
+            or self.subsumed_matches
+        ):
+            raise ValueError(
+                "AnalyzeWorkerOutcome: a rejected response yields zero proposals, "
+                "trace candidates, and subsumption records (parser contract); "
+                "producer-OBSERVED augmentation is unaffected"
             )
 
         _canonical_hash_tuple("producer_observed_hashes", self.producer_observed_hashes)

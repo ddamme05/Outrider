@@ -197,6 +197,15 @@ def test_response_rejection_zeroes_proposals_but_allows_producer_augment() -> No
         producer_observed_hashes=(finding.content_hash,),
     )
     assert augmented.admitted_findings  # producer augmentation is legal
+    with pytest.raises(ValidationError, match="one LLM call"):
+        _outcome(n_responses_rejected=2, n_proposals_seen=0, admitted_findings=())
+    with pytest.raises(ValidationError, match="zero proposals"):
+        _outcome(
+            n_responses_rejected=1,
+            n_proposals_seen=0,
+            admitted_findings=(),
+            n_trace_candidates_dropped_malformed=1,
+        )
 
 
 # ---------------------------------------------------------------------------
