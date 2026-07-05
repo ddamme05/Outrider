@@ -775,8 +775,9 @@ async def analyze(
                 _admit_with_dedup(served.admitted_findings, admitted_findings, admitted_keys_seen)
                 trace_candidates.extend(served.trace_candidates)
             elif file_outcome.observed_skip_result is not None:
-                # Step 3b-mechanism: enforced OBSERVED skip — the file's changed
-                # scopes were fully skip_safe-covered, so the LLM was NOT called. The
+                # No-LLM OBSERVED emission: the file skipped the LLM (enforced
+                # skip_safe coverage, or a module-finding ride-out on a budget/
+                # trivial skip) but produced OBSERVED findings anyway. The
                 # OBSERVED findings ride n_findings_emitted (real FindingEvents fired)
                 # AND n_findings_observed (the proposal-accounting subtraction channel;
                 # OBSERVED findings have no proposal lifecycle), exactly like the
@@ -1219,9 +1220,11 @@ class _FileOutcome:
     # Stage B serve flip: non-None ONLY on a cache-served hit (parser_result is
     # then None — no LLM call). The main loop's served branch consumes it.
     served_result: _ServedResult | None = None
-    # Step 3b-mechanism: non-None ONLY on an enforced OBSERVED skip (parser_result is
-    # then None — no LLM call). The main loop's observed-skip branch admits these
-    # OBSERVED findings into the round so they reach synthesize + HITL.
+    # Non-None ONLY when the file skipped the LLM but produced OBSERVED findings:
+    # the enforced skip_safe-coverage skip, or a module-finding ride-out on a
+    # budget/trivial skip (parser_result is then None — no LLM call). The main
+    # loop's observed-skip branch admits these findings so they reach
+    # synthesize + HITL.
     observed_skip_result: _ObservedSkipResult | None = None
     # Stage 2 (FUP-044 ext 3): the skip reason, mirrored from the
     # FileExaminationEvent onto the in-memory outcome so the main loop can count
