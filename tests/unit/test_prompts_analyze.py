@@ -44,11 +44,14 @@ from outrider.prompts.analyze import (
 # ---------------------------------------------------------------------------
 
 
-def test_version_is_named_analyze_v9() -> None:
+def test_version_is_named_analyze_v10() -> None:
     """VERSION flows to LLMRequest.prompt_template_version. Pin the
-    "analyze-v9" name so future renames break the test and force a
+    "analyze-v10" name so future renames break the test and force a
     registry decision. Replay attribution depends on this — a prompt row
     replays against the contract it was emitted under, not a newer one.
+    The v10 bump fixed the module-route provenance overclaim ("changes only
+    module-level lines" → "added lines are all module-level"; the route can
+    fire with pure in-function deletions present, which the hunks show).
     The v9 bump made the DEGRADED user template's provenance sentence
     reason-aware (`module_level_observed_match` is a clean parse; the fixed
     "could not be parsed" sentence was false provenance for it) — the tuned
@@ -65,7 +68,7 @@ def test_version_is_named_analyze_v9() -> None:
     exemplars block in the cached prefix); v3 added the sql_injection
     parameterized-query false-positive guidance (DECISIONS.md#041); v2 landed
     the trace-node pass-1 arc."""
-    assert VERSION == "analyze-v9"
+    assert VERSION == "analyze-v10"
 
 
 def test_system_prompt_ssrf_carveout_and_authority_exception() -> None:

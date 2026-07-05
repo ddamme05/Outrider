@@ -41,7 +41,8 @@ if TYPE_CHECKING:
 # (distinct from `"tree_has_error_in_changed_regions"`, which needs a recovered scope).
 # `"module_level_observed_match"` is the module-scope routing reason
 # (DECISIONS.md#062) and the one reason that is
-# NOT a parse defect: the parse is CLEAN, but a module-only diff carries an
+# NOT a parse defect: the parse is CLEAN, but a diff whose ADDED lines all
+# sit outside any scope unit carries an
 # eligible OBSERVED match, so the file degrades (bounded-hunks JUDGED review +
 # module-level OBSERVED emission) instead of skipping at NO_CHANGED_SCOPE_UNITS.
 _DegradationReason = Literal[
