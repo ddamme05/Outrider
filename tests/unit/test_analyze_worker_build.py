@@ -37,7 +37,14 @@ def _finding(
     *,
     line: int = 3,
     tier: EvidenceTier = EvidenceTier.JUDGED,
+    query_match_id: str = "python.sql_injection_string_concat",
 ) -> ReviewFinding:
+    """OBSERVED fixtures default to a real Python SECURITY id (producer
+    output); the model-cited case must use a STRUCTURAL id — the
+    model-citable set is structural-only, and empty for JS/TS entirely
+    (the dispatch-arc security anchor), so a security-id or JS-id
+    "cited" fixture would model an input production admission cannot
+    create."""
     finding_type = FindingType.HARDCODED_SECRET
     return ReviewFinding(
         review_id=_REVIEW_ID,
@@ -52,9 +59,7 @@ def _finding(
         evidence="e",
         dimension=lookup_dimension(finding_type),
         evidence_tier=tier,
-        query_match_id=(
-            "javascript.tls_env_verify_disabled" if tier is EvidenceTier.OBSERVED else None
-        ),
+        query_match_id=(query_match_id if tier is EvidenceTier.OBSERVED else None),
         policy_version=ACTIVE_POLICY_VERSION,
         content_hash=compute_finding_content_hash(
             path, line_start=line, line_end=line, finding_type=finding_type
@@ -94,7 +99,12 @@ def test_origin_derives_from_merge_object_placement_not_tier() -> None:
     is listed; a model-cited OBSERVED proposal (in admitted, not a producer
     object) is NOT; a producer finding dropped against an incumbent is NOT."""
     producer_survivor = _finding(line=1, tier=EvidenceTier.OBSERVED)
-    model_cited = _finding(line=2, tier=EvidenceTier.OBSERVED)  # proposal, cited id
+    # A REAL model-citable id: structural, Python (parser admission checks
+    # membership in the structural citable set — a JS or security id here
+    # would model an impossible input and make this pin vacuous).
+    model_cited = _finding(
+        line=2, tier=EvidenceTier.OBSERVED, query_match_id="python.function_definition"
+    )
     dropped_producer = _finding(line=3, tier=EvidenceTier.OBSERVED)
     incumbent = _finding(line=3)  # kept over the producer duplicate
     admitted = (model_cited, incumbent, producer_survivor)  # post-#054 merge
