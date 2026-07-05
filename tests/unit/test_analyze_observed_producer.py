@@ -840,6 +840,35 @@ def test_module_level_kill_switch_admits_on_changed_lines() -> None:
     assert finding.line_start == 1
 
 
+def test_module_arm_matches_carry_the_module_level_marker() -> None:
+    """Arm attribution on the domain record: a module-arm admission is marked
+    `module_level=True` (the #049 skip-coverage exclusion keys on it), while a
+    scope-contained admission stays False."""
+    source = _KILL_SWITCH + "const x = 1;\n"
+    parsed = _parsed_at(source, "src/index.js")
+    (module_match,) = run_observed_matches(
+        file_path="src/index.js",
+        head_content=source,
+        included_scope_units=(),
+        import_refs=parsed.imports,
+        lexical_bindings=parsed.lexical_bindings,
+        all_scope_units=parsed.scope_units,
+        added_line_ranges=((0, len(source.encode())),),
+    )
+    assert module_match.module_level is True
+
+    contained_source = f"function disable() {{\n  {_KILL_SWITCH}}}\n"
+    contained_parsed = _parsed_at(contained_source, "src/danger.js")
+    (contained_match,) = run_observed_matches(
+        file_path="src/danger.js",
+        head_content=contained_source,
+        included_scope_units=contained_parsed.scope_units,
+        import_refs=contained_parsed.imports,
+        lexical_bindings=contained_parsed.lexical_bindings,
+    )
+    assert contained_match.module_level is False
+
+
 def test_module_level_kill_switch_denied_on_unchanged_lines() -> None:
     """Same file, but the added ranges cover only the OTHER line — a
     module-level match in unchanged code stays excluded (the diff anchors

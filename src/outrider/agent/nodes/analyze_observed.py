@@ -169,6 +169,11 @@ class ObservedMatch:
     evidence: str
     line_start: int
     line_end: int
+    # True when the match was admitted by the MODULE-SCOPE arm (scope-disjoint,
+    # diff-anchored — DECISIONS.md#062) rather than scope containment. Consumed
+    # by `compute_observed_skip_shadow` to exclude module-arm matches from #049
+    # skip coverage: their proof is diff-anchored, not scope-coverage-shaped.
+    module_level: bool = False
 
 
 def _is_test_file(file_path: str, language: QueryLanguage | None) -> bool:
@@ -626,6 +631,9 @@ def run_observed_matches(
                     evidence=evidence,
                     line_start=line_start,
                     line_end=line_end,
+                    # Past the gate with no containing included scope means the
+                    # module arm admitted it (the only other way through).
+                    module_level=not contained,
                 )
             )
     return tuple(matches)
@@ -762,8 +770,16 @@ def compute_observed_skip_shadow(
     def _region(side: Literal["head", "base"], line_no: int) -> ObservedSkipChangedRegion:
         return ObservedSkipChangedRegion(side=side, line_start=line_no, line_end=line_no)
 
+    # Module-arm matches are excluded from #049 skip coverage
+    # (DECISIONS.md#062): a byte-disjoint module-level match can share a
+    # source LINE with an included scope's added line, and coverage here is
+    # line-space — without this filter it would count as coverage the skip
+    # contract forbids. Defense-in-depth: the schema floor also rejects
+    # eligible+SKIP_SAFE queries (ObservedQuery._enforce_module_scope_constraints).
     skip_safe_envelopes = tuple(
-        (m.line_start, m.line_end) for m in matches if m.query_class == QueryClass.SKIP_SAFE
+        (m.line_start, m.line_end)
+        for m in matches
+        if m.query_class == QueryClass.SKIP_SAFE and not m.module_level
     )
 
     changed: list[ObservedSkipChangedRegion] = []
