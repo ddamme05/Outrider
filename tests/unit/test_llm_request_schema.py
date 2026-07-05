@@ -640,5 +640,19 @@ def test_phase_key_defaults_none_and_round_trips() -> None:
     no key) and a worker-stamped key survives construction unchanged — the
     provider mirrors it verbatim onto `LLMCallEvent.phase_key`."""
     assert LLMRequest.model_fields["phase_key"].default is None
-    request = LLMRequest(**_kwargs(phase_key="file:src/app.py#1"))
+    request = LLMRequest(
+        **_kwargs(
+            node_id="analyze",
+            context_summary=(_entry(),),
+            phase_key="file:src/app.py#1",
+        )
+    )
     assert request.phase_key == "file:src/app.py#1"
+
+
+def test_phase_key_rejected_outside_analyze() -> None:
+    """Rule 3 (`DECISIONS.md#064`): phase attribution is analyze-fan-out-only.
+    A triage/trace/synthesize request carrying a worker key would create
+    ownership for a phase that cannot exist. Mirrored on `LLMCallEvent`."""
+    with pytest.raises(ValidationError, match="phase_key is only valid"):
+        LLMRequest(**_kwargs(node_id="triage", phase_key="file:src/app.py#0"))

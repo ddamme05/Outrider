@@ -28,7 +28,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from outrider.audit.config import RetentionSettings
-from outrider.audit.events import LLMCallEvent
+from outrider.audit.events import ContextManifestEntry, LLMCallEvent
 from outrider.audit.persister import AuditPersister, AuditPersisterReviewNotFoundError
 from outrider.llm.base import LLMRequest, LLMResponse
 
@@ -74,12 +74,28 @@ _DEFAULT_SYSTEM_PROMPT = "the system prompt"
 _DEFAULT_USER_PROMPT = "the user prompt"
 
 
+def _analyze_context() -> tuple[ContextManifestEntry, ...]:
+    """Shared manifest for analyze-scoped fixtures: `node_id='analyze'`
+    requires non-empty context_summary, and the field is on the persist
+    cross-check allowlist so BOTH sides must carry identical entries."""
+    return (
+        ContextManifestEntry(
+            file_path="src/app.py",
+            scope_unit_name="App.run",
+            line_start=1,
+            line_end=10,
+            inclusion_reason="changed_scope",
+        ),
+    )
+
+
 def _make_llm_call_event(
     review_id_str: str,
     *,
     system_prompt: str = _DEFAULT_SYSTEM_PROMPT,
     user_prompt: str = _DEFAULT_USER_PROMPT,
     phase_key: str | None = None,
+    node_id: str = "triage",
 ) -> LLMCallEvent:
     """Construct a representative LLMCallEvent fixture. Hashes match the
     canonical hash of the request prompts; cost_usd / pricing_version
@@ -111,7 +127,7 @@ def _make_llm_call_event(
         # Must match `_make_llm_response`'s finish_reason for the persister's
         # response<->event cross-check (DECISIONS.md#016 Amended 2026-06-30).
         finish_reason="end_turn",
-        node_id="triage",
+        node_id=node_id,
         input_tokens=100,
         output_tokens=50,
         cached_tokens=0,
@@ -120,7 +136,7 @@ def _make_llm_call_event(
         latency_ms=250,
         prompt_hash=_canonical_prompt_hash(system_prompt=system_prompt, user_prompt=user_prompt),
         cache_hit=False,
-        context_summary=(),
+        context_summary=_analyze_context() if node_id == "analyze" else (),
         prompt_template_version="triage:1",
         system_prompt_hash=_canonical_system_prompt_hash(system_prompt),
         degraded_mode=False,
@@ -139,6 +155,7 @@ def _make_llm_request(
     review_id_str: str,
     user_prompt: str = _DEFAULT_USER_PROMPT,
     phase_key: str | None = None,
+    node_id: str = "triage",
 ) -> LLMRequest:
     """Construct a representative LLMRequest with non-redacted text."""
     from uuid import UUID
@@ -150,7 +167,8 @@ def _make_llm_request(
         max_tokens=1024,
         temperature=0.0,
         review_id=UUID(review_id_str),
-        node_id="triage",
+        node_id=node_id,
+        context_summary=_analyze_context() if node_id == "analyze" else (),
         prompt_template_version="triage:1",
         degraded_mode=False,
         phase_key=phase_key,
@@ -210,7 +228,7 @@ async def test_persist_writes_both_rows_atomically(migrated_db: str) -> None:
             assert audit.event_id == event.event_id
             assert str(audit.review_id) == review_id_str
             assert audit.event_type == "llm_call"
-            assert audit.phase_key is None  # LLMCallEvent never has phase_key
+            assert audit.phase_key is None  # denormalized column is ReviewPhaseEvent-only
             assert audit.is_eval is False
             assert audit.payload["model"] == "claude-haiku-4-5"
             assert audit.payload["input_tokens"] == 100
@@ -649,8 +667,12 @@ async def test_persist_raises_when_event_request_phase_keys_mismatch(
     try:
         seeded_review_id = await _seed_installation_and_review(engine)
         # Request carries a worker key; the event lost it (None) — divergence.
-        event = _make_llm_call_event(seeded_review_id)
-        request = _make_llm_request(seeded_review_id, phase_key="file:src/app.py#0")
+        # node_id="analyze" on both: phase_key is analyze-only by validator,
+        # and node_id itself is on the cross-check allowlist.
+        event = _make_llm_call_event(seeded_review_id, node_id="analyze")
+        request = _make_llm_request(
+            seeded_review_id, phase_key="file:src/app.py#0", node_id="analyze"
+        )
         response = _make_llm_response()
 
         persister = _make_persister(engine)
@@ -675,8 +697,12 @@ async def test_persist_carries_phase_key_in_payload_not_denormalized_column(
     engine = create_async_engine(migrated_db, hide_parameters=True)
     try:
         seeded_review_id = await _seed_installation_and_review(engine)
-        event = _make_llm_call_event(seeded_review_id, phase_key="file:src/app.py#0")
-        request = _make_llm_request(seeded_review_id, phase_key="file:src/app.py#0")
+        event = _make_llm_call_event(
+            seeded_review_id, phase_key="file:src/app.py#0", node_id="analyze"
+        )
+        request = _make_llm_request(
+            seeded_review_id, phase_key="file:src/app.py#0", node_id="analyze"
+        )
         response = _make_llm_response()
 
         persister = _make_persister(engine)
