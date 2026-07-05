@@ -20,6 +20,7 @@ The only generated identities in the tree are the nested findings'
 one-for-one against the models' generated fields.
 """
 
+import re
 from decimal import Decimal
 from typing import Annotated, Final, Literal, Self
 
@@ -48,6 +49,8 @@ __all__ = [
 # legitimate replay), and a semantic field wrongly listed would be
 # silently ignored; the pin catches both directions.
 WORKER_OUTCOME_EXCLUDE_PATHS: Final[frozenset[str]] = frozenset({"admitted_findings.[].finding_id"})
+
+_SHA256_HEX_RE: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{64}")
 
 
 class AnalyzeWorkerCounters(BaseModel):
@@ -107,7 +110,11 @@ class AnalyzeWorkerOutcome(BaseModel):
     # Content hashes of CACHE-SERVED findings (identity, not just count):
     # the post-cap accounting recomputes how many KEPT findings were
     # served vs proposal-born AFTER aggregate dedup and capping — a count
-    # alone cannot survive that recomputation.
+    # alone cannot survive that recomputation. Canonical form is enforced
+    # below: SHA-256 hex, sorted, unique (an order-of-emission encoding
+    # would make identical retries digest-divergent), a subset of the
+    # admitted findings' hashes, and length-coupled to
+    # counters.n_findings_served.
     served_content_hashes: tuple[str, ...] = ()
 
     @field_validator("path")
@@ -133,6 +140,56 @@ class AnalyzeWorkerOutcome(BaseModel):
             )
         if skipped and self.llm_called:
             raise ValueError("AnalyzeWorkerOutcome: a skipped file never makes an LLM call")
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_served_hashes_canonical(self) -> Self:
+        """Sorted-unique SHA-256 hex, subset of admitted hashes, coupled to
+        the served counter. Sorted-unique is the digest-stability half (an
+        emission-order encoding would falsely diverge identical retries);
+        the subset + counter coupling is the accounting half (a served hash
+        naming a finding this worker never admitted, or a count the hash
+        set contradicts, would corrupt the post-cap kept_served split)."""
+        for h in self.served_content_hashes:
+            if not _SHA256_HEX_RE.fullmatch(h):
+                raise ValueError(
+                    f"AnalyzeWorkerOutcome: served_content_hashes entry is not SHA-256 hex: {h!r}"
+                )
+        if list(self.served_content_hashes) != sorted(set(self.served_content_hashes)):
+            raise ValueError(
+                "AnalyzeWorkerOutcome: served_content_hashes must be sorted and unique"
+            )
+        admitted_hashes = {f.content_hash for f in self.admitted_findings}
+        if not set(self.served_content_hashes) <= admitted_hashes:
+            raise ValueError(
+                "AnalyzeWorkerOutcome: served_content_hashes must be a subset of "
+                "the admitted findings' content hashes"
+            )
+        if len(self.served_content_hashes) != self.counters.n_findings_served:
+            raise ValueError(
+                f"AnalyzeWorkerOutcome: {len(self.served_content_hashes)} served "
+                f"hashes but counters.n_findings_served="
+                f"{self.counters.n_findings_served}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_single_file_attribution(self) -> Self:
+        """Every nested finding and subsumption record names THIS worker's
+        file. The sequential per-file loop makes cross-file attribution
+        impossible; a worker outcome must not be able to express it."""
+        for finding in self.admitted_findings:
+            if finding.file_path != self.path:
+                raise ValueError(
+                    f"AnalyzeWorkerOutcome: finding names {finding.file_path!r} "
+                    f"but the worker's file is {self.path!r}"
+                )
+        for match in self.subsumed_matches:
+            if match.file_path != self.path:
+                raise ValueError(
+                    f"AnalyzeWorkerOutcome: subsumed match names "
+                    f"{match.file_path!r} but the worker's file is {self.path!r}"
+                )
         return self
 
     @model_validator(mode="after")

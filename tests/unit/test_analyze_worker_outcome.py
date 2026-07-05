@@ -214,3 +214,66 @@ def test_state_field_merges_identical_retries_and_rejects_divergence() -> None:
     diverged = _outcome(admitted_findings=(_finding("y"),))
     with pytest.raises(SlotDivergenceError):
         reducer([first], [diverged])
+
+
+def test_served_hashes_canonical_form_enforced() -> None:
+    """SHA-hex, sorted-unique, subset-of-admitted, counter-coupled — each
+    direction pinned. Sorted-unique is digest stability (emission-order
+    encodings would falsely diverge identical retries); subset + coupling is
+    the post-cap kept_served accounting."""
+    finding = _finding()
+    h = finding.content_hash
+    ok = _outcome(
+        admitted_findings=(finding,),
+        served_content_hashes=(h,),
+        counters=AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_served=1),
+        **_NO_SPEND,
+    )
+    assert ok.served_content_hashes == (h,)
+    with pytest.raises(ValidationError, match="SHA-256 hex"):
+        _outcome(served_content_hashes=("nope",))
+    with pytest.raises(ValidationError, match="sorted and unique"):
+        _outcome(
+            admitted_findings=(finding,),
+            served_content_hashes=(h, h),
+            counters=AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_served=2),
+            **_NO_SPEND,
+        )
+    with pytest.raises(ValidationError, match="subset"):
+        _outcome(served_content_hashes=("b" * 64,))
+    with pytest.raises(ValidationError, match="n_findings_served"):
+        _outcome(
+            admitted_findings=(finding,),
+            served_content_hashes=(h,),
+            counters=AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_served=0),
+            **_NO_SPEND,
+        )
+
+
+def test_cross_file_attribution_is_unrepresentable() -> None:
+    """A worker outcome must not be able to express what the sequential
+    per-file loop cannot: findings or subsumption records for another file."""
+    with pytest.raises(ValidationError, match="worker's file"):
+        _outcome(path="src/other.py")  # base finding names src/app.py
+    match = ObservedSubsumedMatch(
+        file_path="src/other.py",
+        query_match_id="javascript.tls_env_verify_disabled",
+        finding_type=FindingType.HARDCODED_SECRET,
+        subsumed_by_finding_type=FindingType.HARDCODED_SECRET,
+        line_start=3,
+        line_end=3,
+        dropped_content_hash=compute_finding_content_hash(
+            "src/other.py",
+            line_start=3,
+            line_end=3,
+            finding_type=FindingType.HARDCODED_SECRET,
+        ),
+        subsumer_content_hash=compute_finding_content_hash(
+            "src/other.py",
+            line_start=3,
+            line_end=3,
+            finding_type=FindingType.HARDCODED_SECRET,
+        ),
+    )
+    with pytest.raises(ValidationError, match="worker's file"):
+        _outcome(subsumed_matches=(match,))
