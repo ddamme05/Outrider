@@ -91,10 +91,16 @@ def proxy_estimate_tokens(
     """Conservative pre-render token estimate for one file's analyze call.
 
     `ceil((dup_factor × (content_bytes + patch_bytes)) / BYTES_PER_TOKEN)
-    + fixed_overhead_tokens`. The caller supplies `fixed_overhead_tokens`
-    (system prompt + user-template scaffolding, computed once per review
+    + fixed_overhead_tokens`. The caller supplies `fixed_overhead_tokens`,
+    which MUST cover the same fixed terms the worker's real estimate
+    carries: system-prompt tokens + user-template scaffolding + the
+    output-token reservation (`analyze_prompt.MAX_TOKENS` — the sequential
+    gate's estimate is system + user + MAX_TOKENS). Omitting the output
+    reservation systematically under-funds every file by that constant,
+    and the worker's real-estimate-vs-allocation check converts the gap
+    into spurious COST_BUDGET_EXHAUSTED skips. Computed once per review
     from the real prompt constants — this module stays import-light and
-    never renders). Heuristic by design; see `DUP_FACTOR`.
+    never renders. Heuristic by design; see `DUP_FACTOR`.
     """
     if content_bytes < 0 or patch_bytes < 0:
         raise ValueError("byte counts must be non-negative")
@@ -149,6 +155,23 @@ class BudgetPlan:
     reserved_remainder_tokens: int
 
     def __post_init__(self) -> None:
+        # Per-allocation validation FIRST: the totals equation alone admits
+        # compensating negatives (one allocation drawing -100 while another
+        # over-draws +100 balances the books while a worker overspends), so
+        # no-overspend is proven locally, then summed.
+        for a in self.allocations:
+            if a.from_reserved_tokens < 0 or a.from_general_tokens < 0:
+                raise ValueError(f"budget accounting violated: negative draw for {a.path!r}")
+            if not a.funded and a.allocation_tokens != 0:
+                raise ValueError(f"budget accounting violated: unfunded draw for {a.path!r}")
+            if a.funded and a.allocation_tokens != a.estimate_tokens:
+                raise ValueError(
+                    f"budget accounting violated: funded allocation != estimate for {a.path!r}"
+                )
+            if not a.is_high_risk and a.from_reserved_tokens != 0:
+                raise ValueError(
+                    f"budget accounting violated: benign file drew reserve for {a.path!r}"
+                )
         drawn_general = sum(a.from_general_tokens for a in self.allocations)
         drawn_reserved = sum(a.from_reserved_tokens for a in self.allocations)
         if drawn_general + self.general_remainder_tokens != self.general_pool_tokens:
