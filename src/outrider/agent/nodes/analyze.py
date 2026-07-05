@@ -47,7 +47,10 @@ backstops drift; producer-side correctness is the contract.
   below). Branch kept as a structural slot for the future
   schema-relaxation / raw-bytes paths. No LLM call.
 - `skipped+NO_CHANGED_SCOPE_UNITS` — clean parse but no scope unit
-  intersects the changed regions, OR clean parse with no patch.
+  intersects the changed regions, OR clean parse with no patch — UNLESS an
+  eligible module-level OBSERVED match sits on the added lines, which
+  routes to `degraded+degraded_llm` (`module_level_observed_match`) above
+  instead of skipping.
 - `skipped+COST_BUDGET_EXHAUSTED` — cost gate fired before the LLM
   call.
 - `skipped+UNSUPPORTED_LANGUAGE` — no registered ast_facts adapter
