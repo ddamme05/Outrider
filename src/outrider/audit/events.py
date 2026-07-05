@@ -425,6 +425,11 @@ class LLMCallEvent(AuditEventBase):
     """
 
     event_type: Literal["llm_call"] = "llm_call"
+    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
+    # emitting planner/worker/aggregate phase's key; None on
+    # sequential-era rows. Grouping is the strict derived-owner hybrid
+    # pinned by specs/2026-07-05-parallel-analyze.md.
+    phase_key: str | None = None
     model: str
     # The provider's normalized stop reason (`end_turn`/`refusal`/`max_tokens`/…),
     # mirrored from `LLMResponse.finish_reason` and cross-checked in the persister
@@ -645,6 +650,11 @@ class ScopeExclusionEvent(AuditEventBase):
     """
 
     event_type: Literal["scope_exclusion"] = "scope_exclusion"
+    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
+    # emitting planner/worker/aggregate phase's key; None on
+    # sequential-era rows. Grouping is the strict derived-owner hybrid
+    # pinned by specs/2026-07-05-parallel-analyze.md.
+    phase_key: str | None = None
     file_path: Annotated[str, Field(max_length=1024)]
     node_id: Literal["analyze"] = "analyze"
     applied: bool
@@ -692,6 +702,11 @@ class CacheLookupEvent(AuditEventBase):
     """
 
     event_type: Literal["cache_lookup"] = "cache_lookup"
+    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
+    # emitting planner/worker/aggregate phase's key; None on
+    # sequential-era rows. Grouping is the strict derived-owner hybrid
+    # pinned by specs/2026-07-05-parallel-analyze.md.
+    phase_key: str | None = None
     file_path: Annotated[str, Field(max_length=1024)]
     node_id: Literal["analyze"] = "analyze"
     outcome: Literal["would_hit", "miss"]
@@ -769,6 +784,11 @@ class CacheServeEvent(AuditEventBase):
     """
 
     event_type: Literal["cache_serve"] = "cache_serve"
+    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
+    # emitting planner/worker/aggregate phase's key; None on
+    # sequential-era rows. Grouping is the strict derived-owner hybrid
+    # pinned by specs/2026-07-05-parallel-analyze.md.
+    phase_key: str | None = None
     file_path: Annotated[str, Field(max_length=1024)]
     node_id: Literal["analyze"] = "analyze"
     cache_key: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
@@ -880,6 +900,11 @@ class ObservedSkipShadowEvent(AuditEventBase):
     """
 
     event_type: Literal["observed_skip_shadow"] = "observed_skip_shadow"
+    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
+    # emitting planner/worker/aggregate phase's key; None on
+    # sequential-era rows. Grouping is the strict derived-owner hybrid
+    # pinned by specs/2026-07-05-parallel-analyze.md.
+    phase_key: str | None = None
     node_id: Literal["analyze"] = "analyze"
     file_path: Annotated[str, Field(max_length=1024)]
     outcome: Literal["would_skip", "not_eligible"]
@@ -969,6 +994,11 @@ class FileExaminationEvent(AuditEventBase):
     """
 
     event_type: Literal["file_examination"] = "file_examination"
+    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
+    # emitting planner/worker/aggregate phase's key; None on
+    # sequential-era rows. Grouping is the strict derived-owner hybrid
+    # pinned by specs/2026-07-05-parallel-analyze.md.
+    phase_key: str | None = None
     file_path: Annotated[str, Field(max_length=1024)]
     # Bounded to the two actually-emitted values today: intake's
     # per-file fetch record (`emit_file_examination` sites in
@@ -1049,6 +1079,11 @@ class FindingEvent(AuditEventBase):
     """
 
     event_type: Literal["finding"] = "finding"
+    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
+    # emitting planner/worker/aggregate phase's key; None on
+    # sequential-era rows. Grouping is the strict derived-owner hybrid
+    # pinned by specs/2026-07-05-parallel-analyze.md.
+    phase_key: str | None = None
     finding_id: UUID
     finding_type: FindingType
     severity: FindingSeverity
@@ -2628,6 +2663,11 @@ class AnalyzeCompletedEvent(AuditEventBase):
     """
 
     event_type: Literal["analyze_completed"] = "analyze_completed"
+    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
+    # emitting planner/worker/aggregate phase's key; None on
+    # sequential-era rows. Grouping is the strict derived-owner hybrid
+    # pinned by specs/2026-07-05-parallel-analyze.md.
+    phase_key: str | None = None
     pass_index: int = Field(ge=0)
     node_id: Literal["analyze"] = "analyze"
     n_files_analyzed: int = Field(ge=0)
@@ -2874,6 +2914,11 @@ class FindingProposalRejectedEvent(AuditEventBase):
     """
 
     event_type: Literal["finding_proposal_rejected"] = "finding_proposal_rejected"
+    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
+    # emitting planner/worker/aggregate phase's key; None on
+    # sequential-era rows. Grouping is the strict derived-owner hybrid
+    # pinned by specs/2026-07-05-parallel-analyze.md.
+    phase_key: str | None = None
     node_id: Literal["analyze"] = "analyze"
     file_path: Annotated[str, Field(max_length=1024)]
     proposal_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
@@ -2965,6 +3010,11 @@ class AnalyzeResponseRejectedEvent(AuditEventBase):
     """
 
     event_type: Literal["analyze_response_rejected"] = "analyze_response_rejected"
+    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
+    # emitting planner/worker/aggregate phase's key; None on
+    # sequential-era rows. Grouping is the strict derived-owner hybrid
+    # pinned by specs/2026-07-05-parallel-analyze.md.
+    phase_key: str | None = None
     node_id: Literal["analyze"] = "analyze"
     file_path: Annotated[str, Field(max_length=1024)]
     response_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]

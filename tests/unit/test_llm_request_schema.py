@@ -632,3 +632,13 @@ def test_response_schema_json_admits_any_key_order_compact() -> None:
     req_sorted = LLMRequest(**_kwargs(response_schema_json=sorted_order))
     assert req_reasoning.response_schema_json == reasoning_order
     assert req_reasoning.response_format_digest != req_sorted.response_format_digest
+
+
+def test_phase_key_defaults_none_and_round_trips() -> None:
+    """V1.5 phase attribution (`DECISIONS.md#064`): `phase_key` defaults to
+    None (every existing constructor unaffected; sequential-era requests carry
+    no key) and a worker-stamped key survives construction unchanged — the
+    provider mirrors it verbatim onto `LLMCallEvent.phase_key`."""
+    assert LLMRequest.model_fields["phase_key"].default is None
+    request = LLMRequest(**_kwargs(phase_key="file:src/app.py#1"))
+    assert request.phase_key == "file:src/app.py#1"

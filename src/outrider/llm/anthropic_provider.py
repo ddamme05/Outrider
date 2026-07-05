@@ -660,6 +660,7 @@ class AnthropicProvider:
             # through, the wrapper drops the typed cause that
             # `LLMRequest._enforce_degradation_provenance` mandates.
             degradation_reason=request.degradation_reason,
+            phase_key=request.phase_key,
             # Constrained-decoding provenance (FUP-096): identical prompt
             # bytes + template version can produce different output
             # populations once `output_config.format` exists — metadata-only

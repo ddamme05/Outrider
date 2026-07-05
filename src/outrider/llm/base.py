@@ -417,7 +417,8 @@ class LLMRequest(BaseModel):
     - **Audit-context fields** the wrapper passes opaquely through to
       `LLMCallEvent` at `complete()` step 9: `review_id`, `node_id`,
       `is_eval`, `context_summary`, `prompt_template_version`,
-      `degraded_mode`. Provider does NOT modify or re-derive these.
+      `degraded_mode`, `phase_key`. Provider does NOT modify or re-derive
+      these.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -486,6 +487,13 @@ class LLMRequest(BaseModel):
     # prompt's provenance sentence (totality-tested) are the two companions
     # a new member still needs.
     degradation_reason: DegradationReason | None = None
+    # V1.5 parallel-analyze phase attribution: the emitting phase's key,
+    # mirrored verbatim onto `LLMCallEvent.phase_key` by every provider —
+    # the same request→event ride as `degradation_reason`, because the
+    # PROVIDER constructs that event (DECISIONS.md#064; grouping contract
+    # in specs/2026-07-05-parallel-analyze.md). None outside analyze
+    # fan-out phases.
+    phase_key: str | None = None
 
     @field_validator("response_schema_json")
     @classmethod
