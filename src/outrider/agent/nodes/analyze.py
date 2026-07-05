@@ -1612,6 +1612,52 @@ async def _emit_skip(
     )
 
 
+async def _emit_skip_with_module_findings(
+    *,
+    file_examination_sink: FileExaminationSink,
+    review_id: UUID,
+    is_eval: bool,
+    file_path: str,
+    skip_reason: SkipReason,
+    module_matches: tuple[ObservedMatch, ...],
+    installation_id: int,
+    active_policy_version: str,
+) -> _FileOutcome:
+    """A skip that still emits the module arm's OBSERVED findings
+    (DECISIONS.md#062): the deterministic finding costs ZERO LLM tokens, so an
+    early skip — cost budget, all-trivial — must not drop it (the finding is
+    exactly what the module route exists to emit). The skip
+    FileExaminationEvent and its accounting (skip_reason on the outcome, e.g.
+    the COST_BUDGET_EXHAUSTED starvation counter) stand unchanged; the
+    findings ride out on `_ObservedSkipResult`, the enforced-skip carrier the
+    main loop admits with zero LLM accounting (they reach synthesize + HITL).
+    Same-content_hash producer duplicates collapse first-wins, mirroring the
+    enforced-skip branch — content_hash excludes evidence_tier, so two
+    same-span OBSERVED findings would otherwise trip
+    `AnalysisRound._enforce_findings_unique`."""
+    outcome = await _emit_skip(
+        file_examination_sink=file_examination_sink,
+        review_id=review_id,
+        is_eval=is_eval,
+        file_path=file_path,
+        skip_reason=skip_reason,
+    )
+    produced = produce_observed_findings(
+        module_matches,
+        file_path=file_path,
+        review_id=review_id,
+        installation_id=installation_id,
+        active_policy_version=active_policy_version,
+    )
+    deduped: list[ReviewFinding] = []
+    seen_hashes: set[str] = set()
+    for finding in produced:
+        if finding.content_hash not in seen_hashes:
+            deduped.append(finding)
+            seen_hashes.add(finding.content_hash)
+    return replace(outcome, observed_skip_result=_ObservedSkipResult(tuple(deduped)))
+
+
 def _build_context_manifest(
     file_path: str,
     scope_units: Iterable[ScopeUnit],
@@ -1946,6 +1992,21 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         + analyze_prompt.MAX_TOKENS
     )
     if estimated_tokens > per_file_cap_tokens or estimated_tokens > remaining_budget_tokens:
+        if module_matches:
+            # Module route under budget exhaustion (DECISIONS.md#062): the
+            # LLM pass is skipped — and counted, the COST_BUDGET_EXHAUSTED
+            # accounting stands — but the routing sweep's OBSERVED findings
+            # cost zero tokens and must not be dropped with it.
+            return await _emit_skip_with_module_findings(
+                file_examination_sink=file_examination_sink,
+                review_id=review_id,
+                is_eval=is_eval,
+                file_path=changed_file.path,
+                skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
+                module_matches=module_matches,
+                installation_id=installation_id,
+                active_policy_version=active_policy_version,
+            )
         return await _emit_skip(
             file_examination_sink=file_examination_sink,
             review_id=review_id,
@@ -2034,6 +2095,34 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 if not entry.trivial
             )
             if not kept:
+                # Before dropping to the trivial skip: a changed
+                # module-level match is NOT trivial-scope coverage and must
+                # not be silently dropped with it (DECISIONS.md#062). The
+                # clean route never ran the routing sweep, so run it here —
+                # lazily, only when the skip actually fires; the sweep
+                # short-circuits ineligible languages. Structurally
+                # unreachable today (triviality is Python-gated; the sole
+                # eligible query is JavaScript) — this guards the first
+                # Python eligible query / JS trivial classifier.
+                trivial_module_matches = module_level_observed_matches(
+                    file_path=changed_file.path,
+                    head_content=content,
+                    all_scope_units=module_all_scope_units,
+                    added_line_ranges=module_added_ranges,
+                    import_refs=parse_result.imports,
+                    lexical_bindings=parse_result.lexical_bindings,
+                )
+                if trivial_module_matches:
+                    return await _emit_skip_with_module_findings(
+                        file_examination_sink=file_examination_sink,
+                        review_id=review_id,
+                        is_eval=is_eval,
+                        file_path=changed_file.path,
+                        skip_reason=SkipReason.ALL_SCOPES_TRIVIAL,
+                        module_matches=trivial_module_matches,
+                        installation_id=installation_id,
+                        active_policy_version=active_policy_version,
+                    )
                 return await _emit_skip(
                     file_examination_sink=file_examination_sink,
                     review_id=review_id,
