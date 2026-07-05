@@ -79,6 +79,7 @@ def _make_llm_call_event(
     *,
     system_prompt: str = _DEFAULT_SYSTEM_PROMPT,
     user_prompt: str = _DEFAULT_USER_PROMPT,
+    phase_key: str | None = None,
 ) -> LLMCallEvent:
     """Construct a representative LLMCallEvent fixture. Hashes match the
     canonical hash of the request prompts; cost_usd / pricing_version
@@ -130,10 +131,15 @@ def _make_llm_call_event(
         profile_id=_ANTHROPIC_PROFILE_ID,
         reasoning_enabled=False,
         profile_contract_digest=_ANTHROPIC_CONTRACT_DIGEST,
+        phase_key=phase_key,
     )
 
 
-def _make_llm_request(review_id_str: str, user_prompt: str = _DEFAULT_USER_PROMPT) -> LLMRequest:
+def _make_llm_request(
+    review_id_str: str,
+    user_prompt: str = _DEFAULT_USER_PROMPT,
+    phase_key: str | None = None,
+) -> LLMRequest:
     """Construct a representative LLMRequest with non-redacted text."""
     from uuid import UUID
 
@@ -147,6 +153,7 @@ def _make_llm_request(review_id_str: str, user_prompt: str = _DEFAULT_USER_PROMP
         node_id="triage",
         prompt_template_version="triage:1",
         degraded_mode=False,
+        phase_key=phase_key,
     )
 
 
@@ -623,5 +630,65 @@ async def test_persist_idempotent_re_emit_survives_pricing_version_bump(
             )
             assert audit_count.scalar_one() == 1
             assert content_count.scalar_one() == 1
+    finally:
+        await engine.dispose()
+
+
+async def test_persist_raises_when_event_request_phase_keys_mismatch(
+    migrated_db: str,
+) -> None:
+    """V1.5 phase attribution (DECISIONS.md#064): `phase_key` is on the
+    request↔event cross-check allowlist — a provider that drops or rewrites
+    the key mid-pipeline would attribute the LLM call to the wrong worker
+    phase, and replay's strict hybrid grouping would bind it under a phase
+    that never made it. Without this guard the mismatched pair persisted
+    successfully (the increment-1 review catch)."""
+    from outrider.audit.persister import AuditPersisterEventRequestFieldMismatchError
+
+    engine = create_async_engine(migrated_db, hide_parameters=True)
+    try:
+        seeded_review_id = await _seed_installation_and_review(engine)
+        # Request carries a worker key; the event lost it (None) — divergence.
+        event = _make_llm_call_event(seeded_review_id)
+        request = _make_llm_request(seeded_review_id, phase_key="file:src/app.py#0")
+        response = _make_llm_response()
+
+        persister = _make_persister(engine)
+        with pytest.raises(AuditPersisterEventRequestFieldMismatchError) as exc_info:
+            await persister.persist(event, request, response)
+        assert exc_info.value.field_name == "phase_key"
+
+        # No rows landed.
+        async with engine.connect() as conn:
+            audit_count = await conn.execute(text("SELECT COUNT(*) FROM audit_events"))
+            assert audit_count.scalar_one() == 0
+    finally:
+        await engine.dispose()
+
+
+async def test_persist_carries_phase_key_in_payload_not_denormalized_column(
+    migrated_db: str,
+) -> None:
+    """A matched request/event pair with a worker key persists; the key rides
+    the JSONB payload in full while the denormalized `phase_key` column stays
+    NULL (ReviewPhaseEvent-only per the `_NO_PHASE_KEY` sentinel rule)."""
+    engine = create_async_engine(migrated_db, hide_parameters=True)
+    try:
+        seeded_review_id = await _seed_installation_and_review(engine)
+        event = _make_llm_call_event(seeded_review_id, phase_key="file:src/app.py#0")
+        request = _make_llm_request(seeded_review_id, phase_key="file:src/app.py#0")
+        response = _make_llm_response()
+
+        persister = _make_persister(engine)
+        await persister.persist(event, request, response)
+
+        async with engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    text("SELECT phase_key, payload->>'phase_key' FROM audit_events")
+                )
+            ).one()
+            assert row[0] is None  # denormalized column: ReviewPhaseEvent-only
+            assert row[1] == "file:src/app.py#0"  # payload is authoritative
     finally:
         await engine.dispose()

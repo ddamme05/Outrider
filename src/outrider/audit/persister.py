@@ -189,12 +189,15 @@ __all__ = [
 ]
 
 
-# Sentinel for "no top-level phase_key for this event type." `audit_events`
-# has a top-level nullable `phase_key TEXT` column denormalized from the
-# JSONB payload (genesis migration line 103, indexed by
+# Sentinel for "the denormalized top-level column stays NULL for this event
+# type." `audit_events` has a top-level nullable `phase_key TEXT` column
+# denormalized from the JSONB payload (genesis migration line 103, indexed by
 # `ix_audit_events_review_phase_key`). The persister populates it from
 # `event.phase_key` only for `ReviewPhaseEvent`; every other event type
-# writes NULL there.
+# writes NULL there — including the ten V1.5 analyze-emitted carriers whose
+# `phase_key` field rides the JSONB payload in full (DECISIONS.md#064).
+# Whether the carriers also denormalize into the column is a query-efficiency
+# call the replay increment may revisit; the payload is authoritative.
 _NO_PHASE_KEY: Final[None] = None
 
 # The `replay_verdict` partial-index predicate as LITERAL SQL, never an
@@ -587,6 +590,12 @@ class AuditPersisterEventRequestFieldMismatchError(ValueError, metaclass=_Frozen
             # derived digest would mislabel the output population replay
             # and the cache telemetry split on.
             "response_format_digest",
+            # V1.5 phase attribution (DECISIONS.md#064): the provider mirrors
+            # request.phase_key verbatim onto the event; a divergence would
+            # attribute the LLM call to the wrong worker phase — replay's
+            # strict hybrid grouping would then bind the call under a phase
+            # that never made it.
+            "phase_key",
             "prompt_hash",
             "system_prompt_hash",
         }
@@ -1900,7 +1909,9 @@ class AuditPersister:
                     event_id=event.event_id,
                     review_id=event.review_id,
                     event_type=event.event_type,
-                    phase_key=_NO_PHASE_KEY,  # LLMCallEvent has no phase_key
+                    # Column is ReviewPhaseEvent-only; LLMCallEvent.phase_key
+                    # rides the JSONB payload (_NO_PHASE_KEY sentinel rule).
+                    phase_key=_NO_PHASE_KEY,
                     timestamp=event.timestamp,
                     is_eval=event.is_eval,
                     payload=payload,
@@ -2294,10 +2305,10 @@ class AuditPersister:
         fresh event_ids for the same logical row, so the simpler
         `event_id`-PK dedup remains correct here.
 
-        `phase_key` is written as NULL (the denormalized top-level
-        column is populated only for `ReviewPhaseEvent`; per the
-        `_NO_PHASE_KEY` sentinel rule, every other event type writes
-        NULL).
+        `phase_key` is written as NULL in the denormalized top-level
+        column (populated only for `ReviewPhaseEvent` per the
+        `_NO_PHASE_KEY` sentinel rule); a carrier event's own
+        `phase_key` field rides the JSONB payload in full.
 
         Intake's phase-2 content fan-out emits these concurrently
         under `asyncio.TaskGroup`; each emission opens its own
@@ -2457,7 +2468,9 @@ class AuditPersister:
                     event_id=event.event_id,
                     review_id=event.review_id,
                     event_type=event.event_type,
-                    phase_key=_NO_PHASE_KEY,  # FindingEvent has no phase_key
+                    # Column is ReviewPhaseEvent-only; FindingEvent.phase_key
+                    # rides the JSONB payload (_NO_PHASE_KEY sentinel rule).
+                    phase_key=_NO_PHASE_KEY,
                     timestamp=event.timestamp,
                     is_eval=event.is_eval,
                     payload=payload,
