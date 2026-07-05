@@ -89,9 +89,11 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from outrider.agent.reducers import (
     append_with_dedup_by,
     append_with_slot_guard,
+    semantic_digest,
 )
 from outrider.schemas.analysis_round import AnalysisRound
 from outrider.schemas.analyze_worker import (
+    WORKER_OUTCOME_EXCLUDE_PATHS,
     AnalyzeWorkerOutcome,
     worker_outcome_slot,
 )
@@ -155,15 +157,16 @@ class ReviewState(BaseModel):
     # wires the Send workers). Slot key is POSITIONAL, so the merge is the
     # #063 slot guard, not first-wins dedup: identical-digest retries are
     # replay no-ops, divergent same-slot content raises (state must not
-    # fork from audit). The digest is the outcome's AT-CONSTRUCTION
-    # semantic_snapshot — never recomputed at merge, because nested
-    # findings are mutable by design and a post-insertion mutation must
-    # not falsely diverge a legitimate retry.
+    # fork from audit). The digest recomputes over the canonical dump at
+    # merge time (generated finding_ids excluded) — the
+    # AnalysisRound.round_id precedent: state is never mutated
+    # post-insertion, and a mutation that DID happen fails loud as
+    # divergence rather than passing silently as an identical retry.
     analyze_worker_outcomes: Annotated[
         list[AnalyzeWorkerOutcome],
         append_with_slot_guard(
             worker_outcome_slot,
-            lambda o: o.semantic_snapshot,
+            lambda o: semantic_digest(o, exclude_paths=WORKER_OUTCOME_EXCLUDE_PATHS),
         ),
     ] = Field(default_factory=list)
 

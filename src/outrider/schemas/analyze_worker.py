@@ -4,25 +4,40 @@
 `AnalyzeWorkerOutcome` is what an `analyze_file` worker returns into state:
 the aggregate step folds these into ONE `AnalysisRound` per pass plus the
 `AnalyzeCompletedEvent` accounting (per `DECISIONS.md#063`, workers never
-emit rounds — round count is the trace depth counter). The field set is a
-faithful port of what the sequential main loop consumes from its in-memory
-`_FileOutcome`; the DISCRIMINATED `source` field makes the sequential
-branch union explicit (parser XOR cache-serve XOR observed-skip XOR
-plain-skip), and every coherence rule hangs off it — inferring the union
-from counters proved unreliable across three review rounds.
+emit rounds — round count is the trace depth counter).
 
-State discipline (`state-is-pure-data`): every field JSON-round-trips —
-`cost` is a `Decimal` (Pydantic serializes it as an exact string), there
-are NO generated identities or timestamps on the outcome itself (worker
-latency rides `LLMCallEvent.latency_ms`, not state — a per-retry timestamp
-would make every retry digest-divergent and defeat the #063 replay no-op).
+Design rule, learned across five review rounds: the outcome carries
+**facts and identities, never re-derived judgments.** Early drafts made
+workers report derived counters (emitted/observed/served) and validators
+re-inferred branch semantics from them — every such inference was a guess
+about the node, and several proved subtly wrong (evidence tier is NOT
+producer origin; response rejection does NOT preclude producer
+augmentation). The shipped shape instead records what only the worker
+knows, as explicit identity:
 
-The #063 merge digest is SNAPSHOTTED at construction into
-`semantic_snapshot`: nested `ReviewFinding`s are deliberately NOT frozen
-(multi-stage lifecycle), so a recompute-at-merge digest could change after
-a nested mutation and falsely trigger `SlotDivergenceError` on a
-legitimate retry. The snapshot is immutable-at-birth; the slot-guard
-reducer compares snapshots, never recomputes.
+- `source` — the sequential branch, discriminated (parser / cache_serve /
+  observed_skip / plain_skip), never inferred.
+- `producer_observed_hashes` — WHICH findings the deterministic OBSERVED
+  producer made this pass. Origin is identity, not tier: a model-cited
+  OBSERVED proposal is a legitimate proposal and stays out of this list.
+- `served_content_hashes` — WHICH findings a cache hit reconstructed.
+- Parser tallies copied VERBATIM from `ParserCounters` (no derivation).
+
+Everything derivable is derived by the AGGREGATE from these identities
+(the event-level emitted/served/observed counters are recomputed over the
+post-cap kept set anyway), and the canonical proposal equation is
+enforced where it always was — `AnalyzeCompletedEvent`'s accounting
+validator — not re-approximated per worker.
+
+State discipline (`state-is-pure-data`): every field JSON-round-trips;
+`cost` is an exact `Decimal`; NO generated identities or timestamps on
+the outcome itself. The #063 merge digest is recomputed by the state
+reducer over the outcome's canonical dump (generated finding_ids
+excluded) — the `AnalysisRound.round_id` precedent: a content-derived
+key over findings that are nested-mutable by lifecycle design, safe
+because state is never mutated post-insertion, and a mutation that DID
+happen should fail loud as divergence, never pass silently as an
+identical retry.
 """
 
 import re
@@ -31,7 +46,6 @@ from typing import Annotated, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from outrider.agent.reducers import semantic_digest
 from outrider.ast_facts.models import SkipReason
 from outrider.coordinates import validate_diff_path
 from outrider.policy import EvidenceTier
@@ -42,22 +56,16 @@ from outrider.schemas.triage_result import ReviewTier
 
 __all__ = [
     "WORKER_OUTCOME_EXCLUDE_PATHS",
-    "AnalyzeWorkerCounters",
     "AnalyzeWorkerOutcome",
     "WorkerSource",
     "worker_outcome_slot",
 ]
 
 # Positional exclusion paths for the #063 semantic digest (dot-separated,
-# `[]` = list traversal). Two classes of exclusion: the nested findings'
-# uuid4 `finding_id`s (the only generated identities in the tree), and the
-# digest's own storage field (self-referential — a digest cannot cover
-# itself). Pinned by `test_analyze_worker_outcome.py`: the generated
-# entries one-for-one against the models' default_factory fields, the
-# self-reference explicitly.
-WORKER_OUTCOME_EXCLUDE_PATHS: Final[frozenset[str]] = frozenset(
-    {"admitted_findings.[].finding_id", "semantic_snapshot"}
-)
+# `[]` = list traversal): exactly the model tree's generated identities —
+# the nested findings' uuid4 `finding_id`s. Pinned one-for-one against
+# the models' default_factory fields.
+WORKER_OUTCOME_EXCLUDE_PATHS: Final[frozenset[str]] = frozenset({"admitted_findings.[].finding_id"})
 
 _SHA256_HEX_RE: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{64}")
 
@@ -69,34 +77,26 @@ OBSERVED findings (`observed_skip`); a skip emitted nothing
 (`plain_skip`)."""
 
 
-class AnalyzeWorkerCounters(BaseModel):
-    """The per-file accounting terms the aggregate sums into
-    `AnalyzeCompletedEvent` — mirrors the sequential main loop's
-    accumulators, all defaulting to zero so skip outcomes construct bare.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    n_proposals_seen: int = Field(default=0, ge=0)
-    n_findings_emitted: int = Field(default=0, ge=0)
-    n_findings_observed: int = Field(default=0, ge=0)
-    n_findings_served: int = Field(default=0, ge=0)
-    n_proposals_superseded_by_observed: int = Field(default=0, ge=0)
-    n_proposals_rejected: int = Field(default=0, ge=0)
-    n_responses_rejected: int = Field(default=0, ge=0)
-    n_trace_candidates_emitted: int = Field(default=0, ge=0)
-    n_trace_candidates_dropped_malformed: int = Field(default=0, ge=0)
+def _canonical_hash_tuple(name: str, hashes: tuple[str, ...]) -> None:
+    """SHA-256 hex, sorted, unique — the canonical identity-list form (an
+    emission-order encoding would make identical retries digest-divergent)."""
+    for h in hashes:
+        if not _SHA256_HEX_RE.fullmatch(h):
+            raise ValueError(f"AnalyzeWorkerOutcome: {name} entry is not SHA-256 hex: {h!r}")
+    if list(hashes) != sorted(set(hashes)):
+        raise ValueError(f"AnalyzeWorkerOutcome: {name} must be sorted and unique")
 
 
 class AnalyzeWorkerOutcome(BaseModel):
     """One worker's verdict for one (file, pass) slot.
 
     Merged into `ReviewState.analyze_worker_outcomes` by the slot-guard
-    reducer over the stored `semantic_snapshot`: identical-snapshot retries
-    are replay no-ops, divergent same-slot content fails loud
-    (`DECISIONS.md#063`). The aggregate step is the ONLY consumer — it
-    folds outcomes (sorted by path, so worker completion order never
-    changes the round) into the pass's `AnalysisRound` + accounting event.
+    reducer (`DECISIONS.md#063`): identical-digest retries are replay
+    no-ops, divergent same-slot content fails loud. The aggregate step is
+    the ONLY consumer — it folds outcomes (sorted by path, so worker
+    completion order never changes the round) into the pass's
+    `AnalysisRound` + accounting event, deriving the emitted/served/
+    observed counters from the identity lists here.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -107,34 +107,38 @@ class AnalyzeWorkerOutcome(BaseModel):
     parse_status: Literal["clean", "failed", "degraded", "skipped"]
     skip_reason: SkipReason | None = None
     review_tier: ReviewTier
-    llm_called: bool
-    counters: AnalyzeWorkerCounters
     admitted_findings: tuple[ReviewFinding, ...] = ()
     trace_candidates: tuple[TraceCandidate, ...] = ()
+    # Cross-type subsumption proof-retention records (DECISIONS.md#055) —
+    # the aggregate forwards them onto AnalyzeCompletedEvent. A subsumption
+    # needs a JUDGED subsumer, so these exist only where a parser ran.
+    subsumed_matches: tuple[ObservedSubsumedMatch, ...] = ()
+    # ORIGIN IDENTITY, recorded by the producer that knows it (never
+    # inferred from evidence tier): content hashes of the findings the
+    # deterministic OBSERVED producer made THIS pass. A model-cited
+    # OBSERVED proposal is a proposal — admitted, but not listed here.
+    producer_observed_hashes: tuple[str, ...] = ()
+    # Content hashes of CACHE-SERVED findings (produced in a PRIOR pass,
+    # reconstructed without an LLM call). Identity, not count: the
+    # post-cap accounting recomputes served-vs-proposal origins after
+    # aggregate dedup and capping.
+    served_content_hashes: tuple[str, ...] = ()
+    # Parser tallies, copied VERBATIM from ParserCounters — no worker-side
+    # derivation. Zero whenever no parser ran.
+    n_proposals_seen: int = Field(default=0, ge=0)
+    n_proposals_rejected: int = Field(default=0, ge=0)
+    n_responses_rejected: int = Field(default=0, ge=0)
+    n_proposals_superseded_by_observed: int = Field(default=0, ge=0)
+    n_trace_candidates_dropped_malformed: int = Field(default=0, ge=0)
+    # Provider spend (zero on every no-LLM source) + the planner-facing
+    # estimate. `cost` is an exact Decimal; the aggregate sums Decimals
+    # and casts float ONCE at the event (the sequential FP discipline).
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     cache_read_tokens: int = Field(default=0, ge=0)
     cache_write_tokens: int = Field(default=0, ge=0)
-    # Exact per-file Decimal (JSON-serializes as a string, round-trips
-    # exactly); the aggregate sums Decimals and casts float ONCE at the
-    # event — the sequential loop's FP-drift discipline, preserved.
     cost: Decimal = Field(default=Decimal("0"), ge=0)
     estimated_tokens: int = Field(default=0, ge=0)
-    # Cross-type subsumption proof-retention records (DECISIONS.md#055) —
-    # the aggregate forwards them onto AnalyzeCompletedEvent; dropping
-    # them here would vanish the dropped-OBSERVED structural proof.
-    subsumed_matches: tuple[ObservedSubsumedMatch, ...] = ()
-    # Content hashes of CACHE-SERVED findings (identity, not just count):
-    # the post-cap accounting recomputes how many KEPT findings were
-    # served vs proposal-born AFTER aggregate dedup and capping. Canonical
-    # form enforced below: SHA-256 hex, sorted, unique, and (per-source)
-    # exactly the admitted set on `cache_serve`, empty everywhere else.
-    served_content_hashes: tuple[str, ...] = ()
-    # The #063 merge digest, snapshotted at construction (empty input →
-    # computed; non-empty → verified). Nested findings are mutable by
-    # design, so the merge contract binds to the AT-CONSTRUCTION content;
-    # the slot-guard reducer compares this field and never recomputes.
-    semantic_snapshot: str = ""
 
     @field_validator("path")
     @classmethod
@@ -145,9 +149,26 @@ class AnalyzeWorkerOutcome(BaseModel):
         return validate_diff_path(path)
 
     @model_validator(mode="after")
-    def _enforce_skip_coherence(self) -> Self:
-        """`skip_reason` non-None iff `parse_status == "skipped"` (the #018
-        iff contract), and skipped iff a skip source."""
+    def _enforce_fact_coherence(self) -> Self:
+        """The fact-anchored rules only — each verified against the node,
+        none inferred from counters:
+
+        - `skip_reason` non-None iff skipped (the #018 iff contract), and
+          skipped iff a skip source.
+        - Parser tallies, provider spend, trace candidates, and #055
+          subsumption records (a subsumer is JUDGED) require a parser.
+          `n_responses_rejected > 0` additionally forces
+          `n_proposals_seen == 0` — the parser's verified rejected-response
+          contract — but does NOT preclude producer-OBSERVED augmentation.
+        - Identity lists are canonical (hex, sorted, unique), subsets of
+          the admitted set, and per-source: producer hashes cover EXACTLY
+          the admitted set on `observed_skip`, served hashes EXACTLY the
+          admitted set on `cache_serve`, both empty on `plain_skip`;
+          served is cache_serve-exclusive; every producer-listed finding
+          is OBSERVED-tier (the producer makes nothing else).
+        - Cross-file attribution is unrepresentable (the sequential
+          per-file loop cannot express it).
+        """
         skipped = self.parse_status == "skipped"
         if skipped != (self.skip_reason is not None):
             raise ValueError(
@@ -160,122 +181,64 @@ class AnalyzeWorkerOutcome(BaseModel):
                 f"AnalyzeWorkerOutcome: parse_status={self.parse_status!r} does "
                 f"not match source={self.source!r}"
             )
-        return self
 
-    @model_validator(mode="after")
-    def _enforce_served_hashes_canonical(self) -> Self:
-        """Sorted-unique SHA-256 hex, subset of admitted hashes, coupled to
-        the served counter (per-source equality is enforced above)."""
-        for h in self.served_content_hashes:
-            if not _SHA256_HEX_RE.fullmatch(h):
+        if self.source != "parser":
+            if (
+                self.n_proposals_seen
+                or self.n_proposals_rejected
+                or self.n_responses_rejected
+                or self.n_proposals_superseded_by_observed
+                or self.n_trace_candidates_dropped_malformed
+            ):
+                raise ValueError("AnalyzeWorkerOutcome: parser tallies require source='parser'")
+            if (
+                self.input_tokens
+                or self.output_tokens
+                or self.cache_read_tokens
+                or self.cache_write_tokens
+                or self.cost
+            ):
+                raise ValueError("AnalyzeWorkerOutcome: provider spend requires source='parser'")
+            if self.subsumed_matches:
                 raise ValueError(
-                    f"AnalyzeWorkerOutcome: served_content_hashes entry is not SHA-256 hex: {h!r}"
+                    "AnalyzeWorkerOutcome: subsumption records require a parser "
+                    "(a #055 subsumer is JUDGED)"
                 )
-        if list(self.served_content_hashes) != sorted(set(self.served_content_hashes)):
+            if self.trace_candidates:
+                raise ValueError("AnalyzeWorkerOutcome: trace candidates require source='parser'")
+        if self.n_responses_rejected and self.n_proposals_seen:
             raise ValueError(
-                "AnalyzeWorkerOutcome: served_content_hashes must be sorted and unique"
+                "AnalyzeWorkerOutcome: a rejected response yields zero proposals "
+                "(parser contract); producer-OBSERVED augmentation is unaffected"
             )
-        admitted_hashes = {f.content_hash for f in self.admitted_findings}
-        if not set(self.served_content_hashes) <= admitted_hashes:
+
+        _canonical_hash_tuple("producer_observed_hashes", self.producer_observed_hashes)
+        _canonical_hash_tuple("served_content_hashes", self.served_content_hashes)
+        admitted = {f.content_hash for f in self.admitted_findings}
+        producer = set(self.producer_observed_hashes)
+        served = set(self.served_content_hashes)
+        if not producer <= admitted:
+            raise ValueError(
+                "AnalyzeWorkerOutcome: producer_observed_hashes must be a subset "
+                "of the admitted findings' hashes"
+            )
+        if not served <= admitted:
             raise ValueError(
                 "AnalyzeWorkerOutcome: served_content_hashes must be a subset of "
-                "the admitted findings' content hashes"
+                "the admitted findings' hashes"
             )
-        if len(self.served_content_hashes) != self.counters.n_findings_served:
+        if served and self.source != "cache_serve":
             raise ValueError(
-                f"AnalyzeWorkerOutcome: {len(self.served_content_hashes)} served "
-                f"hashes but counters.n_findings_served="
-                f"{self.counters.n_findings_served}"
+                "AnalyzeWorkerOutcome: served findings exist only on "
+                "source='cache_serve' (sequential branch union)"
             )
-        return self
-
-    @model_validator(mode="after")
-    def _enforce_source_coherence(self) -> Self:
-        """Per-source rules — the sequential branch shapes, verified against
-        the main loop rather than inferred: `llm_called` iff `parser`;
-        observed/served counters DERIVED from the findings they describe;
-        trace counters tied to the candidates tuple; the response-rejection
-        all-zero exclusive shape; skips carrying nothing but (for
-        `observed_skip`) the deterministic producer's findings."""
-        c = self.counters
-        if self.llm_called != (self.source == "parser"):
-            raise ValueError(
-                f"AnalyzeWorkerOutcome: llm_called={self.llm_called} contradicts "
-                f"source={self.source!r}"
-            )
-        observed_count = sum(
-            1 for f in self.admitted_findings if f.evidence_tier is EvidenceTier.OBSERVED
-        )
-        if self.source == "parser":
-            if self.served_content_hashes or c.n_findings_served:
-                raise ValueError(
-                    "AnalyzeWorkerOutcome: cache-served findings cannot coexist "
-                    "with llm_called=True (sequential branch union)"
-                )
-            # This pass's OBSERVED findings are exactly the producer-merged
-            # OBSERVED-tier admitted set — a JUDGED finding counted as
-            # observed (or vice versa) breaks the accounting subtraction.
-            if c.n_findings_observed != observed_count:
-                raise ValueError(
-                    f"AnalyzeWorkerOutcome: n_findings_observed="
-                    f"{c.n_findings_observed} but {observed_count} OBSERVED-tier "
-                    f"findings admitted"
-                )
-            if c.n_trace_candidates_emitted != len(self.trace_candidates):
-                raise ValueError(
-                    f"AnalyzeWorkerOutcome: n_trace_candidates_emitted="
-                    f"{c.n_trace_candidates_emitted} but "
-                    f"{len(self.trace_candidates)} candidates carried"
-                )
-            if c.n_responses_rejected and (
-                c.n_responses_rejected != 1
-                or c.n_proposals_seen
-                or c.n_findings_emitted
-                or self.admitted_findings
-                or self.trace_candidates
-            ):
-                # Exclusive shape per the parser contract: a rejected
-                # response yields zero proposals, findings, and candidates.
-                raise ValueError(
-                    "AnalyzeWorkerOutcome: a response-level rejection is "
-                    "exclusive — counters all zero except "
-                    "n_responses_rejected=1, no findings, no candidates"
-                )
-        else:
-            # No parser ran: no proposal lifecycle, no trace emission.
-            if (
-                c.n_proposals_seen
-                or c.n_proposals_rejected
-                or c.n_responses_rejected
-                or c.n_proposals_superseded_by_observed
-                or c.n_trace_candidates_emitted
-                or c.n_trace_candidates_dropped_malformed
-            ):
-                raise ValueError(
-                    "AnalyzeWorkerOutcome: proposal/trace counters require an "
-                    "LLM call (no parser ran)"
-                )
         if self.source == "cache_serve":
             if self.parse_status != "clean":
                 raise ValueError("AnalyzeWorkerOutcome: cache_serve requires parse_status='clean'")
-            # Served findings ride the served counter regardless of tier
-            # (they were produced in a PRIOR pass); nothing here is
-            # this-pass observed.
-            if c.n_findings_observed:
+            if served != admitted or producer:
                 raise ValueError(
-                    "AnalyzeWorkerOutcome: cache_serve never counts this-pass observed findings"
-                )
-            expected = tuple(sorted({f.content_hash for f in self.admitted_findings}))
-            if self.served_content_hashes != expected:
-                raise ValueError(
-                    "AnalyzeWorkerOutcome: cache_serve served_content_hashes must "
-                    "be exactly the admitted findings' hashes"
-                )
-            if c.n_findings_served != len(self.admitted_findings):
-                raise ValueError(
-                    f"AnalyzeWorkerOutcome: cache_serve n_findings_served="
-                    f"{c.n_findings_served} but {len(self.admitted_findings)} "
-                    f"findings admitted"
+                    "AnalyzeWorkerOutcome: cache_serve admits exactly the served "
+                    "set (nothing was produced this pass)"
                 )
         if self.source == "observed_skip":
             if not self.admitted_findings:
@@ -283,48 +246,26 @@ class AnalyzeWorkerOutcome(BaseModel):
                     "AnalyzeWorkerOutcome: observed_skip carries the producer's "
                     "findings; an empty skip is plain_skip"
                 )
-            if self.served_content_hashes or c.n_findings_served:
-                raise ValueError("AnalyzeWorkerOutcome: observed_skip never serves from cache")
-            if c.n_findings_observed != len(self.admitted_findings):
+            if producer != admitted:
                 raise ValueError(
-                    "AnalyzeWorkerOutcome: observed_skip findings are all this-pass observed"
+                    "AnalyzeWorkerOutcome: observed_skip findings are all "
+                    "producer-origin (producer_observed_hashes covers the "
+                    "admitted set)"
                 )
-            if self.trace_candidates:
-                raise ValueError("AnalyzeWorkerOutcome: a skipped file emits no trace candidates")
         if self.source == "plain_skip" and (
-            self.admitted_findings
-            or self.trace_candidates
-            or self.served_content_hashes
-            or c.n_findings_emitted
-            or c.n_findings_observed
-            or c.n_findings_served
+            self.admitted_findings or self.producer_observed_hashes
         ):
             raise ValueError("AnalyzeWorkerOutcome: plain_skip carries nothing")
-        return self
 
-    @model_validator(mode="after")
-    def _enforce_skip_findings_are_observed_only(self) -> Self:
-        """Every real findings-on-skip path is the deterministic producer
-        (enforced coverage skip; budget/trivial ride-outs) — a skipped
-        outcome carrying a JUDGED or INFERRED finding is a shape no
-        sequential path can produce, and the proof boundary must not gain
-        one through the fan-out."""
-        if self.parse_status == "skipped":
-            for finding in self.admitted_findings:
-                if finding.evidence_tier is not EvidenceTier.OBSERVED:
-                    raise ValueError(
-                        f"AnalyzeWorkerOutcome: a skipped outcome carries only "
-                        f"OBSERVED findings; got {finding.evidence_tier} for "
-                        f"{finding.content_hash}"
-                    )
-        return self
-
-    @model_validator(mode="after")
-    def _enforce_single_file_attribution(self) -> Self:
-        """Every nested finding and subsumption record names THIS worker's
-        file. The sequential per-file loop makes cross-file attribution
-        impossible; a worker outcome must not be able to express it."""
         for finding in self.admitted_findings:
+            if (
+                finding.content_hash in producer
+                and finding.evidence_tier is not EvidenceTier.OBSERVED
+            ):
+                raise ValueError(
+                    "AnalyzeWorkerOutcome: producer-listed findings are "
+                    "OBSERVED-tier (the deterministic producer makes nothing else)"
+                )
             if finding.file_path != self.path:
                 raise ValueError(
                     f"AnalyzeWorkerOutcome: finding names {finding.file_path!r} "
@@ -336,77 +277,6 @@ class AnalyzeWorkerOutcome(BaseModel):
                     f"AnalyzeWorkerOutcome: subsumed match names "
                     f"{match.file_path!r} but the worker's file is {self.path!r}"
                 )
-        return self
-
-    @model_validator(mode="after")
-    def _enforce_worker_accounting(self) -> Self:
-        """Per-worker halves of AnalyzeCompletedEvent's proposal equation, so
-        errors cannot cancel ACROSS workers at the aggregate: (a) emitted
-        findings are exactly the admitted set (worker-local, pre-aggregate
-        dedup/cap); (b) `seen == (emitted - served - observed) + rejected +
-        superseded` — the canonical equation WITHOUT the drop term, because
-        `n_proposals_dropped` is computed at the aggregate over the
-        post-dedup kept set, never per worker."""
-        c = self.counters
-        if c.n_findings_emitted != len(self.admitted_findings):
-            raise ValueError(
-                f"AnalyzeWorkerOutcome: n_findings_emitted={c.n_findings_emitted} "
-                f"but {len(self.admitted_findings)} findings admitted"
-            )
-        lhs = c.n_proposals_seen
-        rhs = (
-            c.n_findings_emitted
-            - c.n_findings_served
-            - c.n_findings_observed
-            + c.n_proposals_rejected
-            + c.n_proposals_superseded_by_observed
-        )
-        if lhs != rhs:
-            raise ValueError(
-                f"AnalyzeWorkerOutcome: proposal accounting violated: "
-                f"n_proposals_seen={lhs} != (emitted - served - observed) + "
-                f"rejected + superseded = {rhs}"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _enforce_no_llm_means_no_spend(self) -> Self:
-        """`llm_called=False` (skips, cache serves, ride-outs) constructs with
-        zero provider tokens and zero cost everywhere in the node — nonzero
-        spend without a call would let the aggregate's accounting contradict
-        the LLMCallEvent stream."""
-        if not self.llm_called and (
-            self.input_tokens
-            or self.output_tokens
-            or self.cache_read_tokens
-            or self.cache_write_tokens
-            or self.cost
-        ):
-            raise ValueError(
-                "AnalyzeWorkerOutcome: llm_called=False requires zero provider tokens and zero cost"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _snapshot_semantic_digest(self) -> Self:
-        """LAST validator: snapshot (or verify) the #063 merge digest.
-
-        Nested `ReviewFinding`s are mutable by design, so a
-        recompute-at-merge digest could change after insertion and falsely
-        diverge a legitimate retry. Computed here over the fully-validated
-        content (the field excludes itself via
-        `WORKER_OUTCOME_EXCLUDE_PATHS`); non-empty input (a JSON round-trip
-        or a hand-built value) is VERIFIED, not trusted.
-        `object.__setattr__` writes through the frozen config — the
-        standard Pydantic pattern for validator-computed fields.
-        """
-        computed = semantic_digest(self, exclude_paths=WORKER_OUTCOME_EXCLUDE_PATHS)
-        if not self.semantic_snapshot:
-            object.__setattr__(self, "semantic_snapshot", computed)
-        elif self.semantic_snapshot != computed:
-            raise ValueError(
-                "AnalyzeWorkerOutcome: semantic_snapshot does not match the outcome's content"
-            )
         return self
 
 
