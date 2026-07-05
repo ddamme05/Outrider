@@ -113,7 +113,7 @@ class SkipReason(StrEnum):
     - Analyze-stage (rule rooted in analyze's decision rationale):
       `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,
       `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`,
-      `ALL_SCOPES_TRIVIAL`. Set by the
+      `ALL_SCOPES_TRIVIAL`, `PATCH_HEAD_MISALIGNED`. Set by the
       analyze node body when it skips a file mid-pass.
       `UNSUPPORTED_LANGUAGE` is capability-scoped: it fires for
       extensions with no registered ast_facts adapter (the registry
@@ -143,6 +143,16 @@ class SkipReason(StrEnum):
     # gate: COST_BUDGET_EXHAUSTED wins the race. Per
     # `DECISIONS.md#018` Amended 2026-06-11.
     ALL_SCOPES_TRIVIAL = "ALL_SCOPES_TRIVIAL"
+    # Detected patch/head-content misalignment (a patch target line lies
+    # beyond the fetched source, e.g. a force-push racing intake's
+    # files-list vs content fetches). Every coordinate anchor for the
+    # file — degraded span veto, module-scope admission, publish line
+    # mapping — is unsound against mismatched content, so the file skips
+    # with the data-integrity cause audit-visible instead of aborting or
+    # silently reviewing on wrong coordinates (FUP-217; `DECISIONS.md#018`
+    # taxonomy). Best-effort detection: a misalignment whose line numbers
+    # still fit the fetched source is not detectable here.
+    PATCH_HEAD_MISALIGNED = "PATCH_HEAD_MISALIGNED"
 
     def stage(self) -> Literal["parser", "analyze"]:
         """Return which decision stage produced this skip reason.
@@ -189,6 +199,7 @@ _ANALYZE_STAGE_SKIP_REASONS: frozenset[SkipReason] = frozenset(
         SkipReason.NO_CHANGED_SCOPE_UNITS,
         SkipReason.UNSUPPORTED_LANGUAGE,
         SkipReason.ALL_SCOPES_TRIVIAL,
+        SkipReason.PATCH_HEAD_MISALIGNED,
     }
 )
 

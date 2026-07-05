@@ -77,15 +77,32 @@ def test_file_examination_event_admits_no_changed_scope_units() -> None:
     assert event.skip_reason == SkipReason.NO_CHANGED_SCOPE_UNITS
 
 
-def test_skip_reason_has_eleven_total_values() -> None:
+def test_skip_reason_patch_head_misaligned_exists_and_admits() -> None:
+    """Analyze-stage skip (FUP-217): detected patch/head-content
+    misalignment — every coordinate anchor for the file is unsound, so
+    the node skips with the data-integrity cause audit-visible."""
+    assert SkipReason.PATCH_HEAD_MISALIGNED.value == "PATCH_HEAD_MISALIGNED"
+    assert SkipReason.PATCH_HEAD_MISALIGNED.stage() == "analyze"
+    event = FileExaminationEvent(
+        review_id=uuid4(),
+        file_path="src/foo.py",
+        examination_type="analyze",
+        node_id="analyze",
+        parse_status="skipped",
+        skip_reason=SkipReason.PATCH_HEAD_MISALIGNED,
+    )
+    assert event.skip_reason == SkipReason.PATCH_HEAD_MISALIGNED
+
+
+def test_skip_reason_has_twelve_total_values() -> None:
     """6 parser-stage (5 original + `BINARY` from #018 2026-05-21
-    amendment) + 5 analyze-stage (3 from #018 2026-05-20 +
+    amendment) + 6 analyze-stage (3 from #018 2026-05-20 +
     `UNSUPPORTED_LANGUAGE` from #018 2026-05-21 + `ALL_SCOPES_TRIVIAL`
-    from the trivial-scope-filter spec per #018 Amended 2026-06-11) = 11
-    total.
+    from the trivial-scope-filter spec per #018 Amended 2026-06-11 +
+    `PATCH_HEAD_MISALIGNED` from FUP-217) = 12 total.
 
     Pins the count so a future addition or removal surfaces in the
     diff loud — adjusting this number is the canonical way to indicate
     intent to expand or contract the taxonomy.
     """
-    assert len(list(SkipReason)) == 11
+    assert len(list(SkipReason)) == 12
