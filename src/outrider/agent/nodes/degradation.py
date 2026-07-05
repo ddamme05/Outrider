@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from outrider.ast_facts.models import SkipReason
+from outrider.audit.events import DegradationReason
 from outrider.coordinates import (
     added_line_numbers,
     patched_file_has_added_lines,
@@ -31,26 +32,11 @@ if TYPE_CHECKING:
 
     from outrider.ast_facts.models import ParseResult, ScopeUnit
 
-# Bidirectionally coupled with `LLMRequest.degraded_mode` per
-# `_enforce_degradation_provenance` (llm/base.py). A new value here must be added in
-# LOCKSTEP to `LLMRequest.degradation_reason` (llm/base.py) and
-# `LLMCallEvent.degradation_reason` (audit/events.py) — three independent literals.
-# `"parse_failed"` is V1-unreachable (raw-bytes intake path, FUP-053).
-# `"tree_has_error_no_scope"` is the no-scope syntax-error case per DECISIONS.md#033:
-# a changed addable line intersects a tree error but no scope recovered there
-# (distinct from `"tree_has_error_in_changed_regions"`, which needs a recovered scope).
-# `"module_level_observed_match"` is the module-scope routing reason
-# (DECISIONS.md#062) and the one reason that is
-# NOT a parse defect: the parse is CLEAN, but a diff whose ADDED lines all
-# sit outside any scope unit carries an
-# eligible OBSERVED match, so the file degrades (bounded-hunks JUDGED review +
-# module-level OBSERVED emission) instead of skipping at NO_CHANGED_SCOPE_UNITS.
-_DegradationReason = Literal[
-    "parse_failed",
-    "tree_has_error_in_changed_regions",
-    "tree_has_error_no_scope",
-    "module_level_observed_match",
-]
+# The reason vocabulary is the shared `DegradationReason` StrEnum
+# (audit/events.py — the single source; the old three-Literal lockstep is
+# gone). Member semantics live on the enum docstring; the route→behavior
+# mapping lives on `DegradationDecision`'s properties below, next to the
+# decision that produces the reasons.
 
 # `FileExaminationEvent.parse_status` values for the analyze node.
 # `"failed"` is V1-unreachable for the same reason as `"parse_failed"` above.
@@ -72,9 +58,31 @@ class DegradationDecision:
     mode: Literal["skip", "degraded", "clean"]
     parse_status: _ParseStatus
     skip_reason: SkipReason | None = None
-    degradation_reason: _DegradationReason | None = None
+    degradation_reason: DegradationReason | None = None
     included_scope_units: tuple[ScopeUnit, ...] = ()
     included_clipped_hunks: tuple[tuple[str, ...], ...] = ()
+
+    @property
+    def is_module_level_route(self) -> bool:
+        # The clean-parse module-scope degraded route (DECISIONS.md#062).
+        return self.degradation_reason is DegradationReason.MODULE_LEVEL_OBSERVED_MATCH
+
+    @property
+    def runs_observed_producer(self) -> bool:
+        # Route→behavior, owned by the decision so a future reason cannot
+        # silently inherit the wrong gates: the OBSERVED producer runs on
+        # the clean route and on the ONE clean-parse degraded route
+        # (module-scope); every error-caused degraded route keeps it off —
+        # an error-recovered tree is not trusted for structural proof.
+        # Skip routes never reach the producer gates.
+        return self.mode == "clean" or self.is_module_level_route
+
+    @property
+    def emits_skip_shadow(self) -> bool:
+        # #049 skip-shadow telemetry is clean-mode-only: degraded routes —
+        # the module route included (its matches are excluded from skip
+        # coverage, DECISIONS.md#062) — emit no shadow event.
+        return self.mode == "clean"
 
     def __post_init__(self) -> None:
         """The discriminator must agree with the reason fields (fail-loud)."""
@@ -167,7 +175,9 @@ def decide_degradation(
             )
         # failed+degraded_llm: no scope context survives a failed parse.
         return DegradationDecision(
-            mode="degraded", parse_status="failed", degradation_reason="parse_failed"
+            mode="degraded",
+            parse_status="failed",
+            degradation_reason=DegradationReason.PARSE_FAILED,
         )
 
     # parser_outcome == "clean".
@@ -190,7 +200,7 @@ def decide_degradation(
             return DegradationDecision(
                 mode="degraded",
                 parse_status="degraded",
-                degradation_reason="tree_has_error_no_scope",
+                degradation_reason=DegradationReason.TREE_HAS_ERROR_NO_SCOPE,
                 # No scope recovered → no scope context; the degraded prompt uses the
                 # bounded diff hunks, so included_scope_units/hunks stay ().
             )
@@ -209,7 +219,7 @@ def decide_degradation(
             return DegradationDecision(
                 mode="degraded",
                 parse_status="clean",
-                degradation_reason="module_level_observed_match",
+                degradation_reason=DegradationReason.MODULE_LEVEL_OBSERVED_MATCH,
             )
         return DegradationDecision(
             mode="skip", parse_status="clean", skip_reason=SkipReason.NO_CHANGED_SCOPE_UNITS
@@ -218,7 +228,7 @@ def decide_degradation(
         return DegradationDecision(
             mode="degraded",
             parse_status="degraded",
-            degradation_reason="tree_has_error_in_changed_regions",
+            degradation_reason=DegradationReason.TREE_HAS_ERROR_IN_CHANGED_REGIONS,
             included_scope_units=included_scope_units,
             included_clipped_hunks=included_clipped_hunks,
         )

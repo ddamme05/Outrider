@@ -864,17 +864,17 @@ def test_render_degraded_user_prompt_signals_degraded_mode() -> None:
 
 
 def test_degradation_context_mapping_is_total_over_reasons() -> None:
-    """Every `_DegradationReason` literal has a provenance sentence, and the
+    """Every `DegradationReason` member has a provenance sentence, and the
     mapping carries no stale keys. `render_degraded` indexes the mapping
-    FAIL-LOUD, so a future reason added to the literal without a sentence
+    FAIL-LOUD, so a future member added to the enum without a sentence
     here would KeyError on its first degraded call — this pin moves that
-    failure to test time and rejects fail-open drift in either direction."""
-    from typing import get_args
-
-    from outrider.agent.nodes.degradation import _DegradationReason  # noqa: PLC2701
+    failure to test time and rejects fail-open drift in either direction.
+    (The vocabulary itself is single-sourced on the enum now; this mapping
+    is its one companion that the type system cannot force.)"""
+    from outrider.audit.events import DegradationReason
     from outrider.prompts.analyze import _DEGRADATION_CONTEXT  # noqa: PLC2701
 
-    assert set(_DEGRADATION_CONTEXT) == set(get_args(_DegradationReason))
+    assert set(_DEGRADATION_CONTEXT) == set(DegradationReason)
 
 
 def test_render_degraded_unknown_reason_fails_loud() -> None:

@@ -387,6 +387,29 @@ def _triad_all_set_or_all_none(
     return all(present) or not any(present)
 
 
+class DegradationReason(StrEnum):
+    """Why an analyze LLM call ran degraded — THE single source for the
+    vocabulary that previously lived in three hand-synced Literals
+    (`degradation.py`, `LLMRequest`, this module) plus the degraded prompt's
+    provenance-mapping keys. A `str` enum, so event payloads serialize the
+    same wire values as before and comparisons against raw strings still
+    hold. `PARSE_FAILED` is V1-unreachable (raw-bytes intake path, FUP-053);
+    `TREE_HAS_ERROR_NO_SCOPE` is the no-scope syntax-error case
+    (DECISIONS.md#033); `MODULE_LEVEL_OBSERVED_MATCH` (DECISIONS.md#062) is
+    the one cause that is NOT a parse defect — the parse is clean, the
+    degradation is a routing choice, and the review's FileExaminationEvent
+    truthfully reports `parse_status="clean"` while the LLMCallEvent carries
+    this reason (the cross-event pairing that distinguishes the route).
+    Adding a member: the type system now propagates it to every consumer;
+    the degraded prompt's provenance mapping (`prompts/analyze.py`) is the
+    one companion that needs a sentence, enforced by its totality test."""
+
+    PARSE_FAILED = "parse_failed"
+    TREE_HAS_ERROR_IN_CHANGED_REGIONS = "tree_has_error_in_changed_regions"
+    TREE_HAS_ERROR_NO_SCOPE = "tree_has_error_no_scope"
+    MODULE_LEVEL_OBSERVED_MATCH = "module_level_observed_match"
+
+
 class LLMCallEvent(AuditEventBase):
     """Metadata for one LLM call. Content lives in `llm_call_content` per #016.
 
@@ -430,7 +453,7 @@ class LLMCallEvent(AuditEventBase):
     degraded_mode: bool
     # `degraded_mode: bool` alone loses provenance on metadata-only
     # replay (post-retention or partial-content). The distinct reasons
-    # (the `_DegradationReason` literals) imply structurally different
+    # (the `DegradationReason` members) imply structurally different
     # prompt content; collapsing them into
     # the bool means audit-stream queries like "how many parse_failed
     # analyze calls did we make this month" become unanswerable. Same
@@ -438,23 +461,9 @@ class LLMCallEvent(AuditEventBase):
     # by `_enforce_degradation_reason_consistency` below. Modeled as an
     # enum rather than a bool because dropping the reason would corrupt
     # replay reconstruction.
-    # `"tree_has_error_no_scope"` added per DECISIONS.md#033, in lockstep with
-    # `LLMRequest.degradation_reason` and `_DegradationReason` (degradation.py).
-    # `"module_level_observed_match"` (DECISIONS.md#062)
-    # is the one degraded cause that is NOT a parse defect: the review's
-    # FileExaminationEvent reports parse_status="clean" while this event
-    # carries the reason — the cross-event pairing that distinguishes the
-    # module-scope route from both a normal clean review and a
-    # parse-degraded one.
-    degradation_reason: (
-        Literal[
-            "parse_failed",
-            "tree_has_error_in_changed_regions",
-            "tree_has_error_no_scope",
-            "module_level_observed_match",
-        ]
-        | None
-    ) = None
+    # Typed by the shared `DegradationReason` enum above — the single
+    # source (previously three hand-synced Literals); wire values unchanged.
+    degradation_reason: DegradationReason | None = None
     # Constrained-decoding provenance (specs/2026-06-12-constrained-decoding.md,
     # FUP-096): digest of the response schema this call was constrained to
     # (`LLMRequest.response_format_digest` pass-through); `None` = free-form
