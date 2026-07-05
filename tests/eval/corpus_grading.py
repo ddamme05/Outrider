@@ -387,10 +387,50 @@ def _validate_rows_against_registry(ground_truth: GroundTruth) -> None:
         )
 
 
+def _validate_row_coherence(ground_truth: GroundTruth) -> None:
+    """Reject duplicate and contradictory rows at load: a duplicated
+    expected_finding key grades one emission as multiple TPs, and an
+    expected_clean scope containing a documented-emitted row grades the same
+    emission as both TP and FP. The shipped corpus is coherent; this keeps
+    future authoring honest."""
+    problems: list[str] = []
+    finding_keys: set[tuple[str, str, int]] = set()
+    clean_keys: set[tuple[str, str | None]] = set()
+    emitted_rows: list[ExpectedFindingRow] = []
+    for row in ground_truth.rows:
+        if isinstance(row, ExpectedFindingRow):
+            key = (row.file, row.query_match_id, row.line)
+            if key in finding_keys:
+                problems.append(f"duplicate expected_finding row {key}")
+            finding_keys.add(key)
+            if row.current_outcome == "emitted":
+                emitted_rows.append(row)
+        else:
+            clean_key = (row.file, row.query_match_id)
+            if clean_key in clean_keys:
+                problems.append(f"duplicate expected_clean row {clean_key}")
+            clean_keys.add(clean_key)
+    for row in ground_truth.rows:
+        if isinstance(row, ExpectedCleanRow):
+            for finding in emitted_rows:
+                if finding.file == row.file and row.query_match_id in (
+                    None,
+                    finding.query_match_id,
+                ):
+                    problems.append(
+                        f"expected_clean scope ({row.file}, {row.query_match_id!r}) "
+                        f"contradicts documented-emitted row "
+                        f"({finding.query_match_id}, line {finding.line})"
+                    )
+    if problems:
+        raise ValueError("ground truth rows are incoherent — " + "; ".join(problems))
+
+
 def grade(ground_truth: GroundTruth, *, repo_root: Path) -> Scorecard:
     """Grade the catalog against ground truth, producing a deterministic scorecard."""
     corpus_root = repo_root / ground_truth.corpus_root
     _validate_rows_against_registry(ground_truth)
+    _validate_row_coherence(ground_truth)
     _validate_corpus_totality(corpus_root, ground_truth)
     # Observe each referenced file once.
     files = sorted({row.file for row in ground_truth.rows})

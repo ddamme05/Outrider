@@ -443,6 +443,55 @@ def test_grade_rejects_finding_type_registry_mismatch(tmp_path) -> None:
         cg.grade(gt, repo_root=tmp_path)
 
 
+def _eval_finding_row(line: int = 2, outcome: str = "emitted") -> dict:
+    return {
+        "kind": "expected_finding",
+        "file": "evil.js",
+        "query_match_id": "javascript.command_injection_eval",
+        "finding_type": "command_injection",
+        "line": line,
+        "real_vulnerability": True,
+        "current_outcome": outcome,
+        "rationale": "x",
+    }
+
+
+def test_grade_rejects_duplicate_finding_rows(tmp_path) -> None:
+    """A duplicated (file, query, line) key would grade one emission as two
+    true positives — reject at load."""
+    _write(tmp_path, "evil.js", _EVAL_SRC)
+    gt = cg.GroundTruth.model_validate(
+        {"corpus_root": ".", "rows": [_eval_finding_row(), _eval_finding_row()]}
+    )
+    with pytest.raises(ValueError, match="duplicate expected_finding"):
+        cg.grade(gt, repo_root=tmp_path)
+
+
+def test_grade_rejects_duplicate_clean_rows(tmp_path) -> None:
+    _write(tmp_path, "clean.js", _CLEAN_SRC)
+    row = {"kind": "expected_clean", "file": "clean.js", "rationale": "x"}
+    gt = cg.GroundTruth.model_validate({"corpus_root": ".", "rows": [row, dict(row)]})
+    with pytest.raises(ValueError, match="duplicate expected_clean"):
+        cg.grade(gt, repo_root=tmp_path)
+
+
+def test_grade_rejects_clean_scope_contradicting_emitted_row(tmp_path) -> None:
+    """An expected_clean scope containing a documented-emitted row would grade
+    the same emission as both TP and FP — contradictory ground truth."""
+    _write(tmp_path, "evil.js", _EVAL_SRC)
+    gt = cg.GroundTruth.model_validate(
+        {
+            "corpus_root": ".",
+            "rows": [
+                _eval_finding_row(),
+                {"kind": "expected_clean", "file": "evil.js", "rationale": "contradiction"},
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="contradicts documented-emitted"):
+        cg.grade(gt, repo_root=tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # Documented non-vulnerability (real_vulnerability=false) classification.
 # ---------------------------------------------------------------------------
