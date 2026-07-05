@@ -69,12 +69,14 @@ WORKER_OUTCOME_EXCLUDE_PATHS: Final[frozenset[str]] = frozenset({"admitted_findi
 
 _SHA256_HEX_RE: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{64}")
 
-WorkerSource = Literal["parser", "cache_serve", "observed_skip", "plain_skip"]
+WorkerSource = Literal["parser", "cache_serve", "observed_coverage", "observed_skip", "plain_skip"]
 """The sequential branch union, made explicit. Exactly one of: the LLM
 parser ran (`parser`); a cache hit served reconstructed findings with no
-LLM call (`cache_serve`); an enforced/ride-out skip emitted deterministic
-OBSERVED findings (`observed_skip`); a skip emitted nothing
-(`plain_skip`)."""
+LLM call (`cache_serve`); the #049 ENFORCED coverage skip — every changed
+scope skip_safe-covered, LLM not called, producer findings emitted, but
+the file is EXAMINED (clean FileExaminationEvent, no SkipReason)
+(`observed_coverage`); a budget/trivial ride-out skip carrying producer
+findings (`observed_skip`); a skip that emitted nothing (`plain_skip`)."""
 
 
 def _canonical_hash_tuple(name: str, hashes: tuple[str, ...]) -> None:
@@ -186,7 +188,7 @@ class AnalyzeWorkerOutcome(BaseModel):
                 f"parse_status='skipped'; got parse_status={self.parse_status!r}, "
                 f"skip_reason={self.skip_reason!r}"
             )
-        if skipped != (self.source in ("observed_skip", "plain_skip")):
+        if skipped != (self.source in ("observed_skip", "plain_skip")):  # coverage is EXAMINED
             raise ValueError(
                 f"AnalyzeWorkerOutcome: parse_status={self.parse_status!r} does "
                 f"not match source={self.source!r}"
@@ -291,6 +293,26 @@ class AnalyzeWorkerOutcome(BaseModel):
                 raise ValueError(
                     "AnalyzeWorkerOutcome: cache_serve admits exactly the served "
                     "set (nothing was produced this pass)"
+                )
+        if self.source == "observed_coverage":
+            # #049 enforced coverage: clean status, producer-only findings,
+            # no LLM, no candidates, no #054/#055 merge (the LLM never ran).
+            if self.parse_status != "clean":
+                raise ValueError(
+                    "AnalyzeWorkerOutcome: observed_coverage requires "
+                    "parse_status='clean' (the file is examined, not skipped)"
+                )
+            if not self.admitted_findings or producer != admitted:
+                raise ValueError(
+                    "AnalyzeWorkerOutcome: observed_coverage findings are all "
+                    "producer-origin (an empty coverage skip is impossible — "
+                    "coverage requires matches)"
+                )
+            if self.trace_candidates or self.subsumed_matches or served:
+                raise ValueError(
+                    "AnalyzeWorkerOutcome: observed_coverage carries no "
+                    "candidates, subsumption records, or served findings "
+                    "(the LLM never ran; no merge happened)"
                 )
         if self.source == "observed_skip":
             if not self.admitted_findings:

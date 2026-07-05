@@ -132,6 +132,13 @@ from outrider.agent.nodes.analyze_parser import (
     from_import_map_digest,
     parse_analyze_response,
 )
+from outrider.agent.nodes.analyze_worker_build import (
+    worker_outcome_from_observed_coverage,
+    worker_outcome_from_observed_skip,
+    worker_outcome_from_parser,
+    worker_outcome_from_plain_skip,
+    worker_outcome_from_serve,
+)
 from outrider.agent.nodes.cache_config import CacheMode
 from outrider.agent.nodes.degradation import (
     _ParseStatus,
@@ -202,6 +209,7 @@ from outrider.queries import registry as query_registry
 from outrider.queries.registry import OBSERVED_QUERY_IDS, QUERY_REGISTRY_DIGEST
 from outrider.schemas import AnalysisRound, ReviewFinding, TraceCandidate
 from outrider.schemas.analysis_round import MAX_FINDINGS_HARD_CAP, MAX_FINDINGS_PER_ROUND
+from outrider.schemas.analyze_worker import AnalyzeWorkerOutcome
 from outrider.schemas.llm.analyze import (
     ANALYZE_RESPONSE_FORMAT_DIGEST,
     ANALYZE_RESPONSE_SCHEMA_JSON,
@@ -228,6 +236,7 @@ if TYPE_CHECKING:
         ReviewState,
         TraceFetchedFile,
     )
+    from outrider.schemas.analyze_worker import AnalyzeWorkerOutcome
     from outrider.schemas.pr_context import ChangedFile
 
 
@@ -640,6 +649,9 @@ async def analyze(
     # pass 1 (`pass_index > 0`) — pass 0 still rejects per the V1 stub
     # (no trace context exists yet at that point).
     triage_result = state.triage_result
+    # 3b-2c-1: pass-0 worker outcomes (defined for BOTH passes — the pass-1
+    # re-entry returns it empty; the trace-fetched pass stays sequential).
+    worker_outcomes: list[AnalyzeWorkerOutcome] = []
     if pass_index == 0:
         # Bounded high-risk reserve (Stage 1): split the per-review budget into a
         # general pool (all files) + a capped reserve only high-risk files may
@@ -714,6 +726,20 @@ async def analyze(
                 profile_id=profile_id,
                 reasoning_enabled=reasoning_enabled,
                 profile_contract_digest=profile_contract_digest,
+            )
+
+            # Parallel-analyze 3b-2c-1: construct the worker outcome from the
+            # SAME branch data the sequential accumulation reads (producer
+            # originals pre-clone — origin truth by object identity). Rides
+            # state alongside the sequential round until the fan-out cutover;
+            # the parity test folds these and compares against the round.
+            worker_outcomes.append(
+                _worker_outcome_for(
+                    file_outcome,
+                    path=changed_file.path,
+                    pass_index=pass_index,
+                    review_tier=tier,
+                )
             )
 
             if file_outcome.parser_result is not None:
@@ -1163,7 +1189,91 @@ async def analyze(
     return {
         "analysis_rounds": [new_round],
         "trace_candidates": list(trace_candidates),
+        # 3b-2c-1: pass-0 worker outcomes (empty on pass-1 re-entry — the
+        # trace-fetched pass stays sequential and out of fan-out scope).
+        "analyze_worker_outcomes": worker_outcomes,
     }
+
+
+def _worker_outcome_for(
+    file_outcome: _FileOutcome,
+    *,
+    path: str,
+    pass_index: int,
+    review_tier: ReviewTier,
+) -> AnalyzeWorkerOutcome:
+    """Map one `_FileOutcome` to its `AnalyzeWorkerOutcome` (parallel-analyze
+    3b-2c-1): the sequential branch union discriminates the source, and the
+    builders receive the ORIGINAL objects (producer originals pre-clone —
+    origin truth intersects by object identity; cloning happens inside the
+    builders). Until the fan-out cutover these outcomes ride state ALONGSIDE
+    the sequential accumulation; the parity test folds them and compares."""
+    if file_outcome.parser_result is not None:
+        parser_result = file_outcome.parser_result
+        return worker_outcome_from_parser(
+            path=path,
+            pass_index=pass_index,
+            review_tier=review_tier,
+            parse_status=file_outcome.parse_status,  # type: ignore[arg-type]  # non-skip by branch
+            admitted_findings=parser_result.admitted_findings,
+            producer_findings=file_outcome.producer_findings,
+            trace_candidates=parser_result.trace_candidates,
+            subsumed_matches=file_outcome.subsumed_matches,
+            n_proposals_seen=parser_result.counters.n_proposals_seen,
+            n_proposals_rejected=parser_result.counters.n_proposals_rejected,
+            n_responses_rejected=parser_result.counters.n_responses_rejected,
+            n_proposals_superseded_by_observed=(
+                parser_result.counters.n_proposals_superseded_by_observed
+            ),
+            n_trace_candidates_dropped_malformed=(
+                parser_result.counters.n_trace_candidates_dropped_malformed
+            ),
+            input_tokens=file_outcome.input_tokens,
+            output_tokens=file_outcome.output_tokens,
+            cache_read_tokens=file_outcome.cache_read_tokens,
+            cache_write_tokens=file_outcome.cache_write_tokens,
+            cost=file_outcome.cost_decimal,
+            estimated_tokens=file_outcome.estimated_tokens,
+        )
+    if file_outcome.served_result is not None:
+        served = file_outcome.served_result
+        return worker_outcome_from_serve(
+            path=path,
+            pass_index=pass_index,
+            review_tier=review_tier,
+            served_findings=served.admitted_findings,
+            trace_candidates=served.trace_candidates,
+            subsumed_matches=file_outcome.subsumed_matches,
+            estimated_tokens=file_outcome.estimated_tokens,
+        )
+    if file_outcome.observed_skip_result is not None:
+        skip_reason = file_outcome.skip_reason
+        if skip_reason is None:
+            # The #049 ENFORCED coverage skip: clean FileExaminationEvent,
+            # no SkipReason — the file is EXAMINED, the LLM just never ran.
+            return worker_outcome_from_observed_coverage(
+                path=path,
+                pass_index=pass_index,
+                review_tier=review_tier,
+                producer_findings=file_outcome.observed_skip_result.admitted_findings,
+                estimated_tokens=file_outcome.estimated_tokens,
+            )
+        return worker_outcome_from_observed_skip(
+            path=path,
+            pass_index=pass_index,
+            review_tier=review_tier,
+            skip_reason=skip_reason,
+            producer_findings=file_outcome.observed_skip_result.admitted_findings,
+        )
+    skip_reason = file_outcome.skip_reason
+    if skip_reason is None:  # every remaining branch is a reasoned skip
+        raise RuntimeError("plain-skip outcome without a skip_reason")
+    return worker_outcome_from_plain_skip(
+        path=path,
+        pass_index=pass_index,
+        review_tier=review_tier,
+        skip_reason=skip_reason,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1236,6 +1346,12 @@ class _FileOutcome:
     # them from the payload — so the main loop accumulates them onto the per-pass
     # AnalyzeCompletedEvent uniformly regardless of cache hit/miss.
     subsumed_matches: tuple[ObservedSubsumedMatch, ...] = ()
+    # RAW producer output (original objects, pre-clone) from the #054 merge
+    # site — the parallel-analyze origin-truth source: the worker-outcome
+    # builder intersects these BY OBJECT IDENTITY with the admitted set, so
+    # they must be the same objects the merge placed (never clones). Empty
+    # on every non-parser path.
+    producer_findings: tuple[ReviewFinding, ...] = ()
 
 
 class _ServeReconstructionError(Exception):
@@ -2567,6 +2683,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # below and threaded out for the per-pass `AnalyzeCompletedEvent`; stays empty
     # in degraded mode and when nothing is subsumed.
     subsumed_matches: list[ObservedSubsumedMatch] = []
+    producer_originals: tuple[ReviewFinding, ...] = ()
     if changed_file.content_head is not None and decision.runs_observed_producer:
         # `observed_matches` was computed PRE-LLM (Step 3b-mechanism) so an enforced
         # `would_skip` could short-circuit the LLM; reuse the same matches here for the
@@ -2581,6 +2698,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             installation_id=installation_id,
             active_policy_version=active_policy_version,
         )
+        producer_originals = tuple(observed_findings)
         if observed_findings:
             # prefer-OBSERVED (DECISIONS.md#054): a producer OBSERVED finding that
             # collides (same content_hash = file+line+finding_type) with an
@@ -2818,6 +2936,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         cost_decimal=cost_decimal,
         estimated_tokens=estimated_tokens,
         subsumed_matches=tuple(subsumed_matches),
+        producer_findings=producer_originals,
     )
 
 

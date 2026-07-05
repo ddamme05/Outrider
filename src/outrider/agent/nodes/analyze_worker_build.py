@@ -1,5 +1,5 @@
 # Worker-outcome builders per specs/2026-07-05-parallel-analyze.md (3b-2b).
-"""Construct `AnalyzeWorkerOutcome` records at the node's four branch sites.
+"""Construct `AnalyzeWorkerOutcome` records at the node's five branch sites.
 
 One builder per `WorkerSource`, called by the `analyze_file` worker at the
 exact site that knows the branch's facts — these builders are how the two
@@ -33,6 +33,7 @@ from outrider.schemas.trace_candidate import TraceCandidate
 from outrider.schemas.triage_result import ReviewTier
 
 __all__ = [
+    "worker_outcome_from_observed_coverage",
     "worker_outcome_from_observed_skip",
     "worker_outcome_from_parser",
     "worker_outcome_from_plain_skip",
@@ -152,6 +153,30 @@ def worker_outcome_from_observed_skip(
         review_tier=review_tier,
         admitted_findings=_clone_all(producer_findings),
         producer_observed_hashes=_sorted_hashes(producer_findings),
+    )
+
+
+def worker_outcome_from_observed_coverage(
+    *,
+    path: str,
+    pass_index: int,
+    review_tier: ReviewTier,
+    producer_findings: tuple[ReviewFinding, ...],
+    estimated_tokens: int,
+) -> AnalyzeWorkerOutcome:
+    """The #049 ENFORCED coverage skip: every changed scope was
+    skip_safe-covered, the LLM was not called, and the file counts as
+    EXAMINED (clean status, no SkipReason). Every finding is producer
+    output by construction."""
+    return AnalyzeWorkerOutcome(
+        path=path,
+        pass_index=pass_index,
+        source="observed_coverage",
+        parse_status="clean",
+        review_tier=review_tier,
+        admitted_findings=_clone_all(producer_findings),
+        producer_observed_hashes=_sorted_hashes(producer_findings),
+        estimated_tokens=estimated_tokens,
     )
 
 

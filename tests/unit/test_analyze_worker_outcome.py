@@ -333,6 +333,43 @@ def test_trace_candidate_evidence_implies_proposals_seen() -> None:
         )
 
 
+def test_observed_coverage_is_examined_not_skipped() -> None:
+    """The #049 enforced coverage skip: clean status (the file is
+    EXAMINED), no SkipReason, producer-only findings, no LLM, nothing
+    merged. The eval tier caught this as a fifth branch the four-source
+    union missed."""
+    finding = _finding(tier=EvidenceTier.OBSERVED)
+    outcome = AnalyzeWorkerOutcome(
+        path="src/app.py",
+        pass_index=0,
+        source="observed_coverage",
+        parse_status="clean",
+        review_tier=ReviewTier.DEEP,
+        admitted_findings=(finding,),
+        producer_observed_hashes=(finding.content_hash,),
+    )
+    assert outcome.skip_reason is None
+    with pytest.raises(ValidationError, match="producer-origin|impossible"):
+        AnalyzeWorkerOutcome(
+            path="src/app.py",
+            pass_index=0,
+            source="observed_coverage",
+            parse_status="clean",
+            review_tier=ReviewTier.DEEP,
+        )  # empty coverage is impossible — coverage requires matches
+    with pytest.raises(ValidationError, match="does not match source"):
+        AnalyzeWorkerOutcome(
+            path="src/app.py",
+            pass_index=0,
+            source="observed_coverage",
+            parse_status="skipped",
+            skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
+            review_tier=ReviewTier.DEEP,
+            admitted_findings=(finding,),
+            producer_observed_hashes=(finding.content_hash,),
+        )
+
+
 def test_plain_skip_carries_nothing() -> None:
     with pytest.raises(ValidationError, match="plain_skip carries nothing"):
         _observed_skip(source="plain_skip")
