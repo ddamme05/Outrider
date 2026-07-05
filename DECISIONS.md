@@ -1667,3 +1667,17 @@ Admission (`agent/nodes/analyze_observed.py`): a match is denied when any bindin
 **Consequences.** `OBSERVED_PRODUCER_VERSION` v7. `module_admission_digest` joins the analyze cache key (recipe v6), covering added-line ranges, the module-level bytes they cover, and every parsed scope span. The degraded prompt's provenance sentence became reason-aware (fail-loud mapping; shipped as `analyze-v10` after a same-arc wording fix) — the module route must not be described to the model as a parse failure. The module-only degraded route is non-cacheable (existing degraded mechanics) and excluded from #049 skip coverage. Matches on unchanged module-level lines are never admitted — the diff anchors the proof. Eligibility widening is evidence-gated (exactly-once catalog pin). Python parity stays FUP-184.
 
 **Referenced from.** `src/outrider/agent/nodes/degradation.py`, `src/outrider/agent/nodes/analyze_observed.py`, `src/outrider/queries/observed.py`, `src/outrider/cache/key.py`, `src/outrider/prompts/analyze.py`.
+
+---
+
+## 063. One `AnalysisRound` per analyze pass; parallel workers do not emit rounds
+
+**Status:** Accepted, 2026-07-05.
+
+**Context.** Spec §16.1 anticipated V1.5's parallel analyze with "each analyze worker produces an `AnalysisRound` under its own `round_id` … no additional work needed." Written before the trace loop landed, it misses that the depth ceiling is counted in rounds: `agent/graph.py` routes analyze ⇄ trace on `len(state.analysis_rounds)` against `MAX_ANALYSIS_ROUNDS`, so per-worker rounds would read a 30-file first pass as depth 30 — and every other consumer (synthesize, replay, dashboard) likewise reads rounds-as-passes.
+
+**Decision.** The Send fan-out's aggregate step folds all worker outcomes into ONE `AnalysisRound` per analyze pass (`round_id` per pass, as today). Workers return per-(file, pass)-keyed outcome records merged by a dedup reducer; per-file audit attribution rides `phase_key` on the events, not round identity. §16.1's per-worker-rounds sentence is superseded; its reducer-keying conclusion (dedup by stable ID absorbs concurrency) stands. The rejected alternative — per-worker rounds plus a depth counter decoupled from round count — has the wider blast radius: every `analysis_rounds` consumer would need to re-learn what a round means.
+
+**Consequences.** Rounds-as-passes stays the invariant for the trace depth router and all consumers. The audit-side design this pairs with — which events carry `phase_key`, who emits them, and how replay groups them — is owned by the parallel-analyze feature spec and is NOT fixed by this entry; this entry fixes only the round-identity question. `docs/spec.md` §16.1 carries a reconciliation note pointing here. The parallel-analyze spec transitions to Approved only after this entry lands.
+
+**Referenced from:** `src/outrider/agent/graph.py`, `src/outrider/agent/reducers.py`, `specs/2026-07-05-parallel-analyze.md`.
