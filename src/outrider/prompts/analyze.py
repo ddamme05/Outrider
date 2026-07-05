@@ -93,6 +93,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
+from outrider.audit.events import DegradationReason
+
 if TYPE_CHECKING:
     from uuid import UUID
 
@@ -805,19 +807,20 @@ max 8192 chars of text) to cap the degraded-path cost.
 # prompt must not tell the model a clean-parse file "could not be parsed"
 # (DECISIONS.md#062: `module_level_observed_match`
 # is a ROUTING degradation over a clean parse). Closed, code-side mapping keyed
-# by the typed `_DegradationReason` value, indexed FAIL-LOUD in
-# `render_degraded`: a future reason without a provenance sentence is a
-# KeyError at the first degraded call, never a silently-wrong claim — the
-# totality test pins this mapping against the `_DegradationReason` literal.
+# by the shared `DegradationReason` enum (audit/events.py — the single
+# source), indexed FAIL-LOUD in `render_degraded`: a future member without a
+# provenance sentence is a KeyError at the first degraded call, never a
+# silently-wrong claim — the totality test pins this mapping against the
+# enum's members.
 _DEGRADATION_CONTEXT_PARSE_DEFECT: Final[str] = (
     "This file could not be parsed structurally (or has tree-sitter errors\n"
     "intersecting the changed regions)."
 )
-_DEGRADATION_CONTEXT: Final[dict[str, str]] = {
-    "parse_failed": _DEGRADATION_CONTEXT_PARSE_DEFECT,
-    "tree_has_error_in_changed_regions": _DEGRADATION_CONTEXT_PARSE_DEFECT,
-    "tree_has_error_no_scope": _DEGRADATION_CONTEXT_PARSE_DEFECT,
-    "module_level_observed_match": (
+_DEGRADATION_CONTEXT: Final[dict[DegradationReason, str]] = {
+    DegradationReason.PARSE_FAILED: _DEGRADATION_CONTEXT_PARSE_DEFECT,
+    DegradationReason.TREE_HAS_ERROR_IN_CHANGED_REGIONS: _DEGRADATION_CONTEXT_PARSE_DEFECT,
+    DegradationReason.TREE_HAS_ERROR_NO_SCOPE: _DEGRADATION_CONTEXT_PARSE_DEFECT,
+    DegradationReason.MODULE_LEVEL_OBSERVED_MATCH: (
         "This file parsed cleanly, but the diff's added lines are all\n"
         "module-level, outside any function or class, so no scope-unit\n"
         "context exists for this call. (The diff may also remove lines\n"
@@ -1082,17 +1085,16 @@ def render_degraded(
     file_path: str,
     bounded_hunks: str,
     pass_index: int,
-    degradation_reason: str,
+    degradation_reason: DegradationReason,
 ) -> AnalyzePromptParts:
     """Build the (system, user) prompt pair for a degraded-outcome call.
 
-    `degradation_reason` is the typed `LLMRequest.degradation_reason` value
-    (one of the `_DegradationReason` literals: `parse_failed`,
-    `tree_has_error_in_changed_regions`, `tree_has_error_no_scope`,
-    `module_level_observed_match` — the clean-parse module-scope routing
-    reason); it appears in the prompt so the model knows structural-tier
-    claims will reject, with a reason-aware provenance sentence
-    (`_DEGRADATION_CONTEXT`, indexed fail-loud).
+    `degradation_reason` is the shared `DegradationReason` member (the
+    single-source vocabulary, audit/events.py) that also rides
+    `LLMRequest.degradation_reason`; it appears in the prompt so the model
+    knows structural-tier claims will reject, with a reason-aware provenance
+    sentence (`_DEGRADATION_CONTEXT`, indexed fail-loud — an unmapped member
+    is a KeyError, pinned by the totality test).
 
     `bounded_hunks` MUST already satisfy the per-file degraded budget
     cap (≤100 unidiff Line objects AND ≤8192 chars). The node body

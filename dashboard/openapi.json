@@ -1719,6 +1719,17 @@
         ],
         "title": "DashboardMetricsResponse"
       },
+      "DegradationReason": {
+        "type": "string",
+        "enum": [
+          "parse_failed",
+          "tree_has_error_in_changed_regions",
+          "tree_has_error_no_scope",
+          "module_level_observed_match"
+        ],
+        "title": "DegradationReason",
+        "description": "Why an analyze LLM call ran degraded \u2014 THE single source for the\nvocabulary that previously lived in three hand-synced Literals\n(`degradation.py`, `LLMRequest`, this module) plus the degraded prompt's\nprovenance-mapping keys. A `str` enum, so event payloads serialize the\nsame wire values as before and comparisons against raw strings still\nhold. `PARSE_FAILED` is V1-unreachable (raw-bytes intake path, FUP-053);\n`TREE_HAS_ERROR_NO_SCOPE` is the no-scope syntax-error case\n(DECISIONS.md#033); `MODULE_LEVEL_OBSERVED_MATCH` (DECISIONS.md#062) is\nthe one cause that is NOT a parse defect \u2014 the parse is clean, the\ndegradation is a routing choice, and the review's FileExaminationEvent\ntruthfully reports `parse_status=\"clean\"` while the LLMCallEvent carries\nthis reason (the cross-event pairing that distinguishes the route).\nAdding a member: the type system now propagates it to every consumer;\nthe degraded prompt's provenance mapping (`prompts/analyze.py`) is the\none companion that needs a sentence, enforced by its totality test."
+      },
       "EvidenceTier": {
         "type": "string",
         "enum": [
@@ -2707,19 +2718,12 @@
           "degradation_reason": {
             "anyOf": [
               {
-                "type": "string",
-                "enum": [
-                  "parse_failed",
-                  "tree_has_error_in_changed_regions",
-                  "tree_has_error_no_scope",
-                  "module_level_observed_match"
-                ]
+                "$ref": "#/components/schemas/DegradationReason"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Degradation Reason"
+            ]
           },
           "response_format_digest": {
             "anyOf": [

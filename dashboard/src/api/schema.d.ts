@@ -929,6 +929,26 @@ export interface components {
             deltas: components["schemas"]["MetricDeltas"];
         };
         /**
+         * DegradationReason
+         * @description Why an analyze LLM call ran degraded — THE single source for the
+         *     vocabulary that previously lived in three hand-synced Literals
+         *     (`degradation.py`, `LLMRequest`, this module) plus the degraded prompt's
+         *     provenance-mapping keys. A `str` enum, so event payloads serialize the
+         *     same wire values as before and comparisons against raw strings still
+         *     hold. `PARSE_FAILED` is V1-unreachable (raw-bytes intake path, FUP-053);
+         *     `TREE_HAS_ERROR_NO_SCOPE` is the no-scope syntax-error case
+         *     (DECISIONS.md#033); `MODULE_LEVEL_OBSERVED_MATCH` (DECISIONS.md#062) is
+         *     the one cause that is NOT a parse defect — the parse is clean, the
+         *     degradation is a routing choice, and the review's FileExaminationEvent
+         *     truthfully reports `parse_status="clean"` while the LLMCallEvent carries
+         *     this reason (the cross-event pairing that distinguishes the route).
+         *     Adding a member: the type system now propagates it to every consumer;
+         *     the degraded prompt's provenance mapping (`prompts/analyze.py`) is the
+         *     one companion that needs a sentence, enforced by its totality test.
+         * @enum {string}
+         */
+        DegradationReason: "parse_failed" | "tree_has_error_in_changed_regions" | "tree_has_error_no_scope" | "module_level_observed_match";
+        /**
          * EvidenceTier
          * @description How a finding's claim is justified.
          *
@@ -1484,8 +1504,7 @@ export interface components {
             system_prompt_hash: string;
             /** Degraded Mode */
             degraded_mode: boolean;
-            /** Degradation Reason */
-            degradation_reason?: ("parse_failed" | "tree_has_error_in_changed_regions" | "tree_has_error_no_scope" | "module_level_observed_match") | null;
+            degradation_reason?: components["schemas"]["DegradationReason"] | null;
             /** Response Format Digest */
             response_format_digest?: string | null;
             /** Profile Id */

@@ -58,7 +58,7 @@ from pydantic import (
 )
 from pydantic_core.core_schema import SerializationInfo
 
-from outrider.audit.events import ContextManifestEntry, LLMCallEvent
+from outrider.audit.events import ContextManifestEntry, DegradationReason, LLMCallEvent
 from outrider.policy.canonical import SHA256_HEX_PATTERN
 
 __all__ = [
@@ -478,28 +478,14 @@ class LLMRequest(BaseModel):
     # match the parser's parse-failure / has_error_in_changed_regions
     # branches.
     #
-    # Sibling-sweep checklist when adding a new value: (1) extend this
-    # Literal; (2) extend `LLMCallEvent.degradation_reason` Literal in
-    # lockstep at `outrider.audit.events`; (3) add the branch that maps the
-    # new cause to this reason (a parser branch for parse-defect reasons, a
-    # `decide_degradation` routing branch otherwise); (4) extend
-    # `tests/unit/test_llm_request_schema.py`'s truth-table tests.
-    # `"tree_has_error_no_scope"` added per DECISIONS.md#033 (no-scope syntax error:
-    # changed addable line intersects a tree error with no recovered scope).
-    # `"module_level_observed_match"` is the module-scope ROUTING reason
-    # (DECISIONS.md#062) — the one degraded
-    # cause that is not a parse defect (the parse is clean; a module-only
-    # diff carries an eligible OBSERVED match), set by `decide_degradation`,
-    # never by the parser.
-    degradation_reason: (
-        Literal[
-            "parse_failed",
-            "tree_has_error_in_changed_regions",
-            "tree_has_error_no_scope",
-            "module_level_observed_match",
-        ]
-        | None
-    ) = None
+    # Typed by the shared `DegradationReason` enum (audit/events.py) — the
+    # single source; the old three-Literal lockstep is gone. Adding a member
+    # there propagates here by the type system; the branch that MAPS a new
+    # cause to its reason (a parser branch for parse defects, a
+    # `decide_degradation` routing branch otherwise) and the degraded
+    # prompt's provenance sentence (totality-tested) are the two companions
+    # a new member still needs.
+    degradation_reason: DegradationReason | None = None
 
     @field_validator("response_schema_json")
     @classmethod

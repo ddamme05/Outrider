@@ -134,7 +134,6 @@ from outrider.agent.nodes.analyze_parser import (
 )
 from outrider.agent.nodes.cache_config import CacheMode
 from outrider.agent.nodes.degradation import (
-    _DegradationReason,
     _ParseStatus,
     decide_degradation,
 )
@@ -166,6 +165,7 @@ from outrider.audit.events import (
     CacheLookupEvent,
     CacheServeEvent,
     ContextManifestEntry,
+    DegradationReason,
     FileExaminationEvent,
     FindingProposalRejectedEvent,
     ObservedSkipShadowEvent,
@@ -1920,7 +1920,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             file_path=changed_file.path,
             skip_reason=skip_reason,
         )
-    degradation_reason: _DegradationReason | None = decision.degradation_reason
+    degradation_reason: DegradationReason | None = decision.degradation_reason
     parse_status_for_event: _ParseStatus = decision.parse_status
     included_scope_units: tuple[ScopeUnit, ...] = decision.included_scope_units
     included_clipped_hunks: tuple[tuple[str, ...], ...] = decision.included_clipped_hunks
@@ -2321,8 +2321,8 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # off the module ROUTE, `compute_observed_skip_shadow` filters
     # `module_level` matches out of coverage in clean mode, and the schema
     # floor rejects eligible+SKIP_SAFE queries outright.
-    module_level_route = degradation_reason == "module_level_observed_match"
-    if changed_file.content_head is not None and (not degraded_mode or module_level_route):
+    module_level_route = decision.is_module_level_route
+    if changed_file.content_head is not None and decision.runs_observed_producer:
         if module_level_route:
             # One sweep, zero drift: the routing sweep's admitted matches
             # ARE the module route's final set — non-empty by construction
@@ -2348,7 +2348,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 all_scope_units=module_all_scope_units,
                 added_line_ranges=module_added_ranges,
             )
-        if patched_file is not None and not module_level_route:
+        if patched_file is not None and decision.emits_skip_shadow:
             observed_skip_event = compute_observed_skip_shadow(
                 observed_matches,
                 file_path=changed_file.path,
@@ -2542,7 +2542,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # below and threaded out for the per-pass `AnalyzeCompletedEvent`; stays empty
     # in degraded mode and when nothing is subsumed.
     subsumed_matches: list[ObservedSubsumedMatch] = []
-    if changed_file.content_head is not None and (not degraded_mode or module_level_route):
+    if changed_file.content_head is not None and decision.runs_observed_producer:
         # `observed_matches` was computed PRE-LLM (Step 3b-mechanism) so an enforced
         # `would_skip` could short-circuit the LLM; reuse the same matches here for the
         # findings producer + the #054 merge (a single deterministic OBSERVED query pass).
