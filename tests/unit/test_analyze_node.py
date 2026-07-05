@@ -1901,6 +1901,51 @@ async def test_budget_exhausted_module_route_still_emits_the_observed_finding(
 
 
 @pytest.mark.asyncio
+async def test_budget_exhausted_with_scopes_file_still_emits_module_finding(
+    deps: dict[str, Any],
+) -> None:
+    """The MIXED case (Codex round on the fold): a file with a changed
+    function AND a changed module-level kill switch takes the clean route, so
+    the routing sweep never ran — budget exhaustion must run it lazily and
+    still ride the module finding out (revert-the-fold: gating the ride-out
+    on the route-populated `module_matches` alone drops it)."""
+    deps["total_review_budget_tokens"] = 100
+    content = (
+        b'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        b"export function f(x) {\n  return x + 1;\n}\n"
+    )
+    patch = (
+        "--- a/src/index.js\n+++ b/src/index.js\n"
+        "@@ -1,3 +1,4 @@\n"
+        '+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        " export function f(x) {\n"
+        "-  return x;\n"
+        "+  return x + 1;\n"
+        " }\n"
+    )
+    cf = _build_changed_file(
+        path="src/index.js",
+        content=content,
+        patch=patch,
+        content_base="export function f(x) {\n  return x;\n}\n",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(cf,)),
+        triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
+    )
+
+    result = await analyze(state, **deps)
+
+    assert deps["provider"].calls == []
+    fe_events = deps["file_examination_sink"].events
+    assert fe_events[0].parse_status == "skipped"
+    assert fe_events[0].skip_reason is SkipReason.COST_BUDGET_EXHAUSTED
+    (finding,) = result["analysis_rounds"][0].findings
+    assert finding.query_match_id == "javascript.tls_env_verify_disabled"
+    assert finding.evidence_tier is EvidenceTier.OBSERVED
+
+
+@pytest.mark.asyncio
 async def test_patch_head_misalignment_does_not_abort_the_review(
     deps: dict[str, Any],
 ) -> None:
