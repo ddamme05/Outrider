@@ -388,12 +388,15 @@ def test_observed_producer_version_pinned() -> None:
     + value-import requirement — a shadowed anchor or `shadow_guard`
     global is denied, and only VALUE imports satisfy binding rules (under
     v5 the join was file-level and type-only/re-export/side-effect refs
-    counted as proof). The
+    counted as proof). v7: the module-scope admission arm — a
+    `module_scope_eligible` query's scope-DISJOINT match fully inside a
+    head-side added-line byte range admits without an enclosing scope
+    (under v6 every module-top-level match was dropped). The
     literal pin is the revert tripwire: every other suite reference derives
     from the constant, so without this pin a silent revert would stay green
     while current reviews re-key onto stale cache rows written under the
     older admission rules."""
-    assert OBSERVED_PRODUCER_VERSION == "observed-producer-v6"
+    assert OBSERVED_PRODUCER_VERSION == "observed-producer-v7"
 
 
 def test_query_registry_digest_is_stable_64_hex() -> None:
