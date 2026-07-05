@@ -241,6 +241,20 @@ class AnalyzeWorkerOutcome(BaseModel):
                 "trace candidates, and subsumption records (parser contract); "
                 "producer-OBSERVED augmentation is unaffected"
             )
+        # Candidates are processed only inside the parser's proposal loop
+        # (well-formed AND malformed alike; #025's rejected-parent
+        # candidates are still candidates of SEEN proposals) — so any
+        # trace-candidate evidence implies at least one proposal was seen.
+        if (
+            self.source == "parser"
+            and (self.trace_candidates or self.n_trace_candidates_dropped_malformed)
+            and not self.n_proposals_seen
+        ):
+            raise ValueError(
+                "AnalyzeWorkerOutcome: trace candidates (or malformed drops) "
+                "imply n_proposals_seen > 0 — candidates exist only inside "
+                "the proposal loop"
+            )
 
         _canonical_hash_tuple("producer_observed_hashes", self.producer_observed_hashes)
         _canonical_hash_tuple("served_content_hashes", self.served_content_hashes)
