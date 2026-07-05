@@ -357,13 +357,14 @@ class ReviewPhaseEvent(AuditEventBase):
 
     event_type: Literal["review_phase"] = "review_phase"
     phase_id: str
-    # The seven graph nodes per spec §4 (intake, triage, analyze, trace,
-    # synthesize, hitl, publish). Each emits start/end ReviewPhaseEvent
-    # pairs scoping the node's work. V1 only intake + triage have shipped
-    # emit sites; the other five emit when their respective node specs
-    # land. Tightening the Literal now is forward-compatible AND stops
-    # an emission-site typo (`"analyse"`, `"sythesize"`) from landing in
-    # the append-only audit log before the spec for that node arrives.
+    # The seven LOGICAL graph nodes per spec §4 (intake, triage, analyze,
+    # trace, synthesize, hitl, publish) — physical LangGraph vertices may
+    # exceed them and emit under their logical owner, distinguished by
+    # phase_key; this Literal never widens (see DECISIONS.md#064). Each
+    # logical node emits start/end ReviewPhaseEvent pairs scoping its
+    # work. Tightening the Literal stops an emission-site typo
+    # (`"analyse"`, `"sythesize"`) from landing in the append-only
+    # audit log.
     node_id: Literal["intake", "triage", "analyze", "trace", "synthesize", "hitl", "publish"]
     marker: Literal["start", "end"]
     phase_key: str | None = None

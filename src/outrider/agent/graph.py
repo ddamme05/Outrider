@@ -4,7 +4,10 @@
 Graph topology: intake → triage → analyze ⇄ trace → synthesize → hitl → publish.
 
 V1 ships SEVEN nodes: `intake`, `triage`, `analyze`, `trace`,
-`synthesize`, `hitl`, `publish`. Intake enriches
+`synthesize`, `hitl`, `publish`. The seven are the LOGICAL graph — audit
+vocabulary, state identity, replay grouping; physical LangGraph vertices
+may exceed them (V1.5 parallel-analyze fan-out), emitting under their
+logical owner distinguished by phase_key (see DECISIONS.md#064). Intake enriches
 `pr_context.changed_files` per
 `DECISIONS.md#020`; triage runs a fast LLM pass for tier
 classification; analyze runs one Sonnet call per DEEP/STANDARD-tier
