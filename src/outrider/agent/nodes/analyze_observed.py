@@ -8,8 +8,10 @@ runs every OBSERVED query registered for the file's catalog language (via
 `queries.registry.match` under the file's grammar — the registry owns both
 the tree-sitter execution and the per-language selection; a catalog-less
 language yields zero queries and the producer stays inert), applies the
-admission rules (test-file suppression, scope containment, import-binding
-admission, zero-width skip,
+admission rules (test-file suppression, scope containment — with the
+module-scope arm for `module_scope_eligible` queries: scope-DISJOINT matches
+fully inside a head-side added-line byte range admit without an enclosing
+scope — import-binding admission, zero-width skip,
 byte->line mapping), and returns plain `ObservedMatch` domain records —
 `query_class` included. Every consumer reads
 the SAME records, so there is one definition of "the OBSERVED query facts for
@@ -72,10 +74,11 @@ if TYPE_CHECKING:
         ImportRef,
         LexicalBinding,
         QueryCaptureSpan,
+        QueryMatchSpan,
         ScopeUnit,
     )
     from outrider.policy.severity import FindingType
-    from outrider.queries.observed import BindingRule, QueryLanguage
+    from outrider.queries.observed import BindingRule, ObservedQuery, QueryLanguage
 
 
 # Version of the OBSERVED producer's ADMISSION logic — the rules in
@@ -120,7 +123,14 @@ if TYPE_CHECKING:
 # a real crypto import, `function apply(process) {...}` fired the TLS
 # kill-switch query, and `import type { Pool } from "pg"` proved DB
 # presence.
-OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v6"
+# v7: module-scope admission arm
+# (specs/2026-07-04-module-scope-admission-arm.md). A `module_scope_eligible`
+# query's match (binding=None by registry validation) is admitted WITHOUT an
+# enclosing ScopeUnit when its envelope is DISJOINT from every parsed scope
+# and fully inside a head-side added-line byte range. Under v6 the
+# containment gate dropped every module-top-level match — including
+# tls_env_verify_disabled's canonical kill-switch form.
+OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v7"
 
 # A query match envelope spans the whole matched construct (e.g. an entire
 # `cursor.execute(f"...long SQL...")` call), so the matched source can exceed
@@ -410,6 +420,33 @@ def lexical_bindings_digest(lexical_bindings: tuple[LexicalBinding, ...]) -> str
     return h.hexdigest()
 
 
+def _module_level_admits(
+    observed: ObservedQuery,
+    span: QueryMatchSpan,
+    *,
+    all_scope_ranges: tuple[tuple[int, int], ...],
+    added_line_ranges: tuple[tuple[int, int], ...],
+) -> bool:
+    """Module-scope admission arm (specs/2026-07-04-module-scope-admission-arm.md).
+
+    A `module_scope_eligible` query's match admits WITHOUT an enclosing scope
+    when its envelope is (a) DISJOINT from every parsed scope — overlap or
+    enclosure of a scope boundary is a straddle and stays denied, and absence
+    from the INCLUDED set alone proves nothing (the match could sit inside a
+    parsed-but-unchanged scope) — and (b) fully inside one head-side
+    added-line byte range, so the diff itself anchors the proof. Deny by
+    default: empty `added_line_ranges` (a caller that doesn't thread the diff)
+    admits nothing. The shadow guard, zero-width skip, and byte->line checks
+    still apply to module-level matches in the caller's chain.
+    """
+    if not observed.module_scope_eligible or not added_line_ranges:
+        return False
+    for scope_start, scope_end in all_scope_ranges:
+        if not (span.byte_end <= scope_start or scope_end <= span.byte_start):
+            return False
+    return any(s <= span.byte_start and span.byte_end <= e for s, e in added_line_ranges)
+
+
 def run_observed_matches(
     *,
     file_path: str,
@@ -417,6 +454,8 @@ def run_observed_matches(
     included_scope_units: tuple[ScopeUnit, ...],
     import_refs: tuple[ImportRef, ...],
     lexical_bindings: tuple[LexicalBinding, ...],
+    all_scope_units: tuple[ScopeUnit, ...] = (),
+    added_line_ranges: tuple[tuple[int, int], ...] = (),
 ) -> tuple[ObservedMatch, ...]:
     """Run every OBSERVED query registered for `file_path`'s catalog language
     over `head_content` and return the admitted matches as `ObservedMatch`
@@ -436,7 +475,19 @@ def run_observed_matches(
     `shadow_guard` global (a local `process` parameter/mock) resolves to the
     local binding, not the import/global. Test files admit nothing
     (spec §11.2). Zero-width
-    envelopes and spans that fail the byte->line mapping are dropped. Returns a
+    envelopes and spans that fail the byte->line mapping are dropped.
+
+    The MODULE-SCOPE arm (`_module_level_admits`,
+    specs/2026-07-04-module-scope-admission-arm.md) is the one exception to
+    containment: a `module_scope_eligible` query's match admits without an
+    enclosing scope when its envelope is disjoint from every parsed scope
+    (`all_scope_units`) and fully inside a head-side added-line byte range
+    (`added_line_ranges`, from `coordinates.added_line_byte_ranges`). Both
+    default empty = deny: a caller that doesn't thread the module inputs gets
+    exactly the pre-v7 behavior. Shadow-guard and byte->line checks still
+    apply to module-level matches.
+
+    Returns a
     deterministically ordered tuple (by query id, then the registry's match
     sort) so any content-derived id downstream stays stable across replays.
     """
@@ -453,6 +504,7 @@ def run_observed_matches(
         return ()
     content_bytes = head_content.encode("utf-8")
     scope_ranges = tuple((su.byte_start, su.byte_end) for su in included_scope_units)
+    all_scope_ranges = tuple((su.byte_start, su.byte_end) for su in all_scope_units)
     matches: list[ObservedMatch] = []
 
     for query_id, observed in query_registry.observed_queries_for(language).items():
@@ -474,14 +526,18 @@ def run_observed_matches(
                 continue
             # Containment: the match must fall fully inside an included scope's
             # byte range (a call always nests within its enclosing scope).
-            # Known residual (FUP-214): module-top-level matches have no
-            # enclosing ScopeUnit and are dropped here — including
-            # tls_env_verify_disabled's canonical kill-switch form
-            # (producer-pinned). Do NOT fix by loosening this gate broadly
-            # (it excludes straddling/unchanged-code matches by design);
-            # the fix shape is a changed-region admission arm for
-            # import-free module-level queries.
-            if not any(s <= span.byte_start and span.byte_end <= e for s, e in scope_ranges):
+            # The ONE exception is the module-scope arm
+            # (`_module_level_admits`): an eligible query's scope-DISJOINT
+            # match fully inside a changed added-line range admits without an
+            # enclosing ScopeUnit. Straddling and unchanged-code matches stay
+            # excluded by design in BOTH arms.
+            contained = any(s <= span.byte_start and span.byte_end <= e for s, e in scope_ranges)
+            if not contained and not _module_level_admits(
+                observed,
+                span,
+                all_scope_ranges=all_scope_ranges,
+                added_line_ranges=added_line_ranges,
+            ):
                 continue
             # Shadow guard: a text-constrained global (tls_env's `process`,
             # eval/Function) must not be locally bound at the match site — a
@@ -536,6 +592,39 @@ def run_observed_matches(
                 )
             )
     return tuple(matches)
+
+
+def has_module_level_eligible_match(
+    *,
+    file_path: str,
+    head_content: str,
+    all_scope_units: tuple[ScopeUnit, ...],
+    added_line_ranges: tuple[tuple[int, int], ...],
+    import_refs: tuple[ImportRef, ...],
+    lexical_bindings: tuple[LexicalBinding, ...],
+) -> bool:
+    """Routing pre-check for the module-only degraded route
+    (specs/2026-07-04-module-scope-admission-arm.md): does at least one
+    `module_scope_eligible` query admit a module-level match on the changed
+    lines? Delegates to `run_observed_matches` with NO included scopes, so
+    the only admissible matches are module-level ones — the exact admission
+    chain (eligibility, disjointness, changed-range containment, shadow
+    guard) the producer runs; one implementation, zero drift, and a True
+    here never buys a degraded LLM pass that then emits nothing. The analyze
+    node computes this before `decide_degradation` so a module-only diff
+    carrying an eligible match degrades instead of skipping.
+    """
+    return bool(
+        run_observed_matches(
+            file_path=file_path,
+            head_content=head_content,
+            included_scope_units=(),
+            import_refs=import_refs,
+            lexical_bindings=lexical_bindings,
+            all_scope_units=all_scope_units,
+            added_line_ranges=added_line_ranges,
+        )
+    )
 
 
 def produce_observed_findings(

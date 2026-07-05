@@ -784,18 +784,154 @@ def test_process_env_kill_switch_needs_no_import() -> None:
         assert f.query_match_id == "javascript.tls_env_verify_disabled"
 
 
-def test_module_top_level_kill_switch_is_a_documented_residual() -> None:
-    """The kill switch's CANONICAL real-world form — the assignment at module
-    top level, before any TLS connection — has no enclosing ScopeUnit
-    (function/method/class are the only kinds), so the scope-containment
-    gate drops it and the producer emits nothing. This pin records that
-    veto as a deliberate, visible residual (FUP-214) rather than an
-    accident masked by function-wrapped fixtures; the fix shape is a
-    changed-region admission arm for import-free module-level queries.
-    The function-wrapped forms in `test_process_env_kill_switch_needs_no_import`
-    are the positive control."""
+def test_module_arm_denies_when_module_inputs_not_threaded() -> None:
+    """Deny-by-default: a caller that does not thread `all_scope_units` +
+    `added_line_ranges` (both default empty) gets exactly the pre-v7
+    behavior — the module-top-level kill switch stays dropped. The module
+    arm's positive control is
+    `test_module_level_kill_switch_admits_on_changed_lines`; the
+    function-wrapped forms in `test_process_env_kill_switch_needs_no_import`
+    pin the normal containment arm."""
     source = 'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\nconst x = 1;\n'
     assert _produce_at(source, "src/index.js") == ()
+
+
+# ---------------------------------------------------------------------------
+# Module-scope admission arm (specs/2026-07-04-module-scope-admission-arm.md):
+# a `module_scope_eligible` query's match admits without an enclosing scope
+# iff its envelope is DISJOINT from every parsed scope and fully inside a
+# head-side added-line byte range. `_KILL_SWITCH` is detection-target
+# documentation, parsed for structure and never executed.
+# ---------------------------------------------------------------------------
+
+_KILL_SWITCH = 'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+
+
+def _produce_module_level(source: str, file_path: str, *, ranges=None):
+    """Producer run with the module-arm inputs threaded (no included scopes,
+    all parsed scopes for disjointness, whole-file added ranges by default)."""
+    parsed = _parsed_at(source, file_path)
+    matches = run_observed_matches(
+        file_path=file_path,
+        head_content=source,
+        included_scope_units=(),
+        import_refs=parsed.imports,
+        lexical_bindings=parsed.lexical_bindings,
+        all_scope_units=parsed.scope_units,
+        added_line_ranges=ranges if ranges is not None else ((0, len(source.encode())),),
+    )
+    return produce_observed_findings(
+        matches,
+        file_path=file_path,
+        review_id=uuid4(),
+        installation_id=12345,
+        active_policy_version=ACTIVE_POLICY_VERSION,
+    )
+
+
+def test_module_level_kill_switch_admits_on_changed_lines() -> None:
+    """The canonical real-world form — the kill switch at module top level,
+    on a changed line — now produces the OBSERVED finding (the veto this
+    arm exists to close)."""
+    source = _KILL_SWITCH + "const x = 1;\n"
+    (finding,) = _produce_module_level(source, "src/index.js")
+    assert finding.query_match_id == "javascript.tls_env_verify_disabled"
+    assert finding.evidence_tier is EvidenceTier.OBSERVED
+    assert finding.line_start == 1
+
+
+def test_module_level_kill_switch_denied_on_unchanged_lines() -> None:
+    """Same file, but the added ranges cover only the OTHER line — a
+    module-level match in unchanged code stays excluded (the diff anchors
+    the proof)."""
+    source = _KILL_SWITCH + "const x = 1;\n"
+    unchanged_only = ((len(_KILL_SWITCH.encode()), len(source.encode())),)
+    assert _produce_module_level(source, "src/index.js", ranges=unchanged_only) == ()
+
+
+def test_module_level_denied_inside_parsed_but_excluded_scope() -> None:
+    """Disjointness is proven against ALL parsed scopes, not the included
+    set: a kill switch inside a parsed-but-not-included function is NOT a
+    module-level match, even with whole-file added ranges."""
+    source = f"function disable() {{\n  {_KILL_SWITCH}}}\n"
+    assert _produce_module_level(source, "src/index.js") == ()
+
+
+def test_module_level_shadowed_process_denied() -> None:
+    """The shadow guard still applies at module level: a module-wide local
+    `process` binding means the name is a mock, not the global."""
+    source = "const process = mockProcess;\n" + _KILL_SWITCH
+    assert _produce_module_level(source, "src/index.js") == ()
+
+
+def test_ineligible_query_never_admits_at_module_level() -> None:
+    """Eligibility is what gates the arm: a module-top-level `eval` sink
+    (command_injection_eval, NOT module_scope_eligible) stays denied even
+    with the module inputs threaded. The eval string is an inert parse
+    fixture."""
+    source = "eval(userInput);\n"
+    assert _produce_module_level(source, "src/app.js") == ()
+
+
+def test_module_level_straddle_and_enclosure_denied() -> None:
+    """Disjointness, not non-containment: an envelope that OVERLAPS a scope
+    boundary or ENCLOSES a scope is a straddle and stays denied; a genuinely
+    disjoint envelope inside an added range admits (synthetic spans against
+    the real eligible query)."""
+    from outrider.agent.nodes.analyze_observed import _module_level_admits
+    from outrider.ast_facts.models import QueryCaptureSpan, QueryMatchSpan
+    from outrider.queries import registry
+
+    eligible = registry.OBSERVED_QUERIES["javascript.tls_env_verify_disabled"]
+
+    def span(start: int, end: int) -> QueryMatchSpan:
+        return QueryMatchSpan(
+            byte_start=start,
+            byte_end=end,
+            captures=(QueryCaptureSpan(name="_proc", byte_start=start, byte_end=end),),
+        )
+
+    scope = ((10, 50),)
+    ranges = ((0, 100),)
+    # Overlapping a scope boundary: straddle, denied.
+    assert not _module_level_admits(
+        eligible, span(40, 60), all_scope_ranges=scope, added_line_ranges=ranges
+    )
+    # Enclosing the scope: straddle, denied.
+    assert not _module_level_admits(
+        eligible, span(5, 60), all_scope_ranges=scope, added_line_ranges=ranges
+    )
+    # Disjoint and inside an added range: admits.
+    assert _module_level_admits(
+        eligible, span(55, 70), all_scope_ranges=scope, added_line_ranges=ranges
+    )
+    # Deny-by-default with no added ranges.
+    assert not _module_level_admits(
+        eligible, span(55, 70), all_scope_ranges=scope, added_line_ranges=()
+    )
+
+
+def test_has_module_level_eligible_match_pre_check() -> None:
+    """The routing pre-check delegates to the producer's own admission chain:
+    True exactly when a module-level match would be admitted."""
+    from outrider.agent.nodes.analyze_observed import has_module_level_eligible_match
+
+    def pre_check(source: str) -> bool:
+        parsed = _parsed_at(source, "src/index.js")
+        return has_module_level_eligible_match(
+            file_path="src/index.js",
+            head_content=source,
+            all_scope_units=parsed.scope_units,
+            added_line_ranges=((0, len(source.encode())),),
+            import_refs=parsed.imports,
+            lexical_bindings=parsed.lexical_bindings,
+        )
+
+    assert pre_check(_KILL_SWITCH + "const x = 1;\n")
+    # Shadowed global: the full chain (not just a raw match) decides.
+    assert not pre_check("const process = mockProcess;\n" + _KILL_SWITCH)
+    # No eligible match at all.
+    assert not pre_check("const x = 1;\n")
 
 
 # ---------------------------------------------------------------------------
