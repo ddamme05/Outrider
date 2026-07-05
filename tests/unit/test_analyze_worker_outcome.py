@@ -148,39 +148,41 @@ def test_skipped_iff_skip_source() -> None:
         _outcome(source="observed_skip")
 
 
+def _subsumed_match(path: str = "src/app.py") -> ObservedSubsumedMatch:
+    return ObservedSubsumedMatch(
+        file_path=path,
+        query_match_id="javascript.tls_env_verify_disabled",
+        finding_type=FindingType.HARDCODED_SECRET,
+        subsumed_by_finding_type=FindingType.HARDCODED_SECRET,
+        line_start=3,
+        line_end=3,
+        dropped_content_hash=compute_finding_content_hash(
+            path, line_start=3, line_end=3, finding_type=FindingType.HARDCODED_SECRET
+        ),
+        subsumer_content_hash=compute_finding_content_hash(
+            path, line_start=3, line_end=3, finding_type=FindingType.HARDCODED_SECRET
+        ),
+    )
+
+
+def test_cache_serve_reconstructs_subsumption_records() -> None:
+    """#055 proof retention survives the serve: _serve_cache_hit
+    reconstructs subsumed matches from the cached payload — a serve
+    outcome carrying them is valid; skip sources still reject."""
+    outcome = _cache_serve(subsumed_matches=(_subsumed_match(),))
+    assert outcome.subsumed_matches
+    with pytest.raises(ValidationError, match="parser and cache_serve"):
+        _observed_skip(subsumed_matches=(_subsumed_match(),))
+
+
 def test_parser_only_facts_require_parser() -> None:
-    """Tallies, spend, candidates, and #055 records all imply a parser ran."""
+    """Tallies, spend, and candidate-on-skip all imply a parser ran."""
     with pytest.raises(ValidationError, match="parser tallies"):
         _cache_serve(n_proposals_seen=1)
     with pytest.raises(ValidationError, match="provider spend"):
         _cache_serve(input_tokens=100)
     with pytest.raises(ValidationError, match="provider spend"):
         _observed_skip(cost=Decimal("0.01"))
-    with pytest.raises(ValidationError, match="subsumption records"):
-        _observed_skip(
-            subsumed_matches=(
-                ObservedSubsumedMatch(
-                    file_path="src/app.py",
-                    query_match_id="javascript.tls_env_verify_disabled",
-                    finding_type=FindingType.HARDCODED_SECRET,
-                    subsumed_by_finding_type=FindingType.HARDCODED_SECRET,
-                    line_start=3,
-                    line_end=3,
-                    dropped_content_hash=compute_finding_content_hash(
-                        "src/app.py",
-                        line_start=3,
-                        line_end=3,
-                        finding_type=FindingType.HARDCODED_SECRET,
-                    ),
-                    subsumer_content_hash=compute_finding_content_hash(
-                        "src/app.py",
-                        line_start=3,
-                        line_end=3,
-                        finding_type=FindingType.HARDCODED_SECRET,
-                    ),
-                ),
-            ),
-        )
 
 
 def test_response_rejection_zeroes_proposals_but_allows_producer_augment() -> None:

@@ -205,10 +205,14 @@ class AnalyzeWorkerOutcome(BaseModel):
                 or self.cost
             ):
                 raise ValueError("AnalyzeWorkerOutcome: provider spend requires source='parser'")
-            if self.subsumed_matches:
+            # #055 records exist on BOTH non-skip paths: the parser merge
+            # assembles them, and a cache serve RECONSTRUCTS them from the
+            # cached payload (proof retention must survive the serve).
+            # Only skip sources have nothing to retain.
+            if self.subsumed_matches and self.source != "cache_serve":
                 raise ValueError(
-                    "AnalyzeWorkerOutcome: subsumption records require a parser "
-                    "(a #055 subsumer is JUDGED)"
+                    "AnalyzeWorkerOutcome: subsumption records exist only on "
+                    "parser and cache_serve sources (#055 proof retention)"
                 )
             # Cache hits RESTORE prior-pass candidates into state (the
             # sequential serve branch extends state without counting them
