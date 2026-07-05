@@ -17,9 +17,9 @@ policy. `queries/` is a higher layer and may import `policy/`.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Final, Literal
+from typing import Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 # Runtime import (not TYPE_CHECKING): Pydantic resolves field annotations at
 # model-build time, so `FindingType` must be in the runtime namespace.
@@ -175,3 +175,27 @@ class ObservedQuery(BaseModel):
         # field rides into `_registry_digest` via model_dump(), and an
         # order-varying tuple would make the digest author-order-sensitive.
         return tuple(sorted(set(v)))
+
+    @model_validator(mode="after")
+    def _enforce_module_scope_constraints(self) -> Self:
+        """DECISIONS.md#062's proof rules at the SCHEMA floor (the
+        `enforce_proof_boundary` pattern), so direct construction — a second
+        registration path, a programmatic catalog, a test fixture — cannot
+        bypass what a registry-load loop would only check for one seeded dict:
+        (a) module-scope admission proves by diff anchoring alone, which would
+        WEAKEN an import-join proof, so an eligible query may not carry a
+        `BindingRule`; (b) module-arm matches are excluded from `#049` skip
+        coverage (their proof is diff-anchored, not scope-coverage-shaped), so
+        eligibility may not combine with `SKIP_SAFE` promotion."""
+        if self.module_scope_eligible and self.binding is not None:
+            raise ValueError(
+                f"module_scope_eligible requires binding=None (module-level "
+                f"admission weakens an import-join proof): {self.query_match_id}"
+            )
+        if self.module_scope_eligible and self.query_class is QueryClass.SKIP_SAFE:
+            raise ValueError(
+                f"module_scope_eligible may not combine with SKIP_SAFE "
+                f"(module-arm matches are excluded from #049 skip coverage): "
+                f"{self.query_match_id}"
+            )
+        return self
