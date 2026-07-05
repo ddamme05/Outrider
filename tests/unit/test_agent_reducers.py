@@ -140,7 +140,7 @@ class _SlotOutcome(BaseModel):
     description: str = ""
 
 
-_EXCLUDED: frozenset[str] = frozenset({"finding_id"})
+_EXCLUDED: frozenset[str] = frozenset({"findings.[].finding_id"})
 
 
 def _slot(o: _SlotOutcome) -> tuple[str, int]:
@@ -148,7 +148,7 @@ def _slot(o: _SlotOutcome) -> tuple[str, int]:
 
 
 def _digest(o: _SlotOutcome) -> str:
-    return semantic_digest(o, exclude_fields=_EXCLUDED)
+    return semantic_digest(o, exclude_paths=_EXCLUDED)
 
 
 def test_same_semantics_different_uuids_dedup_as_noop() -> None:
@@ -186,11 +186,44 @@ def test_distinct_slots_append_and_replay_is_idempotent() -> None:
     assert reducer(merged, [a, b, a_pass1]) == merged
 
 
-def test_semantic_digest_excludes_named_fields_at_any_depth() -> None:
-    """Exclusion is by-name-anywhere: the generated identity nests inside the
-    findings list, not at the top level."""
+def test_semantic_digest_excludes_explicit_paths_with_list_traversal() -> None:
+    """Exclusion is by EXPLICIT PATH (#063 amendment): `findings.[].finding_id`
+    strips the generated identity inside each nested finding."""
     one = _SlotOutcome(path="a.py", pass_index=0, findings=(_StandInFinding(title="x"),))
     two = _SlotOutcome(path="a.py", pass_index=0, findings=(_StandInFinding(title="x"),))
     three = _SlotOutcome(path="a.py", pass_index=0, findings=(_StandInFinding(title="y"),))
     assert _digest(one) == _digest(two)  # UUIDs differ, semantics equal
     assert _digest(one) != _digest(three)  # semantic change moves the digest
+
+
+def test_semantic_digest_does_not_strip_same_name_at_other_positions() -> None:
+    """The review catch: a name-based strip would silently ignore a future
+    SEMANTIC field that happens to share a generated identity's name.
+    Positional exclusion keeps it digested — a top-level field named
+    `finding_id` moves the digest even though `findings.[].finding_id` is
+    excluded."""
+
+    class _WithSemanticTwin(BaseModel):
+        path: str
+        pass_index: int
+        finding_id: str  # SEMANTIC here (top level), not the nested generated one
+        findings: tuple[_StandInFinding, ...] = ()
+
+    a = _WithSemanticTwin(path="a.py", pass_index=0, finding_id="policy-ref-1")
+    b = _WithSemanticTwin(path="a.py", pass_index=0, finding_id="policy-ref-2")
+    da = semantic_digest(a, exclude_paths=_EXCLUDED)
+    db = semantic_digest(b, exclude_paths=_EXCLUDED)
+    assert da != db  # the top-level twin still counts
+
+
+def test_slot_guard_validates_existing_state_too() -> None:
+    """Duplicate slots already IN state are foreign-writer/pre-guard
+    corruption: divergent duplicates raise even with EMPTY incoming;
+    identical duplicates collapse to the first occupant."""
+    first = _SlotOutcome(path="a.py", pass_index=0, description="found nothing")
+    diverged = _SlotOutcome(path="a.py", pass_index=0, description="found a bug")
+    reducer = append_with_slot_guard(_slot, _digest)
+    with pytest.raises(SlotDivergenceError, match="a.py"):
+        reducer([first, diverged], [])
+    twin = _SlotOutcome(path="a.py", pass_index=0, description="found nothing")
+    assert reducer([first, twin], []) == [first]  # identical duplicate collapses
