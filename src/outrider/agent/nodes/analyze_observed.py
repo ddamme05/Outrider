@@ -486,9 +486,11 @@ def module_admission_inputs(
     force-push between the pinned-head content fetch and the live files-list
     patch): the file falls back to pre-arm behavior with the module arm inert,
     logged for observability. The deny is proof-correct (misaligned ranges are
-    an unsound proof anchor — do not admit through this branch); the log-only
-    visibility is the documented residual, FUP-217 (audit-visible misalignment
-    signal). Production callers derive the arm's inputs ONLY
+    an unsound proof anchor — do not admit through this branch), and it is
+    defense-in-depth: the analyze node's per-file misalignment probe (FUP-217)
+    skips misaligned files with `SkipReason.PATCH_HEAD_MISALIGNED` before this
+    helper runs, so the branch is production-unreachable behind it.
+    Production callers derive the arm's inputs ONLY
     through this helper (or its whole-file sibling); hand-threading kwargs
     into `run_observed_matches` bypasses the gate and is reserved for tests
     pinning the mechanism itself."""
