@@ -475,20 +475,68 @@ def test_grade_rejects_duplicate_clean_rows(tmp_path) -> None:
         cg.grade(gt, repo_root=tmp_path)
 
 
-def test_grade_rejects_clean_scope_contradicting_emitted_row(tmp_path) -> None:
-    """An expected_clean scope containing a documented-emitted row would grade
-    the same emission as both TP and FP — contradictory ground truth."""
+def test_grade_rejects_whole_catalog_clean_row_with_siblings(tmp_path) -> None:
+    """A whole-catalog expected_clean row overlaps every other row on its file
+    (one emission would grade on both) — it must be the file's only row."""
     _write(tmp_path, "evil.js", _EVAL_SRC)
     gt = cg.GroundTruth.model_validate(
         {
             "corpus_root": ".",
             "rows": [
                 _eval_finding_row(),
-                {"kind": "expected_clean", "file": "evil.js", "rationale": "contradiction"},
+                {"kind": "expected_clean", "file": "evil.js", "rationale": "overlaps"},
             ],
         }
     )
-    with pytest.raises(ValueError, match="contradicts documented-emitted"):
+    with pytest.raises(ValueError, match="must be the file's only row"):
+        cg.grade(gt, repo_root=tmp_path)
+
+
+def test_grade_rejects_whole_catalog_clean_row_beside_scoped_clean(tmp_path) -> None:
+    """Whole-catalog + query-scoped clean rows on one file double-count the
+    same emission as two FPs — rejected regardless of current behavior."""
+    _write(tmp_path, "clean.js", _CLEAN_SRC)
+    gt = cg.GroundTruth.model_validate(
+        {
+            "corpus_root": ".",
+            "rows": [
+                {"kind": "expected_clean", "file": "clean.js", "rationale": "whole"},
+                {
+                    "kind": "expected_clean",
+                    "file": "clean.js",
+                    "query_match_id": "javascript.command_injection_eval",
+                    "rationale": "scoped",
+                },
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="must be the file's only row"):
+        cg.grade(gt, repo_root=tmp_path)
+
+
+def test_grade_rejects_clean_scope_overlapping_accepted_miss(tmp_path) -> None:
+    """Overlap is rejected regardless of documented outcome: a clean scope
+    over an accepted-miss row would grade a later residual-closing emission as
+    both `improvement` and `false_positive`."""
+    _write(tmp_path, "evil.js", _EVAL_SRC)
+    gt = cg.GroundTruth.model_validate(
+        {
+            "corpus_root": ".",
+            "rows": [
+                {
+                    **_eval_finding_row(outcome="denied_at_admission"),
+                    "residual_tag": "some-residual",
+                },
+                {
+                    "kind": "expected_clean",
+                    "file": "evil.js",
+                    "query_match_id": "javascript.command_injection_eval",
+                    "rationale": "overlaps the miss",
+                },
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="overlaps expected_finding"):
         cg.grade(gt, repo_root=tmp_path)
 
 
