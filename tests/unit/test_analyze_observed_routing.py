@@ -11,6 +11,7 @@ evidence-gated flip).
 
 from __future__ import annotations
 
+import dataclasses
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -111,6 +112,21 @@ def test_skip_safe_full_coverage_yields_would_skip() -> None:
     assert [m.query_match_id for m in ev.covering_matches] == ["q-1"]
     assert ev.covering_matches[0].side == "head"
     assert {(r.side, r.line_start) for r in ev.changed_regions} == {("head", 3)}
+
+
+def test_module_level_skip_safe_match_does_not_count_for_coverage() -> None:
+    """DECISIONS.md#062 exclusion, enforced in the shadow itself (not only by
+    the schema floor's eligible+SKIP_SAFE rejection): a module-arm match —
+    byte-disjoint from every scope but possibly sharing a source LINE with an
+    included scope's added line — must never create #049 skip coverage, even
+    if marked SKIP_SAFE. Defense-in-depth against a future construction path
+    that bypasses the model validator."""
+    module_match = dataclasses.replace(_match(QueryClass.SKIP_SAFE), module_level=True)
+    ev = _compute((module_match,))
+    assert ev is not None
+    assert ev.outcome == "not_eligible"
+    assert ev.covering_matches == ()
+    assert [(b.side, b.line_start) for b in ev.blockers] == [("head", 3)]
 
 
 def test_signal_only_match_does_not_count_for_coverage() -> None:

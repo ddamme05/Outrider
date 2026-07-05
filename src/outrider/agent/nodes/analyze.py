@@ -2220,8 +2220,11 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # arm only (no included scopes exist on that route, so the containment
     # arm is naturally inert). Every other degraded reason keeps the producer
     # OFF (an error-recovered/failed tree is not trusted for structural
-    # proof). Skip-shadow telemetry stays clean-mode-only: module-level
-    # matches are excluded from #049 skip coverage by spec non-goal.
+    # proof). Module-level matches are excluded from #049 skip coverage
+    # (DECISIONS.md#062) at three layers: the shadow call below is gated
+    # off the module ROUTE, `compute_observed_skip_shadow` filters
+    # `module_level` matches out of coverage in clean mode, and the schema
+    # floor rejects eligible+SKIP_SAFE queries outright.
     module_level_route = degradation_reason == "module_level_observed_match"
     if changed_file.content_head is not None and (not degraded_mode or module_level_route):
         observed_matches = run_observed_matches(
