@@ -2724,7 +2724,10 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
       - `clean+full_llm` — clean parse, LLM call admitted, parser ran.
 
     Degraded outcomes (parse_failed / tree_has_error_in_changed_regions /
-    tree_has_error_no_scope) don't apply here: no changed regions, and parse failures on a
+    tree_has_error_no_scope / module_level_observed_match) don't apply
+    here: no changed regions — the module-scope arm is diff-anchored, so a
+    whole-file pass has no added-line ranges to anchor on — and parse
+    failures on a
     head-SHA-fetched file are routed through the parser-stage skip path
     rather than the V1-unreachable degraded branch.
 
