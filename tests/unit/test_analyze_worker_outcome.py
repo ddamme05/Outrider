@@ -32,6 +32,7 @@ from outrider.schemas.analyze_worker import (
     AnalyzeWorkerOutcome,
     worker_outcome_slot,
 )
+from outrider.schemas.observed_subsumption import ObservedSubsumedMatch
 from outrider.schemas.review_finding import ReviewFinding
 from outrider.schemas.trace_candidate import TraceCandidate
 from outrider.schemas.triage_result import ReviewTier
@@ -88,10 +89,20 @@ def _digest(o: AnalyzeWorkerOutcome) -> str:
 # ---------------------------------------------------------------------------
 
 
+_NO_SPEND: dict[str, Any] = {
+    "llm_called": False,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "cost": Decimal("0"),
+}
+
+
 def test_skip_coherence_iff_contract_both_directions() -> None:
     """skip_reason non-None iff parse_status='skipped' (the #018 iff shape)."""
     with pytest.raises(ValidationError, match="iff"):
-        _outcome(parse_status="skipped", llm_called=False)  # skipped, no reason
+        _outcome(parse_status="skipped", **_NO_SPEND)  # skipped, no reason
     with pytest.raises(ValidationError, match="iff"):
         _outcome(skip_reason=SkipReason.COST_BUDGET_EXHAUSTED)  # reason, not skipped
 
@@ -111,10 +122,19 @@ def test_ride_out_shape_is_legal_findings_on_a_skip() -> None:
     outcome = _outcome(
         parse_status="skipped",
         skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
-        llm_called=False,
         counters=AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_observed=1),
+        **_NO_SPEND,
     )
     assert outcome.admitted_findings
+
+
+def test_no_llm_call_means_zero_spend() -> None:
+    """llm_called=False with nonzero provider tokens or cost would let the
+    aggregate's accounting contradict the LLMCallEvent stream."""
+    with pytest.raises(ValidationError, match="zero provider"):
+        _outcome(llm_called=False)  # base fixture carries tokens + cost
+    with pytest.raises(ValidationError, match="zero provider"):
+        _outcome(**{**_NO_SPEND, "cost": Decimal("0.01")})
 
 
 def test_path_is_canonicalized_like_analysis_round() -> None:
@@ -165,6 +185,7 @@ def test_exclusion_paths_match_generated_fields_one_for_one() -> None:
         (AnalyzeWorkerCounters, "counters."),
         (ReviewFinding, "admitted_findings.[]."),
         (TraceCandidate, "trace_candidates.[]."),
+        (ObservedSubsumedMatch, "subsumed_matches.[]."),
     ):
         for name, field in model.model_fields.items():
             if field.default_factory is not None and field.default_factory is not tuple:
