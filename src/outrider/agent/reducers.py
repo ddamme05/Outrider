@@ -62,31 +62,43 @@ def append_with_dedup_by[T](
 def semantic_digest(
     model: BaseModel,
     *,
-    exclude_fields: frozenset[str],
+    exclude_paths: frozenset[str],
 ) -> str:
     """Canonical SHA-256 over a model's semantic content (DECISIONS.md#063).
 
-    Recipe: `model_dump(mode="json")`, then every field named in
-    `exclude_fields` is removed RECURSIVELY (a worker outcome nests
-    findings, and each finding carries its own generated `finding_id`),
-    then compact sorted-key JSON, UTF-8, SHA-256 hex. Exclusion is
-    by-name-anywhere-in-the-tree by design: inclusion-by-default is the
-    fail-safe direction (a future field digests automatically; a false
-    divergence is loud, a silently ignored field is not), and the caller's
-    exclusion list must therefore name ONLY generated identities whose
-    names are never semantic at any depth (`finding_id`-class UUIDs,
-    timestamps). The worker-outcome model pins its list against its
-    generated fields one-for-one.
+    Recipe: `model_dump(mode="json")`, then every EXPLICIT PATH in
+    `exclude_paths` is removed, then compact sorted-key JSON, UTF-8,
+    SHA-256 hex. Paths are dot-separated with `[]` for list traversal —
+    `"findings.[].finding_id"` strips the generated identity inside each
+    nested finding while a future top-level SEMANTIC field that happens to
+    be named `finding_id` still digests (per #063's amendment, exclusions
+    are positional, never name-anywhere — a name-based strip would
+    silently ignore it). Inclusion-by-default stays the fail-safe
+    direction: a future field digests automatically, and the
+    worker-outcome model pins its path list against its generated fields
+    one-for-one.
     """
+    parsed: tuple[tuple[str, ...], ...] = tuple(
+        tuple(path.split(".")) for path in sorted(exclude_paths)
+    )
 
-    def strip(value: object) -> object:
+    def strip(value: object, paths: tuple[tuple[str, ...], ...]) -> object:
+        if not paths:
+            return value
         if isinstance(value, dict):
-            return {k: strip(v) for k, v in value.items() if k not in exclude_fields}
+            out: dict[str, object] = {}
+            for k, v in value.items():
+                if any(p == (k,) for p in paths):
+                    continue
+                tails = tuple(p[1:] for p in paths if len(p) > 1 and p[0] == k)
+                out[k] = strip(v, tails)
+            return out
         if isinstance(value, list):
-            return [strip(v) for v in value]
+            tails = tuple(p[1:] for p in paths if len(p) > 1 and p[0] == "[]")
+            return [strip(v, tails) for v in value]
         return value
 
-    stripped = strip(model.model_dump(mode="json"))
+    stripped = strip(model.model_dump(mode="json"), parsed)
     payload = json.dumps(stripped, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -123,8 +135,21 @@ def append_with_slot_guard[T](
     """
 
     def reducer(existing: list[T], incoming: list[T]) -> list[T]:
-        seen: dict[Hashable, str] = {slot_fn(item): digest_fn(item) for item in existing}
-        merged = list(existing)
+        # `existing` is validated too: the append path below never produces a
+        # duplicate slot, so one already in state means a foreign writer or
+        # pre-guard corruption. Divergent duplicates raise even when
+        # `incoming` is empty (they must not ride along silently); identical
+        # duplicates collapse to the first occupant (replay-shaped, harmless).
+        seen: dict[Hashable, str] = {}
+        merged: list[T] = []
+        for item in existing:
+            slot = slot_fn(item)
+            digest = digest_fn(item)
+            if slot not in seen:
+                seen[slot] = digest
+                merged.append(item)
+            elif seen[slot] != digest:
+                raise SlotDivergenceError(slot)
         for item in incoming:
             slot = slot_fn(item)
             digest = digest_fn(item)
