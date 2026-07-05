@@ -388,40 +388,48 @@ def _validate_rows_against_registry(ground_truth: GroundTruth) -> None:
 
 
 def _validate_row_coherence(ground_truth: GroundTruth) -> None:
-    """Reject duplicate and contradictory rows at load: a duplicated
-    expected_finding key grades one emission as multiple TPs, and an
-    expected_clean scope containing a documented-emitted row grades the same
-    emission as both TP and FP. The shipped corpus is coherent; this keeps
-    future authoring honest."""
+    """Reject duplicate and overlapping rows at load. Overlapping scopes
+    double-grade regardless of the documented outcome (an emission counts as
+    TP+FP today; a residual closing later grades one emission as both
+    `improvement` and `false_positive`), so overlap is rejected structurally,
+    not just for currently-emitted rows: a whole-catalog expected_clean row
+    must be its file's ONLY row, and a query-scoped expected_clean row may not
+    coexist with any expected_finding row for the same (file, query). The
+    shipped corpus is coherent; this keeps future authoring honest."""
     problems: list[str] = []
     finding_keys: set[tuple[str, str, int]] = set()
+    finding_scopes: set[tuple[str, str]] = set()
     clean_keys: set[tuple[str, str | None]] = set()
-    emitted_rows: list[ExpectedFindingRow] = []
+    rows_per_file: Counter[str] = Counter()
     for row in ground_truth.rows:
+        rows_per_file[row.file] += 1
         if isinstance(row, ExpectedFindingRow):
             key = (row.file, row.query_match_id, row.line)
             if key in finding_keys:
                 problems.append(f"duplicate expected_finding row {key}")
             finding_keys.add(key)
-            if row.current_outcome == "emitted":
-                emitted_rows.append(row)
+            finding_scopes.add((row.file, row.query_match_id))
         else:
             clean_key = (row.file, row.query_match_id)
             if clean_key in clean_keys:
                 problems.append(f"duplicate expected_clean row {clean_key}")
             clean_keys.add(clean_key)
     for row in ground_truth.rows:
-        if isinstance(row, ExpectedCleanRow):
-            for finding in emitted_rows:
-                if finding.file == row.file and row.query_match_id in (
-                    None,
-                    finding.query_match_id,
-                ):
-                    problems.append(
-                        f"expected_clean scope ({row.file}, {row.query_match_id!r}) "
-                        f"contradicts documented-emitted row "
-                        f"({finding.query_match_id}, line {finding.line})"
-                    )
+        if not isinstance(row, ExpectedCleanRow):
+            continue
+        if row.query_match_id is None:
+            if rows_per_file[row.file] > 1:
+                problems.append(
+                    f"whole-catalog expected_clean row for {row.file} must be the "
+                    f"file's only row ({rows_per_file[row.file]} rows present — "
+                    f"overlapping scopes double-grade emissions)"
+                )
+        elif (row.file, row.query_match_id) in finding_scopes:
+            problems.append(
+                f"expected_clean scope ({row.file}, {row.query_match_id!r}) overlaps "
+                f"expected_finding rows for the same query — one emission would "
+                f"grade on both"
+            )
     if problems:
         raise ValueError("ground truth rows are incoherent — " + "; ".join(problems))
 
