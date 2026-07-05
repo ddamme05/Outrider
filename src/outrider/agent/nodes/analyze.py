@@ -116,11 +116,11 @@ from outrider.agent.nodes.analyze_observed import (
     OBSERVED_PRODUCER_VERSION,
     ObservedMatch,
     compute_observed_skip_shadow,
-    has_module_level_eligible_match,
     import_bindings_digest,
     lexical_bindings_digest,
     module_admission_digest,
     module_admission_inputs,
+    module_level_observed_matches,
     produce_observed_findings,
     run_observed_matches,
 )
@@ -1818,29 +1818,13 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # degraded prompt below also needs `patched_file`.
     patched_file = lookup_patched_file(changed_file.patch, changed_file.path)
 
-    # Module-scope routing pre-check (DECISIONS.md#062):
-    # would an eligible OBSERVED query admit a module-level match on the added
-    # lines? Delegates to the producer's own admission chain
-    # (`has_module_level_eligible_match`), so True always yields an OBSERVED
-    # emission downstream — never a degraded LLM pass that then emits nothing.
-    # Gated on a FULLY error-free parse (parse-error precedence for THIS
-    # arm: the module arm never anchors proof on a tree carrying ANY
-    # error/MISSING node — stricter than normal scope-contained production,
-    # which still runs in clean mode when errors sit outside the included
-    # changed scopes; `decide_degradation` additionally orders its error
-    # branch first) and on head content (the module arm anchors on
-    # head-side added ranges). The ranges are computed once and
-    # reused by the producer call below on the module route.
+    # Module-scope arm inputs (DECISIONS.md#062), derived through the ONE
+    # gated helper (fully error-free parse; patch/head-misalignment
+    # contained to an inert arm) — needed on the clean route too (the
+    # with-scopes arm + its cache-key digest), so derived up front. The
+    # ROUTING SWEEP below is lazy; only this derivation is unconditional.
     module_all_scope_units, module_added_ranges = module_admission_inputs(
         parse_result, patched_file, changed_file.content_head
-    )
-    module_level_candidate = bool(module_added_ranges) and has_module_level_eligible_match(
-        file_path=changed_file.path,
-        head_content=content,
-        all_scope_units=module_all_scope_units,
-        added_line_ranges=module_added_ranges,
-        import_refs=parse_result.imports,
-        lexical_bindings=parse_result.lexical_bindings,
     )
 
     # Outcome determination (skip / degraded / clean) for a PARSED file lives in the
@@ -1849,9 +1833,35 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # decision into behavior. The `"failed"` degraded branch is V1-unreachable
     # (intake gates invalid UTF-8 with SkipReason.OVERSIZED); retained for the
     # raw-bytes intake path (FUP-053) + audit/prompt-wiring tests.
-    decision = decide_degradation(
-        parse_result, patched_file, module_level_observed_candidate=module_level_candidate
-    )
+    decision = decide_degradation(parse_result, patched_file)
+
+    # Module-scope routing (DECISIONS.md#062), evaluated LAZILY: the catalog
+    # sweep runs only when the file would otherwise skip at
+    # NO_CHANGED_SCOPE_UNITS — the ONE branch that consults the candidate —
+    # and `module_level_observed_matches` itself short-circuits languages
+    # with no eligible query, so the common route (files with changed
+    # scopes) and every Python file pay nothing. `decide_degradation` is
+    # pure, so re-deciding on a non-empty sweep is free; the admitted
+    # matches are REUSED as the module route's final set below (one sweep,
+    # zero drift between routing and production).
+    module_matches: tuple[ObservedMatch, ...] = ()
+    if (
+        decision.mode == "skip"
+        and decision.skip_reason is SkipReason.NO_CHANGED_SCOPE_UNITS
+        and module_added_ranges
+    ):
+        module_matches = module_level_observed_matches(
+            file_path=changed_file.path,
+            head_content=content,
+            all_scope_units=module_all_scope_units,
+            added_line_ranges=module_added_ranges,
+            import_refs=parse_result.imports,
+            lexical_bindings=parse_result.lexical_bindings,
+        )
+        if module_matches:
+            decision = decide_degradation(
+                parse_result, patched_file, module_level_observed_candidate=True
+            )
     if decision.mode == "skip":
         skip_reason = decision.skip_reason
         if skip_reason is None:  # DegradationDecision guard makes this impossible; narrows mypy.
@@ -2223,24 +2233,31 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # floor rejects eligible+SKIP_SAFE queries outright.
     module_level_route = degradation_reason == "module_level_observed_match"
     if changed_file.content_head is not None and (not degraded_mode or module_level_route):
-        observed_matches = run_observed_matches(
-            file_path=changed_file.path,
-            head_content=content,
-            included_scope_units=included_scope_units,
-            # Import-binding admission: the producer proves a name-anchored
-            # match binds to its dangerous API via the file's extracted
-            # imports — and rejects it when a local binding shadows the
-            # anchor (or a guarded global) at the match site.
-            import_refs=parse_result.imports,
-            lexical_bindings=parse_result.lexical_bindings,
-            # Module-scope arm inputs, clean mode and module route alike —
-            # the with-scopes case (a changed function AND a changed
-            # module-level line in one file) admits through the same arm;
-            # `module_added_ranges` is empty for error-bearing parses and
-            # patch-less files, keeping the arm inert exactly there.
-            all_scope_units=module_all_scope_units,
-            added_line_ranges=module_added_ranges,
-        )
+        if module_level_route:
+            # One sweep, zero drift: the routing sweep's admitted matches
+            # ARE the module route's final set — non-empty by construction
+            # (an empty sweep never re-decides onto this route).
+            observed_matches = module_matches
+        else:
+            observed_matches = run_observed_matches(
+                file_path=changed_file.path,
+                head_content=content,
+                included_scope_units=included_scope_units,
+                # Import-binding admission: the producer proves a
+                # name-anchored match binds to its dangerous API via the
+                # file's extracted imports — and rejects it when a local
+                # binding shadows the anchor (or a guarded global) at the
+                # match site.
+                import_refs=parse_result.imports,
+                lexical_bindings=parse_result.lexical_bindings,
+                # Module-scope arm inputs — the with-scopes case (a changed
+                # function AND a changed module-level line in one file)
+                # admits through the same arm; `module_added_ranges` is
+                # empty for error-bearing parses and patch-less files,
+                # keeping the arm inert exactly there.
+                all_scope_units=module_all_scope_units,
+                added_line_ranges=module_added_ranges,
+            )
         if patched_file is not None and not module_level_route:
             observed_skip_event = compute_observed_skip_shadow(
                 observed_matches,
