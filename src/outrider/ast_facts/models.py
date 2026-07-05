@@ -145,7 +145,8 @@ class SkipReason(StrEnum):
     ALL_SCOPES_TRIVIAL = "ALL_SCOPES_TRIVIAL"
     # Detected patch/head-content misalignment (a patch target line lies
     # beyond the fetched source, e.g. a force-push racing intake's
-    # files-list vs content fetches). Every coordinate anchor for the
+    # files-list vs content fetches — or an added-line patch with no head
+    # content to anchor against). Every coordinate anchor for the
     # file — degraded span veto, module-scope admission, publish line
     # mapping — is unsound against mismatched content, so the file skips
     # with the data-integrity cause audit-visible instead of aborting or
