@@ -62,7 +62,7 @@ Surfaces:
 - `DEGRADED_USER_TEMPLATE` — directives + bounded hunks for degraded calls
   (admits only `evidence_tier="judged"`).
 - `TEMPLATE = USER_TEMPLATE` — spec-named alias.
-- `VERSION = "analyze-v8"` — flows to `LLMRequest.prompt_template_version`.
+- `VERSION = "analyze-v9"` — flows to `LLMRequest.prompt_template_version`.
   Bump on any template change.
 - `MAX_TOKENS = 8192` — the output-token cap, distinct from the schema's
   50-finding runaway ceiling (`AnalyzeResponseRaw.findings` max_length). At the
@@ -94,6 +94,16 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from uuid import UUID
 
+# Bumped 2026-07-04 (was "analyze-v8") to make the DEGRADED user template's
+# provenance sentence reason-aware: `module_level_observed_match` (the module-scope
+# routing degradation, specs/2026-07-04-module-scope-admission-arm.md) is a CLEAN
+# parse, and the fixed "could not be parsed" sentence was false provenance for it.
+# The parse-defect reasons keep the prior sentence verbatim. The tuned
+# SYSTEM_PROMPT_STABLE_PREFIX is untouched — no conservatism/ssrf re-probe owed
+# (that discipline guards the system prefix's precision wording, not the degraded
+# user template); clean-path prompt bytes are unchanged, the bump re-keys the
+# cache via prompt_template_version (safe direction) and keeps LLMCallEvent
+# provenance honest for degraded calls whose bytes changed.
 # Bumped 2026-06-26 (was "analyze-v7") to append SYSTEM_PROMPT_CALIBRATION — a broad
 # "clean code is common; don't manufacture findings" rule that targets the model's baseline
 # over-eagerness ACROSS finding types, not one type (the v7 ssrf fix had remapped, not
@@ -131,7 +141,7 @@ if TYPE_CHECKING:
 # `render_post_trace`, and the pass-1 output-schema override. Each bump keeps
 # replay attribution exact — a prompt row replays against the contract it was
 # emitted under, not a newer one.
-VERSION: Final[str] = "analyze-v8"
+VERSION: Final[str] = "analyze-v9"
 MAX_TOKENS: Final[int] = 8192
 TEMPERATURE: Final[float] = 0.0
 
@@ -767,8 +777,7 @@ File: {file_path}
 Pass: analyze-pass-{pass_index}
 Mode: DEGRADED ({degradation_reason})
 
-This file could not be parsed structurally (or has tree-sitter errors
-intersecting the changed regions). The pre-fired query-match registry
+{degradation_context} The pre-fired query-match registry
 and import/call walks are unavailable for this call.
 
 You MAY emit findings only with `evidence_tier="judged"`. Any `observed`
@@ -782,6 +791,28 @@ max 8192 chars of text) to cap the degraded-path cost.
 {bounded_hunks}
 """
 
+
+# Reason-aware provenance for the degraded template's opening sentence — the
+# prompt must not tell the model a clean-parse file "could not be parsed"
+# (specs/2026-07-04-module-scope-admission-arm.md: `module_level_observed_match`
+# is a ROUTING degradation over a clean parse). Closed, code-side mapping keyed
+# by the typed `_DegradationReason` value; unknown/future reasons fall back to
+# the parse-defect sentence (the pre-v9 wording), which is the conservative
+# claim for any parse-caused reason.
+_DEGRADATION_CONTEXT_PARSE_DEFECT: Final[str] = (
+    "This file could not be parsed structurally (or has tree-sitter errors\n"
+    "intersecting the changed regions)."
+)
+_DEGRADATION_CONTEXT: Final[dict[str, str]] = {
+    "parse_failed": _DEGRADATION_CONTEXT_PARSE_DEFECT,
+    "tree_has_error_in_changed_regions": _DEGRADATION_CONTEXT_PARSE_DEFECT,
+    "tree_has_error_no_scope": _DEGRADATION_CONTEXT_PARSE_DEFECT,
+    "module_level_observed_match": (
+        "This file parsed cleanly, but the diff changes only module-level\n"
+        "lines outside any function or class, so no scope-unit context exists\n"
+        "for this call."
+    ),
+}
 
 TEMPLATE: Final[str] = USER_TEMPLATE
 """Spec-named alias of USER_TEMPLATE. Same string object."""
@@ -1065,6 +1096,9 @@ def render_degraded(
         file_path=file_path,
         pass_index=pass_index,
         degradation_reason=degradation_reason,
+        degradation_context=_DEGRADATION_CONTEXT.get(
+            degradation_reason, _DEGRADATION_CONTEXT_PARSE_DEFECT
+        ),
         bounded_hunks=safe_code_fence(bounded_hunks, lang="diff"),
     )
     return AnalyzePromptParts(system_prompt=SYSTEM_PROMPT_STABLE_PREFIX, user_prompt=user_prompt)

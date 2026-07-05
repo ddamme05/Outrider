@@ -44,12 +44,16 @@ from outrider.prompts.analyze import (
 # ---------------------------------------------------------------------------
 
 
-def test_version_is_named_analyze_v8() -> None:
+def test_version_is_named_analyze_v9() -> None:
     """VERSION flows to LLMRequest.prompt_template_version. Pin the
-    "analyze-v8" name so future renames break the test and force a
+    "analyze-v9" name so future renames break the test and force a
     registry decision. Replay attribution depends on this — a prompt row
     replays against the contract it was emitted under, not a newer one.
-    The v8 bump appended SYSTEM_PROMPT_CALIBRATION — a broad "clean code is
+    The v9 bump made the DEGRADED user template's provenance sentence
+    reason-aware (`module_level_observed_match` is a clean parse; the fixed
+    "could not be parsed" sentence was false provenance for it) — the tuned
+    system prefix is untouched. The v8 bump appended SYSTEM_PROMPT_CALIBRATION
+    — a broad "clean code is
     common; don't manufacture findings" rule that cut analyze false positives
     28->5 across finding types with zero recall loss in a 5-rep conservatism
     probe; the v7 bump adopted the destination-control `ssrf` rule + a worked
@@ -61,7 +65,7 @@ def test_version_is_named_analyze_v8() -> None:
     exemplars block in the cached prefix); v3 added the sql_injection
     parameterized-query false-positive guidance (DECISIONS.md#041); v2 landed
     the trace-node pass-1 arc."""
-    assert VERSION == "analyze-v8"
+    assert VERSION == "analyze-v9"
 
 
 def test_system_prompt_ssrf_carveout_and_authority_exception() -> None:
@@ -172,6 +176,7 @@ def test_degraded_user_template_has_required_placeholders() -> None:
         "file_path",
         "pass_index",
         "degradation_reason",
+        "degradation_context",
         "bounded_hunks",
     }
     found = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", DEGRADED_USER_TEMPLATE))
@@ -853,6 +858,36 @@ def test_render_degraded_user_prompt_signals_degraded_mode() -> None:
     )
     assert "DEGRADED" in parts.user_prompt
     assert "parse_failed" in parts.user_prompt
+
+
+def test_render_degraded_provenance_is_reason_aware() -> None:
+    """The v9 provenance rule: parse-defect reasons keep the "could not be
+    parsed" sentence; the module-scope routing reason
+    (`module_level_observed_match`, a CLEAN parse —
+    specs/2026-07-04-module-scope-admission-arm.md) must say the file parsed
+    cleanly and must NOT claim a parse failure — false provenance biases the
+    model's judged review of a perfectly parseable file."""
+    for parse_reason in (
+        "parse_failed",
+        "tree_has_error_in_changed_regions",
+        "tree_has_error_no_scope",
+    ):
+        parts = render_degraded(
+            file_path="src/x.py",
+            bounded_hunks="",
+            pass_index=0,
+            degradation_reason=parse_reason,
+        )
+        assert "could not be parsed" in parts.user_prompt, parse_reason
+
+    module_parts = render_degraded(
+        file_path="src/index.js",
+        bounded_hunks="",
+        pass_index=0,
+        degradation_reason="module_level_observed_match",
+    )
+    assert "parsed cleanly" in module_parts.user_prompt
+    assert "could not be parsed" not in module_parts.user_prompt
 
 
 def test_render_degraded_user_prompt_admits_only_judged() -> None:
