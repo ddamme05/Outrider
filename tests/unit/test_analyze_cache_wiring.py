@@ -969,3 +969,70 @@ class TestServedTraceCandidateRefImportStringValidator:
 
         with pytest.raises(ValidationError):
             ServedTraceCandidateRef(**self._ref_kwargs(import_string))
+
+
+@pytest.mark.asyncio
+async def test_module_scope_degraded_route_has_no_cache_activity() -> None:
+    """The module-scope degraded route is non-cacheable, same mechanism as
+    every degraded route (the parameterized-call scan is None in degraded
+    mode and the cache gate requires it non-None): with a wired store, a
+    module-only kill-switch diff (inert parse fixture) reviews and emits the
+    OBSERVED finding but computes no key, performs no lookup, and writes no
+    row. Only scope resolution (pass-scoped, pre-decision) runs."""
+    kill_head = 'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\nmodule.exports = {};\n'
+    kill_patch = (
+        "--- a/src/killswitch.js\n+++ b/src/killswitch.js\n"
+        "@@ -1,1 +1,2 @@\n"
+        '+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
+        " module.exports = {};\n"
+    )
+    changed = ChangedFile(
+        path="src/killswitch.js",
+        status="modified",
+        additions=1,
+        deletions=0,
+        patch=kill_patch,
+        content_base="module.exports = {};\n",
+        content_head=kill_head,
+        previous_path=None,
+        language="javascript",
+    )
+    pr_context = PRContext(
+        installation_id=42,
+        owner="acme",
+        repo="widget",
+        pr_number=9,
+        base_sha="a" * 40,
+        head_sha="b" * 40,
+        pr_title="t",
+        pr_body=None,
+        author="someone",
+        total_additions=1,
+        total_deletions=0,
+        changed_files=(changed,),
+    )
+    triage = TriageResult(
+        file_tiers={"src/killswitch.js": ReviewTier.DEEP},
+        overall_risk=RiskLevel.MEDIUM,
+        relevant_dimensions=(ReviewDimension.SECURITY,),
+        reasoning="test",
+    )
+    state = ReviewState(
+        review_id=_REVIEW_ID,
+        received_at=datetime(2026, 5, 20, 12, 0, 0, tzinfo=UTC),
+        pr_context=pr_context,
+        triage_result=triage,
+        is_eval=False,
+    )
+    store = _FakeCacheStore(scope=_SCOPE)
+
+    provider, sink = await _run(store, state=state)
+
+    # The route reviewed (degraded LLM call with the module-scope reason)...
+    [request] = provider.calls
+    assert request.degraded_mode is True
+    assert request.degradation_reason == "module_level_observed_match"
+    # ...but touched no cache surface beyond pass-scoped scope resolution.
+    assert store.lookup_calls == []
+    assert store.write_calls == []
+    assert sink.cache_lookups == []

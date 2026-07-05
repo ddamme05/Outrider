@@ -20,12 +20,14 @@
 ; process.env; env.NODE_TLS_... = "0"`), and `globalThis.process.env` —
 ; the receiver is constrained to the literal `process.env` chain.
 ;
-; Known residual (FUP-214): the producer's scope-containment gate admits
-; matches only inside an extracted ScopeUnit (function/method/class), and
-; the CANONICAL real-world form of this kill switch is a module-top-level
-; statement — which has no enclosing scope unit and is dropped there. The
-; producer test suite pins that veto explicitly; the fix shape is a
-; changed-region admission arm for import-free module-level queries.
+; Module-top-level reach (specs/2026-07-04-module-scope-admission-arm.md):
+; the CANONICAL real-world form of this kill switch — a module-top-level
+; statement in index.js/config — is admitted by the producer's module-scope
+; arm (this query is `module_scope_eligible`): a match disjoint from every
+; parsed scope and fully inside a head-side added-line range produces the
+; OBSERVED finding; a module-only diff routes to the degraded review
+; instead of skipping. Matches on UNCHANGED module-level lines stay
+; excluded — the diff anchors the proof.
 (assignment_expression
   left: (member_expression
     object: (member_expression

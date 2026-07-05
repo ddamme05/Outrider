@@ -61,7 +61,7 @@
       "kind": "expected_clean",
       "file": "src/lib/xml.ts",
       "query_match_id": "javascript.command_injection_eval",
-      "rationale": "new Function('specifier', 'return import(specifier)') — all arguments are string literals, so it is constant code, not a dynamic-code sink; the query correctly excludes all-literal `new Function`. A true negative (also module-level, so the scope gate would drop it regardless)."
+      "rationale": "new Function('specifier', 'return import(specifier)') — all arguments are string literals, so it is constant code, not a dynamic-code sink; the query correctly excludes all-literal `new Function`. A true negative (also module-level: command_injection_eval is not module_scope_eligible, so the module-scope arm never admits it there either)."
     },
     {
       "kind": "expected_clean",
