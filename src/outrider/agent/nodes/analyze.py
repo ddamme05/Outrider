@@ -1714,7 +1714,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
       unreachable, see module docstring) parse failure with no addable
       diff text.
     - `skipped+NO_CHANGED_SCOPE_UNITS` — clean parse but no scope
-      unit intersects the changed regions.
+      unit intersects the changed regions, UNLESS an eligible
+      module-level OBSERVED match sits on the added lines (the
+      module-scope arm routes that to `degraded+degraded_llm` below).
     - `skipped+COST_BUDGET_EXHAUSTED` — outcome would have made an
       LLM call but cost gate failed.
     - `skipped+ALL_SCOPES_TRIVIAL` — enforcing-mode trivial-scope
@@ -1729,7 +1731,11 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
       nodes intersect a changed scope unit
       (`degradation_reason="tree_has_error_in_changed_regions"`), OR a
       changed addable line intersects a tree error with no recovered scope
-      (`degradation_reason="tree_has_error_no_scope"`, DECISIONS#033);
+      (`degradation_reason="tree_has_error_no_scope"`, DECISIONS#033), OR
+      a module-only diff carries an eligible module-level OBSERVED match
+      (`degradation_reason="module_level_observed_match"` — clean parse,
+      `parse_status="clean"`; the producer runs and its OBSERVED findings
+      merge with the degraded pass);
       degraded LLM call.
     - `clean+full_llm` — clean parse, scope units intersect changed
       regions, no `has_error` in those units.
