@@ -110,8 +110,10 @@ class AnalyzeWorkerOutcome(BaseModel):
     admitted_findings: tuple[ReviewFinding, ...] = ()
     trace_candidates: tuple[TraceCandidate, ...] = ()
     # Cross-type subsumption proof-retention records (DECISIONS.md#055) —
-    # the aggregate forwards them onto AnalyzeCompletedEvent. A subsumption
-    # needs a JUDGED subsumer, so these exist only where a parser ran.
+    # the aggregate forwards them onto AnalyzeCompletedEvent. Present on
+    # BOTH non-skip paths: the parser merge assembles them, and a cache
+    # serve RECONSTRUCTS them from the cached payload (proof retention
+    # survives the serve). Skip sources carry none.
     subsumed_matches: tuple[ObservedSubsumedMatch, ...] = ()
     # ORIGIN IDENTITY, recorded by the producer that knows it (never
     # inferred from evidence tier): content hashes of the findings the
@@ -161,9 +163,11 @@ class AnalyzeWorkerOutcome(BaseModel):
 
         - `skip_reason` non-None iff skipped (the #018 iff contract), and
           skipped iff a skip source.
-        - Parser tallies, provider spend, trace candidates, and #055
-          subsumption records (a subsumer is JUDGED) require a parser.
-          `n_responses_rejected > 0` additionally forces
+        - Parser tallies and provider spend require a parser. Trace
+          candidates and #055 subsumption records exist on parser AND
+          cache_serve (a serve RESTORES candidates and RECONSTRUCTS
+          subsumption records from the cached payload); skip sources
+          carry neither. `n_responses_rejected > 0` additionally forces
           `n_proposals_seen == 0` — the parser's verified rejected-response
           contract — but does NOT preclude producer-OBSERVED augmentation.
         - Identity lists are canonical (hex, sorted, unique), subsets of
