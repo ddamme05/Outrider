@@ -63,6 +63,30 @@ def _finding(title: str = "t") -> ReviewFinding:
     )
 
 
+def _observed_finding(title: str = "t") -> ReviewFinding:
+    finding_type = FindingType.HARDCODED_SECRET
+    return ReviewFinding(
+        review_id=_REVIEW_ID,
+        installation_id=42,
+        finding_type=finding_type,
+        severity=lookup_severity(finding_type),
+        file_path="src/app.py",
+        line_start=3,
+        line_end=3,
+        title=title,
+        description="d",
+        evidence="e",
+        dimension=lookup_dimension(finding_type),
+        evidence_tier=EvidenceTier.OBSERVED,
+        query_match_id="javascript.tls_env_verify_disabled",
+        policy_version=ACTIVE_POLICY_VERSION,
+        content_hash=compute_finding_content_hash(
+            "src/app.py", line_start=3, line_end=3, finding_type=finding_type
+        ),
+        proposal_hash="b" * 64,
+    )
+
+
 def _outcome(**overrides: Any) -> AnalyzeWorkerOutcome:
     base: dict[str, Any] = {
         "path": "src/app.py",
@@ -122,19 +146,65 @@ def test_ride_out_shape_is_legal_findings_on_a_skip() -> None:
     outcome = _outcome(
         parse_status="skipped",
         skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
+        admitted_findings=(_observed_finding(),),
         counters=AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_observed=1),
         **_NO_SPEND,
     )
     assert outcome.admitted_findings
 
 
+def test_skip_findings_must_be_observed_tier() -> None:
+    """A JUDGED finding on a skip is a shape no sequential path produces —
+    the ride-out and enforced-coverage paths emit the deterministic
+    producer's OBSERVED findings only."""
+    with pytest.raises(ValidationError, match="only.*OBSERVED|OBSERVED findings"):
+        _outcome(
+            parse_status="skipped",
+            skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
+            admitted_findings=(_finding(),),  # JUDGED
+            counters=AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_observed=1),
+            **_NO_SPEND,
+        )
+
+
+def test_served_findings_cannot_coexist_with_an_llm_call() -> None:
+    finding = _finding()
+    with pytest.raises(ValidationError, match="cannot coexist"):
+        _outcome(
+            admitted_findings=(finding,),
+            served_content_hashes=(finding.content_hash,),
+            counters=AnalyzeWorkerCounters(
+                n_proposals_seen=0, n_findings_emitted=1, n_findings_served=1
+            ),
+            llm_called=True,
+        )
+
+
+def test_worker_accounting_equation_and_cardinality() -> None:
+    """Per-worker halves of the canonical proposal equation, so errors
+    cannot cancel across workers at the aggregate."""
+    with pytest.raises(ValidationError, match="findings admitted"):
+        _outcome(counters=AnalyzeWorkerCounters(n_proposals_seen=2, n_findings_emitted=2))
+    with pytest.raises(ValidationError, match="proposal accounting"):
+        _outcome(counters=AnalyzeWorkerCounters(n_proposals_seen=2, n_findings_emitted=1))
+    with pytest.raises(ValidationError, match="require an LLM call"):
+        _outcome(
+            counters=AnalyzeWorkerCounters(n_proposals_seen=1, n_findings_emitted=1),
+            **_NO_SPEND,
+        )
+
+
 def test_no_llm_call_means_zero_spend() -> None:
     """llm_called=False with nonzero provider tokens or cost would let the
     aggregate's accounting contradict the LLMCallEvent stream."""
+    observed_shape: dict[str, Any] = {
+        "admitted_findings": (_observed_finding(),),
+        "counters": AnalyzeWorkerCounters(n_findings_emitted=1, n_findings_observed=1),
+    }
     with pytest.raises(ValidationError, match="zero provider"):
-        _outcome(llm_called=False)  # base fixture carries tokens + cost
+        _outcome(llm_called=False, **observed_shape)  # base tokens + cost survive
     with pytest.raises(ValidationError, match="zero provider"):
-        _outcome(**{**_NO_SPEND, "cost": Decimal("0.01")})
+        _outcome(**{**_NO_SPEND, "cost": Decimal("0.01")}, **observed_shape)
 
 
 def test_path_is_canonicalized_like_analysis_round() -> None:
