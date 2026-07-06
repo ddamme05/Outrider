@@ -401,13 +401,13 @@ async def test_pass_one_events_stay_none_keyed(deps: dict[str, Any]) -> None:
 
 
 @pytest.mark.asyncio
-async def test_concurrency_gate_contends_per_loop_and_prunes_closed_loops() -> None:
-    """REAL contention on each loop (permits=1: the second task must WAIT,
-    which is what makes asyncio bind the semaphore to its loop — the
-    failure mode a bare build-time Semaphore has on a second loop), plus
-    the leak guard: a closed loop's entry is pruned on the next miss
-    (weak keys cannot work here — a contended semaphore strongly retains
-    its bound loop, so the map must prune, not rely on collection)."""
+async def test_concurrency_gate_contends_per_loop_and_prunes_on_hit() -> None:
+    """REAL contention on each loop (permits=1: the second holder must WAIT,
+    which is what makes asyncio bind the semaphore to its loop) — plus the
+    DETERMINISTIC prune-policy pin: after a secondary loop closes, a plain
+    HIT on the still-live primary loop must evict it. Miss-only pruning
+    (the reverted behavior) would keep the closed loop's semaphore forever
+    when no new loop appears, so this assertion fails on that revert."""
     import threading
 
     from outrider.agent.nodes.analyze import AnalyzeConcurrencyGate
@@ -428,23 +428,64 @@ async def test_concurrency_gate_contends_per_loop_and_prunes_closed_loops() -> N
         return id(sem)
 
     first_id = await contend()  # loop A (the running test loop)
-    assert len(gate._by_loop) == 1
 
     result: dict[str, int] = {}
 
     def run_on_fresh_loop() -> None:
-        result["second_id"] = asyncio.run(contend())  # loop B; then B closes
+        result["second_id"] = asyncio.run(contend())  # loop B; closes on return
 
     thread = threading.Thread(target=run_on_fresh_loop)
     thread.start()
     thread.join()
     assert result["second_id"] != first_id  # a fresh semaphore, no cross-loop rebind
+    assert len(gate._by_loop) == 2  # closed B still present — nothing pruned it yet
 
-    def run_on_third_loop() -> None:
-        result["third_id"] = asyncio.run(contend())  # loop C: miss → prunes closed B
+    # THE PIN: a HIT on live loop A (no miss involved) prunes closed B.
+    hit_id = id(gate.current())
+    assert hit_id == first_id  # same live semaphore — this was a hit, not a miss
+    assert len(gate._by_loop) == 1  # closed B evicted by per-call pruning
 
-    thread = threading.Thread(target=run_on_third_loop)
-    thread.start()
-    thread.join()
-    # Loop A (still alive) + loop C survive; closed loop B was pruned on miss.
-    assert len(gate._by_loop) == 2
+
+@pytest.mark.asyncio
+async def test_concurrency_gate_survives_simultaneous_cross_thread_misses() -> None:
+    """The lock pin: barrier-released threads MISS simultaneously while
+    closed-loop entries need pruning, so unsynchronized iterate/del/set
+    would double-delete the same stale key (KeyError) or corrupt the map.
+    Detection of a removed lock is probabilistic per iteration (a race),
+    so the loop hammers 4 threads x 25 fresh loops each; the deterministic
+    prune-policy revert is covered by the hit-prune pin above."""
+    import threading
+
+    from outrider.agent.nodes.analyze import AnalyzeConcurrencyGate
+
+    gate = AnalyzeConcurrencyGate(2)
+
+    async def touch() -> None:
+        async with gate.current():
+            await asyncio.sleep(0)
+
+    # Seed one already-closed entry so the very first barrier wave prunes.
+    seed_thread = threading.Thread(target=lambda: asyncio.run(touch()))
+    seed_thread.start()
+    seed_thread.join()
+
+    n_threads = 4
+    barrier = threading.Barrier(n_threads)
+    errors: list[BaseException] = []
+
+    def hammer() -> None:
+        try:
+            barrier.wait(timeout=10)
+            for _ in range(25):
+                asyncio.run(touch())  # every run: fresh loop → miss + prune pressure
+        except BaseException as exc:  # noqa: BLE001 — the failure IS the assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=hammer) for _ in range(n_threads)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []  # no KeyError double-del, no corrupted map
+    await touch()  # a final call on the live test loop prunes all closed loops
+    assert len(gate._by_loop) == 1  # only this loop remains

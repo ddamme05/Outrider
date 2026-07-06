@@ -500,11 +500,14 @@ class AnalyzeConcurrencyGate:
     provider/rate-limit layer's concern, and a cross-loop limiter would
     need thread-blocking primitives inside coroutines).
 
-    Storage is a STRONG dict pruned of closed loops on miss: weak keys
-    do not work here, because a contended `asyncio.Semaphore` caches its
-    bound loop (`_LoopBoundMixin`) — the value would strongly retain the
-    weak key and no entry would ever collect. Pruning bounds the map by
-    LIVE loops instead.
+    Storage is a STRONG dict pruned of closed loops on EVERY call, under
+    a lock: weak keys do not work here, because a contended
+    `asyncio.Semaphore` caches its bound loop (`_LoopBoundMixin`) — the
+    value would strongly retain the weak key and no entry would ever
+    collect — and miss-only pruning would retain a closed loop's entry
+    indefinitely when no new loop ever appears. The lock serializes
+    simultaneous-thread access (simultaneous loops ARE simultaneous
+    threads); per-call pruning bounds the map by LIVE loops.
     """
 
     def __init__(self, permits: int) -> None:
