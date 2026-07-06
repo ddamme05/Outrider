@@ -27,6 +27,7 @@ existing `test_publish_node_end_to_end.py` pattern — `tests/unit/` has no
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -335,6 +336,43 @@ async def test_reviewable_diff_line_routes_inline_comment() -> None:
     assert sink.routing[0].destination is PublishDestination.INLINE_COMMENT
     assert sink.routing[0].reason is PublishRoutingReason.REVIEWABLE_DIFF_LINE
     assert sink.routing[0].coordinate_error_kind is None
+
+
+@pytest.mark.asyncio
+async def test_routing_emission_failure_is_logged_and_withholds(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When emit_publish_routing raises (a transient audit-DB hiccup), the finding is withheld
+    via the ROUTING_EMISSION_FAILED recovery — and now a WARNING names the finding, so the
+    silent withholding is visible in a live run instead of only a lower comments_posted."""
+
+    class _RaisingRoutingSink(_RecordingPublishEventSink):
+        async def emit_publish_routing(self, event: PublishRoutingEvent) -> None:
+            raise RuntimeError("audit-db hiccup")
+
+    finding = _make_finding(line_start=2, line_end=2)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    sink = _RaisingRoutingSink()
+
+    with caplog.at_level(logging.WARNING, logger="outrider.agent.nodes.publish"):
+        await publish_module.publish(
+            state,
+            publisher=_StubPublisher(),
+            publish_event_sink=sink,
+            phase_event_sink=_RecordingPhaseEventSink(),
+            review_status_sink=_StubReviewStatusSink(),
+            github_factory=_stub_github_factory,
+        )
+
+    assert sink.routing == []  # the emit raised before it could record
+    assert len(sink.eligibility) == 1  # the withheld-recovery eligibility event still fires
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "routing-event emit failed" in r.getMessage()
+    ]
+    assert warnings, "expected a WARNING for the swallowed routing-emission failure"
+    assert str(finding.finding_id) in warnings[0]
 
 
 # ---------------------------------------------------------------------------

@@ -1883,6 +1883,11 @@ async def _emit_skip(
     and return a zero-cost `_FileOutcome`. Used by every skip path in
     `_process_one_file` to keep the emission point uniform per spec §7
     step 3e (single emission per kept file)."""
+    # One stdout line per skip so a live run shows WHY a file produced no findings
+    # (UNSUPPORTED_LANGUAGE / VENDORED / OVERSIZED / NO_CHANGED_SCOPE_UNITS / ...) — otherwise
+    # "fewer findings than files" reads as a silent failure. The event below is the durable
+    # record; this is the live-watch signal (INFO, so it stays out of the WARNING+ error tee).
+    logger.info("analyze: skipped %s (%s)", file_path, skip_reason.value)
     await file_examination_sink.emit_file_examination(
         FileExaminationEvent(
             review_id=review_id,

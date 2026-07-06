@@ -857,6 +857,16 @@ async def _route_and_gate_one_finding(
     try:
         await publish_event_sink.emit_publish_routing(routing_event)
     except Exception:
+        # Unlike every other publish failure (which emits PublishAttemptEvent(FAILED) and
+        # re-raises), this sink-I/O catch withholds the finding and continues — so a transient
+        # audit-DB hiccup silently lowers comments_posted. Log it so the withholding is visible
+        # (WARNING, so the demo's error tee catches it); the recovery path is unchanged.
+        logger.warning(
+            "publish: routing-event emit failed for finding %s; withholding from GitHub "
+            "(ROUTING_EMISSION_FAILED)",
+            finding.finding_id,
+            exc_info=True,
+        )
         routing_emission_failed = True
 
     # Eligibility decision. If routing emission failed, use the

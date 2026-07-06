@@ -13,6 +13,7 @@ the same set by construction — one variable feeds both).
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -296,6 +297,26 @@ async def test_enforcing_all_trivial_skips_without_llm_call() -> None:
     [event] = analyze_sink.scope_exclusions
     assert event.applied is True
     assert all(entry.trivial for entry in event.entries)
+
+
+@pytest.mark.asyncio
+async def test_skip_emits_one_stdout_log_line_naming_the_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Every skip logs one INFO line naming the file + reason, so a live run shows WHY a file
+    produced no findings (the FileExaminationEvent is the durable record; this is the
+    live-watch signal for the silent 'fewer findings than files' case)."""
+    cf = _changed_file(
+        path="src/trivial.py", head=_HEAD_TRIVIAL, base=_BASE_TRIVIAL, patch=_PATCH_TRIVIAL
+    )
+    with caplog.at_level(logging.INFO, logger="outrider.agent.nodes.analyze"):
+        await _run(_state(cf), enabled=True)
+
+    skip_lines = [
+        r.getMessage() for r in caplog.records if "skipped src/trivial.py" in r.getMessage()
+    ]
+    assert skip_lines, "expected an INFO skip line naming the file"
+    assert SkipReason.ALL_SCOPES_TRIVIAL.value in skip_lines[0]
 
 
 @pytest.mark.asyncio
