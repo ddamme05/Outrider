@@ -14,6 +14,7 @@ accounting — the cutover's parity contract.
 # ruff: noqa: F811  — the imported deps fixture is intentionally shadowed by test params
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -24,6 +25,7 @@ from test_analyze_node import (  # noqa: F401  (deps is a fixture)
     _build_pr_context,
     _build_review_state,
     _build_triage_result,
+    _StubLLMProvider,
     analyze,
     deps,
 )
@@ -44,9 +46,10 @@ _KILL_SWITCH_PATCH = (
 async def test_ride_out_produces_observed_skip_outcome_with_real_producer_origin(
     deps: dict[str, Any],
 ) -> None:
-    """END-TO-END origin truth: the module-arm budget ride-out runs the REAL
-    producer; the state outcome must be observed_skip with the producer's
-    finding listed by hash."""
+    """The ride-out path with REAL producer output: the state outcome must
+    be observed_skip with the producer's finding listed by hash. (The
+    origin-truth gate proper — model-cited exclusion through the parser's
+    #054 merge — is the dedicated test below.)"""
     cf = _build_changed_file(
         path="src/index.js",
         content=_KILL_SWITCH_JS,
@@ -72,6 +75,72 @@ async def test_ride_out_produces_observed_skip_outcome_with_real_producer_origin
     (round_finding,) = result["analysis_rounds"][0].findings
     assert round_finding is not finding
     assert round_finding.content_hash == finding.content_hash
+
+
+# Deliberately vulnerable FIXTURE CONTENT (never executed): os.system is
+# the trigger for the python.command_injection_os_system producer query.
+_OS_SYSTEM_PY = b"""\
+import os
+
+def run(cmd):
+    os.system(cmd)
+"""
+_OS_SYSTEM_PATCH = (
+    "--- a/src/runner.py\n+++ b/src/runner.py\n"
+    "@@ -0,0 +1,4 @@\n+import os\n+\n+def run(cmd):\n+    os.system(cmd)\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_model_cited_observed_is_excluded_from_producer_list_end_to_end(
+    deps: dict[str, Any],
+) -> None:
+    """ORIGIN TRUTH through the REAL parser and #054 merge: the scripted
+    model cites a structural id (`python.function_definition` fires on
+    this file, so the citation admits as OBSERVED) while the real producer
+    fires `python.command_injection_os_system` on the same file. The
+    outcome's producer list must carry EXACTLY the producer's finding —
+    the model-cited OBSERVED finding is admitted but stays out, because
+    origin derives from the merge's object placement, never from tier."""
+    response_json = json.dumps(
+        {
+            "findings": [
+                {
+                    "finding_type": "sql_injection",
+                    "evidence_tier": "observed",
+                    "query_match_id": "python.function_definition",
+                    "trace_path": None,
+                    "title": "Model-cited structural OBSERVED",
+                    "description": "A legitimate proposal citing a fired structural query.",
+                    "evidence": "def run(cmd):\n    os.system(cmd)",
+                    "line_start": 3,
+                    "line_end": 4,
+                    "trace_candidates": [],
+                }
+            ]
+        }
+    )
+    deps["provider"] = _StubLLMProvider(response_json)
+    cf = _build_changed_file(
+        path="src/runner.py",
+        content=_OS_SYSTEM_PY,
+        patch=_OS_SYSTEM_PATCH,
+        content_base="",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(cf,)),
+        triage_result=_build_triage_result(file_tiers={"src/runner.py": ReviewTier.DEEP}),
+    )
+    result = await analyze(state, **deps)
+
+    (outcome,) = result["analyze_worker_outcomes"]
+    assert outcome.source == "parser"
+    by_query = {f.query_match_id: f for f in outcome.admitted_findings}
+    producer = by_query["python.command_injection_os_system"]
+    cited = by_query["python.function_definition"]
+    assert cited.evidence_tier is EvidenceTier.OBSERVED  # admitted as OBSERVED...
+    assert outcome.producer_observed_hashes == (producer.content_hash,)
+    assert cited.content_hash not in outcome.producer_observed_hashes  # ...but not producer-listed
 
 
 @pytest.mark.asyncio
@@ -110,20 +179,22 @@ async def test_fold_over_state_outcomes_reproduces_the_sequential_round(
         started_at=sequential_round.started_at,
         ended_at=sequential_round.ended_at,
     )
-    # Round parity is ORDER-INSENSITIVE by design: the sequential loop
-    # iterates tier-descending (budget-pressure order), the fold
-    # canonicalizes to sorted-path order (completion order must never
-    # matter under fan-out). Same content, different ordering — and
-    # therefore different round_id values, the one DOCUMENTED cutover
-    # divergence (round_id is content-derived over the ordered tuples;
-    # historical rounds replay from state, never recomputed cross-version).
+    # ROUND IDENTITY IS EQUAL: the sequential loop iterates
+    # tier-descending (budget-pressure order) and the fold canonicalizes
+    # to sorted-path order, so the state-visible TUPLES may differ in
+    # order — but compute_round_id sorts its hashed inputs internally,
+    # so both implementations produce the SAME round_id and collapse as
+    # one round on the dedup reducer. Content assertions stay
+    # order-insensitive because tuple order is the one permitted delta.
+    assert fold.round.round_id == sequential_round.round_id
     assert sorted(f.content_hash for f in fold.round.findings) == sorted(
         f.content_hash for f in sequential_round.findings
     )
     assert set(fold.round.files_examined) == set(sequential_round.files_examined)
     assert set(fold.round.files_skipped) == set(sequential_round.files_skipped)
 
-    # Accounting parity against the emitted event.
+    # Accounting parity against the emitted event — EVERY fold-owned
+    # counter the event carries, none omitted.
     (event,) = [e for e in deps["analyze_event_sink"].completed if e.pass_index == 0]
     assert fold.n_llm_calls == event.n_llm_calls
     assert fold.n_proposals_seen == event.n_proposals_seen
@@ -132,11 +203,20 @@ async def test_fold_over_state_outcomes_reproduces_the_sequential_round(
     assert fold.n_findings_observed == event.n_findings_observed
     assert fold.n_proposals_rejected == event.n_proposals_rejected
     assert fold.n_responses_rejected == event.n_responses_rejected
+    assert fold.n_proposals_superseded_by_observed == event.n_proposals_superseded_by_observed
+    assert fold.n_proposals_dropped == event.n_proposals_dropped
+    assert fold.n_findings_dropped_over_cap == event.n_findings_dropped_over_cap
     assert fold.n_trace_candidates_emitted == event.n_trace_candidates_emitted
+    assert fold.n_trace_candidates_dropped_malformed == event.n_trace_candidates_dropped_malformed
+    assert sorted(m.model_dump_json() for m in fold.subsumed_matches) == sorted(
+        m.model_dump_json() for m in event.subsumed_matches
+    )
     assert fold.n_files_analyzed == event.n_files_analyzed
     assert fold.n_files_skipped == event.n_files_skipped
     assert fold.total_input_tokens == event.total_input_tokens
     assert fold.total_output_tokens == event.total_output_tokens
+    assert fold.total_cache_read_tokens == event.total_cache_read_tokens
+    assert fold.total_cache_write_tokens == event.total_cache_write_tokens
     assert float(fold.total_cost) == event.total_cost_usd
 
 

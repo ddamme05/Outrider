@@ -14,16 +14,16 @@ and post-processing exactly — cross-source `(content_hash,
 proposal_hash)` admission dedup, content-hash collapse (first-wins),
 the gated-aware severity cap, and the post-cap counter recompute — with
 outcomes folded in SORTED PATH ORDER so worker completion order can
-never change the round (`round_id` is content-derived; a
-completion-order-dependent fold would break replay idempotence). This
-canonicalization is the ONE documented divergence from the sequential
-loop, which iterates tier-descending (a budget-pressure ordering that is
-a planner concern, not round identity): same round content, different
-tuple ordering, therefore different `round_id` values across the two
-implementations — harmless, because historical rounds replay from state
-and are never recomputed cross-version.
+never change the round (a completion-order-dependent fold would break
+replay idempotence). The sequential loop iterates tier-descending (a
+budget-pressure ordering that is a planner concern, not round
+identity), so the round's state-visible tuples (`files_examined`,
+`findings`) come out in a different ORDER than the sequential round's —
+but `compute_round_id` sorts its hashed inputs internally, so both
+orderings produce the SAME `round_id` and collapse as one round on the
+dedup reducer. Ordering is not an identity divergence.
 
-One deliberate, documented divergence: the sequential post-cap recompute
+The ONE deliberate, documented divergence: the sequential post-cap recompute
 classifies producer-OBSERVED findings by a HEURISTIC (tier + registry
 membership), which miscounts a model-cited OBSERVED proposal as producer
 output. The fold classifies by ORIGIN IDENTITY
