@@ -282,3 +282,18 @@ def test_cache_packing_cross_file_proof() -> None:
     )
     print("=" * 78)
     assert cached < uncached, "cache-modeled cost must beat uncached repricing"
+
+
+def test_probe_with_concurrency_is_refused() -> None:
+    """Reproducibility guard: the in-flight-aware cache model prices a
+    concurrent first wave correctly, but HOW MANY workers land in that
+    wave depends on persist() I/O timing — modeled cost would vary
+    run-to-run, defeating the probe's deterministic before/after purpose.
+    The combination fails loud at the entry point."""
+    import pytest
+
+    from outrider.agent.eval_driver import EvalDriverError
+
+    probe = CostProbe(token_estimator=_estimate_tokens)
+    with pytest.raises(EvalDriverError, match="not be reproducible"):
+        run_review(_FIXTURES / "parallel_fanout.json", probe=probe, analyze_max_concurrency=4)

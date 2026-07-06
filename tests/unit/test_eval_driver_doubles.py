@@ -585,3 +585,28 @@ def test_validate_eval_db_url_rejects_unparseable_url() -> None:
     # not a raw SQLAlchemy error (the file's fail-loud-with-clear-cause discipline).
     with pytest.raises(EvalDriverError, match="not a parseable database URL"):
         _validate_eval_db_url("postgresql+psycopg://u:p@localhost:NOTAPORT/outrider_eval_x")
+
+
+def test_concurrency_scripting_guard_refuses_any_indexed_analyze_response() -> None:
+    """>= 1, not > 1: how many files reach the LLM is runtime behavior, so
+    even a single index-keyed analyze response can misattribute under
+    concurrency — and the first worker PERSISTS the misattributed exchange
+    before the second aborts. By-path (or no analyze scripting at all)
+    passes; any indexed response refuses."""
+    from outrider.agent.eval_driver import _require_concurrency_safe_scripting
+
+    base = _fixture().model_dump()
+    base["llm_responses"] = {"triage": ["t"], "analyze": ["one"], "synthesize": ["s"]}
+    indexed = EvalFixture.model_validate(base)
+    with pytest.raises(EvalDriverError, match="analyze_responses_by_path"):
+        _require_concurrency_safe_scripting(indexed, 2)
+    _require_concurrency_safe_scripting(indexed, 1)  # sequential: fine
+
+    base["analyze_responses_by_path"] = {"app/views.py": "one"}
+    by_path = EvalFixture.model_validate(base)
+    _require_concurrency_safe_scripting(by_path, 4)  # keyed: fine
+
+    base["analyze_responses_by_path"] = None
+    base["llm_responses"] = {"triage": ["t"], "synthesize": ["s"]}
+    no_analyze = EvalFixture.model_validate(base)
+    _require_concurrency_safe_scripting(no_analyze, 4)  # nothing to misattribute
