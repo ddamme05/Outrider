@@ -128,10 +128,16 @@ def test_finding_line_humanized_no_emoji_full_range() -> None:
     assert ":red_circle:" not in line  # no severity emoji (a11y)
 
 
-def test_pathological_pr_title_capped_and_action_block_survives() -> None:
-    """A pathological pr_title (raw webhook string, no model-side length cap) truncates to Slack's
-    per-section limit, and the deep-link action block (appended after, no attacker text) is NOT
-    dropped — Slack's msg_too_long guard without losing the required action."""
+def _utf16_units(s: str) -> int:
+    """UTF-16 code-unit count — the metric Slack measures its length limits in (an astral emoji
+    is 2 units)."""
+    return len(s.encode("utf-16-le")) // 2
+
+
+def test_pathological_pr_title_bounded_everywhere_and_action_block_survives() -> None:
+    """A pathological pr_title is clipped at the source, so BOTH the section blocks AND the `text`
+    notification fallback stay under Slack's limits, and the deep-link action block is NOT dropped.
+    Regression guard for the previously-uncapped `text` field (only section blocks were bounded)."""
     findings = [_finding(FindingSeverity.CRITICAL, title="t")]
     msg = build_hitl_pending_message(
         repo="r", pr_number=1, pr_title="A" * 10_000, findings=findings, deep_link="https://d/x"
@@ -139,7 +145,21 @@ def test_pathological_pr_title_capped_and_action_block_survives() -> None:
     for b in msg.blocks:
         if b["type"] == "section":
             assert len(b["text"]["text"]) <= 2900  # every section within the cap
+    assert len(msg.text) < 3000  # the `text` fallback is bounded too (was fully uncapped)
     assert _actions_button_url(msg.blocks) == "https://d/x"  # action block survived
+
+
+def test_astral_pr_title_stays_within_utf16_budget() -> None:
+    """Astral emoji count as 2 UTF-16 units (Slack's metric), so a code-point cap would under-count;
+    source-clipping keeps both the header section and the `text` fallback under the UTF-16 limit."""
+    findings = [_finding(FindingSeverity.CRITICAL, title="t")]
+    msg = build_hitl_pending_message(
+        repo="r", pr_number=1, pr_title="😀" * 5000, findings=findings, deep_link="https://d/x"
+    )
+    for b in msg.blocks:
+        if b["type"] == "section":
+            assert _utf16_units(b["text"]["text"]) <= 3000
+    assert _utf16_units(msg.text) <= 3000
 
 
 def test_hitl_card_is_metadata_first() -> None:
