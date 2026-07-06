@@ -181,15 +181,23 @@ test("files render '—', never a misleading 0, before synthesize completes", as
   expect(filesCard).not.toHaveTextContent("0 examined");
 });
 
-test("renders a finding with severity pill, type, and destination", async () => {
+test("renders a finding with humanized severity pill, type, dimension, and destination", async () => {
   mount();
-  expect(await screen.findByText(/sql_injection/)).toBeInTheDocument();
-  const sevPill = screen.getByText("high");
-  expect(sevPill.className).toContain("sev-high");
-  // Lowercase wire value "inline_comment" is uppercased for display AND drives the variant
-  // class off the lowercase key — regression guard for the uppercase-key bug that left the
-  // destination tag unstyled (colorless) despite valid data.
-  const dest = screen.getByText("INLINE_COMMENT");
+  // Render-wait on a unique humanized label (single finding → one destination tag).
+  await screen.findByText("Inline comment");
+  // Severity pill: humanized text "High", CSS class still keyed off the lowercase wire value.
+  const sevPill = document.querySelector(".sev-pill");
+  expect(sevPill).toHaveTextContent("High");
+  expect(sevPill?.className).toContain("sev-high");
+  // Type + dimension are humanized in the .ft-tag chip (typeLabel / dimensionLabel). The title,
+  // now promoted to its own .f-title, ALSO reads "SQL injection", so scope the type check to the tag.
+  const tag = document.querySelector(".ft-tag");
+  expect(tag).toHaveTextContent("SQL injection");
+  expect(tag).toHaveTextContent("Security");
+  // Wire value "inline_comment" is HUMANIZED for display (destLabel → "Inline comment") AND drives
+  // the variant class off the lowercase key — regression guard for the uppercase-key bug that left
+  // the destination tag unstyled (colorless) despite valid data.
+  const dest = screen.getByText("Inline comment");
   expect(dest.className).toContain("dest-inline");
 });
 
@@ -208,11 +216,11 @@ test("a finding with a HITL decision shows its override provenance", async () =>
       }),
     ],
   });
-  await screen.findByText(/sql_injection/);
+  await screen.findAllByText(/SQL injection/); // render-wait; humanized label may repeat (title + type chip)
   const prov = document.querySelector(".f-prov");
   expect(prov).not.toBeNull();
-  expect(prov).toHaveTextContent("severity_override");
-  expect(prov).toHaveTextContent("high → medium");
+  expect(prov).toHaveTextContent("Severity overridden");
+  expect(prov).toHaveTextContent("High → Medium");
   expect(prov).toHaveTextContent("by admin");
   expect(prov).toHaveTextContent("downgraded: test-only path");
 });
@@ -403,7 +411,7 @@ test("pipeline node cards derive per-node model and cost from the verified phase
       ],
     }),
   });
-  await screen.findByText(/sql_injection/);
+  await screen.findAllByText(/SQL injection/); // render-wait; humanized label may repeat (title + type chip)
   // Per-node costs derived from the phases, shown on the pipeline node cards. Scope to
   // `.pn-stat` — the always-shown audit feed also surfaces these costs in its event-row
   // summaries, so an unscoped getByText(/\$0.27/) would now match in two places.
@@ -463,7 +471,7 @@ test("completed review shows the authoritative gated count, not 0, in the findin
       finding({ finding_id: "f2", finding_type: "xss" }),
     ],
   });
-  await screen.findByText(/sql_injection/);
+  await screen.findAllByText(/SQL injection/); // render-wait; humanized label may repeat (title + type chip)
   expect(screen.getByText(/2 findings · 2 gated/)).toBeInTheDocument();
 });
 

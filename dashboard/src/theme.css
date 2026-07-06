@@ -1250,11 +1250,42 @@ button.verdict-pill:hover {
 .f-proof .trace-chain .arr {
   color: var(--faint);
 }
-.f-evidence {
+/* Finding title — the one-line summary, promoted above the description (matches the
+ * GitHub/Slack renderers, which lead with the title). */
+.f-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.5;
+}
+/* Evidence code block (CodeBlock.tsx): monospace, wide lines scroll INSIDE the block
+ * (overflow-x: auto) so the page body never scrolls horizontally. Optional language chip. */
+.codeblock {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.codeblock-lang {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  padding: 5px 11px 0;
+}
+.codeblock-pre {
+  margin: 0;
+  padding: 9px 11px;
+  overflow-x: auto;
+  font-family: var(--mono);
   font-size: 12px;
   color: var(--muted);
-  white-space: pre-wrap;
-  font-family: var(--mono);
+  line-height: 1.5;
+}
+.codeblock-pre code {
+  white-space: pre;
 }
 .f-fix {
   font-size: 12px;

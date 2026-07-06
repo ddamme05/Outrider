@@ -247,7 +247,7 @@ test("clicking a finding row expands its content + proof + HITL provenance", asy
   await user.click(screen.getByRole("button", { name: /finding/ }));
   expect(screen.getByText("Unparameterized query.")).toBeInTheDocument();
   const prov = document.querySelector(".tl-content .f-prov");
-  expect(prov).toHaveTextContent("critical → high");
+  expect(prov).toHaveTextContent("Critical → High");
 });
 
 test("clicking an llm_call row expands the prompt + completion", async () => {
@@ -305,7 +305,7 @@ test("a redacted finding shows the retention stub but keeps its proof line", asy
   );
   await user.click(screen.getByRole("button", { name: /finding/ }));
   const proof = document.querySelector(".tl-c-proof");
-  expect(proof).toHaveTextContent("observed");
+  expect(proof).toHaveTextContent("OBSERVED");
   expect(proof).toHaveTextContent("sql.scm");
   expect(screen.getByText(/Content redacted in the retention sweep on 2026-05-20/)).toBeInTheDocument();
   expect(screen.queryByText("Unparameterized query.")).toBeNull();
