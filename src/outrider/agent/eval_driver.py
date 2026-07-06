@@ -356,8 +356,13 @@ class CostProbe:
     floor → cache WRITE of the estimated system tokens; repeats → cache READ;
     below-floor or `cache_control=False` → uncached, both 0 — the silent no-op
     the real API exhibits). The model ignores TTL (driven reviews run far inside
-    the 5-minute window) and concurrent-first-call races (the driver is serial).
-    Cache-modeled estimates feed the same pricing multipliers as production
+    the 5-minute window) but is IN-FLIGHT-AWARE for concurrent first calls: a
+    written entry becomes warm only when the writing call COMPLETES, so under
+    `analyze_max_concurrency > 1` the overlapping first wave each records a
+    WRITE — the real API's stampede (the parallel-analyze spec's accepted
+    1.25x note) — and marking warm at decision time would underprice
+    concurrent reviews. Cache-modeled estimates feed the same pricing
+    multipliers as production
     (1.25x write / 0.1x read), so before/after packing comparisons price the
     cache, not just raw token movement.
     """
@@ -372,7 +377,14 @@ class CostProbe:
 
 
 class _FixtureScriptedProvider:
-    """Returns canned responses keyed by `(request.node_id, call-index)`.
+    """Returns canned responses keyed by `(request.node_id, call-index)` —
+    or, for pass-0 analyze calls when the fixture supplies
+    `analyze_responses_by_path`, BY FILE PATH via the worker's
+    `LLMRequest.phase_key` (`file:<path>#<pass>`): attribution is then
+    correct under ANY worker completion order, which call-index keying
+    cannot give at `analyze_max_concurrency > 1` (the driver entry points
+    refuse that unsafe combination). Keyless analyze calls (the sequential
+    pass-1 trace-fetched pass) and every other node stay call-index keyed.
 
     Implements the `LLMProvider` Protocol; imports no vendor SDK. Token counts
     are fixed sentinels; cost is derived from them via the real pricing table.
