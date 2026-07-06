@@ -189,7 +189,15 @@ test("auto-follow scrolls the FINAL event into view on the last tick", async () 
   await screen.findByText(/2 events · 0 findings/, undefined, { timeout: 3000 });
   const rows = Array.from(document.querySelectorAll(".tl-evrow"));
   expect(rows.length).toBeGreaterThan(0);
-  expect(targets.at(-1)).toBe(rows.at(-1));
+  expect(targets.length).toBeGreaterThan(0);
+  // Compare by stable identity, NOT reference (Object.is): React can swap the last row's DOM node
+  // for an identical one between the final follow-scroll (which captured the old reference) and
+  // this assertion — same content, new node ("serializes to the same string"). That reference
+  // churn flaked only under full-suite timing. Assert the last scroll landed on a `.tl-evrow`
+  // whose rendered text is the final row's — which is what "scrolled the final event in" means.
+  const lastTarget = targets.at(-1);
+  expect(lastTarget?.className).toContain("tl-evrow");
+  expect(lastTarget?.textContent).toBe(rows.at(-1)?.textContent);
   spy.mockRestore();
 });
 
