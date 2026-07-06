@@ -9,6 +9,7 @@ import {
   eligibilityReasonPhrase,
   hitlOutcomeLabel,
   severityLabel,
+  tierPhrase,
   typeLabel,
 } from "../lib/findingSections";
 
@@ -112,8 +113,8 @@ export function FindingCard({
           {severityLabel(finding.severity)}
         </span>
         {/* tier acronym in the badge (OBSERVED/INFERRED/JUDGED); the full phrase
-            lives in the proof box below. */}
-        <span className={`tier tier-${tier}`}>
+            (matching the GitHub/Slack wording) is the hover title + the proof box below. */}
+        <span className={`tier tier-${tier}`} title={tierPhrase(finding.evidence_tier)}>
           <span className="dot" aria-hidden="true" />
           {tier.toUpperCase()}
         </span>
