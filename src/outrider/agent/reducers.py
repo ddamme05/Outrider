@@ -99,7 +99,18 @@ def semantic_digest(
         return value
 
     stripped = strip(model.model_dump(mode="json"), parsed)
-    payload = json.dumps(stripped, sort_keys=True, separators=(",", ":"))
+    # Encoding settings MATCH `policy.canonical.canonicalize_for_hash`
+    # (sorted keys, compact separators, ensure_ascii=False + UTF-8,
+    # allow_nan=False) so the two recipes cannot drift on the dimensions
+    # they share. The canonical primitive itself is NOT reusable here by
+    # design: it BANS floats (cross-implementation identity hashes must
+    # not depend on float serialization), while a model dump legitimately
+    # carries computed floats (`ReviewFinding.confidence`) — safe for THIS
+    # digest because it is merge-time-ephemeral, never persisted, and only
+    # ever compared against a digest from the same process's encoder.
+    payload = json.dumps(
+        stripped, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -140,25 +151,38 @@ def append_with_slot_guard[T](
         # pre-guard corruption. Divergent duplicates raise even when
         # `incoming` is empty (they must not ride along silently); identical
         # duplicates collapse to the first occupant (replay-shaped, harmless).
-        seen: dict[Hashable, str] = {}
+        #
+        # Digests are computed LAZILY, only on an actual slot collision:
+        # LangGraph folds the N fan-out writes one at a time, so an eager
+        # per-item digest (full model_dump + canonical JSON + SHA-256 over
+        # every nested finding) would cost ~N²/2 digests per pass on the
+        # review hot path — for a merge sequence whose normal case has ZERO
+        # collisions. A collision (checkpoint replay or divergence) costs
+        # two digests, exactly when the answer is needed.
+        seen: dict[Hashable, T] = {}
         merged: list[T] = []
-        for item in existing:
-            slot = slot_fn(item)
-            digest = digest_fn(item)
-            if slot not in seen:
-                seen[slot] = digest
-                merged.append(item)
-            elif seen[slot] != digest:
-                raise SlotDivergenceError(slot)
-        for item in incoming:
-            slot = slot_fn(item)
-            digest = digest_fn(item)
-            if slot not in seen:
-                seen[slot] = digest
-                merged.append(item)
-            elif seen[slot] != digest:
+
+        def check_collision(slot: Hashable, occupant: T, item: T) -> None:
+            if digest_fn(occupant) != digest_fn(item):
                 raise SlotDivergenceError(slot)
             # equal digest: replay re-application — no-op.
+
+        for item in existing:
+            slot = slot_fn(item)
+            occupant = seen.get(slot)
+            if occupant is None:
+                seen[slot] = item
+                merged.append(item)
+            else:
+                check_collision(slot, occupant, item)
+        for item in incoming:
+            slot = slot_fn(item)
+            occupant = seen.get(slot)
+            if occupant is None:
+                seen[slot] = item
+                merged.append(item)
+            else:
+                check_collision(slot, occupant, item)
         return merged
 
     return reducer
