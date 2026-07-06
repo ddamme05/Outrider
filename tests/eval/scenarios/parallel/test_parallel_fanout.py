@@ -86,6 +86,23 @@ async def test_concurrent_round_resumes_through_hitl_and_replays(
         final.review_id
     )
 
+    # Sequence-number containment — the load-bearing assumption under the
+    # replay grouping: each keyed worker/aggregate phase's per-operation
+    # rows carry sequence numbers strictly BETWEEN that phase's start and
+    # end markers, on the PERSISTED stream (not just recorder list order).
+    reconstruction = await AuditReplayer(session_factory=eval_db_session_factory).reconstruct(
+        final.review_id
+    )
+    keyed_phases = [p for p in reconstruction.phases if p.phase_key is not None]
+    assert len(keyed_phases) >= 5  # plan + 3 workers + aggregate
+    checked_ops = 0
+    for phase in keyed_phases:
+        assert phase.start is not None and phase.end is not None
+        for event in phase.events:
+            assert phase.start.sequence_number < event.sequence_number < phase.end.sequence_number
+            checked_ops += 1
+    assert checked_ops >= 6  # per-file exams + LLM calls + findings + completed
+
 
 async def test_concurrent_cache_writes_land_on_distinct_file_keys(
     eval_db: str,

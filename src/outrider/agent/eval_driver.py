@@ -1138,12 +1138,19 @@ def _require_concurrency_safe_scripting(fixture: EvalFixture, analyze_max_concur
     if (
         analyze_max_concurrency > 1
         and fixture.analyze_responses_by_path is None
-        and len(fixture.llm_responses.get("analyze", [])) > 1
+        and len(fixture.llm_responses.get("analyze", [])) >= 1
     ):
+        # >= 1, not > 1: how many files actually reach the LLM is runtime
+        # behavior (budget, cache, coverage skips), so even a single indexed
+        # response can misattribute when two files call — and the first
+        # worker would PERSIST the misattributed exchange before the second
+        # aborts on a misleading call-index error. Response-list length is
+        # the only static signal; refuse whenever any indexed analyze
+        # response exists.
         raise EvalDriverError(
             "analyze_max_concurrency > 1 with index-keyed analyze scripting: "
-            "the fixture scripts multiple llm_responses['analyze'] entries but "
-            "no analyze_responses_by_path map, so worker completion order would "
+            "the fixture scripts llm_responses['analyze'] entries but no "
+            "analyze_responses_by_path map, so worker completion order would "
             "decide response attribution. Add analyze_responses_by_path to the "
             "fixture (or run with analyze_max_concurrency=1)."
         )
@@ -1191,6 +1198,19 @@ def run_review(
         fixture = EvalFixture.model_validate(json.load(fh))
 
     _require_concurrency_safe_scripting(fixture, analyze_max_concurrency)
+    if probe is not None and analyze_max_concurrency > 1:
+        # The in-flight-aware cache model prices a concurrent first wave
+        # CORRECTLY, but HOW MANY workers land in that wave depends on real
+        # persist() I/O timing — run-to-run the modeled cost varies 1..cap
+        # writes. The probe exists for deterministic before/after cost
+        # comparisons (COST_ANALYSIS workflow), so the nondeterministic
+        # combination is refused rather than silently irreproducible.
+        raise EvalDriverError(
+            "CostProbe with analyze_max_concurrency > 1: the modeled "
+            "cache-write count depends on worker timing, so probe runs would "
+            "not be reproducible. Measure cost at analyze_max_concurrency=1 "
+            "(per-call token counts are concurrency-independent)."
+        )
     return asyncio.run(
         _arun_review(
             fixture,
