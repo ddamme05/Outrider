@@ -2167,6 +2167,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 review_id=review_id,
                 is_eval=is_eval,
                 file_path=changed_file.path,
+                phase_key=phase_key,
                 skip_reason=SkipReason.PATCH_HEAD_MISALIGNED,
             )
 
