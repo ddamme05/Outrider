@@ -448,12 +448,12 @@ async def test_concurrency_gate_contends_per_loop_and_prunes_on_hit() -> None:
 
 @pytest.mark.asyncio
 async def test_concurrency_gate_survives_simultaneous_cross_thread_misses() -> None:
-    """The lock pin: barrier-released threads MISS simultaneously while
-    closed-loop entries need pruning, so unsynchronized iterate/del/set
-    would double-delete the same stale key (KeyError) or corrupt the map.
-    Detection of a removed lock is probabilistic per iteration (a race),
-    so the loop hammers 4 threads x 25 fresh loops each; the deterministic
-    prune-policy revert is covered by the hit-prune pin above."""
+    """Cross-thread SMOKE: barrier-released threads miss simultaneously
+    while closed-loop entries need pruning. `current()` is a pure-sync
+    section, so under the GIL a removed lock may still pass this — the
+    DETERMINISTIC lock guarantee is the probe-lock pin below; this test
+    exists to exercise the real threading shape end-to-end (and fails
+    loudly on gross corruption)."""
     import threading
 
     from outrider.agent.nodes.analyze import AnalyzeConcurrencyGate
@@ -489,3 +489,54 @@ async def test_concurrency_gate_survives_simultaneous_cross_thread_misses() -> N
     assert errors == []  # no KeyError double-del, no corrupted map
     await touch()  # a final call on the live test loop prunes all closed loops
     assert len(gate._by_loop) == 1  # only this loop remains
+
+
+@pytest.mark.asyncio
+async def test_concurrency_gate_mutates_the_map_only_under_its_lock() -> None:
+    """DETERMINISTIC lock-usage pin: every `current()` call — miss (create),
+    hit, and the per-call prune scan — must run its map access inside
+    `self._lock`. The probe lock counts acquisitions and flags any map
+    mutation made while it is NOT held, so deleting the `with self._lock:`
+    block fails this test on the first call, no race required (the
+    GIL makes the pure-sync section uninterleavable in practice, which is
+    why the cross-thread smoke above cannot be the guarantee)."""
+    from outrider.agent.nodes.analyze import AnalyzeConcurrencyGate
+
+    gate = AnalyzeConcurrencyGate(2)
+
+    class _ProbeLock:
+        def __init__(self) -> None:
+            self.acquisitions = 0
+            self.held = False
+
+        def __enter__(self) -> _ProbeLock:
+            self.acquisitions += 1
+            self.held = True
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self.held = False
+
+    class _GuardedMap(dict):  # type: ignore[type-arg]
+        """Rejects any mutation performed while the probe lock is not held."""
+
+        def __init__(self, probe: _ProbeLock) -> None:
+            super().__init__()
+            self._probe = probe
+
+        def __setitem__(self, key: object, value: object) -> None:
+            assert self._probe.held, "gate map WRITTEN outside its lock"
+            super().__setitem__(key, value)
+
+        def __delitem__(self, key: object) -> None:
+            assert self._probe.held, "gate map entry DELETED outside its lock"
+            super().__delitem__(key)
+
+    probe = _ProbeLock()
+    gate._lock = probe  # type: ignore[assignment]
+    gate._by_loop = _GuardedMap(probe)  # type: ignore[assignment]
+
+    first = gate.current()  # miss: create + insert — inside the lock
+    second = gate.current()  # hit: prune scan + lookup — inside the lock
+    assert first is second
+    assert probe.acquisitions == 2  # zero here = the `with self._lock:` was removed
