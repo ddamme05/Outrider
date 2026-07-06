@@ -289,7 +289,9 @@ class _RecordingFileExaminationSink:
         self.events.append(event)
 
 
-def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEvent:
+def _lift_finding_event(
+    finding: ReviewFinding, *, is_eval: bool, phase_key: str | None = None
+) -> FindingEvent:
     """Lift an admitted ``ReviewFinding`` to its metadata-only ``FindingEvent``,
     mirroring ``AuditPersister._lift_finding_event`` so the recorder captures the
     same event the production sink would emit under the new sink signature."""
@@ -311,6 +313,7 @@ def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEven
         trace_path=finding.trace_path,
         policy_version=finding.policy_version,
         proposal_hash=finding.proposal_hash,
+        phase_key=phase_key,
     )
 
 
@@ -336,7 +339,7 @@ class _RecordingAnalyzeEventSink:
     async def emit_finding(
         self, finding: ReviewFinding, *, is_eval: bool, phase_key: str | None = None
     ) -> None:
-        self.findings.append(_lift_finding_event(finding, is_eval=is_eval))
+        self.findings.append(_lift_finding_event(finding, is_eval=is_eval, phase_key=phase_key))
 
     async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:
         self.proposal_rejections.append(event)

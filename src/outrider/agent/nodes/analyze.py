@@ -1601,12 +1601,15 @@ async def _serve_cache_hit(
 
     # SINGLE FileExaminationEvent (clean — parse + prompt assembly genuinely ran;
     # only the provider call didn't). The serve short-circuit returns before the
-    # normal-path step-3e emission, so it emits here itself.
+    # normal-path step-3e emission, so it emits here itself — with the worker's
+    # key: an unkeyed event inside the keyed worker envelope is exactly what the
+    # strict replay hybrid's None-branch rejects.
     await _emit_examination(
         file_examination_sink=file_examination_sink,
         review_id=review_id,
         is_eval=is_eval,
         file_path=file_path,
+        phase_key=phase_key,
     )
 
     # Served findings re-emit one FindingEvent each so this review's audit/findings
