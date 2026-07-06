@@ -2137,7 +2137,7 @@ async def test_misaligned_degraded_route_file_skips_instead_of_aborting(
         triage_result=_build_triage_result(file_tiers={"src/broken.js": ReviewTier.DEEP}),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     fe_events = deps["file_examination_sink"].events
     assert len(fe_events) == 1
@@ -2178,7 +2178,7 @@ async def test_head_missing_with_added_lines_skips_as_misaligned(
         triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     fe_events = deps["file_examination_sink"].events
     assert len(fe_events) == 1
@@ -2216,7 +2216,7 @@ async def test_deletion_only_base_content_file_proceeds_unprobed(
         triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     fe_events = deps["file_examination_sink"].events
     assert len(fe_events) == 1
