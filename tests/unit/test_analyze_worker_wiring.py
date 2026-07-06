@@ -378,6 +378,76 @@ async def test_parity_with_every_transcription_channel_non_zero(
     assert len(fold.subsumed_matches) == 1
 
 
+_PLAIN_FUNCS_PY = b"""\
+def alpha():
+    return 1
+
+def beta():
+    return 2
+"""
+_PLAIN_FUNCS_PATCH = (
+    "--- a/src/funcs.py\n+++ b/src/funcs.py\n"
+    "@@ -0,0 +1,5 @@\n+def alpha():\n+    return 1\n+\n+def beta():\n+    return 2\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_cap_drop_parity_with_low_cap(
+    deps: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one channel the non-zero scenario leaves at 0 == 0: cap drops.
+    Forcing 200+ admitted findings through the harness is not the point —
+    the cap SEMANTICS are; so the soft cap is patched low in BOTH the node
+    and the fold (same call-time module-global read), four distinct
+    non-gated findings admit, the cap keeps two, and the drop count must
+    be EXACTLY two on both sides before full parity runs. Non-gated type
+    only: the cap never drops CRITICAL/HIGH (FUP-180)."""
+    import outrider.agent.nodes.analyze as analyze_mod
+    import outrider.agent.nodes.analyze_aggregate as aggregate_mod
+
+    monkeypatch.setattr(analyze_mod, "MAX_FINDINGS_PER_ROUND", 2)
+    monkeypatch.setattr(aggregate_mod, "MAX_FINDINGS_PER_ROUND", 2)
+    response_json = json.dumps(
+        {
+            "findings": [
+                {
+                    "finding_type": "missing_error_handling",  # LOW — never gated
+                    "evidence_tier": "judged",
+                    "query_match_id": None,
+                    "trace_path": None,
+                    "title": f"Unhandled failure {line}",
+                    "description": "d",
+                    "evidence": "e",
+                    "line_start": line,
+                    "line_end": line,
+                    "trace_candidates": [],
+                }
+                for line in (1, 2, 4, 5)  # distinct spans → distinct content hashes
+            ]
+        }
+    )
+    deps["provider"] = _StubLLMProvider(response_json)
+    cf = _build_changed_file(
+        path="src/funcs.py",
+        content=_PLAIN_FUNCS_PY,
+        patch=_PLAIN_FUNCS_PATCH,
+        content_base="",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(cf,)),
+        triage_result=_build_triage_result(file_tiers={"src/funcs.py": ReviewTier.DEEP}),
+    )
+    result = await analyze(state, **deps)
+
+    (outcome,) = result["analyze_worker_outcomes"]
+    assert len(outcome.admitted_findings) == 4  # the outcome is PRE-cap
+    assert len(result["analysis_rounds"][0].findings) == 2  # the round is capped
+
+    fold = _assert_fold_parity(result, deps)
+    assert fold.n_findings_dropped_over_cap == 2  # exact, non-zero, both sides
+
+
 # Single-changed-line fixture for the #049 ENFORCED coverage skip: line 6
 # (the shell=True call, dead code — never executed fixture content) is the
 # only added line, fully covered by the promoted skip_safe query. Mirrors
