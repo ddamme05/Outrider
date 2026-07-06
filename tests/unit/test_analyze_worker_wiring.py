@@ -15,6 +15,7 @@ accounting — the cutover's parity contract.
 from __future__ import annotations
 
 import json
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -25,14 +26,17 @@ from test_analyze_node import (  # noqa: F401  (deps is a fixture)
     _build_pr_context,
     _build_review_state,
     _build_triage_result,
+    _ConfigurableTokensStubProvider,
     _StubLLMProvider,
     analyze,
     deps,
 )
 
+import outrider.queries.registry as query_registry
 from outrider.agent.nodes.analyze_aggregate import fold_worker_outcomes
 from outrider.ast_facts.models import SkipReason
 from outrider.policy import EvidenceTier
+from outrider.queries.observed import QueryClass
 from outrider.schemas.triage_result import ReviewTier
 
 _KILL_SWITCH_JS = b'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
@@ -143,6 +147,60 @@ async def test_model_cited_observed_is_excluded_from_producer_list_end_to_end(
     assert cited.content_hash not in outcome.producer_observed_hashes  # ...but not producer-listed
 
 
+def _assert_fold_parity(result: dict[str, Any], deps: dict[str, Any]) -> Any:
+    """Fold the wired state outcomes and assert FULL parity with the
+    sequential round + emitted AnalyzeCompletedEvent — every fold-owned
+    counter the event carries, none omitted. Returns the fold so callers
+    can add scenario-specific (e.g. non-zero) assertions on top.
+
+    ROUND IDENTITY IS EQUAL: the sequential loop iterates tier-descending
+    (budget-pressure order) and the fold canonicalizes to sorted-path
+    order, so the state-visible TUPLES may differ in order — but
+    compute_round_id sorts its hashed inputs internally, so both
+    implementations produce the SAME round_id and collapse as one round
+    on the dedup reducer. Content assertions stay order-insensitive
+    because tuple order is the one permitted delta."""
+    outcomes = tuple(result["analyze_worker_outcomes"])
+    sequential_round = result["analysis_rounds"][0]
+    fold = fold_worker_outcomes(
+        outcomes,
+        pass_index=0,
+        started_at=sequential_round.started_at,
+        ended_at=sequential_round.ended_at,
+    )
+    assert fold.round.round_id == sequential_round.round_id
+    assert sorted(f.content_hash for f in fold.round.findings) == sorted(
+        f.content_hash for f in sequential_round.findings
+    )
+    assert set(fold.round.files_examined) == set(sequential_round.files_examined)
+    assert set(fold.round.files_skipped) == set(sequential_round.files_skipped)
+
+    (event,) = [e for e in deps["analyze_event_sink"].completed if e.pass_index == 0]
+    assert fold.n_llm_calls == event.n_llm_calls
+    assert fold.n_proposals_seen == event.n_proposals_seen
+    assert fold.n_findings_emitted == event.n_findings_emitted
+    assert fold.n_findings_served == event.n_findings_served
+    assert fold.n_findings_observed == event.n_findings_observed
+    assert fold.n_proposals_rejected == event.n_proposals_rejected
+    assert fold.n_responses_rejected == event.n_responses_rejected
+    assert fold.n_proposals_superseded_by_observed == event.n_proposals_superseded_by_observed
+    assert fold.n_proposals_dropped == event.n_proposals_dropped
+    assert fold.n_findings_dropped_over_cap == event.n_findings_dropped_over_cap
+    assert fold.n_trace_candidates_emitted == event.n_trace_candidates_emitted
+    assert fold.n_trace_candidates_dropped_malformed == event.n_trace_candidates_dropped_malformed
+    assert sorted(m.model_dump_json() for m in fold.subsumed_matches) == sorted(
+        m.model_dump_json() for m in event.subsumed_matches
+    )
+    assert fold.n_files_analyzed == event.n_files_analyzed
+    assert fold.n_files_skipped == event.n_files_skipped
+    assert fold.total_input_tokens == event.total_input_tokens
+    assert fold.total_output_tokens == event.total_output_tokens
+    assert fold.total_cache_read_tokens == event.total_cache_read_tokens
+    assert fold.total_cache_write_tokens == event.total_cache_write_tokens
+    assert float(fold.total_cost) == event.total_cost_usd
+    return fold
+
+
 @pytest.mark.asyncio
 async def test_fold_over_state_outcomes_reproduces_the_sequential_round(
     deps: dict[str, Any],
@@ -170,54 +228,8 @@ async def test_fold_over_state_outcomes_reproduces_the_sequential_round(
     )
     result = await analyze(state, **deps)
 
-    outcomes = tuple(result["analyze_worker_outcomes"])
-    assert len(outcomes) == 2
-    sequential_round = result["analysis_rounds"][0]
-    fold = fold_worker_outcomes(
-        outcomes,
-        pass_index=0,
-        started_at=sequential_round.started_at,
-        ended_at=sequential_round.ended_at,
-    )
-    # ROUND IDENTITY IS EQUAL: the sequential loop iterates
-    # tier-descending (budget-pressure order) and the fold canonicalizes
-    # to sorted-path order, so the state-visible TUPLES may differ in
-    # order — but compute_round_id sorts its hashed inputs internally,
-    # so both implementations produce the SAME round_id and collapse as
-    # one round on the dedup reducer. Content assertions stay
-    # order-insensitive because tuple order is the one permitted delta.
-    assert fold.round.round_id == sequential_round.round_id
-    assert sorted(f.content_hash for f in fold.round.findings) == sorted(
-        f.content_hash for f in sequential_round.findings
-    )
-    assert set(fold.round.files_examined) == set(sequential_round.files_examined)
-    assert set(fold.round.files_skipped) == set(sequential_round.files_skipped)
-
-    # Accounting parity against the emitted event — EVERY fold-owned
-    # counter the event carries, none omitted.
-    (event,) = [e for e in deps["analyze_event_sink"].completed if e.pass_index == 0]
-    assert fold.n_llm_calls == event.n_llm_calls
-    assert fold.n_proposals_seen == event.n_proposals_seen
-    assert fold.n_findings_emitted == event.n_findings_emitted
-    assert fold.n_findings_served == event.n_findings_served
-    assert fold.n_findings_observed == event.n_findings_observed
-    assert fold.n_proposals_rejected == event.n_proposals_rejected
-    assert fold.n_responses_rejected == event.n_responses_rejected
-    assert fold.n_proposals_superseded_by_observed == event.n_proposals_superseded_by_observed
-    assert fold.n_proposals_dropped == event.n_proposals_dropped
-    assert fold.n_findings_dropped_over_cap == event.n_findings_dropped_over_cap
-    assert fold.n_trace_candidates_emitted == event.n_trace_candidates_emitted
-    assert fold.n_trace_candidates_dropped_malformed == event.n_trace_candidates_dropped_malformed
-    assert sorted(m.model_dump_json() for m in fold.subsumed_matches) == sorted(
-        m.model_dump_json() for m in event.subsumed_matches
-    )
-    assert fold.n_files_analyzed == event.n_files_analyzed
-    assert fold.n_files_skipped == event.n_files_skipped
-    assert fold.total_input_tokens == event.total_input_tokens
-    assert fold.total_output_tokens == event.total_output_tokens
-    assert fold.total_cache_read_tokens == event.total_cache_read_tokens
-    assert fold.total_cache_write_tokens == event.total_cache_write_tokens
-    assert float(fold.total_cost) == event.total_cost_usd
+    assert len(result["analyze_worker_outcomes"]) == 2
+    _assert_fold_parity(result, deps)
 
 
 @pytest.mark.asyncio
@@ -235,3 +247,195 @@ async def test_every_pass_zero_file_yields_exactly_one_outcome(
     assert outcome.source == "parser"
     assert outcome.path == "src/example.py"
     assert outcome.pass_index == 0
+
+
+# Deliberately vulnerable FIXTURE CONTENT (never executed): os.system fires
+# the command-injection producer at line 5; DES.new fires the weak-crypto
+# producer at line 8 — the two anchors the transcription scenario needs.
+_MIXED_VULN_PY = b"""\
+import os
+from Crypto.Cipher import DES
+
+def run(cmd):
+    os.system(cmd)
+
+def encrypt(key, data):
+    cipher = DES.new(key, DES.MODE_ECB)
+    return cipher.encrypt(data)
+"""
+_MIXED_VULN_PATCH = (
+    "--- a/src/mixed.py\n+++ b/src/mixed.py\n"
+    "@@ -0,0 +1,9 @@\n"
+    "+import os\n+from Crypto.Cipher import DES\n+\n+def run(cmd):\n"
+    "+    os.system(cmd)\n+\n+def encrypt(key, data):\n"
+    "+    cipher = DES.new(key, DES.MODE_ECB)\n+    return cipher.encrypt(data)\n"
+)
+
+
+def _mixed_vuln_response() -> str:
+    """Four scripted proposals engineered to make every previously-zero
+    transcription channel non-zero through the REAL node: a #054
+    supersession, a #055 subsumption, a same-content-hash duplicate
+    (FUP-180 collapse → n_proposals_dropped), and a malformed trace
+    candidate (path separator → dropped_malformed)."""
+
+    def proposal(
+        finding_type: str,
+        line_start: int,
+        line_end: int,
+        title: str,
+        description: str,
+        trace_candidates: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        return {
+            "finding_type": finding_type,
+            "evidence_tier": "judged",
+            "query_match_id": None,
+            "trace_path": None,
+            "title": title,
+            "description": description,
+            "evidence": "e",
+            "line_start": line_start,
+            "line_end": line_end,
+            "trace_candidates": trace_candidates,
+        }
+
+    return json.dumps(
+        {
+            "findings": [
+                # Same (path, span, type) as the producer's command_injection
+                # → #054 prefer-OBSERVED evicts it → superseded = 1.
+                proposal("command_injection", 5, 5, "Shell exec", "Model saw it too.", []),
+                # More-specific type at the producer weak_crypto's EXACT span
+                # → #055 subsumption drops the OBSERVED, retains the record.
+                # Also carries the malformed trace candidate (path separator)
+                # → n_trace_candidates_dropped_malformed = 1.
+                proposal(
+                    "weak_password_hash",
+                    8,
+                    8,
+                    "DES for passwords",
+                    "Password-specific weak crypto.",
+                    [{"import_string_raw": "bad/../import", "reason": "r"}],
+                ),
+                # Two same-content-hash variants (same span + type, different
+                # prose → different proposal_hash) → FUP-180 collapse drops
+                # one → n_proposals_dropped = 1.
+                proposal("sql_injection", 4, 5, "SQLi one", "First phrasing.", []),
+                proposal("sql_injection", 4, 5, "SQLi two", "Second phrasing.", []),
+            ]
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_parity_with_every_transcription_channel_non_zero(
+    deps: dict[str, Any],
+) -> None:
+    """ANTI-VACUITY parity: the base parity scenario leaves supersession,
+    drops, malformed candidates, cache tokens, and #055 records all at
+    zero, so a live transcription bug in any of them would still pass.
+    This scenario drives every one of those channels NON-ZERO through the
+    real node, asserts each is non-zero (so the scenario can't silently
+    decay), then requires full fold-vs-event parity."""
+    deps["provider"] = _ConfigurableTokensStubProvider(
+        response_text=_mixed_vuln_response(),
+        tokens_per_call={
+            "input_tokens": 120,
+            "output_tokens": 60,
+            "cache_read_tokens": 32,
+            "cache_write_tokens": 16,
+        },
+    )
+    cf = _build_changed_file(
+        path="src/mixed.py",
+        content=_MIXED_VULN_PY,
+        patch=_MIXED_VULN_PATCH,
+        content_base="",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(cf,)),
+        triage_result=_build_triage_result(file_tiers={"src/mixed.py": ReviewTier.DEEP}),
+    )
+    result = await analyze(state, **deps)
+
+    (outcome,) = result["analyze_worker_outcomes"]
+    assert outcome.source == "parser"
+    # Worker-level transcription: each channel non-zero and verbatim.
+    assert outcome.n_proposals_superseded_by_observed == 1
+    assert outcome.n_trace_candidates_dropped_malformed == 1
+    assert outcome.cache_read_tokens == 32
+    assert outcome.cache_write_tokens == 16
+    assert len(outcome.subsumed_matches) == 1
+
+    fold = _assert_fold_parity(result, deps)
+    # Fold-level non-vacuity: the previously-zero channels are live here.
+    assert fold.n_proposals_superseded_by_observed == 1
+    assert fold.n_proposals_dropped == 1
+    assert fold.n_trace_candidates_dropped_malformed == 1
+    assert fold.total_cache_read_tokens == 32
+    assert fold.total_cache_write_tokens == 16
+    assert len(fold.subsumed_matches) == 1
+
+
+# Single-changed-line fixture for the #049 ENFORCED coverage skip: line 6
+# (the shell=True call, dead code — never executed fixture content) is the
+# only added line, fully covered by the promoted skip_safe query. Mirrors
+# tests/eval/scenarios/observed_skip_safe/'s promotion fixture.
+_COVERED_PY = (
+    b"import subprocess\n\n\ndef run_it(cmd):\n"
+    b"    return cmd\n    subprocess.run(cmd, shell=True)\n"
+)
+_COVERED_PATCH = (
+    "--- a/src/vuln.py\n+++ b/src/vuln.py\n"
+    "@@ -1,5 +1,6 @@\n import subprocess\n \n \n def run_it(cmd):\n"
+    "     return cmd\n+    subprocess.run(cmd, shell=True)\n"
+)
+_COVERED_BASE = "import subprocess\n\n\ndef run_it(cmd):\n    return cmd\n"
+
+
+@pytest.mark.asyncio
+async def test_enforced_coverage_skip_maps_to_observed_coverage_live(
+    deps: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The #049 ENFORCED branch through the REAL node: with a test-local
+    skip_safe promotion + analyze_observed_skip_enforced=True, the only
+    changed line is fully covered, the LLM never runs, and the wired
+    outcome must be observed_coverage — clean status, no SkipReason,
+    producer-origin findings, examined-not-skipped — with fold parity."""
+    # Test-local promotion (the eval scenario's pattern): swap the module
+    # attribute for a COPY; monkeypatch restores at teardown.
+    promoted = dict(query_registry.OBSERVED_QUERIES)
+    promote_id = "python.command_injection_subprocess_shell"
+    promoted[promote_id] = promoted[promote_id].model_copy(
+        update={"query_class": QueryClass.SKIP_SAFE}
+    )
+    monkeypatch.setattr(query_registry, "OBSERVED_QUERIES", MappingProxyType(promoted))
+    deps["analyze_observed_skip_enforced"] = True
+
+    cf = _build_changed_file(
+        path="src/vuln.py",
+        content=_COVERED_PY,
+        patch=_COVERED_PATCH,
+        content_base=_COVERED_BASE,
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(cf,)),
+        triage_result=_build_triage_result(file_tiers={"src/vuln.py": ReviewTier.DEEP}),
+    )
+    result = await analyze(state, **deps)
+
+    assert deps["provider"].calls == []  # the LLM never ran
+    (outcome,) = result["analyze_worker_outcomes"]
+    assert outcome.source == "observed_coverage"
+    assert outcome.parse_status == "clean"
+    assert outcome.skip_reason is None
+    (finding,) = outcome.admitted_findings
+    assert finding.query_match_id == promote_id
+    assert outcome.producer_observed_hashes == (finding.content_hash,)
+
+    fold = _assert_fold_parity(result, deps)
+    assert fold.n_files_analyzed == 1  # examined, not skipped
+    assert fold.n_files_skipped == 0
+    assert fold.n_llm_calls == 0
