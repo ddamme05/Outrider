@@ -41,7 +41,10 @@ Flags:
   --compact      one line per event (seq · type · node · key fields) instead of
                  full payloads; section 3 only. Sections 1/2/5/6 unaffected.
   --no-content   skip prompt/completion + finding-description text (metadata only)
-  --phase NODE   restrict the timeline to one node (e.g. --phase analyze)
+  --phase NODE   restrict the timeline to one node (e.g. --phase analyze — shows ALL
+                 of analyze's fan-out phases: plan + every per-file worker + aggregate)
+  --phase-key K  restrict to one fan-out phase by phase_key prefix
+                 (e.g. --phase-key file:src/ops/deploy_helpers.js isolates one worker)
 
 Exit codes: 0 = dumped; 2 = setup error (missing DATABASE_URL / review not found).
 """
@@ -174,18 +177,37 @@ async def _section_replay_verdict(
     _say()
 
 
+def _timeline_passes(
+    phase_filter: str | None,
+    phase_key_filter: str | None,
+    node_for_filter: str | None,
+    row_phase_key: str | None,
+) -> bool:
+    """Whether a timeline row survives the --phase (node_id) and --phase-key (phase_key
+    prefix) filters. `node_for_filter` is the phase's node_id for a marker, or the derived
+    owner node for a per-operation event. Both filters are AND-ed; either being None passes."""
+    node_ok = phase_filter is None or node_for_filter == phase_filter
+    key_ok = phase_key_filter is None or (
+        row_phase_key is not None and row_phase_key.startswith(phase_key_filter)
+    )
+    return node_ok and key_ok
+
+
 async def _section_timeline(
     engine: AsyncEngine,
     review_id: uuid.UUID,
     *,
     compact: bool,
     phase_filter: str | None,
+    phase_key_filter: str | None,
 ) -> None:
     """Section 3: the full ordered event stream, grouped by phase, full payloads."""
     _say(_RULE)
     _say("  3. PHASE TIMELINE — every event in sequence, grouped by graph node")
     if phase_filter:
         _say(f"     (filtered to node_id={phase_filter!r})")
+    if phase_key_filter:
+        _say(f"     (filtered to phase_key prefix {phase_key_filter!r})")
     _say(_RULE)
     async with engine.begin() as conn:
         rows = (
@@ -203,39 +225,72 @@ async def _section_timeline(
         _say()
         return
 
-    # Walk the stream, opening an indented block on each review_phase 'start'
-    # and closing it on 'end'. Events outside any phase (the leading
-    # webhook→intake agent_transition) print at the top level.
-    open_node: str | None = None
+    # Walk the stream, opening an indented block on each review_phase 'start' and closing on
+    # 'end'. The analyze fan-out opens MANY phases under one node_id='analyze' (plan + one
+    # worker per file + aggregate), keyed by phase_key, and they INTERLEAVE — so a single
+    # scalar "current open node" is wrong: a sibling worker's phase-end would reset it and
+    # silently drop every still-open worker's events. Track keyed phases by phase_key->node_id
+    # (unique, never reset by a sibling) and un-keyed phases (intake/triage/... legacy
+    # adjacency) by a single open node. Attribute every per-operation event by its OWN
+    # phase_key, not the ambient bracket.
+    key_to_node: dict[str, str | None] = {}
+    open_unkeyed_node: str | None = None
     for seq, event_type, phase_key, ts, payload in rows:
         node_id = payload.get("node_id")
         marker = payload.get("marker")
 
         if event_type == "review_phase" and marker == "start":
-            open_node = node_id
-            if phase_filter and node_id != phase_filter:
-                continue
-            _say()
-            _say(f"  ┌─ PHASE start: node={node_id}  phase_key={phase_key}  seq={seq}  {ts}")
-            if not compact:
-                _render_payload(payload, indent="  │   ")
+            if phase_key is not None:
+                key_to_node[phase_key] = node_id
+            else:
+                open_unkeyed_node = node_id
+            if _timeline_passes(phase_filter, phase_key_filter, node_id, phase_key):
+                _say()
+                _say(f"  ┌─ PHASE start: node={node_id}  phase_key={phase_key}  seq={seq}  {ts}")
+                if not compact:
+                    _render_payload(payload, indent="  │   ")
             continue
         if event_type == "review_phase" and marker == "end":
-            if not (phase_filter and open_node != phase_filter):
-                _say(f"  └─ PHASE end:   node={node_id}  seq={seq}  {ts}")
+            if _timeline_passes(phase_filter, phase_key_filter, node_id, phase_key):
+                _say(f"  └─ PHASE end:   node={node_id}  phase_key={phase_key}  seq={seq}  {ts}")
                 if not compact:
                     _render_payload(payload, indent="      ")
-            open_node = None
+            # Only an un-keyed phase resets the un-keyed open node; a keyed worker ending must
+            # NOT — that reset was the bug that dropped concurrent siblings' events.
+            if phase_key is None:
+                open_unkeyed_node = None
             continue
 
-        # A per-operation event. Honor the phase filter by the enclosing phase.
-        if phase_filter and open_node != phase_filter:
+        # Per-operation event: attribute by its OWN phase_key (keyed fan-out event) or, if
+        # un-keyed, the currently-open un-keyed node.
+        owner_node = key_to_node.get(phase_key) if phase_key is not None else open_unkeyed_node
+        if not _timeline_passes(phase_filter, phase_key_filter, owner_node, phase_key):
             continue
 
         if compact:
-            # one-liner: a few of the most useful generic fields
-            keys = ("node_id", "file_path", "finding_type", "severity", "outcome", "to_node")
-            extras = "  ".join(f"{k}={payload[k]}" for k in keys if k in payload)
+            # One-liner: generic fields + the fan-out/dual-model/host signals so the
+            # interleaved parallel stream is scannable (analyze_model vs standard_analyze_model
+            # is the DEEP-Sonnet/STANDARD-Haiku proof; profile_id attributes cost to the host).
+            shown = dict(payload)
+            if phase_key is not None:
+                shown.setdefault("phase_key", phase_key)
+            keys = (
+                "node_id",
+                "phase_key",
+                "model",
+                "analyze_model",
+                "standard_analyze_model",
+                "profile_id",
+                "file_path",
+                "skip_reason",
+                "parse_status",
+                "finding_type",
+                "severity",
+                "outcome",
+                "cost_usd",
+                "to_node",
+            )
+            extras = "  ".join(f"{k}={shown[k]}" for k in keys if k in shown)
             _say(f"    [seq {seq:>4}] {event_type:22s} {extras}")
         else:
             _say(f"    [seq {seq:>4}] {event_type}   ({ts})")
@@ -286,6 +341,14 @@ async def _section_llm_exchanges(
             "degradation_reason",
             "prompt_template_version",
             "pricing_version",
+            # Host-identity triad (#056) — profile_id is the ONLY field attributing a
+            # cost/token row to GLM/Fireworks/baseten vs Anthropic (pricing is keyed by
+            # (profile_id, model)). All `if k in payload`-guarded, so they no-op on
+            # pre-#056 Anthropic-only rows.
+            "profile_id",
+            "reasoning_enabled",
+            "profile_contract_digest",
+            "finish_reason",
         ):
             if k in payload:
                 _say(f"       {k:24s} {payload[k]}")
@@ -428,7 +491,13 @@ async def _run(args: argparse.Namespace) -> int:
             _say(f"  No reviews row and no audit events for {review_id}. Nothing to inspect.")
             return 2
         await _section_replay_verdict(session_factory, review_id)
-        await _section_timeline(engine, review_id, compact=args.compact, phase_filter=args.phase)
+        await _section_timeline(
+            engine,
+            review_id,
+            compact=args.compact,
+            phase_filter=args.phase,
+            phase_key_filter=args.phase_key,
+        )
         await _section_llm_exchanges(engine, review_id, show_content=not args.no_content)
         await _section_findings(engine, review_id, show_content=not args.no_content)
         await _section_summary(engine, review_id)
@@ -454,6 +523,12 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--phase", default=None, help="restrict the timeline to one node_id (e.g. analyze)"
+    )
+    parser.add_argument(
+        "--phase-key",
+        default=None,
+        help="restrict the timeline to one fan-out phase by phase_key prefix "
+        "(e.g. 'file:src/ops/deploy_helpers.js' isolates one analyze worker)",
     )
     return parser.parse_args()
 

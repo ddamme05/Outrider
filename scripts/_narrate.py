@@ -151,6 +151,10 @@ _REVIEW_SCOPED_COLUMN = {
     "reviews": "id",
     "findings": "review_id",
     "analyze_file_cache": "source_review_id",
+    # anomalies.review_id (nullable FK) — WITHOUT this the table was "skipped (no per-review
+    # column)" in scoped mode, hiding non-raising anomalies (COST_BUDGET_STARVATION,
+    # GATED_FINDINGS_OVER_CAP) that a demo can fire while still reporting PASSED.
+    "anomalies": "review_id",
 }
 
 
@@ -206,8 +210,9 @@ async def narrate_slack_notifications(
       - no Slack resolver wired (no OUTRIDER_TOKEN_ENC_KEY / no per-install config),
       - the OTHER kind fired (a gated review posts `hitl_pending`, a clean review
         posts `review_posted` — mutually exclusive per review),
-      - or a post FAILED and was swallowed (Slack is never gate-breaking) — check the
-        logs for `notification failed` / `SlackNotifyError` (enable INFO logging to see them).
+      - or a post FAILED and was swallowed (Slack is never gate-breaking) — the orchestrator
+        logs these at WARNING (`SlackNotifyError`) / ERROR (unexpected), so they already surface
+        in the live demo's trace (the `_SayLogHandler` tees `outrider.*` WARNING+ into the log).
     """
     async with engine.begin() as conn:
         rows = (

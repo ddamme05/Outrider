@@ -29,13 +29,19 @@ Run (needs the host LLM key + the GitHub App env + a reachable Postgres):
   op run --env-file=.env -- uv run python scripts/live_github_demo.py \\
     --owner ddamme05 --repo outrider-smoke-test --pr 1 --installation-id <ID>
 
-Host is selected by OUTRIDER_LLM_HOST (default `anthropic`; `baseten` = GLM-5.2, all
-nodes). The required LLM key is host-dependent: ANTHROPIC_API_KEY for anthropic, else the
-profile's key (BASETEN_API_KEY for baseten). Keep OUTRIDER_LLM_REASONING off for baseten.
+Host is selected by OUTRIDER_LLM_HOST (default `anthropic`; `baseten` and `fireworks` are
+GLM-5.2 single-model hosts — all nodes on one model). The required LLM key is host-dependent:
+ANTHROPIC_API_KEY for anthropic, else the profile's key (BASETEN_API_KEY for baseten,
+FIREWORKS_API_KEY for fireworks). Keep OUTRIDER_LLM_REASONING off for any GLM host — those
+profiles have no verified reasoning-ON wire in V1, and the runner fails clean at setup (exit 2)
+if it is left on.
+
+Concurrency: OUTRIDER_ANALYZE_MAX_CONCURRENCY (default 4) sets the analyze fan-out width; set
+it to 1 for a sequential baseline (the parallel-vs-sequential A/B). Same head_sha, same findings.
 
 Env required (read by GitHubAppSettings + the host provider + DB):
   OUTRIDER_GITHUB_APP_ID, OUTRIDER_GITHUB_APP_PRIVATE_KEY, OUTRIDER_GITHUB_WEBHOOK_SECRET,
-  DATABASE_URL, and the host LLM key (ANTHROPIC_API_KEY or BASETEN_API_KEY).
+  DATABASE_URL, and the host LLM key (ANTHROPIC_API_KEY, BASETEN_API_KEY, or FIREWORKS_API_KEY).
 
 Exit codes: 0 = all structural checks passed; 1 = a check failed; 2 = setup/
 config error (missing env, DB unreachable, PR not found, or a review already
@@ -77,6 +83,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # noqa: E402
 
 from outrider.agent.graph import build_graph  # noqa: E402
 from outrider.agent.nodes.analyze_config import AnalyzeConfig  # noqa: E402
+from outrider.agent.nodes.cache_config import CacheConfig  # noqa: E402
 from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: E402
 from outrider.agent.nodes.patch_config import PatchConfig  # noqa: E402
 from outrider.anomaly.persister import AnomalyPersister  # noqa: E402
@@ -311,6 +318,20 @@ async def _run(args: argparse.Namespace) -> int:
             "host or unset the override. Aborting."
         )
         return 2
+    # resolve_host_identity above only rejects the anthropic+reasoning combo. A GLM host with an
+    # off-switch reasoning mechanism (fireworks REASONING_EFFORT_NONE, baseten CHAT_TEMPLATE_ARGS)
+    # passes it but would then crash in the (unwrapped) OpenAICompatibleProvider constructor with a
+    # bare LLMInvalidRequestError + exit 1. Mirror that guard here so a reasoning-on GLM run fails
+    # clean at setup (exit 2), honoring the exit-2 contract above.
+    if llm_host != ANTHROPIC_PROFILE_ID and llm_reasoning:
+        profile = resolve_host_profile(llm_host)
+        if not profile.reasoning_forced_on:
+            _say(
+                f"  OUTRIDER_LLM_REASONING is on but host {llm_host!r} "
+                f"({profile.reasoning_mechanism.value}) has no verified reasoning-ON wire in V1."
+            )
+            _say("  Unset OUTRIDER_LLM_REASONING for any GLM host. Aborting.")
+            return 2
     # The required LLM key is host-dependent: ANTHROPIC_API_KEY for the native host, else the
     # profile's api_key_env (e.g. BASETEN_API_KEY). Gating on it means the op:// / not-set
     # checks below cover the actual key the run will use — a GLM run fails clean at setup, not
@@ -420,10 +441,15 @@ async def _run(args: argparse.Namespace) -> int:
     github_factory = make_installation_client_factory(github_settings)
 
     _say(f"  Host ................. {llm_host}  (reasoning={llm_reasoning})")
-    _say(
-        f"  Models ............... {model_config.analyze_model} (analyze) + "
-        f"{model_config.triage_model} (triage/synthesize)"
-    )
+    if model_config.analyze_model == model_config.triage_model:
+        # Single-model host (GLM baseten/fireworks): every node runs one slug, so the
+        # tiered "(analyze) + (triage/synthesize)" framing would just print it twice.
+        _say(f"  Models ............... {model_config.analyze_model} (all nodes)")
+    else:
+        _say(
+            f"  Models ............... {model_config.analyze_model} (analyze) + "
+            f"{model_config.triage_model} (triage/synthesize)"
+        )
     _say(
         f"  Target ............... {owner}/{repo} PR #{args.pr} "
         f"(installation {args.installation_id})"
@@ -494,6 +520,9 @@ async def _run(args: argparse.Namespace) -> int:
     async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as checkpointer:
         await checkpointer.setup()  # idempotent; the checkpoint tables already exist
 
+        # One AnalyzeConfig instance feeds BOTH the budget and the fan-out width, mirroring
+        # api/lifespan.py — see the analyze_max_concurrency kwarg below.
+        analyze_config = AnalyzeConfig()
         graph = build_graph(
             db_factory=session_factory,
             github_factory=github_factory,
@@ -526,13 +555,23 @@ async def _run(args: argparse.Namespace) -> int:
             # that database's analyze_file_cache, exactly as a production review
             # would; they age out under the same 30-day/retention bounds.
             analyze_cache_store=AnalyzeCacheStore(session_factory=session_factory),
+            # SHADOW by default (build_graph's default too): the model always runs and the
+            # cache only records would-hit/miss telemetry, so the n=1 vs n=4 A/B stays honest
+            # (no cached-serve masking). Honors OUTRIDER_CACHE_MODE like api/lifespan.py.
+            cache_mode=CacheConfig().mode,
+            # DASHBOARD_ONLY / REVIEW_BODY findings reference a dashboard link; without this
+            # the trace-discovered finding's link renders empty. Reuses OUTRIDER_DASHBOARD_BASE_URL.
+            dashboard_base_url=os.environ.get("OUTRIDER_DASHBOARD_BASE_URL", "") or None,
             resolve_slack_target=slack_resolver,
             # Respect OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS (mirrors api/lifespan.py).
             # Without this the demo ran on the hardcoded 200k default — the exact
             # gap that starved 4 of PR #8's 15 findings. Raise the env budget so a
             # multi-DEEP-file PR reviews every file (the reserve protects the
             # high-severity ones at any budget; a bigger budget catches the rest).
-            total_review_budget_tokens=AnalyzeConfig().review_budget_tokens,
+            total_review_budget_tokens=analyze_config.review_budget_tokens,
+            # Fan-out width. Was omitted, so the demo silently ran at build_graph's default and
+            # ignored OUTRIDER_ANALYZE_MAX_CONCURRENCY — set =1 for the sequential A/B baseline.
+            analyze_max_concurrency=analyze_config.max_concurrency,
         )
 
         from outrider.agent.state import ReviewState  # noqa: PLC0415
