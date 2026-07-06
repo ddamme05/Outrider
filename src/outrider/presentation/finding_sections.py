@@ -42,14 +42,10 @@ SEVERITY_LABEL: Final[dict[FindingSeverity, str]] = {
     FindingSeverity.INFO: "Info",
 }
 
-# Decorative cue only — `severity_label` is the authoritative text (never color/emoji-only).
-SEVERITY_EMOJI: Final[dict[FindingSeverity, str]] = {
-    FindingSeverity.CRITICAL: "🔴",
-    FindingSeverity.HIGH: "🟠",
-    FindingSeverity.MEDIUM: "🟡",
-    FindingSeverity.LOW: "🔵",
-    FindingSeverity.INFO: "⚪",
-}
+# No severity emoji in the shared layer: in GitHub Markdown and Slack mrkdwn an emoji can NOT be
+# made reliably decorative (a screen reader announces "red circle"), and this module feeds both.
+# `severity_label` is the authoritative text everywhere. The dashboard may add its own
+# aria-hidden emoji in the TS layer (HTML, where it can be hidden from assistive tech).
 
 # Acronym-correct humanized names for all 22 FindingType members.
 TYPE_LABEL: Final[dict[FindingType, str]] = {
@@ -157,7 +153,6 @@ def _assert_total(mapping: Mapping[Any, str], enum: type[Enum], name: str) -> No
 
 
 _assert_total(SEVERITY_LABEL, FindingSeverity, "SEVERITY_LABEL")
-_assert_total(SEVERITY_EMOJI, FindingSeverity, "SEVERITY_EMOJI")
 _assert_total(TYPE_LABEL, FindingType, "TYPE_LABEL")
 _assert_total(TIER_PHRASE, EvidenceTier, "TIER_PHRASE")
 _assert_total(DEST_LABEL, PublishDestination, "DEST_LABEL")
@@ -177,7 +172,6 @@ class FindingSections:
     # header
     severity_key: str  # "critical" — for CSS/emoji lookup
     severity_label: str  # "Critical" — authoritative text
-    severity_emoji: str  # decorative cue
     type_token: str  # "sql_injection" — machine/marker use
     type_label: str  # "SQL injection"
     title: str  # RAW
@@ -223,7 +217,6 @@ def build_finding_sections(
     return FindingSections(
         severity_key=effective_severity.value,
         severity_label=SEVERITY_LABEL[effective_severity],
-        severity_emoji=SEVERITY_EMOJI[effective_severity],
         type_token=finding.finding_type.value,
         type_label=TYPE_LABEL[finding.finding_type],
         title=finding.title,
@@ -249,7 +242,6 @@ def build_finding_sections(
 __all__ = [
     "DEST_LABEL",
     "DIMENSION_LABEL",
-    "SEVERITY_EMOJI",
     "SEVERITY_LABEL",
     "TIER_PHRASE",
     "TYPE_LABEL",
