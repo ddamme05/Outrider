@@ -77,6 +77,7 @@ def _finding_event(
     file_path: str = "src/app/models.py",
     line_start: int = 10,
     line_end: int = 20,
+    phase_key: str | None = None,
 ) -> FindingEvent:
     finding_type = FindingType.SQL_INJECTION
     return FindingEvent(
@@ -100,6 +101,7 @@ def _finding_event(
         policy_version="1.0.0",
         proposal_hash=hashlib.sha256(b"proposal").hexdigest(),
         sequence_number=sequence_number,
+        phase_key=phase_key,
     )
 
 
@@ -109,20 +111,24 @@ def _phase_event(
     marker: Literal["start", "end"],
     phase_id: str | None = None,
     sequence_number: int | None = None,
+    phase_key: str | None = None,
 ) -> ReviewPhaseEvent:
     return ReviewPhaseEvent(
         review_id=_REVIEW_ID,
-        phase_id=phase_id or f"{node_id}:0",
+        phase_id=phase_id or (f"{node_id}:{phase_key}" if phase_key else f"{node_id}:0"),
         node_id=node_id,
         marker=marker,
-        phase_key=None,
+        phase_key=phase_key,
         sequence_number=sequence_number,
     )
 
 
-def _llm_call_event(*, sequence_number: int | None = None) -> LLMCallEvent:
+def _llm_call_event(
+    *, sequence_number: int | None = None, phase_key: str | None = None
+) -> LLMCallEvent:
     return LLMCallEvent(
         review_id=_REVIEW_ID,
+        phase_key=phase_key,
         model="claude-sonnet-4-5",
         node_id="analyze",
         input_tokens=100,
@@ -1128,3 +1134,123 @@ def test_finding_event_carries_no_stored_confidence() -> None:
     # confidence because neither the event nor the findings table exposes one.
     assert "confidence" not in FindingEvent.model_fields
     assert "confidence" not in FindingContent.model_fields
+
+
+# ---------------------------------------------------------------------------
+# Strict derived-owner hybrid grouping (parallel-analyze increment 5;
+# specs/2026-07-05-parallel-analyze.md + DECISIONS.md#064). The five pins.
+# ---------------------------------------------------------------------------
+
+
+def _keyed_pass_stream() -> tuple[object, ...]:
+    """A faithful fan-out pass-0 stream with TWO CONCURRENT workers:
+    plan pair, both worker starts, interleaved keyed work, both worker
+    ends, then the aggregate pair with its keyed finding."""
+    ka = "file:src/a.py#0"
+    kb = "file:src/b.py#0"
+    return (
+        _phase_event(node_id="analyze", marker="start", phase_key="plan#0", sequence_number=1),
+        _phase_event(node_id="analyze", marker="end", phase_key="plan#0", sequence_number=2),
+        _phase_event(node_id="analyze", marker="start", phase_key=ka, sequence_number=3),
+        _phase_event(node_id="analyze", marker="start", phase_key=kb, sequence_number=4),
+        # Interleaved: b's call lands between a's start and a's call.
+        _llm_call_event(sequence_number=5, phase_key=kb),
+        _llm_call_event(sequence_number=6, phase_key=ka),
+        _phase_event(node_id="analyze", marker="end", phase_key=ka, sequence_number=7),
+        _phase_event(node_id="analyze", marker="end", phase_key=kb, sequence_number=8),
+        _phase_event(node_id="analyze", marker="start", phase_key="aggregate#0", sequence_number=9),
+        _finding_event(sequence_number=10, phase_key="aggregate#0"),
+        _phase_event(node_id="analyze", marker="end", phase_key="aggregate#0", sequence_number=11),
+    )
+
+
+def test_keyed_events_group_by_identity_across_concurrent_workers() -> None:
+    """Pin 1: interleaved keyed work groups into ITS OWN worker phase by
+    (derived owner, phase_key) — adjacency would cross-attribute the two
+    concurrent workers' calls. The same stream also verifies clean."""
+    events = _keyed_pass_stream()
+    _verify_phase_wellformed(events)  # concurrent KEYED phases are legal
+    phases = _group_phases(events)
+    by_key = {p.phase_key: p for p in phases}
+    (a_call,) = by_key["file:src/a.py#0"].events
+    (b_call,) = by_key["file:src/b.py#0"].events
+    assert a_call.sequence_number == 6  # NOT the adjacent (5) one
+    assert b_call.sequence_number == 5
+    assert by_key["plan#0"].events == ()
+
+
+def test_aggregate_keyed_finding_groups_under_analyze_aggregate() -> None:
+    """Pin 2: FindingEvent carries no node_id — its owner derives from the
+    logical owner map (→ analyze) and composes with the aggregate key, so
+    it groups under (analyze, aggregate#0)."""
+    phases = _group_phases(_keyed_pass_stream())
+    agg = next(p for p in phases if p.phase_key == "aggregate#0")
+    (finding,) = agg.events
+    assert finding.phase_key == "aggregate#0"
+    assert agg.node_id == "analyze"
+
+
+def test_unkeyed_event_inside_open_keyed_phase_fails_loud() -> None:
+    """Pin 3: the strict None-branch — a missing key inside an open keyed
+    owner phase is a stamp-omission defect, never legacy data. Both the
+    worker envelope and the aggregate envelope must reject it."""
+    worker_case = (
+        _phase_event(
+            node_id="analyze", marker="start", phase_key="file:src/a.py#0", sequence_number=1
+        ),
+        _llm_call_event(sequence_number=2, phase_key=None),  # forgot to stamp
+        _phase_event(
+            node_id="analyze", marker="end", phase_key="file:src/a.py#0", sequence_number=3
+        ),
+    )
+    with pytest.raises(ReplayEquivalenceError, match="stamp-omission"):
+        _verify_phase_wellformed(worker_case)
+    aggregate_case = (
+        _phase_event(node_id="analyze", marker="start", phase_key="aggregate#0", sequence_number=1),
+        _finding_event(sequence_number=2, phase_key=None),  # forgot to stamp
+        _phase_event(node_id="analyze", marker="end", phase_key="aggregate#0", sequence_number=2),
+    )
+    with pytest.raises(ReplayEquivalenceError, match="stamp-omission"):
+        _verify_phase_wellformed(aggregate_case)
+
+
+def test_keyed_event_with_no_matching_open_phase_fails_loud() -> None:
+    """Pin 4: a keyed event must sit inside an open phase matching BOTH its
+    derived owner and its key — the wrong worker's envelope does not count
+    (identity, never adjacency)."""
+    events = (
+        _phase_event(
+            node_id="analyze", marker="start", phase_key="file:src/a.py#0", sequence_number=1
+        ),
+        _llm_call_event(sequence_number=2, phase_key="file:src/OTHER.py#0"),
+        _phase_event(
+            node_id="analyze", marker="end", phase_key="file:src/a.py#0", sequence_number=3
+        ),
+    )
+    with pytest.raises(ReplayEquivalenceError, match=r"no open\s+phase matches"):
+        _verify_phase_wellformed(events)
+
+
+def test_sequential_era_stream_groups_and_verifies_unchanged() -> None:
+    """Pin 5: legacy streams (every key None) keep their exact pre-fan-out
+    semantics — adjacency grouping, two analyze passes never merged, and
+    un-keyed phases still strictly non-nested."""
+    legacy = (
+        _phase_event(node_id="analyze", marker="start", phase_id="analyze:p0", sequence_number=1),
+        _llm_call_event(sequence_number=2),
+        _phase_event(node_id="analyze", marker="end", phase_id="analyze:p0", sequence_number=3),
+        _phase_event(node_id="analyze", marker="start", phase_id="analyze:p1", sequence_number=4),
+        _llm_call_event(sequence_number=5),
+        _phase_event(node_id="analyze", marker="end", phase_id="analyze:p1", sequence_number=6),
+    )
+    _verify_phase_wellformed(legacy)  # no raise: None keys outside keyed phases are legacy
+    phases = _group_phases(legacy)
+    assert [p.phase_id for p in phases] == ["analyze:p0", "analyze:p1"]  # never merged
+    assert [len(p.events) for p in phases] == [1, 1]
+    # Un-keyed overlap is still rejected (sequential-era rule intact).
+    nested = (
+        _phase_event(node_id="analyze", marker="start", phase_id="analyze:p0", sequence_number=1),
+        _phase_event(node_id="trace", marker="start", phase_id="trace:0", sequence_number=2),
+    )
+    with pytest.raises(ReplayEquivalenceError, match="non-nested"):
+        _verify_phase_wellformed(nested)

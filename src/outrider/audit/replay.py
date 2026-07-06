@@ -301,32 +301,62 @@ class _PhaseBuilder:
 
 
 def _group_phases(events: tuple[AuditEvent, ...]) -> tuple[ReconstructedPhase, ...]:
-    """Group events into phases by `ReviewPhaseEvent` start/end markers.
+    """Group events into phases — the strict derived-owner HYBRID.
 
-    Sequential (non-nested) phases per V1; events outside any open phase
-    (e.g. the leading webhook→intake transition) stay in `events` but are
-    omitted from the grouped view. Keys on `phase_id`, not the
-    V1.5-nullable `phase_key`.
+    Per specs/2026-07-05-parallel-analyze.md + DECISIONS.md#064:
+
+    - A KEYED per-operation event (non-None `phase_key`) groups by
+      `(_required_phase_node(event), event.phase_key)` — derived owner,
+      because `FindingEvent` carries no `node_id` — into the matching
+      OPEN keyed phase. Keyed phases (the fan-out's `plan#` / `file:#` /
+      `aggregate#` envelopes) may be concurrently open, so grouping
+      matches by identity, never by adjacency.
+    - An UN-KEYED event keeps the legacy adjacency rule: it groups into
+      the most recently opened un-keyed phase. Sequential-era streams
+      (every key None, one phase open at a time) group byte-identically
+      to the pre-fan-out behavior; distinct passes keep distinct
+      `phase_id`s and are never merged.
+    - Events matching no open phase (e.g. the leading webhook→intake
+      transition, or a defective stream) stay in `events` but are
+      omitted from the grouped view — `_verify_phase_wellformed` is the
+      surface that REJECTS defective streams; grouping stays lenient.
     """
     builders: list[_PhaseBuilder] = []
-    open_builder: _PhaseBuilder | None = None
+    open_by_id: dict[str, _PhaseBuilder] = {}
+    open_unkeyed: _PhaseBuilder | None = None
     for event in events:
         if isinstance(event, ReviewPhaseEvent):
             if event.marker == "start":
-                open_builder = _PhaseBuilder(start=event)
-                builders.append(open_builder)
+                builder = _PhaseBuilder(start=event)
+                builders.append(builder)
+                open_by_id[event.phase_id] = builder
+                if event.phase_key is None:
+                    open_unkeyed = builder
             else:  # marker == "end"
-                match = next(
+                match = open_by_id.pop(event.phase_id, None) or next(
                     (b for b in builders if b.start.phase_id == event.phase_id and b.end is None),
                     None,
                 )
                 if match is not None:
                     match.end = event
-                    if match is open_builder:
-                        open_builder = None
+                    if match is open_unkeyed:
+                        open_unkeyed = None
             continue
-        if open_builder is not None:
-            open_builder.events.append(event)
+        event_key = getattr(event, "phase_key", None)
+        if event_key is not None:
+            owner = _required_phase_node(event)
+            target = next(
+                (
+                    b
+                    for b in open_by_id.values()
+                    if b.start.phase_key == event_key and b.start.node_id == owner
+                ),
+                None,
+            )
+            if target is not None:
+                target.events.append(event)
+        elif open_unkeyed is not None:
+            open_unkeyed.events.append(event)
     return tuple(
         ReconstructedPhase(
             phase_id=b.start.phase_id,
@@ -536,19 +566,27 @@ def _verify_phase_wellformed(
       `TraceDecisionEvent` → trace, HITL → hitl, publish events → publish). An
       `analyze` LLM call belongs in an `analyze` phase, not a `triage` one; an
       analyze-owned `FindingEvent` likewise. This makes the stream
-      graph-faithful, not merely phase-bounded. The `_PHASE_UNBOUNDED_EVENTS`
-      types (`AgentTransitionEvent`, `ReplayVerdictEvent`, `SlackNotificationEvent`)
-      are unbounded; the completeness guard test asserts every other node-less type
-      has an owner.
+      graph-faithful, not merely phase-bounded. Containment is the STRICT
+      derived-owner HYBRID (specs/2026-07-05-parallel-analyze.md +
+      DECISIONS.md#064): a KEYED event requires an open phase matching BOTH
+      its derived owner and its `phase_key`; an un-keyed owner-matched event
+      is legacy ONLY while no keyed owner phase is open — inside one, a
+      missing key is a stamp-omission defect and fails loud, never regroups.
+      The `_PHASE_UNBOUNDED_EVENTS` types (`AgentTransitionEvent`,
+      `ReplayVerdictEvent`, `SlackNotificationEvent`) are unbounded; the
+      completeness guard test asserts every other node-less type has an owner.
     - **Ordering.** An end never precedes its start (an end whose phase_id has
       no prior start raises — this is the end-before-start case in sequence
       order).
     - **Uniqueness.** A phase_id has ≤1 start and ≤1 end.
-    - **Non-nesting (sequential phases).** A phase may not start while another
-      is still open — V1 runs phases one at a time. Distinct from Uniqueness: a
-      *reused* phase_id raises "more than one start marker"; a *different*
-      phase_id opened concurrently raises the non-nesting error. (V1.5
-      parallel-analyze will rekey this around `(node_id, phase_key)`.)
+    - **Non-nesting (un-keyed phases).** An UN-KEYED phase may not overlap
+      any other phase, in either direction — sequential-era semantics stay
+      exact. KEYED phases (the fan-out's `plan#` / `file:<path>#` /
+      `aggregate#` envelopes) may be concurrently open with each other:
+      concurrent workers are the design, and identity — not adjacency —
+      attributes their events. Distinct from Uniqueness: a *reused* phase_id
+      raises "more than one start marker"; a *different* phase_id opened
+      concurrently raises the non-nesting error.
     - **Marker agreement.** An end's `node_id` / `phase_key` match its start.
     - **Termination on success.** When `require_all_terminated` is set, every
       started phase must also have an end. The invariant's "missing phase end
@@ -573,13 +611,22 @@ def _verify_phase_wellformed(
                     raise ReplayEquivalenceError(
                         f"phase {event.phase_id!r} has more than one start marker"
                     )
-                if open_phases:
+                # Non-nesting applies to UN-KEYED phases only: the
+                # fan-out's keyed envelopes (plan# / file:<path># /
+                # aggregate#) legitimately overlap under concurrent
+                # workers, but an un-keyed phase may never overlap
+                # anything, in either direction (sequential-era
+                # semantics stay exact).
+                if open_phases and (
+                    event.phase_key is None
+                    or any(p.phase_key is None for p in open_phases.values())
+                ):
                     open_ids = sorted(open_phases)
                     raise ReplayEquivalenceError(
                         f"phase {event.phase_id!r} starts while phase(s) {open_ids} "
-                        "are still open; V1 phases must be sequential/non-nested "
-                        "(phase-events-bound-work). V1.5 parallel-analyze will redesign "
-                        "this around (node_id, phase_key)."
+                        "are still open; un-keyed phases must be sequential/"
+                        "non-nested (phase-events-bound-work) — only the "
+                        "parallel-analyze KEYED phases may be concurrently open"
                     )
                 started[event.phase_id] = event
                 open_phases[event.phase_id] = event
@@ -626,15 +673,49 @@ def _verify_phase_wellformed(
             # graph node would emit. The `_PHASE_UNBOUNDED_EVENTS` types are
             # already `continue`d above and so are never constrained here.
             required_node = _required_phase_node(event)
-            if required_node is not None and not any(
-                phase.node_id == required_node for phase in open_phases.values()
-            ):
+            if required_node is None:
+                continue
+            event_key = getattr(event, "phase_key", None)
+            if event_key is not None:
+                # KEYED event: an open phase must match BOTH the derived
+                # owner and the key — physical ownership is explicit.
+                if not any(
+                    phase.node_id == required_node and phase.phase_key == event_key
+                    for phase in open_phases.values()
+                ):
+                    open_keys = sorted(f"{p.node_id}/{p.phase_key}" for p in open_phases.values())
+                    raise ReplayEquivalenceError(
+                        f"{type(event).__name__} (sequence {event.sequence_number}) carries "
+                        f"phase_key {event_key!r} (owner {required_node!r}) but no open "
+                        f"phase matches that (owner, key) pair (open: {open_keys}); "
+                        f"keyed work must be bounded by its own keyed phase markers "
+                        f"(phase-events-bound-work)"
+                    )
+                continue
+            owner_open = [p for p in open_phases.values() if p.node_id == required_node]
+            if not owner_open:
                 open_node_ids = sorted({phase.node_id for phase in open_phases.values()})
                 raise ReplayEquivalenceError(
                     f"{type(event).__name__} (sequence {event.sequence_number}) is owned by "
                     f"node {required_node!r} but no open phase matches that node "
                     f"(open phases: {open_node_ids}); a node's work must be bounded by its "
                     f"own phase markers (phase-events-bound-work)"
+                )
+            if any(p.phase_key is not None for p in owner_open):
+                # STRICT None-branch: None cannot always mean legacy — a
+                # worker/aggregate emission that FORGOT to stamp its key
+                # would otherwise fall through to adjacency grouping and
+                # silently lose physical ownership, reading a defect as
+                # old data. Inside an open KEYED owner phase, an
+                # owner-matched event with a None key is a replay
+                # failure — fail loud, never regroup.
+                open_keys = sorted(str(p.phase_key) for p in owner_open)
+                raise ReplayEquivalenceError(
+                    f"{type(event).__name__} (sequence {event.sequence_number}) is owned by "
+                    f"node {required_node!r} and carries NO phase_key while keyed "
+                    f"{required_node!r} phase(s) {open_keys} are open; a missing key "
+                    f"inside a keyed phase is a stamp-omission defect, not legacy data "
+                    f"(strict hybrid, specs/2026-07-05-parallel-analyze.md)"
                 )
     if require_all_terminated:
         unterminated = sorted(phase_id for phase_id in started if phase_id not in ended)
