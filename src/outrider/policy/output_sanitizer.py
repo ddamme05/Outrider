@@ -202,6 +202,13 @@ _LEADING_BLOCK_MARKER_REGEX: Final[re.Pattern[str]] = re.compile(
     flags=re.MULTILINE,
 )
 
+# The agent-marker signature (`<!-- outrider:KEY VALUE -->` / `<!-- outrider-review-id:… -->`).
+# Prose escapes `<`→`\<` and `is_safe_suggestion_replacement` rejects `<!--` so untrusted body text
+# can't forge a raw-byte-grepped marker (FUP-154); `render_fenced_block` applies the same defense to
+# fenced content (a code fence renders `<!--` verbatim), targeted at the `outrider` namespace so
+# legitimate HTML/XML comments in a code snippet are left intact.
+_OUTRIDER_MARKER_OPEN_REGEX: Final[re.Pattern[str]] = re.compile(r"<!--(\s*outrider)")
+
 
 # ---------------------------------------------------------------------------
 # Public sanitization API.
@@ -281,7 +288,11 @@ def render_fenced_block(content: str, *, language: str = "") -> str:
     a code fence. But the bidi/ANSI/NUL stripping from
     `sanitize_display_string` is reapplied here because a code-fenced
     block can still contain a Trojan Source attack visible on
-    GitHub's syntax-highlighting renderer.
+    GitHub's syntax-highlighting renderer. For the same reason the
+    `<!-- outrider… -->` agent-marker signature is neutralized: a fence
+    renders `<!--` verbatim, so a multiline snippet could otherwise plant
+    a byte-perfect marker in the raw comment (FUP-154 defense parity with
+    the prose / suggested_fix fields).
 
     `language` is an optional info-string (e.g., `python`); it lands
     after the opening fence per CommonMark. Sanitized to alphanum +
@@ -293,6 +304,10 @@ def render_fenced_block(content: str, *, language: str = "") -> str:
     content = _ANSI_CONTROL_REGEX.sub("", content)
     content = content.replace(_NUL_CHAR, "")
     content = _drop_lone_surrogates(content)
+    # Neutralize any agent-marker signature by breaking `<!` → `\<\!` (exactly what prose escaping
+    # does via `<`→`\<` + `!`→`\!`): the raw `<!--` token no longer appears in the bytes, so a
+    # marker grep — substring OR line-anchored — can't see a forged `<!-- outrider… -->`.
+    content = _OUTRIDER_MARKER_OPEN_REGEX.sub(r"\\<\\!--\1", content)
 
     # Fence count: scan for the longest run of backticks; ours must be
     # at least one longer. Floor of 3 because single/double backticks
