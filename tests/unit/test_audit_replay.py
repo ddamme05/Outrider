@@ -53,7 +53,7 @@ from outrider.audit.replay import (
 from outrider.db.models.findings import Finding
 from outrider.db.models.llm_call_content import LLMCallContent
 from outrider.db.models.reviews import Review
-from outrider.policy.canonical import compute_hitl_decision_content_hash
+from outrider.policy.canonical import compute_hitl_decision_content_hash, compute_phase_id
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import FindingSeverity, FindingType
 from outrider.schemas import ReviewDimension
@@ -113,9 +113,18 @@ def _phase_event(
     sequence_number: int | None = None,
     phase_key: str | None = None,
 ) -> ReviewPhaseEvent:
+    if phase_id is None:
+        # Keyed phases carry the REAL bound id (compute_phase_id with
+        # attempt_key = phase_key verbatim) — the verifier enforces the
+        # binding, so a synthetic id would model an impossible stream.
+        phase_id = (
+            compute_phase_id(review_id=str(_REVIEW_ID), node_id=node_id, attempt_key=phase_key)
+            if phase_key is not None
+            else f"{node_id}:0"
+        )
     return ReviewPhaseEvent(
         review_id=_REVIEW_ID,
-        phase_id=phase_id or (f"{node_id}:{phase_key}" if phase_key else f"{node_id}:0"),
+        phase_id=phase_id,
         node_id=node_id,
         marker=marker,
         phase_key=phase_key,
@@ -1254,3 +1263,45 @@ def test_sequential_era_stream_groups_and_verifies_unchanged() -> None:
     )
     with pytest.raises(ReplayEquivalenceError, match="non-nested"):
         _verify_phase_wellformed(nested)
+
+
+def test_forged_keyed_phase_id_fails_the_binding_check() -> None:
+    """A keyed phase's id is a pure function of (review_id, node_id,
+    phase_key); a start carrying the right key under a FORGED id must
+    fail — otherwise it could shadow the legitimate envelope and make
+    grouping's open-phase match arbitrary."""
+    forged = _phase_event(
+        node_id="analyze",
+        marker="start",
+        phase_key="file:src/a.py#0",
+        phase_id="f" * 64,  # any id that isn't the bound derivation
+        sequence_number=1,
+    )
+    with pytest.raises(ReplayEquivalenceError, match="bound to their keys"):
+        _verify_phase_wellformed((forged,))
+
+
+def test_duplicate_owner_key_pair_cannot_verify() -> None:
+    """Two distinct phase_ids claiming the same (owner, key): the binding
+    makes this structurally impossible — the honest id collides into the
+    more-than-one-start check, and the second (necessarily forged) id
+    fails the binding check first."""
+    honest = _phase_event(
+        node_id="analyze", marker="start", phase_key="file:src/a.py#0", sequence_number=1
+    )
+    imposter = _phase_event(
+        node_id="analyze",
+        marker="start",
+        phase_key="file:src/a.py#0",
+        phase_id="a" * 64,
+        sequence_number=2,
+    )
+    with pytest.raises(ReplayEquivalenceError, match="bound to their keys"):
+        _verify_phase_wellformed((honest, imposter))
+    # And the same-id duplicate (the only way to repeat the key with a
+    # VALID id) still trips the start-uniqueness rule.
+    same_id_dup = _phase_event(
+        node_id="analyze", marker="start", phase_key="file:src/a.py#0", sequence_number=2
+    )
+    with pytest.raises(ReplayEquivalenceError, match="more than one start marker"):
+        _verify_phase_wellformed((honest, same_id_dup))
