@@ -153,11 +153,12 @@ def _say(msg: str = "") -> None:
 
 
 class _SayLogHandler(logging.Handler):
-    """Route `outrider.*` WARNING+ logs into the trace tee so SWALLOWED failures —
-    notably best-effort Slack errors the orchestrator/nodes log-and-ignore — show in
-    the terminal AND the scripts/generated/ trace file, not just on stderr. This is
-    the "catch every silent failure" hook: a Slack post that fails is never fatal, so
-    its only signal is the log line, and this makes that signal impossible to miss."""
+    """Route `outrider.*` INFO+ logs into the trace tee so the scripts/generated/ file
+    captures every log line the run emits — analyze skip lines (why a file produced no
+    findings) AND swallowed WARNING+ failures (best-effort Slack errors the
+    orchestrator/nodes log-and-ignore), not just on stderr. This is the "catch every
+    silent failure" hook: a skipped file or a failed Slack post is never fatal, so its
+    only signal is the log line, and this makes that signal impossible to miss."""
 
     def emit(self, record: logging.LogRecord) -> None:
         for line in self.format(record).splitlines():
@@ -959,12 +960,15 @@ def _main_with_log() -> int:
     global _TRACE  # noqa: PLW0603 — single assignment per process, set before any _say
     _TRACE = TraceTee("live_github_demo")
     print(f"  Full trace ........... {_TRACE.path}", flush=True)
-    # Route outrider WARNING+ logs (incl. SWALLOWED best-effort Slack failures) into
-    # the tee, so a non-fatal Slack error isn't a silent failure — it lands in the
-    # terminal + the trace file alongside everything else.
+    # Route outrider INFO+ logs into the tee so the trace file captures EVERYTHING the
+    # run emits: analyze skip lines (UNSUPPORTED_LANGUAGE / NO_CHANGED_SCOPE_UNITS / degraded
+    # — the "why did a file produce no findings" signal), plus every WARNING+ (swallowed
+    # best-effort Slack failures, cache/degradation notes) as before. Scoped to the `outrider`
+    # logger, so third-party INFO (httpx, langgraph, anthropic SDK) does NOT flood the tee —
+    # only Outrider's own log lines land, tagged `[log:INFO]` / `[log:WARNING]`.
     outrider_logger = logging.getLogger("outrider")
-    outrider_logger.setLevel(logging.WARNING)
-    log_handler = _SayLogHandler(level=logging.WARNING)
+    outrider_logger.setLevel(logging.INFO)
+    log_handler = _SayLogHandler(level=logging.INFO)
     outrider_logger.addHandler(log_handler)
     try:
         return asyncio.run(_run(_parse_args()))
