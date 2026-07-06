@@ -280,6 +280,49 @@ async def test_probe_cache_model_distinct_system_prompts_never_hit() -> None:
     assert (r2.cache_write_tokens, r2.cache_read_tokens) == (5000, 0)
 
 
+class _BlockingPersist(_RecordingPersist):
+    """Holds every persist() until released — forces two complete() calls to
+    OVERLAP deterministically (the concurrent-worker shape)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        import asyncio
+
+        self.release = asyncio.Event()
+
+    async def persist(self, event: Any, request: Any, response: Any) -> None:
+        await self.release.wait()
+        await super().persist(event, request, response)
+
+
+async def test_probe_cache_model_concurrent_first_wave_all_write() -> None:
+    """IN-FLIGHT-AWARE cache model: a written prefix is warm only when the
+    writing call COMPLETES, so two calls that overlap (the parallel-analyze
+    first wave) BOTH record cache writes — the real API's documented
+    stampede. Marking warm at decision time would let the sibling record a
+    read and underprice concurrent reviews (1.25× write vs 0.1× read). A
+    call arriving AFTER completion still reads (the sequential contract,
+    unchanged)."""
+    import asyncio
+
+    probe = CostProbe(token_estimator=len, output_tokens=10, model_cache=True)
+    persist = _BlockingPersist()
+    provider = _FixtureScriptedProvider(
+        {"triage": ["one", "two", "three"]}, persister=persist, probe=probe
+    )
+    system = "A" * 5000
+    task1 = asyncio.ensure_future(provider.complete(_cache_request(system)))
+    task2 = asyncio.ensure_future(provider.complete(_cache_request(system)))
+    await asyncio.sleep(0)  # both calls reach the blocked persist — overlapped
+    persist.release.set()
+    r1, r2 = await asyncio.gather(task1, task2)
+    assert (r1.cache_write_tokens, r1.cache_read_tokens) == (5000, 0)
+    assert (r2.cache_write_tokens, r2.cache_read_tokens) == (5000, 0)  # the stampede
+    # Post-completion arrival: warm — the sequential read contract holds.
+    r3 = await provider.complete(_cache_request(system))
+    assert (r3.cache_write_tokens, r3.cache_read_tokens) == (0, 5000)
+
+
 # ---------------------------------------------------------------------------
 # _FixtureGitHubClient (via _github_factory_for) — wire-shape fidelity
 # ---------------------------------------------------------------------------
