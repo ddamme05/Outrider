@@ -735,10 +735,10 @@ async def test_severity_override_renders_override_severity_in_comment_and_audit(
     posted_comments = publisher.create_calls[0]["comments"]
     assert len(posted_comments) == 1
     body = posted_comments[0].body
-    # Header begins with `**LOW**` (the override), NOT `**CRITICAL**` (baseline).
+    # Header carries the humanized OVERRIDE label `**Low**`, NOT the baseline `**Critical**`.
     assert "**Low**" in body, f"expected override severity Low in body, got: {body[:80]!r}"
-    assert "**CRITICAL**" not in body, (
-        f"baseline CRITICAL should not appear in body, got: {body[:80]!r}"
+    assert "**Critical**" not in body, (
+        f"baseline Critical should not appear in body, got: {body[:80]!r}"
     )
 
 
