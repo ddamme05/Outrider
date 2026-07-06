@@ -9,11 +9,16 @@ The PR is designed to exercise, in one review: **Python + JS/TS**, the **paralle
 fan-out**, the **deterministic severity policy table**, and the **trace node** (cross-file
 resolution). It runs identically on Anthropic (Sonnet/Haiku tiered) and Fireworks GLM-5.2.
 
-**Corpus location:** the 10 files live in `scripts/demo_fixtures/live_pr_corpus/`, mirroring the
-sandbox repo layout. To build the PR: copy `src/app/db/queries.py` onto the sandbox repo's **base**
-branch first (the trace target — must exist at head but be absent from the diff), then open a PR
-that adds the other **9** files. The OBSERVED findings below were offline-validated against the
-real query producer, so they will fire when the sandbox review runs.
+**Corpus location:** the 10 files live in `scripts/demo_fixtures/live_pr_corpus/`, laid out at
+**repo root** (`app/…`, `ops/`, `data/`, `components/`) to match the sandbox repo's import
+convention — Python imports resolve as `app.*` from root, so the trace edge
+(`reports.py` → `from app.db.queries import run_raw_query`) resolves to `app/db/queries.py`
+(offline-verified via the real resolver). To build the PR: copy `app/db/queries.py` onto the
+sandbox repo's **base** branch first (the trace target — must exist at head but be absent from
+the diff), then open a PR that adds the other **9** files. The corpus `README.md` deploys as
+`CATALOG_SERVICE.md` in the sandbox (so it doesn't clobber the repo's own README) — it's still the
+non-code doc that proves triage SKIM/SKIP. The OBSERVED findings below were offline-validated
+against the real query producer (17 matches), so they fire when the sandbox review runs.
 
 ---
 
@@ -40,7 +45,7 @@ gate is guaranteed to trip and the review will pause at `AWAITING_APPROVAL`.
 
 ## Prerequisites (one-time)
 
-1. **Commit the trace target to the sandbox repo's BASE branch first.** `src/app/db/queries.py`
+1. **Commit the trace target to the sandbox repo's BASE branch first.** `app/db/queries.py`
    must exist at the PR's head SHA but be **absent from the PR diff** — that's what gives the
    trace node something to resolve and fetch. Commit it to `main` in the sandbox repo, *then*
    open the PR that adds the other 9 files.
@@ -62,15 +67,15 @@ gate is guaranteed to trip and the review will pause at `AWAITING_APPROVAL`.
 
 | # | Path | Lang | Tier | In diff? | Proves |
 |---|------|------|------|----------|--------|
-| 1 | `src/app/db/user_repository.py` | py | DEEP | yes | Python OBSERVED SQLi + JUDGED spread; HITL |
-| 2 | `src/app/tasks/report_runner.py` | py | DEEP | yes | densest Python OBSERVED; multi-query→one-finding dedup |
-| 3 | `src/app/api/reports.py` | py | DEEP | yes | **trace source** (imports an out-of-diff sink) |
-| 4 | `src/app/db/queries.py` | py | — | **base only** | **trace target** (fetched in pass-2) |
-| 5 | `src/app/utils/pagination.py` | py | STANDARD | yes | Haiku-tier file, JUDGED-only (INFO band) |
-| 6 | `src/app/models/invoice.py` | py | STANDARD | yes | second Haiku-tier file (fan-out width) |
-| 7 | `src/ops/deploy_helpers.js` | js | DEEP | yes | JS OBSERVED (command injection + weak crypto) |
-| 8 | `src/data/user_repository.ts` | ts | DEEP | yes | TS grammar fires the JS OBSERVED catalog |
-| 9 | `src/components/ExpressionPreview.tsx` | tsx | DEEP | yes | TSX grammar + eval/hash OBSERVED |
+| 1 | `app/db/user_repository.py` | py | DEEP | yes | Python OBSERVED SQLi + JUDGED spread; HITL |
+| 2 | `app/tasks/report_runner.py` | py | DEEP | yes | densest Python OBSERVED; multi-query→one-finding dedup |
+| 3 | `app/api/reports.py` | py | DEEP | yes | **trace source** (imports an out-of-diff sink) |
+| 4 | `app/db/queries.py` | py | — | **base only** | **trace target** (fetched in pass-2) |
+| 5 | `app/utils/pagination.py` | py | STANDARD | yes | Haiku-tier file, JUDGED-only (INFO band) |
+| 6 | `app/models/invoice.py` | py | STANDARD | yes | second Haiku-tier file (fan-out width) |
+| 7 | `ops/deploy_helpers.js` | js | DEEP | yes | JS OBSERVED (command injection + weak crypto) |
+| 8 | `data/user_repository.ts` | ts | DEEP | yes | TS grammar fires the JS OBSERVED catalog |
+| 9 | `components/ExpressionPreview.tsx` | tsx | DEEP | yes | TSX grammar + eval/hash OBSERVED |
 | 10 | `README.md` | md | SKIM/SKIP | yes | triage excludes non-code (no worker Sent) |
 
 Tier is **triage-decided** at runtime by security density — the split above is the intent; the
@@ -86,7 +91,7 @@ Legend: **[O]** OBSERVED (guaranteed), **[J]** JUDGED (likely, model-dependent),
 real producer (`ast_facts.registry.parse_source` → `analyze_observed.run_observed_matches`) —
 each listed query provably fires on the corpus file.
 
-### 1. `src/app/db/user_repository.py` — DEEP
+### 1. `app/db/user_repository.py` — DEEP
 | Finding type | Severity | Tier | Note |
 |---|---|---|---|
 | `sql_injection` | CRITICAL | **[O]** | `python.sql_injection_string_concat` — fires on **2 methods** (f-string SQL into `cursor.execute`): `find_by_id`, `search_by_email` |
@@ -97,7 +102,7 @@ each listed query provably fires on the corpus file.
 gets flagged `sql_injection`, that's a **false positive** to investigate — the OBSERVED producer
 proves it won't (validated: 2 matches, not 5).
 
-### 2. `src/app/tasks/report_runner.py` — DEEP
+### 2. `app/tasks/report_runner.py` — DEEP
 | Finding type | Severity | Tier | Note |
 |---|---|---|---|
 | `command_injection` | CRITICAL | **[O]** | `python.command_injection_subprocess_shell` (`subprocess(..., shell=True)`) |
@@ -105,31 +110,31 @@ proves it won't (validated: 2 matches, not 5).
 | `tls_verify_disabled` | HIGH | **[O]** | `python.tls_verify_disabled` (`requests(..., verify=False)`) |
 | `weak_crypto` | HIGH | **[O]** | `weak_crypto_broken_cipher` + `weak_crypto_ecb_mode` both fire on the `DES.new` line → **dedup to ONE** finding (content-hash dedup) |
 
-### 3. `src/app/api/reports.py` — DEEP (trace source)
+### 3. `app/api/reports.py` — DEEP (trace source)
 | Finding type | Severity | Tier | Note |
 |---|---|---|---|
 | `sql_injection` | CRITICAL | [J] | JUDGED (not OBSERVED): the f-string is passed to the imported `run_raw_query`, whose `.execute` sink lives out-of-diff → emits a **TraceCandidate** for `app.db.queries` |
 
-### 4. `src/app/db/queries.py` — trace target (base only, fetched in pass-2)
+### 4. `app/db/queries.py` — trace target (base only, fetched in pass-2)
 | Finding type | Severity | Tier | Note |
 |---|---|---|---|
 | `sql_injection` | CRITICAL | [I]/[J] | second analyze round over the trace-fetched file; confirms the raw `cursor.execute(sql)` sink. `analysis_rounds == 2`, `files_traced_beyond_diff >= 1`, published **DASHBOARD_ONLY** (not in the diff) |
 
-### 5. `src/app/utils/pagination.py` — STANDARD (Haiku)
+### 5. `app/utils/pagination.py` — STANDARD (Haiku)
 | Finding type | Severity | Tier |
 |---|---|---|
 | `missing_input_validation` | MEDIUM | [J] |
 | `missing_error_handling` | LOW | [J] |
 | `deprecated_api` | INFO | [J] — `datetime.utcnow()` |
 
-### 6. `src/app/models/invoice.py` — STANDARD (Haiku)
+### 6. `app/models/invoice.py` — STANDARD (Haiku)
 | Finding type | Severity | Tier |
 |---|---|---|
 | `missing_input_validation` | MEDIUM | [J] |
 | `missing_test` | LOW | [J] |
 | `unused_import` | INFO | [J] — unreferenced `import json` |
 
-### 7. `src/ops/deploy_helpers.js` — DEEP (JavaScript)
+### 7. `ops/deploy_helpers.js` — DEEP (JavaScript)
 | Finding type | Severity | Tier | Note |
 |---|---|---|---|
 | `command_injection` | CRITICAL | **[O]** | `javascript.command_injection_child_process` (`cp.execSync(var)`) |
@@ -137,14 +142,14 @@ proves it won't (validated: 2 matches, not 5).
 | `weak_crypto` | HIGH | **[O]** | `javascript.weak_crypto_broken_cipher` (`des-ede3-cbc`) |
 | `weak_crypto` | HIGH | **[O]** | `javascript.weak_crypto_ecb_mode` (`aes-128-ecb`) |
 
-### 8. `src/data/user_repository.ts` — DEEP (TypeScript, uses the JS catalog)
+### 8. `data/user_repository.ts` — DEEP (TypeScript, uses the JS catalog)
 | Finding type | Severity | Tier | Note |
 |---|---|---|---|
 | `sql_injection` | CRITICAL | **[O]** | `javascript.sql_injection_string_concat` (`pool.query(concat)`) |
 | `tls_verify_disabled` | HIGH | **[O]** | `javascript.tls_verify_disabled` (`rejectUnauthorized: false`) |
 | `tls_verify_disabled` | HIGH | **[O]** | `javascript.tls_env_verify_disabled` (`NODE_TLS_REJECT_UNAUTHORIZED = '0'`) |
 
-### 9. `src/components/ExpressionPreview.tsx` — DEEP (TSX)
+### 9. `components/ExpressionPreview.tsx` — DEEP (TSX)
 | Finding type | Severity | Tier | Note |
 |---|---|---|---|
 | `command_injection` | CRITICAL | **[O]** | `javascript.command_injection_eval` (`eval(memberExpr)`) |
@@ -246,7 +251,7 @@ the alternate GLM host: `OUTRIDER_LLM_HOST=baseten` + `BASETEN_API_KEY`.)
 ```
 uv run python scripts/inspect_review.py --review-id <id>
     # full per-phase timeline (phase_key-grouped) + curated LLM (profile_id/finish_reason) + findings + replay verdict
-uv run python scripts/inspect_review.py --review-id <id> --phase-key file:src/ops/deploy_helpers.js
+uv run python scripts/inspect_review.py --review-id <id> --phase-key file:ops/deploy_helpers.js
     # isolate ONE fan-out worker
 uv run python scripts/inspect_review.py --review-id <id> --compact
     # scan the interleaved parallel stream (phase_key/model/profile_id per line)
