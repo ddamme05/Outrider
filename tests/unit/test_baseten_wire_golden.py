@@ -78,9 +78,11 @@ GOLDEN_EVENT_TOKENS: dict[str, int] = {"input_tokens": 70, "output_tokens": 50, 
 # rate change must update this literal explicitly.
 GOLDEN_COST_USD: float = 0.0003258
 # Pinned literal, NOT the live PRICING_VERSION constant — the golden forces an explicit
-# acknowledgment on every bump: v3→v4 (host-qualified re-key) and v4→v5 (Sonnet 5 added to
-# RATE_TABLE). GLM/Baseten rates are unchanged across all of these; a call made now stamps v5.
-GOLDEN_PRICING_VERSION = "v5"
+# acknowledgment on every bump: v3→v4 (host-qualified re-key), v4→v5 (Sonnet 5 added to
+# RATE_TABLE), v5→v6 (Fireworks GLM-5.2 added, #056 amendment). Baseten's OWN rates are
+# unchanged across all of these — the version stamped on a call just records the table
+# generation — so a Baseten call made now stamps v6 with byte-identical cost.
+GOLDEN_PRICING_VERSION = "v6"
 
 _FIXED_REVIEW_ID = UUID("00000000-0000-0000-0000-0000000000aa")
 

@@ -265,7 +265,43 @@ BASETEN_PROFILE: Final[HostProfile] = HostProfile(
     ),
 )
 
-# ADD-A-HOST CHECKLIST (e.g. Fireworks / DeepInfra — arc 1b/2). The registries below
+# Fireworks — arc 1b (DECISIONS.md#056 amendment 2026-07-06). Ships on the captured paid
+# wire (`spikes/fireworks/fixtures/`): strict json_schema ACCEPTS the raw
+# ANALYZE_RESPONSE_SCHEMA verbatim (nullable anyOf honored) → STRICT_JSON_SCHEMA, NO adapter;
+# usage is OpenAI-shape (cached_tokens ⊂ prompt_tokens) → PROMPT_INCLUDES_CACHED;
+# reasoning_effort="none" accepted → REASONING_EFFORT_NONE. GLM-5.2 is an OPEN model on
+# Fireworks, served on the chat-completions path this provider uses — Fireworks' zero-data-
+# retention policy applies (the Responses-API store=True/30-day retention does NOT — a
+# different endpoint we never call).
+FIREWORKS_PROFILE: Final[HostProfile] = HostProfile(
+    host_id="fireworks",
+    base_url="https://api.fireworks.ai/inference/v1",
+    api_key_env="FIREWORKS_API_KEY",
+    # Fireworks renders the model version's dot as `p` (glm-5p2). Anchor both segments so a
+    # bare `zai-org/GLM-5.2` (Baseten's shape) can't cross-validate against this host.
+    model_slug_pattern=r"^accounts/fireworks/models/glm-\d+p\d+$",
+    json_mode=JsonMode.STRICT_JSON_SCHEMA,
+    token_accounting=TokenAccounting.PROMPT_INCLUDES_CACHED,
+    reasoning_mechanism=ReasoningMechanism.REASONING_EFFORT_NONE,
+    privacy=HostPrivacy(
+        egress_host="api.fireworks.ai",
+        model_origin="zhipu",  # GLM-5.2 is Zhipu/z.ai's model; Fireworks hosts it directly.
+        direct_hosted=True,  # Fireworks runs model-library requests on its own infra.
+        trains_on_inputs=False,  # "We do not use your prompts ... to train or improve our
+        # AI models without your explicit opt-in" (privacy notice); Outrider does not opt in.
+        retention=(
+            "Fireworks does not log or store prompt or generation data for open models "
+            "(GLM-5.2 is an open model) on the chat-completions inference path Outrider uses; "
+            "prompt-cache KV may reside in volatile memory for several minutes, never "
+            "persisted. The Responses-API store=True 30-day retention is a DIFFERENT endpoint "
+            "Outrider never calls."
+        ),
+        source_url="https://docs.fireworks.ai/guides/security_compliance/data_handling",
+        verified_date="2026-07-06",
+    ),
+)
+
+# ADD-A-HOST CHECKLIST (e.g. DeepInfra — arc 2). The registries below
 # (HOST_PROFILES, HOST_DEFAULT_MODELS) + pricing's RATE_TABLE / MIN_CACHEABLE_TOKENS are
 # the ONLY host enumerations in src/, and the error strings auto-derive their host lists
 # from them, so this is genuinely "add-a-profile":
@@ -279,15 +315,22 @@ BASETEN_PROFILE: Final[HostProfile] = HostProfile(
 #      (None = unknown floor, 0 = documented no-floor), bump PRICING_VERSION, update the
 #      pricing-digest test.
 #   3. .env: point OUTRIDER_LLM_HOST at the new host_id + set its api_key_env.
-#   4. STRICT-JSON hosts ONLY (Fireworks/DeepInfra constrained decoding): ANALYZE_RESPONSE_SCHEMA
-#      is hand-trimmed to Anthropic's subset (nullable `anyOf`, partial `required`) and sent
-#      verbatim with strict:True. A strict compiler REJECTS that shape — add a per-host schema
-#      adapter (rewrite nullable `anyOf` -> `type:[X,"null"]` + complete every object's
-#      `required`) and confirm the host's strict compiler accepts it on a CAPTURED WIRE before
-#      shipping (#056: a new host ships only on captured wire evidence + the scorecard).
-#      Baseten's SOFT_FENCED path needs no adapter.
+#   4. STRICT-JSON hosts (DeepInfra constrained decoding, and any future strict host):
+#      ANALYZE_RESPONSE_SCHEMA is hand-trimmed to Anthropic's subset (nullable `anyOf`,
+#      partial `required`) and sent verbatim with strict:True. CONFIRM on a CAPTURED WIRE
+#      whether the host's strict compiler accepts that shape (#056: a new host ships only on
+#      captured wire evidence + the scorecard). FIREWORKS (2026-07-06 wire) ACCEPTS the raw
+#      schema verbatim — nullable `anyOf` honored, direct conforming JSON — so it needs NO
+#      adapter. The prototyped `_fireworks_adapt` (nullable→type-array + required-completion)
+#      is REJECTED as harmful: required-completion induced fabricated proof-boundary metadata
+#      (a `query_match_id`/`trace_path` on a JUDGED finding). Do NOT force-required a strict
+#      host's optional proof fields without re-examining this. Baseten's SOFT_FENCED path
+#      needs no adapter either.
 HOST_PROFILES: Final[Mapping[str, HostProfile]] = MappingProxyType(
-    {BASETEN_PROFILE.host_id: BASETEN_PROFILE}
+    {
+        BASETEN_PROFILE.host_id: BASETEN_PROFILE,
+        FIREWORKS_PROFILE.host_id: FIREWORKS_PROFILE,
+    }
 )
 
 # Per-host per-node default model slugs (NOT HostProfiles). Anthropic has an entry but no
@@ -315,8 +358,15 @@ _ANTHROPIC_DEFAULT_MODELS: Final[Mapping[str, str]] = MappingProxyType(
 _BASETEN_DEFAULT_MODELS: Final[Mapping[str, str]] = MappingProxyType(
     {field: "zai-org/GLM-5.2" for field in _MODEL_FIELDS}
 )
+_FIREWORKS_DEFAULT_MODELS: Final[Mapping[str, str]] = MappingProxyType(
+    {field: "accounts/fireworks/models/glm-5p2" for field in _MODEL_FIELDS}
+)
 HOST_DEFAULT_MODELS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyType(
-    {"anthropic": _ANTHROPIC_DEFAULT_MODELS, "baseten": _BASETEN_DEFAULT_MODELS}
+    {
+        "anthropic": _ANTHROPIC_DEFAULT_MODELS,
+        "baseten": _BASETEN_DEFAULT_MODELS,
+        "fireworks": _FIREWORKS_DEFAULT_MODELS,
+    }
 )
 
 

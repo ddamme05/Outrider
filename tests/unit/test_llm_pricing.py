@@ -268,6 +268,9 @@ EXPECTED_PRICING_DIGEST: dict[str, str] = {
     # v5 (Sonnet 5 migration): added ("anthropic", "claude-sonnet-5") at intro
     # rates; claude-sonnet-4-6 retained for historical replay + scorecard baseline.
     "v5": "e7a9702ea9b8d626",
+    # v6 (#056 amendment): added ("fireworks", "accounts/fireworks/models/glm-5p2")
+    # at $1.40/$0.14/$4.40 (verified live 2026-07-06). No other rate VALUES changed.
+    "v6": "ff3388e38abc33f2",
 }
 
 

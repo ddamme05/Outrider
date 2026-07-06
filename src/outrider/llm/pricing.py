@@ -132,11 +132,17 @@ version-keyed cost aggregation.
 #   2026-06-30 INTRODUCTORY rate ($2.00 in / $10.00 out per MTok; cache read
 #   $0.20 = 0.10× input, cache write $2.50 = 1.25× input). Introductory pricing
 #   runs through 2026-08-31; STANDARD pricing ($3.00 in / $15.00 out) takes effect
-#   2026-09-01 and needs a v6 bump then (FUP-201). The prior claude-sonnet-4-6
-#   rates are RETAINED for historical replay + the GLM-vs-Anthropic scorecard
-#   baseline. Anthropic pricing values are runtime-enforced and can drift between
-#   snapshots — verify live before the v6 bump.
-PRICING_VERSION: Final[str] = "v5"
+#   2026-09-01 and needs a bump then (FUP-201, now the v7 slot). The prior
+#   claude-sonnet-4-6 rates are RETAINED for historical replay + the GLM-vs-Anthropic
+#   scorecard baseline. Anthropic pricing values are runtime-enforced and can drift
+#   between snapshots — verify live before that bump.
+# v6 (DECISIONS.md#056 amendment 2026-07-06): added
+#   ("fireworks", "accounts/fireworks/models/glm-5p2") at $1.40 in / $0.14 cached-read /
+#   $4.40 out (Standard path), verified live against fireworks.ai + the 6/30 blog. Fireworks'
+#   cached-input DIVERGES from Baseten's $0.26 (dropped to $0.14 on 6/30) — the host-qualified
+#   key resolves both. No Anthropic/Baseten rate VALUES changed; the bump records v6 so a
+#   Fireworks-host call replays under this table.
+PRICING_VERSION: Final[str] = "v6"
 if not re.fullmatch(PRICING_VERSION_PATTERN, PRICING_VERSION):
     raise RuntimeError(
         f"PRICING_VERSION must match {PRICING_VERSION_PATTERN!r} "
@@ -226,6 +232,20 @@ RATE_TABLE: Final[Mapping[tuple[str, str], ModelPricing]] = MappingProxyType(
             cache_read_per_token=Decimal("0.00000026"),  # 0.26/MTok (cached input)
             out_per_token=Decimal("0.0000044"),  # 4.40/MTok
         ),
+        # GLM 5.2 on Fireworks (PRICING_VERSION v6; DECISIONS.md#056 amendment 2026-07-06).
+        # Verified 2026-07-06 against fireworks.ai/models/fireworks/glm-5p2 AND the 6/30 blog:
+        # "$1.40 / $0.14 / $4.40 Per 1M Tokens (input/cached input/output)" — the STANDARD path
+        # (the Fast path, $2.10/$0.21/$6.60 at ~2× throughput, is not what this provider calls).
+        # cache_read DIVERGES from Baseten's 0.26 (Fireworks dropped cached-input to 0.14 on
+        # 6/30) — the "same slug, two hosts, two rates" case the host-qualified key exists for.
+        # cache_write_per_token=0: Fireworks automatic prompt caching surfaces no cache-write
+        # token class, and the provider sets cache_write_tokens=0 (PROMPT_INCLUDES_CACHED).
+        ("fireworks", "accounts/fireworks/models/glm-5p2"): ModelPricing(
+            in_per_token=Decimal("0.0000014"),  # 1.40/MTok
+            cache_write_per_token=Decimal("0"),  # no Fireworks cache-write class
+            cache_read_per_token=Decimal("0.00000014"),  # 0.14/MTok (cached input)
+            out_per_token=Decimal("0.0000044"),  # 4.40/MTok
+        ),
     }
 )
 
@@ -267,6 +287,13 @@ MIN_CACHEABLE_TOKENS: Final[Mapping[tuple[str, str], int | None]] = MappingProxy
         # cache_control marker and has no silently-disabled-cache diagnostic),
         # but the key-set parity test requires an entry for every RATE_TABLE key.
         ("baseten", "zai-org/GLM-5.2"): 0,
+        # Fireworks: the captured wire (spikes/fireworks/fixtures/adapted.json) shows caching
+        # fire at prompt_tokens=159 (cached=158) with no apparent minimum, and Fireworks
+        # documents automatic prompt caching without a published token threshold — 0 =
+        # no-floor, same treatment as the sibling GLM host. The OpenAI-compat provider does
+        # not consult this (Fireworks caches automatically; the provider reads cached_tokens
+        # straight from usage); the entry exists for the RATE_TABLE key-set parity test.
+        ("fireworks", "accounts/fireworks/models/glm-5p2"): 0,
     }
 )
 

@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from outrider.llm.base import LLMInvalidResponseError
 from outrider.llm.host_profiles import (
     BASETEN_PROFILE,
+    FIREWORKS_PROFILE,
     HOST_DEFAULT_MODELS,
     HOST_PROFILES,
     HostPrivacy,
@@ -161,14 +162,95 @@ def test_host_default_models_anthropic_matches_canonical_tiers() -> None:
         "patch_model": "claude-haiku-4-5",
     }
     assert set(HOST_DEFAULT_MODELS["baseten"].values()) == {"zai-org/GLM-5.2"}
+    assert set(HOST_DEFAULT_MODELS["fireworks"].values()) == {"accounts/fireworks/models/glm-5p2"}
     assert HOST_DEFAULT_MODELS["anthropic"].keys() == HOST_DEFAULT_MODELS["baseten"].keys()
+    assert HOST_DEFAULT_MODELS["fireworks"].keys() == HOST_DEFAULT_MODELS["baseten"].keys()
 
 
 def test_resolve_host_profile() -> None:
     assert resolve_host_profile("baseten") is BASETEN_PROFILE
-    assert set(HOST_PROFILES) == {"baseten"}  # arc 1a ships only Baseten
+    assert resolve_host_profile("fireworks") is FIREWORKS_PROFILE
+    assert set(HOST_PROFILES) == {"baseten", "fireworks"}  # arc 1a Baseten + arc 1b Fireworks
     with pytest.raises(ValueError, match="unknown OpenAI-compatible host 'deepinfra'"):
         resolve_host_profile("deepinfra")
+
+
+def test_fireworks_profile_is_wire_verified() -> None:
+    """The Fireworks profile encodes the 2026-07-06 captured wire contract
+    (DECISIONS.md#056 amendment): strict schema (raw, no adapter), OpenAI cached-token
+    accounting, reasoning_effort='none', and the no-training / open-model-ZDR privacy."""
+    p = FIREWORKS_PROFILE
+    assert p.host_id == "fireworks"
+    assert p.base_url == "https://api.fireworks.ai/inference/v1"
+    assert p.api_key_env == "FIREWORKS_API_KEY"
+    assert p.json_mode is JsonMode.STRICT_JSON_SCHEMA  # raw schema accepted, no adapter
+    assert p.token_accounting is TokenAccounting.PROMPT_INCLUDES_CACHED
+    assert p.reasoning_mechanism is ReasoningMechanism.REASONING_EFFORT_NONE
+    assert not p.reasoning_forced_on  # it HAS an off-switch
+    assert p.privacy.trains_on_inputs is False  # hard-fail field: confirmed no-training
+    assert p.privacy.egress_host == "api.fireworks.ai"
+    assert p.privacy.verified_date == "2026-07-06"
+    # The slug pattern admits the real Fireworks GLM path and rejects Baseten's shape.
+    p.validate_model_slug("accounts/fireworks/models/glm-5p2")
+    with pytest.raises(ValueError, match="does not match host 'fireworks'"):
+        p.validate_model_slug("zai-org/GLM-5.2")
+    # Its digest differs from Baseten's (cache/replay separation across the two GLM hosts).
+    assert p.profile_contract_digest != BASETEN_PROFILE.profile_contract_digest
+
+
+def test_fireworks_reasoning_off_shapes_reasoning_effort_none() -> None:
+    """The wire-verified shaper: extra reasoning_effort='none' key, accepted by Fireworks."""
+    kwargs: dict[str, object] = {}
+    FIREWORKS_PROFILE.apply_reasoning_off(kwargs)
+    assert kwargs == {"reasoning_effort": "none"}
+
+
+def test_fireworks_usage_maps_cached_as_subset_of_prompt() -> None:
+    """PROMPT_INCLUDES_CACHED, grounded in the captured wire (adapted.json:
+    prompt_tokens=159, cached_tokens=158): cache_read is the cached subset, input is the
+    remainder, and input + cache_read == prompt_tokens."""
+    input_tokens, cache_read, output_tokens = read_usage(
+        prompt_tokens=159,
+        raw_cached_tokens=158,
+        completion_tokens=410,
+        accounting=FIREWORKS_PROFILE.token_accounting,
+    )
+    assert (input_tokens, cache_read, output_tokens) == (1, 158, 410)
+    assert input_tokens + cache_read == 159
+
+
+# The EXACT raw response body Fireworks GLM-5.2 returned for the analyze schema on the
+# 2026-07-06 paid wire (spikes/fireworks/fixtures/raw.json — gitignored, so this inline
+# copy is the SOLE in-repo record; kept byte-verbatim so a future re-capture can diff
+# against it). Direct, un-fenced JSON; nullable proof fields
+# (query_match_id/trace_path/trace_candidates) OMITTED, not fabricated — the reason the
+# profile ships the RAW schema with no adapter.
+_FIREWORKS_RAW_WIRE_BODY = (
+    '{\n"findings": [\n{\n"finding_type": "sql_injection",\n'
+    '"evidence_tier": "judged",\n"title": "SQL Injection via string concatenation",\n'
+    '"description": "The code constructs a SQL query by directly concatenating the '
+    "`user_id` parameter into the query string. This allows an attacker to inject "
+    "arbitrary SQL commands. To fix this, use parameterized queries instead of string "
+    'concatenation, e.g., `db.execute(\\"SELECT * FROM users WHERE id = ?\\", '
+    '(user_id,))`.",\n'
+    '"evidence": "    query = \\"SELECT * FROM users WHERE id = \'\\" + user_id + '
+    '\\"\'\\"",\n"line_start": 4,\n"line_end": 4\n}\n]\n}'
+)
+
+
+def test_fireworks_raw_wire_body_parses_and_omits_proof_fields() -> None:
+    """Regression on the captured wire (DECISIONS.md#056 amendment): the RAW-schema
+    response parses through `AnalyzeResponseRaw` unfenced, and the optional proof fields
+    are ABSENT (→ None), not fabricated — the harm the rejected required-completion adapter
+    would have introduced (a `query_match_id`/`trace_path` invented on a JUDGED finding)."""
+    from outrider.schemas.llm.analyze import AnalyzeResponseRaw
+
+    parsed = AnalyzeResponseRaw.model_validate_json(_FIREWORKS_RAW_WIRE_BODY)
+    (finding,) = parsed.findings
+    assert finding.evidence_tier == "judged"
+    assert finding.query_match_id is None  # omitted by the raw schema, not fabricated
+    assert finding.trace_path is None
+    assert finding.trace_candidates == ()  # default; the model left it out
 
 
 def test_reasoning_forced_on_is_true_only_for_none_mechanism() -> None:
