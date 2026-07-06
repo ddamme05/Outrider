@@ -284,16 +284,27 @@ def test_cache_packing_cross_file_proof() -> None:
     assert cached < uncached, "cache-modeled cost must beat uncached repricing"
 
 
-def test_probe_with_concurrency_is_refused() -> None:
-    """Reproducibility guard: the in-flight-aware cache model prices a
-    concurrent first wave correctly, but HOW MANY workers land in that
-    wave depends on persist() I/O timing — modeled cost would vary
-    run-to-run, defeating the probe's deterministic before/after purpose.
-    The combination fails loud at the entry point."""
+def test_cache_modeled_probe_with_concurrency_is_refused() -> None:
+    """Reproducibility guard, NARROW: only the cache-MODELED probe is
+    timing-dependent (how many first-wave workers record the 1.25x write
+    varies with persist() I/O), so only that combination fails loud."""
     import pytest
 
     from outrider.agent.eval_driver import EvalDriverError
 
-    probe = CostProbe(token_estimator=_estimate_tokens)
+    probe = CostProbe(token_estimator=_estimate_tokens, model_cache=True)
     with pytest.raises(EvalDriverError, match="not be reproducible"):
         run_review(_FIXTURES / "parallel_fanout.json", probe=probe, analyze_max_concurrency=4)
+
+
+def test_cache_off_probe_runs_under_concurrency() -> None:
+    """A cache-OFF probe is deterministic under concurrency (per-call token
+    counts + per-call pricing; only the .calls ORDER varies), so concurrent
+    cost measurement stays available — the refusal must not overreach."""
+    probe = CostProbe(token_estimator=_estimate_tokens)  # model_cache=False
+    result = run_review(_FIXTURES / "parallel_fanout.json", probe=probe, analyze_max_concurrency=4)
+    assert result.hitl_gated is True  # the run genuinely completed its pass
+    analyze_calls = [c for c in probe.calls if c["node_id"] == "analyze"]
+    assert len(analyze_calls) == 3
+    assert all(c["cache_write_tokens"] == 0 for c in analyze_calls)  # cache-off
+    assert all(c["input_tokens"] > 0 for c in analyze_calls)  # real prompt-derived

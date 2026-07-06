@@ -111,7 +111,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import weakref
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -488,24 +487,35 @@ class AnalyzeConcurrencyGate:
     "bound to a different event loop" if the same compiled graph is ever
     driven on a second loop (a module-scoped graph fixture, an
     import-time build, sequential `asyncio.run` calls). This gate holds
-    the permit COUNT and mints one semaphore per running loop on demand,
-    so the bound is per-(graph, loop) — semantically identical for the
-    single-loop production server, crash-proof everywhere else.
+    the permit COUNT and mints one semaphore per running loop on demand.
+
+    CONTRACT — the bound is per-(graph, LOOP), not globally cross-loop:
+    the production server drives one loop, where per-loop IS graph-global;
+    two loops simultaneously driving one compiled graph would each get an
+    independent cap (an accepted limitation — this gate bounds the
+    fan-out's burst; cross-process/global provider throttling is the
+    provider/rate-limit layer's concern, and a cross-loop limiter would
+    need thread-blocking primitives inside coroutines).
+
+    Storage is a STRONG dict pruned of closed loops on miss: weak keys
+    do not work here, because a contended `asyncio.Semaphore` caches its
+    bound loop (`_LoopBoundMixin`) — the value would strongly retain the
+    weak key and no entry would ever collect. Pruning bounds the map by
+    LIVE loops instead.
     """
 
     def __init__(self, permits: int) -> None:
         if permits < 1:
             raise ValueError(f"permits must be >= 1, got {permits}")
         self._permits = permits
-        # Weak keys: a finished loop's semaphore is garbage, not a leak.
-        self._by_loop: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
-            weakref.WeakKeyDictionary()
-        )
+        self._by_loop: dict[asyncio.AbstractEventLoop, asyncio.Semaphore] = {}
 
     def current(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()
         semaphore = self._by_loop.get(loop)
         if semaphore is None:
+            for stale in [known for known in self._by_loop if known.is_closed()]:
+                del self._by_loop[stale]
             semaphore = asyncio.Semaphore(self._permits)
             self._by_loop[loop] = semaphore
         return semaphore
