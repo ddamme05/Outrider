@@ -145,7 +145,7 @@ proves it won't (validated: 2 matches, not 5).
 ### 8. `data/user_repository.ts` — DEEP (TypeScript, uses the JS catalog)
 | Finding type | Severity | Tier | Note |
 |---|---|---|---|
-| `sql_injection` | CRITICAL | **[O]** | `javascript.sql_injection_string_concat` (`pool.query(concat)`) |
+| `sql_injection` | CRITICAL | **[O]** | `javascript.sql_injection_string_concat` — **2 sites** (id lookup + domain `LIKE`), `pool.query(concat)` |
 | `tls_verify_disabled` | HIGH | **[O]** | `javascript.tls_verify_disabled` (`rejectUnauthorized: false`) |
 | `tls_verify_disabled` | HIGH | **[O]** | `javascript.tls_env_verify_disabled` (`NODE_TLS_REJECT_UNAUTHORIZED = '0'`) |
 
@@ -167,7 +167,7 @@ No `analyze_file` worker Sent (triage classifies non-code as SKIM/SKIP). Verify 
 - **OBSERVED matches (guaranteed — offline-validated):** **17** query matches across 5 files:
   `user_repository.py` 2 SQLi · `report_runner.py` 5 (cmd-inj, unsafe-deser, tls, broken-cipher,
   ecb — the last two on one line → **1 weak_crypto finding**) · `deploy_helpers.js` 4 (cmd-inj +
-  3 weak-crypto) · `user_repository.ts` 4 (SQLi, tls-verify ×2, tls-env) · `ExpressionPreview.tsx`
+  3 weak-crypto) · `user_repository.ts` 4 (SQLi ×2, tls-verify, tls-env) · `ExpressionPreview.tsx`
   2 (eval, md5). Each carries a `query_match_id`; a missing one = a silent parse/skip or catalog
   regression. (Match count > finding count where content-hash dedup collapses same-line/same-type
   hits, e.g. the broken-cipher+ecb pair.)
