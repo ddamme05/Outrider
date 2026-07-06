@@ -4,6 +4,13 @@ These Python files are **input to the live review demo** (`scripts/seed_demo.py`
 `scripts/live_claude_smoke.py --diff-file`). Each carries a **deliberate, planted
 flaw** so a real review produces a known finding for the seeded demo dashboard.
 
+> **`live_pr_corpus/` is separate.** That subdirectory is the 10-file, multi-language
+> (Python + JS/TS) corpus for the **live GitHub everything-run** — copied into the sandbox
+> repo to open a real PR, not consumed by `seed_demo.py`. It exercises the parallel fan-out,
+> policy table, and trace node in one review, and its OBSERVED findings are offline-validated.
+> The full per-file expected findings + run recipe live in `LIVE_RUN_EXPECTED_FINDINGS.md` at
+> the repo root. Same "no demo/test framing" rule applies (it mirrors a real app repo).
+
 ## Why they read like production code (and why this note isn't in them)
 
 Triage is an LLM. When a fixture's own docstring announces "this is a deliberately

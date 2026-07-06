@@ -87,6 +87,10 @@ extend-exclude = [
     # Intentionally malformed Python — fixtures for ast_facts parse-failure handling.
     "spikes/tree_sitter/fixtures/syntax_error_inside_scope.py",
     "spikes/tree_sitter/fixtures/syntax_error_outside_scope.py",
+    # Live-run PR corpus — deliberately-vulnerable multi-language demo files copied into the
+    # sandbox repo for the live everything-run (see LIVE_RUN_EXPECTED_FINDINGS.md). Every S-rule
+    # hit is a planted flaw the review must detect; not Outrider code, never imported or run here.
+    "scripts/demo_fixtures/live_pr_corpus/",
 ]
 
 [tool.ruff.lint]
