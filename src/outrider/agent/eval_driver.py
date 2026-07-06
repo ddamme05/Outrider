@@ -465,6 +465,14 @@ class _FixtureScriptedProvider:
         # graph has ALREADY rendered the real system+user prompts by this point, so
         # the input count is grounded; output is modeled (no real completion).
         cache_read_tokens, cache_write_tokens = 0, 0
+        # In-flight-aware cache model: a written prefix becomes WARM only when
+        # the writing call COMPLETES (set just before `return response`), so a
+        # concurrent sibling that starts while the write is in flight records
+        # its own write — the real API's first-wave stampede (the
+        # parallel-analyze spec's accepted 1.25× note). Marking warm at
+        # decision time would let overlapping workers record reads and
+        # underprice concurrent reviews.
+        pending_cache_entry: tuple[str, str] | None = None
         probe = self._probe
         if probe is not None:
             output_tokens = (
@@ -517,7 +525,7 @@ class _FixtureScriptedProvider:
                         cache_read_tokens = system_tokens
                     else:
                         cache_write_tokens = system_tokens
-                        probe._cache_entries.add(entry)
+                        pending_cache_entry = entry  # warm at COMPLETION, below
                     input_tokens = probe.token_estimator(request.user_prompt)
                 else:
                     # Below the model's floor: processed without caching, no
@@ -615,6 +623,9 @@ class _FixtureScriptedProvider:
             profile_contract_digest=response.profile_contract_digest,
         )
         await self._persister.persist(event, request, response)
+        if pending_cache_entry is not None and self._probe is not None:
+            # The write has now completed: later calls read; overlapped ones wrote.
+            self._probe._cache_entries.add(pending_cache_entry)
         return response
 
     async def aclose(self) -> None:
