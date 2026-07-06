@@ -15,6 +15,7 @@ from collections import Counter
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from outrider.policy.severity import FindingSeverity
+from outrider.presentation.finding_sections import build_finding_sections
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -32,13 +33,13 @@ _SEVERITY_ORDER: Final[tuple[FindingSeverity, ...]] = (
     FindingSeverity.INFO,
 )
 _SEVERITY_RANK: Final[dict[FindingSeverity, int]] = {s: i for i, s in enumerate(_SEVERITY_ORDER)}
-_SEVERITY_EMOJI: Final[dict[FindingSeverity, str]] = {
-    FindingSeverity.CRITICAL: ":red_circle:",
-    FindingSeverity.HIGH: ":large_orange_circle:",
-    FindingSeverity.MEDIUM: ":large_yellow_circle:",
-    FindingSeverity.LOW: ":large_blue_circle:",
-    FindingSeverity.INFO: ":white_circle:",
-}
+
+# Slack Block Kit caps a section's mrkdwn text at 3000 chars. The attacker-controlled
+# pr_title / file_path / title are otherwise uncapped → a pathological value would trip
+# `msg_too_long`. `_cap_text` truncates per-section WITHOUT dropping blocks, so the overflow +
+# deep-link/action blocks (appended after, no attacker text) always survive. Total block count
+# is bounded well under Slack's 50-block message limit by `top_n`.
+_SLACK_SECTION_MAX: Final[int] = 2900
 
 
 class RenderedSlackMessage(NamedTuple):
@@ -58,8 +59,14 @@ def _escape_mrkdwn(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _cap_text(text: str) -> str:
+    """Truncate a section's mrkdwn to Slack's per-section limit (ellipsis-terminated) so an
+    uncapped attacker-controlled value (pr_title / file_path / title) can't trip msg_too_long."""
+    return text if len(text) <= _SLACK_SECTION_MAX else text[: _SLACK_SECTION_MAX - 1] + "…"
+
+
 def _section(markdown: str) -> dict[str, Any]:
-    return {"type": "section", "text": {"type": "mrkdwn", "text": markdown}}
+    return {"type": "section", "text": {"type": "mrkdwn", "text": _cap_text(markdown)}}
 
 
 def _context(markdown: str) -> dict[str, Any]:
@@ -76,12 +83,14 @@ def _counts_phrase(counts: list[tuple[FindingSeverity, int]]) -> str:
 
 
 def _finding_line(f: ReviewFinding) -> str:
-    """One finding, metadata-first: severity · type — file:line + title. No code/evidence."""
-    emoji = _SEVERITY_EMOJI[f.severity]
-    type_label = f.finding_type.value.replace("_", " ")
+    """One finding, metadata-first: severity · type — file:line-range + title. No code/evidence.
+    Humanized labels from the shared presentation layer; full line range (was line_start only). NO
+    severity emoji — Slack announces it to screen readers (a11y); severity is the text label."""
+    sections = build_finding_sections(f, effective_severity=f.severity)
+    line_range = str(f.line_start) if f.line_start == f.line_end else f"{f.line_start}-{f.line_end}"
     return (
-        f"{emoji} *{f.severity.value.upper()}* · {type_label} — "
-        f"`{_escape_mrkdwn(f.file_path)}:{f.line_start}`\n{_escape_mrkdwn(f.title)}"
+        f"*{sections.severity_label}* · {sections.type_label} — "
+        f"`{_escape_mrkdwn(f.file_path)}:{line_range}`\n{_escape_mrkdwn(f.title)}"
     )
 
 

@@ -29,10 +29,16 @@ _BY_SEVERITY = {
 
 
 def _finding(
-    severity: FindingSeverity, *, title: str, line: int = 10, file_path: str = "src/x.py"
+    severity: FindingSeverity,
+    *,
+    title: str,
+    line: int = 10,
+    line_end: int | None = None,
+    file_path: str = "src/x.py",
 ) -> ReviewFinding:
     ft = _BY_SEVERITY[severity]
     fp = file_path
+    le = line if line_end is None else line_end
     return ReviewFinding(
         finding_id=uuid4(),
         review_id=uuid4(),
@@ -42,14 +48,14 @@ def _finding(
         severity=severity,
         file_path=fp,
         line_start=line,
-        line_end=line,
+        line_end=le,
         title=title,
         description="DESCRIPTION THAT MUST NOT APPEAR IN SLACK",
         evidence="EVIDENCE THAT MUST NOT APPEAR IN SLACK",
         evidence_tier=EvidenceTier.JUDGED,
         policy_version=ACTIVE_POLICY_VERSION,
         content_hash=compute_finding_content_hash(
-            file_path=fp, line_start=line, line_end=line, finding_type=ft
+            file_path=fp, line_start=line, line_end=le, finding_type=ft
         ),
         proposal_hash=hashlib.sha256(f"{ft}{line}{title}".encode()).hexdigest(),
     )
@@ -86,7 +92,10 @@ def test_hitl_card_orders_by_severity_caps_and_overflows() -> None:
     # Top-3 by severity = the 2 criticals + 1 high; the 2 mediums collapse to the overflow.
     assert "crit-finding-a" in dumped and "crit-finding-b" in dumped and "high-finding" in dumped
     assert "med-finding-a" not in dumped and "med-finding-b" not in dumped
-    assert dumped.index("*CRITICAL*") < dumped.index("*HIGH*")  # ordering
+    assert dumped.index("*Critical*") < dumped.index("*High*")  # ordering (humanized labels)
+    # Humanized type label, NO raw enum, NO severity emoji (a11y: Slack announces emoji aloud).
+    assert "SQL injection" in dumped and "sql_injection" not in dumped
+    assert ":red_circle:" not in dumped and ":large_orange_circle:" not in dumped
     # Overflow line.
     assert "+2 more (2 Medium)" in dumped
     assert "view all 5 in the dashboard" in dumped
@@ -105,6 +114,32 @@ def test_hitl_card_no_overflow_within_top_n() -> None:
     dumped = json.dumps(msg.blocks, ensure_ascii=False)
     assert "more" not in dumped  # no overflow line
     assert "c1" in dumped and "h1" in dumped
+
+
+def test_finding_line_humanized_no_emoji_full_range() -> None:
+    """One finding renders humanized (severity + type label, no raw enum, no emoji) and carries
+    the full line range when line_start != line_end (was line_start only)."""
+    from outrider.notify.messages import _finding_line
+
+    line = _finding_line(_finding(FindingSeverity.CRITICAL, title="t", line=10, line_end=14))
+    assert line.startswith("*Critical* · SQL injection — ")
+    assert "`src/x.py:10-14`" in line  # full range, not just line_start
+    assert "sql_injection" not in line  # humanized, not raw enum
+    assert ":red_circle:" not in line  # no severity emoji (a11y)
+
+
+def test_pathological_pr_title_capped_and_action_block_survives() -> None:
+    """A pathological pr_title (raw webhook string, no model-side length cap) truncates to Slack's
+    per-section limit, and the deep-link action block (appended after, no attacker text) is NOT
+    dropped — Slack's msg_too_long guard without losing the required action."""
+    findings = [_finding(FindingSeverity.CRITICAL, title="t")]
+    msg = build_hitl_pending_message(
+        repo="r", pr_number=1, pr_title="A" * 10_000, findings=findings, deep_link="https://d/x"
+    )
+    for b in msg.blocks:
+        if b["type"] == "section":
+            assert len(b["text"]["text"]) <= 2900  # every section within the cap
+    assert _actions_button_url(msg.blocks) == "https://d/x"  # action block survived
 
 
 def test_hitl_card_is_metadata_first() -> None:
