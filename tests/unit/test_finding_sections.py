@@ -19,7 +19,6 @@ from outrider.policy.severity import (
 from outrider.presentation.finding_sections import (
     DEST_LABEL,
     DIMENSION_LABEL,
-    SEVERITY_EMOJI,
     SEVERITY_LABEL,
     TIER_PHRASE,
     TYPE_LABEL,
@@ -81,7 +80,6 @@ def test_every_enum_member_has_a_label() -> None:
     """The totality guard the import-time asserts enforce — pinned as a test so a new enum
     member without a label is a named test failure, not just an import crash."""
     assert set(SEVERITY_LABEL) == set(FindingSeverity)
-    assert set(SEVERITY_EMOJI) == set(FindingSeverity)
     assert set(TYPE_LABEL) == set(FindingType)
     assert set(TIER_PHRASE) == set(EvidenceTier)
     assert set(DEST_LABEL) == set(PublishDestination)
