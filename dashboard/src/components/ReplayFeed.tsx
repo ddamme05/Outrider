@@ -17,6 +17,7 @@ import {
 import { formatDurationMs, spanMs } from "../lib/format";
 import { hitlOutcomeLabel, severityLabel, typeLabel } from "../lib/findingSections";
 import { AuditFeed } from "./AuditFeed";
+import { CodeBlock } from "./CodeBlock";
 
 type TimelineData = components["schemas"]["ReplayTimelineResponse"];
 type Phase = NonNullable<TimelineData["phases"]>[number];
@@ -78,7 +79,7 @@ function flatBody(e: AuditEvent): ReactNode {
       return (
         <>
           <b>{severityLabel(e.severity)}</b> {typeLabel(e.finding_type)} ·{" "}
-          <span className="mono">{e.evidence_tier.toUpperCase()}</span> ·{" "}
+          <span className="mono">{(e.evidence_tier ?? "").toUpperCase()}</span> ·{" "}
           <span className="mono">
             {e.file_path}:{e.line_start}
           </span>
@@ -133,7 +134,7 @@ function FindingContentPanel({ content, proof }: { content: FindingContent; proo
     <div className="tl-content">
       {/* Proof artifacts render unconditionally — they survive content redaction. */}
       <div className="tl-c-proof mono">
-        {proof.tier.toUpperCase()}
+        {(proof.tier ?? "").toUpperCase()}
         {proof.queryMatchId ? <span> · {proof.queryMatchId}</span> : null}
         {proof.tracePath && proof.tracePath.length > 0 ? (
           <span> · trace {proof.tracePath.join(" → ")}</span>
@@ -145,7 +146,7 @@ function FindingContentPanel({ content, proof }: { content: FindingContent; proo
         <>
           {content.title ? <div className="tl-c-title">{content.title}</div> : null}
           {content.description ? <div className="tl-c-body">{content.description}</div> : null}
-          {content.evidence ? <pre className="tl-c-pre">{content.evidence}</pre> : null}
+          {content.evidence ? <CodeBlock code={content.evidence} /> : null}
           {content.suggested_fix ? (
             <div className="tl-c-fix">Fix: {content.suggested_fix}</div>
           ) : null}
