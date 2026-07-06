@@ -929,6 +929,14 @@ def _build_eval_graph(
         checkpointer=checkpointer,
         publisher=publisher,
         import_path_resolver=_NoOpImportPathResolver(),
+        # Scripted-response determinism: `_FixtureScriptedProvider` keys
+        # responses by (node_id, call-index), so concurrent analyze workers
+        # would race for indices — a fixture's per-file responses could land
+        # on the wrong file. One worker at a time preserves the Send-dispatch
+        # (tier-descending worklist) order the fixtures script against.
+        # File-keyed scripting + real driver concurrency is the increment-6
+        # hardening item (specs/2026-07-05-parallel-analyze.md).
+        analyze_max_concurrency=1,
         # Shadow mode by default, matching production: the classifier runs
         # and audits would-exclude verdicts on every eval scenario. An
         # enforce-mode scenario opts in through this seam

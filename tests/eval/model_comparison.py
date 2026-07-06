@@ -26,7 +26,8 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from outrider.agent.eval_driver import EvalFixture
-from outrider.agent.nodes.analyze import analyze
+from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze, analyze_file
+from outrider.agent.nodes.analyze_aggregate import analyze_aggregate
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas.pr_context import ChangedFile, PRContext
 from outrider.schemas.review_state import ReviewState
@@ -219,7 +220,12 @@ async def run_analyze_under_model(
     non-rejection audit emits are discarded. `model` is passed as both `analyze_model` and
     `standard_analyze_model` so a STANDARD-tier scenario file routes to it (the flip)."""
     sink = _NullSink()
-    result = await analyze(
+    resolver = _NoOpImportPathResolver()
+    # Compose the post-cutover three-vertex pass in-process: planner
+    # Command → one analyze_file worker per Send (in Send order) →
+    # analyze_aggregate over the merged outcomes. Sequential per-file
+    # semantics are identical; only the vertex boundaries moved.
+    cmd = await analyze(
         state,
         provider=provider,
         analyze_model=model,
@@ -228,7 +234,34 @@ async def run_analyze_under_model(
         file_examination_sink=sink,
         analyze_event_sink=sink,
         anomaly_sink=sink,
-        import_path_resolver=_NoOpImportPathResolver(),
+        import_path_resolver=resolver,
+    )
+    outcomes = []
+    for send in cmd.goto if isinstance(cmd.goto, list) else []:
+        worker_update = await analyze_file(
+            send.arg,
+            provider=provider,
+            analyze_model=model,
+            standard_analyze_model=model,
+            import_path_resolver=resolver,
+            file_examination_sink=sink,
+            analyze_event_sink=sink,
+        )
+        outcomes.extend(worker_update["analyze_worker_outcomes"])
+    state_after = state.model_copy(
+        update={
+            "analyze_worker_outcomes": [*state.analyze_worker_outcomes, *outcomes],
+            "analyze_pass_started_at": (cmd.update or {})["analyze_pass_started_at"],
+        }
+    )
+    result = await analyze_aggregate(
+        state_after,
+        analyze_event_sink=sink,
+        phase_event_sink=sink,
+        anomaly_sink=sink,
+        analyze_model=model,
+        standard_analyze_model=model,
+        total_review_budget_tokens=DEFAULT_REVIEW_BUDGET_TOKENS,
     )
     rounds = result["analysis_rounds"]
     findings = tuple(rounds[0].findings) if rounds else ()

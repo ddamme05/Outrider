@@ -176,6 +176,16 @@ class ReviewState(BaseModel):
         ),
     ] = Field(default_factory=list)
 
+    # Wall-clock start of the in-flight analyze pass, written by the analyze
+    # planner step and read by the aggregate step to stamp the folded
+    # `AnalysisRound.started_at` (the pass spans multiple graph vertices
+    # under the fan-out, so the anchor must ride state — a monotonic anchor
+    # cannot cross vertices/processes; the aggregate clamps `ended_at` to
+    # `max(started_at, now)` instead, preserving the round's ordering
+    # invariant under clock jumps). Last-write-wins per pass; None until
+    # the first analyze pass starts.
+    analyze_pass_started_at: AwareDatetime | None = None
+
     # Analyze's deterministic request channel for the trace node. Same
     # reducer shape; merge key is `candidate_id`. Trace consumes the
     # accumulated list. Per §3.

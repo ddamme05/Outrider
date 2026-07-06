@@ -21,8 +21,9 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
+from test_analyze_node import run_analyze_pass_kw
 
-from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
+from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS
 from outrider.llm.anthropic_provider import (
     _ANTHROPIC_CONTRACT_DIGEST,
     _ANTHROPIC_PROFILE_ID,
@@ -189,7 +190,7 @@ def _state(head: str = _HEAD, patch: str = _PATCH) -> ReviewState:
 
 async def _run(provider: _ScriptedProvider, state: ReviewState | None = None) -> _AnalyzeSink:
     sink = _AnalyzeSink()
-    await analyze(
+    await run_analyze_pass_kw(
         state if state is not None else _state(),
         provider=provider,  # type: ignore[arg-type]
         analyze_model="claude-sonnet-4-6",

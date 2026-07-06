@@ -1,13 +1,16 @@
 # Seven-node StateGraph(ReviewState) factory for the V1 review pipeline.
 """Seven-node `StateGraph(ReviewState)` factory.
 
-Graph topology: intake → triage → analyze ⇄ trace → synthesize → hitl → publish.
+Graph topology (logical): intake → triage → analyze ⇄ trace → synthesize → hitl → publish.
 
-V1 ships SEVEN nodes: `intake`, `triage`, `analyze`, `trace`,
+V1 ships SEVEN logical nodes: `intake`, `triage`, `analyze`, `trace`,
 `synthesize`, `hitl`, `publish`. The seven are the LOGICAL graph — audit
 vocabulary, state identity, replay grouping; physical LangGraph vertices
-may exceed them (V1.5 parallel-analyze fan-out), emitting under their
-logical owner distinguished by phase_key (see DECISIONS.md#064). Intake enriches
+exceed them since the parallel-analyze fan-out: analyze is three physical
+vertices — the `analyze` planner (Command-routing: pass-0 Sends, pass-1
+sequential), the per-file `analyze_file` Send worker, and the
+`analyze_aggregate` fold — all emitting under `node_id="analyze"`
+distinguished by phase_key (see DECISIONS.md#064). Intake enriches
 `pr_context.changed_files` per
 `DECISIONS.md#020`; triage runs a fast LLM pass for tier
 classification; analyze runs one Sonnet call per DEEP/STANDARD-tier
@@ -145,13 +148,20 @@ graphs are invoked via `await graph.ainvoke(state)` / `.astream(...)`.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 from typing import TYPE_CHECKING, Any
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
+from outrider.agent.nodes.analyze import (
+    ANALYZE_MAX_CONCURRENCY,
+    DEFAULT_REVIEW_BUDGET_TOKENS,
+    analyze,
+    analyze_file,
+)
+from outrider.agent.nodes.analyze_aggregate import analyze_aggregate
 from outrider.agent.nodes.cache_config import CacheMode
 from outrider.agent.nodes.hitl import hitl
 from outrider.agent.nodes.hitl_config import HITLConfig
@@ -230,6 +240,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     publisher: GitHubPublisher,
     import_path_resolver: ImportPathResolver,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
+    analyze_max_concurrency: int = ANALYZE_MAX_CONCURRENCY,
     trivial_scope_filter_enabled: bool = False,
     analyze_observed_skip_enforced: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
@@ -347,6 +358,16 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         raise BuildGraphError(
             f"total_review_budget_tokens must be int "
             f"(got type: {type(total_review_budget_tokens).__name__})"
+        )
+    # Same bool-rejection rationale; additionally require >= 1 — a
+    # zero-permit semaphore would deadlock the first worker forever.
+    if (
+        not isinstance(analyze_max_concurrency, int)
+        or isinstance(analyze_max_concurrency, bool)
+        or analyze_max_concurrency < 1
+    ):
+        raise BuildGraphError(
+            f"analyze_max_concurrency must be an int >= 1 (got: {analyze_max_concurrency!r})"
         )
 
     # Non-callable factories would pass the None check but fail at first
@@ -527,6 +548,40 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         # to the store-or-None enable switch.
         cache_mode=cache_mode,
     )
+    # Per-file Send worker (the fan-out cutover). The semaphore is created
+    # ONCE per compiled graph, so the in-flight bound is global across
+    # concurrent reviews sharing this graph — deliberate: the provider's
+    # rate limits are global, not per-review (see ANALYZE_MAX_CONCURRENCY).
+    analyze_file_callable = functools.partial(
+        analyze_file,
+        provider=provider,
+        analyze_model=model_config.analyze_model,
+        standard_analyze_model=model_config.standard_analyze_model,
+        import_path_resolver=import_path_resolver,
+        file_examination_sink=file_examination_sink,
+        analyze_event_sink=analyze_event_sink,
+        total_review_budget_tokens=total_review_budget_tokens,
+        trivial_scope_filter_enabled=trivial_scope_filter_enabled,
+        analyze_observed_skip_enforced=analyze_observed_skip_enforced,
+        analyze_cache_store=analyze_cache_store,
+        cache_mode=cache_mode,
+        profile_id=profile_id,
+        reasoning_enabled=reasoning_enabled,
+        profile_contract_digest=profile_contract_digest,
+        concurrency_semaphore=asyncio.Semaphore(analyze_max_concurrency),
+    )
+    analyze_aggregate_callable = functools.partial(
+        analyze_aggregate,
+        analyze_event_sink=analyze_event_sink,
+        phase_event_sink=phase_event_sink,
+        anomaly_sink=anomaly_sink,
+        analyze_model=model_config.analyze_model,
+        standard_analyze_model=model_config.standard_analyze_model,
+        total_review_budget_tokens=total_review_budget_tokens,
+        profile_id=profile_id,
+        reasoning_enabled=reasoning_enabled,
+        profile_contract_digest=profile_contract_digest,
+    )
     publish_callable = functools.partial(
         publish,
         publisher=publisher,
@@ -572,6 +627,12 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     builder.add_node("intake", intake_callable)
     builder.add_node("triage", triage_callable)
     builder.add_node("analyze", analyze_callable)
+    # The two physical fan-out vertices (specs/2026-07-05-parallel-analyze.md).
+    # LOGICAL node count stays seven (DECISIONS.md#064): both emit under
+    # node_id="analyze", the internal edges emit no AgentTransitionEvents,
+    # and every audit node vocabulary stays a closed seven-name Literal.
+    builder.add_node("analyze_file", analyze_file_callable)
+    builder.add_node("analyze_aggregate", analyze_aggregate_callable)
     builder.add_node("trace", trace_callable)
     builder.add_node("synthesize", synthesize_callable)
     builder.add_node("hitl", hitl_callable)
@@ -583,12 +644,20 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     # would fire alongside the Command and send to BOTH destinations.
     # See module docstring "Routing" section for the full rationale.
     builder.add_edge("triage", "analyze")
-    # Adaptive analyze ⇄ trace loop per `specs/2026-05-23-trace-node.md`.
-    # After analyze pass 1: route to trace iff there are accumulated
-    # trace candidates AND we're on round 1. After trace: route back to
-    # analyze iff trace's content fetches produced new files to examine
-    # AND we're below the depth-2 round limit. Otherwise → hitl.
-    builder.add_conditional_edges("analyze", _analyze_router)
+    # NO edges out of "analyze" either — same Command rule as intake: the
+    # planner returns Command(goto=[Send("analyze_file", ...), ...]) on
+    # pass 0 (or "analyze_aggregate" on the zero-worker route), and
+    # Command(goto="synthesize") after the sequential pass 1.
+    # Every worker feeds the single aggregate superstep (map-reduce shape
+    # per langgraph-1.1.6/narrative/use-graph-api.md "Send API").
+    builder.add_edge("analyze_file", "analyze_aggregate")
+    # Adaptive analyze ⇄ trace loop per `specs/2026-05-23-trace-node.md`,
+    # moved from "analyze" to the aggregate (the pass-0 round now merges
+    # when the AGGREGATE returns): route to trace iff round 1 produced
+    # trace candidates. After trace: route back to analyze iff trace's
+    # content fetches produced new files AND we're below the depth-2
+    # round limit. Otherwise → synthesize.
+    builder.add_conditional_edges("analyze_aggregate", _analyze_router)
     builder.add_conditional_edges("trace", _trace_router)
     # synthesize is the canonical 7th node: after analyze ⇄ trace
     # terminates, synthesize aggregates findings into a ReviewReport
@@ -605,12 +674,13 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
 
 
 def _analyze_router(state: ReviewState) -> str:
-    """Route analyze's output: trace if pass 1 produced candidates, else synthesize.
+    """Route the aggregate's output: trace if round 1 has candidates, else synthesize.
 
-    Per the trace-node spec: after analyze pass 1 (i.e.,
+    Attached to "analyze_aggregate" (the pass-0 round merges when the
+    aggregate returns; the sequential pass-1 tail routes itself via
+    Command). Per the trace-node spec: after pass 0 (i.e.,
     `len(state.analysis_rounds) == 1`), route to trace to consume the
-    accumulated trace_candidates. After analyze pass 2 (depth-2 limit),
-    route straight to synthesize — no further trace work allowed.
+    accumulated trace_candidates; otherwise synthesize.
     Round count IS the depth counter — which is why a round is one
     analyze PASS, never one parallel worker (see DECISIONS.md#063).
     Synthesize folds findings into a ReviewReport; HITL then partitions

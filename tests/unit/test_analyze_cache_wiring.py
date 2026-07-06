@@ -24,8 +24,9 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
+from test_analyze_node import run_analyze_pass_kw
 
-from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
+from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS
 from outrider.agent.nodes.analyze_observed import (
     OBSERVED_PRODUCER_VERSION,
     import_bindings_digest,
@@ -281,7 +282,7 @@ async def _run(
 ) -> tuple[_StubLLMProvider, _RecordingAnalyzeEventSink]:
     provider = _StubLLMProvider(response_text, finish_reason=finish_reason)
     sink = _RecordingAnalyzeEventSink()
-    await analyze(
+    await run_analyze_pass_kw(
         state if state is not None else _state(is_eval=state_is_eval),
         provider=provider,  # type: ignore[arg-type]
         analyze_model="claude-sonnet-4-6",
