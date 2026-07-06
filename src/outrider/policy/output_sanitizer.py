@@ -206,8 +206,12 @@ _LEADING_BLOCK_MARKER_REGEX: Final[re.Pattern[str]] = re.compile(
 # Prose escapes `<`→`\<` and `is_safe_suggestion_replacement` rejects `<!--` so untrusted body text
 # can't forge a raw-byte-grepped marker (FUP-154); `render_fenced_block` applies the same defense to
 # fenced content (a code fence renders `<!--` verbatim), targeted at the `outrider` namespace so
-# legitimate HTML/XML comments in a code snippet are left intact.
-_OUTRIDER_MARKER_OPEN_REGEX: Final[re.Pattern[str]] = re.compile(r"<!--(\s*outrider)")
+# legitimate HTML/XML comments in a code snippet are left intact. Case-insensitive (like
+# `_TRUNCATION_MARKER_REGEX`) — prose/suggestion escape `<`/`<!--` letter-blind, so a case variant
+# (`<!-- OUTRIDER…`) must not slip past a case-insensitive marker grep here either.
+_OUTRIDER_MARKER_OPEN_REGEX: Final[re.Pattern[str]] = re.compile(
+    r"<!--(\s*outrider)", flags=re.IGNORECASE
+)
 
 
 # ---------------------------------------------------------------------------
