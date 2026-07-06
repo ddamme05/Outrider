@@ -135,8 +135,8 @@ def test_entry_uses_effective_severity_not_finding_severity() -> None:
     entry = _render_related_concern_entry(
         finding, effective_severity=FindingSeverity.INFO, deep_link=None
     )
-    assert entry.startswith("- **INFO**")
-    assert "CRITICAL" not in entry
+    assert entry.startswith("- **Info**")  # humanized effective severity
+    assert "Critical" not in entry  # the finding's CRITICAL label must not leak
 
 
 def test_entry_includes_type_location_title_and_link() -> None:
@@ -151,7 +151,8 @@ def test_entry_includes_type_location_title_and_link() -> None:
         effective_severity=FindingSeverity.MEDIUM,
         deep_link="https://dash.example/reviews/x?finding=y",
     )
-    assert FindingType.MISSING_INPUT_VALIDATION.value in entry
+    assert "Missing input validation" in entry  # humanized type_label, not the raw snake_case
+    assert FindingType.MISSING_INPUT_VALIDATION.value not in entry  # raw enum must not leak
     assert "src/auth/login.py:42" in entry
     assert "weak check" in entry
     assert "[view in dashboard](https://dash.example/reviews/x?finding=y)" in entry
