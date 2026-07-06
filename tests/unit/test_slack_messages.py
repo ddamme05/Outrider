@@ -162,6 +162,49 @@ def test_astral_pr_title_stays_within_utf16_budget() -> None:
     assert _utf16_units(msg.text) <= 3000
 
 
+def _no_split_entity(s: str) -> bool:
+    """True iff `s` contains no severed `&amp;`/`&lt;`/`&gt;`: strip complete entities, then no bare
+    `&` may remain (every `&` in escaped mrkdwn opens one of the three entities)."""
+    return "&" not in s.replace("&amp;", "").replace("&lt;", "").replace("&gt;", "")
+
+
+def test_cap_text_never_severs_an_escape_entity() -> None:
+    """Directly: a cut that lands INSIDE a `&amp;` trims back to before the `&`, never leaving a
+    dangling `&a…`. Offset-crafted so it fails if the escape-aware trim is reverted."""
+    from outrider.notify.messages import _SLACK_SECTION_MAX, _cap_text
+
+    # Boundary at index _SLACK_SECTION_MAX-1 lands 2 chars into the first `&amp;` ("&a|mp;").
+    text = "x" * (_SLACK_SECTION_MAX - 3) + "&amp;" * 10
+    out = _cap_text(text)
+    assert len(out) <= _SLACK_SECTION_MAX
+    assert out.endswith("…")
+    assert _no_split_entity(out)  # the "&a" fragment was trimmed, not shipped
+
+
+def test_escape_expanding_inputs_stay_bounded_without_split_entities() -> None:
+    """The worst case the cap must PROVE: repo + pr_title full of `&`, which `_escape_mrkdwn`
+    expands ~5× (`&`→`&amp;`) so a `_clip`-ped 300-cp input becomes ~1500 chars and the compound
+    header section exceeds the limit — forcing `_cap_text` to fire. Every section AND the `text`
+    fallback must land within the limit with NO split entity, and the action block must survive."""
+    from outrider.notify.messages import _SLACK_SECTION_MAX
+
+    # repo + pr_title are raw webhook strings (not schema-validated like file_path); both full of
+    # `&` push the compound header section past the limit once escaped, forcing _cap_text to fire.
+    findings = [_finding(FindingSeverity.CRITICAL, title="t")]
+    msg = build_hitl_pending_message(
+        repo="&" * 400, pr_number=1, pr_title="&" * 400, findings=findings, deep_link="https://d/x"
+    )
+    for b in msg.blocks:
+        if b["type"] == "section":
+            t = b["text"]["text"]
+            assert len(t) <= _SLACK_SECTION_MAX  # final serialized length proven, post-escape
+            assert _no_split_entity(t)  # truncation never severed a &amp;/&lt;/&gt;
+    # The trusted deep-link (no `&`) is appended AFTER the cap, so the fallback is bounded + clean.
+    assert len(msg.text) <= _SLACK_SECTION_MAX + len(" https://d/x")
+    assert _no_split_entity(msg.text)
+    assert _actions_button_url(msg.blocks) == "https://d/x"
+
+
 def test_hitl_card_is_metadata_first() -> None:
     findings = [_finding(FindingSeverity.CRITICAL, title="crit")]
     msg = build_hitl_pending_message(

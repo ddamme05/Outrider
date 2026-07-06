@@ -72,10 +72,20 @@ def _clip(raw: str) -> str:
 
 
 def _cap_text(text: str) -> str:
-    """Per-section backstop: truncate composed mrkdwn to Slack's ≤3000-char section limit. With
-    raw inputs already `_clip`-ped this rarely fires; kept as defense in depth for any future
-    section that composes many inputs."""
-    return text if len(text) <= _SLACK_SECTION_MAX else text[: _SLACK_SECTION_MAX - 1] + "…"
+    """Truncate composed mrkdwn to Slack's ≤3000-char section limit, ESCAPE-AWARE so a cut never
+    severs a `&amp;`/`&lt;`/`&gt;` entity into a dangling `&…`. Backstops the section blocks AND
+    the `text` fallback: `_escape_mrkdwn` expands each `&`/`<`/`>` (to ≤5 chars), so a `_clip`-ped
+    (≤300-cp) input can still exceed the limit once escaped — this proves the FINAL serialized
+    length regardless of that expansion."""
+    if len(text) <= _SLACK_SECTION_MAX:
+        return text
+    cut = text[: _SLACK_SECTION_MAX - 1]
+    # `_escape_mrkdwn` emits only `&amp;`/`&lt;`/`&gt;` — every `&` opens an entity. A trailing `&`
+    # with no closing `;` after it is a split entity; trim back to before it (window is ≤5 chars).
+    amp = cut.rfind("&")
+    if amp != -1 and ";" not in cut[amp:]:
+        cut = cut[:amp]
+    return cut + "…"
 
 
 def _section(markdown: str) -> dict[str, Any]:
@@ -159,7 +169,11 @@ def build_hitl_pending_message(
         )
 
     counts_text = _counts_phrase(counts) if counts else "no findings"
-    text = f"Review needs approval: {repo_s} #{pr_number} — {pr_title_s} ({counts_text})."
+    # Cap the attacker-bearing fallback BEFORE appending the trusted deep-link (escape-aware, so
+    # the escaped repo/pr_title can't push `text` past the limit or strand a split entity).
+    text = _cap_text(
+        f"Review needs approval: {repo_s} #{pr_number} — {pr_title_s} ({counts_text})."
+    )
     if deep_link is not None:
         text += f" {deep_link}"
     return RenderedSlackMessage(text=text, blocks=blocks)
@@ -190,7 +204,7 @@ def build_review_posted_message(
     section_text = (
         f":white_check_mark: Reviewed `{repo_s}` #{pr_number} — {summary}, no approval needed"
     )
-    text = f"Reviewed {repo_s} #{pr_number} — {summary}, no approval needed."
+    text = _cap_text(f"Reviewed {repo_s} #{pr_number} — {summary}, no approval needed.")
     if deep_link is not None:
         section_text += f" · <{deep_link}|view>"
         text += f" {deep_link}"
