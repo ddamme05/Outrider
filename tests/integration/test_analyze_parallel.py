@@ -52,15 +52,19 @@ _HEAD = "def work(x):\n    return x + 1\n"
 _PATCH_TEMPLATE = "--- a/{path}\n+++ b/{path}\n@@ -0,0 +1,2 @@\n+def work(x):\n+    return x + 1\n"
 
 
-def _triage_all_deep() -> str:
+def _triage_deep_over(paths: tuple[str, ...]) -> str:
     return json.dumps(
         {
-            "file_tiers": dict.fromkeys(_PATHS, "deep"),
+            "file_tiers": dict.fromkeys(paths, "deep"),
             "overall_risk": "medium",
             "relevant_dimensions": ["code_quality"],
             "reasoning": "test",
         }
     )
+
+
+def _triage_all_deep() -> str:
+    return _triage_deep_over(_PATHS)
 
 
 def _analyze_response_for(path: str) -> str:
@@ -94,9 +98,16 @@ class _RendezvousProvider:
     workers, the barrier would never fill and the test fails on the
     wait timeout instead of flaking."""
 
-    def __init__(self, *, rendezvous_n: int, fail_path: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        rendezvous_n: int,
+        fail_path: str | None = None,
+        triage_paths: tuple[str, ...] = _PATHS,
+    ) -> None:
         self.rendezvous_n = rendezvous_n
         self.fail_path = fail_path
+        self.triage_paths = triage_paths
         self.in_flight = 0
         self.max_in_flight = 0
         self.calls: list[LLMRequest] = []
@@ -112,7 +123,7 @@ class _RendezvousProvider:
     async def complete(self, request: LLMRequest) -> LLMResponse:
         self.calls.append(request)
         if request.node_id == "triage":
-            return self._response(request, _triage_all_deep())
+            return self._response(request, _triage_deep_over(self.triage_paths))
         if request.node_id == "synthesize":
             return self._response(request, "summary")
         assert request.node_id == "analyze"
@@ -418,3 +429,144 @@ async def test_worker_failure_fails_the_pass_with_no_retry() -> None:
         r for r in provider.calls if r.node_id == "analyze" and r.phase_key == f"file:{_PATHS[1]}#0"
     ]
     assert len(failing_calls) == 1  # once — never retried
+
+
+# ── The combination: parallel fan-out over a MIXED Python + JS + TS PR ────────
+# The fan-out is language-agnostic (it Sends ChangedFiles; each worker dispatches
+# by path extension through the ast_facts registry). This proves the combination
+# the parallel and JS/TS arcs only covered separately: three languages parsed by
+# three different tree-sitter adapters inside three CONCURRENT workers, each
+# finding attributed to its own file. Every file has a real changed scope so its
+# language adapter genuinely runs (an unsupported/empty parse would skip it).
+_MIXED: dict[str, tuple[str, str]] = {
+    # path -> (head_content, language)
+    "src/svc.py": ("def handle(x):\n    return x + 1\n", "python"),
+    "src/svc.js": ("function handle(x) {\n  return x + 1;\n}\n", "javascript"),
+    "src/svc.ts": ("function handle(x: number): number {\n  return x + 1;\n}\n", "typescript"),
+}
+
+
+def _mixed_patch(path: str, content: str) -> str:
+    lines = content.splitlines()
+    body = "".join("+" + line + "\n" for line in lines)
+    return f"--- a/{path}\n+++ b/{path}\n@@ -0,0 +1,{len(lines)} @@\n{body}"
+
+
+class _MixedGitHub:
+    """Serves the three mixed-language files (intake re-enriches from this listing)."""
+
+    class _Repos:
+        async def async_get_content(
+            self, owner: str, repo: str, path: str, *, ref: str
+        ) -> _StubResponse:
+            content = _MIXED[path][0] if ref == "b" * 40 else ""
+            return _StubResponse(
+                parsed_data=_StubContentFile(
+                    encoding="base64",
+                    content=base64.b64encode(content.encode()).decode("ascii"),
+                )
+            )
+
+    class _Pulls:
+        async def async_list_files(
+            self, owner: str, repo: str, pull_number: int, **kwargs: Any
+        ) -> _StubResponse:
+            return _StubResponse(
+                parsed_data=[
+                    _StubFileMeta(
+                        filename=path,
+                        status="added",
+                        additions=len(content.splitlines()),
+                        deletions=0,
+                        patch=_mixed_patch(path, content),
+                    )
+                    for path, (content, _lang) in _MIXED.items()
+                ]
+            )
+
+    def __init__(self) -> None:
+        from types import SimpleNamespace
+
+        self.rest = SimpleNamespace(repos=self._Repos(), pulls=self._Pulls())
+
+
+def _mixed_github_factory(installation_id: int) -> Any:
+    assert installation_id == _SEED_INSTALLATION_ID
+    return _MixedGitHub()
+
+
+def _mixed_state() -> ReviewState:
+    return ReviewState(
+        review_id=uuid4(),
+        received_at=datetime.now(UTC),
+        pr_context=PRContext(
+            installation_id=_SEED_INSTALLATION_ID,
+            owner=_SEED_OWNER,
+            repo=_SEED_REPO,
+            pr_number=_SEED_PULL_NUMBER,
+            base_sha="a" * 40,
+            head_sha="b" * 40,
+            pr_title="mixed-language parallel",
+            pr_body=None,
+            author="someone",
+            total_additions=9,
+            total_deletions=0,
+            changed_files=tuple(
+                ChangedFile(
+                    path=path,
+                    status="added",
+                    additions=len(content.splitlines()),
+                    deletions=0,
+                    patch=_mixed_patch(path, content),
+                    content_base=None,
+                    content_head=content,
+                    previous_path=None,
+                    language=lang,
+                )
+                for path, (content, lang) in _MIXED.items()
+            ),
+        ),
+        is_eval=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_mixed_language_parallel_fanout_dispatches_per_language() -> None:
+    """THE COMBINATION: a Python + JS + TS PR through the real compiled graph at
+    concurrency 3, under the rendezvous barrier (all three workers must be in
+    flight simultaneously to release — serialized dispatch times out and FAILS).
+    Each file is parsed by ITS OWN tree-sitter adapter inside a concurrent worker,
+    examined (not skipped-unsupported), and its scripted finding attributed to its
+    own file. Proves the fan-out and the language dispatch compose correctly."""
+    provider = _RendezvousProvider(rendezvous_n=3, triage_paths=tuple(_MIXED))
+    recorder = _CombinedRecorder()
+    provider.llm_event_stream = recorder.stream
+    state = _mixed_state()
+    kwargs = _build_kwargs(
+        provider=provider,  # type: ignore[arg-type]
+        phase_event_sink=recorder,  # type: ignore[arg-type]
+        file_examination_sink=recorder,  # type: ignore[arg-type]
+        analyze_event_sink=recorder,  # type: ignore[arg-type]
+    )
+    kwargs["analyze_max_concurrency"] = 3
+    kwargs["github_factory"] = _mixed_github_factory
+    kwargs["publisher"] = _PermissivePublisher()
+    graph = build_graph(**kwargs)
+
+    result = await graph.ainvoke(
+        state, config={"configurable": {"thread_id": str(state.review_id)}}
+    )
+
+    assert provider.max_in_flight == 3  # genuine 3-way overlap across the languages
+    (round_,) = result["analysis_rounds"]
+    # Every language's file was EXAMINED — its adapter parsed a real changed scope,
+    # not skipped as unsupported/empty.
+    assert set(round_.files_examined) == set(_MIXED)
+    assert round_.files_skipped == ()
+    # Each finding is on its own file (no cross-language misattribution under concurrency).
+    titles = {f.file_path: f.title for f in round_.findings}
+    assert titles == {path: f"finding for {path}" for path in _MIXED}
+    # One worker outcome per language file, each parsed clean by its own adapter.
+    outcomes = result["analyze_worker_outcomes"]
+    assert sorted(o.path for o in outcomes) == sorted(_MIXED)
+    assert all(o.source == "parser" and o.parse_status == "clean" for o in outcomes)
