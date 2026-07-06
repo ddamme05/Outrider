@@ -69,6 +69,7 @@ from outrider.db.models.audit_events import AuditEvent as AuditEventRow
 from outrider.db.models.findings import Finding
 from outrider.db.models.llm_call_content import LLMCallContent
 from outrider.db.models.reviews import Review
+from outrider.policy.canonical import compute_phase_id
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import (
     ACTIVE_POLICY_VERSION,
@@ -578,7 +579,11 @@ def _verify_phase_wellformed(
     - **Ordering.** An end never precedes its start (an end whose phase_id has
       no prior start raises — this is the end-before-start case in sequence
       order).
-    - **Uniqueness.** A phase_id has ≤1 start and ≤1 end.
+    - **Uniqueness + key binding.** A phase_id has ≤1 start and ≤1 end; a
+      KEYED start's phase_id must equal
+      `compute_phase_id(review_id, node_id, attempt_key=phase_key)` — ids
+      are bound to their keys, so a forged id cannot shadow a legitimate
+      `(owner, key)` pair and a duplicated key cannot verify under two ids.
     - **Non-nesting (un-keyed phases).** An UN-KEYED phase may not overlap
       any other phase, in either direction — sequential-era semantics stay
       exact. KEYED phases (the fan-out's `plan#` / `file:<path>#` /
@@ -611,6 +616,29 @@ def _verify_phase_wellformed(
                     raise ReplayEquivalenceError(
                         f"phase {event.phase_id!r} has more than one start marker"
                     )
+                # KEYED phases: verify the id-to-key BINDING. phase_id is a
+                # pure function of (review_id, node_id, phase_key) — the
+                # increment-4 recipe binds attempt_key = phase_key VERBATIM —
+                # so a forged id cannot shadow a legitimate (owner, key)
+                # pair, and two distinct ids claiming the same key are
+                # impossible (the honest one collides into the
+                # more-than-one-start check above; the forged one fails
+                # here). Without this, grouping's open-phase match for a
+                # duplicated key would be arbitrary.
+                if event.phase_key is not None:
+                    expected_phase_id = compute_phase_id(
+                        review_id=str(event.review_id),
+                        node_id=event.node_id,
+                        attempt_key=event.phase_key,
+                    )
+                    if event.phase_id != expected_phase_id:
+                        raise ReplayEquivalenceError(
+                            f"keyed phase start (sequence {event.sequence_number}) "
+                            f"carries phase_id {event.phase_id!r} but its key "
+                            f"{event.phase_key!r} derives {expected_phase_id!r}; "
+                            f"keyed phase ids are bound to their keys "
+                            f"(compute_phase_id, attempt_key = phase_key verbatim)"
+                        )
                 # Non-nesting applies to UN-KEYED phases only: the
                 # fan-out's keyed envelopes (plan# / file:<path># /
                 # aggregate#) legitimately overlap under concurrent
