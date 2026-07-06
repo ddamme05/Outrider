@@ -42,7 +42,7 @@ __all__ = [
 
 
 def _clone_all(findings: tuple[ReviewFinding, ...]) -> tuple[ReviewFinding, ...]:
-    return tuple(ReviewFinding.model_validate(f.model_dump()) for f in findings)
+    return tuple(f.validated_clone() for f in findings)
 
 
 def _sorted_hashes(findings: tuple[ReviewFinding, ...]) -> tuple[str, ...]:

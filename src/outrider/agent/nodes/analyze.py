@@ -108,8 +108,10 @@ under-estimates. A tokenizer-grade estimate is FUP-049 scope.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+import weakref
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -159,7 +161,7 @@ from outrider.agent.nodes.degradation import (
     _ParseStatus,
     decide_degradation,
 )
-from outrider.agent.nodes.finding_cap import cap_findings_by_severity
+from outrider.agent.nodes.finding_cap import admit_with_pair_dedup, cap_findings_by_severity
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.analyze_bundle import extract_triviality_and_scan
 from outrider.ast_facts.models import SkipReason, TrivialityReason
@@ -224,7 +226,6 @@ from outrider.queries import registry as query_registry
 from outrider.queries.registry import OBSERVED_QUERY_IDS, QUERY_REGISTRY_DIGEST
 from outrider.schemas import AnalysisRound, ReviewFinding, TraceCandidate
 from outrider.schemas.analysis_round import MAX_FINDINGS_HARD_CAP, MAX_FINDINGS_PER_ROUND
-from outrider.schemas.analyze_worker import AnalyzeWorkerOutcome
 from outrider.schemas.llm.analyze import (
     ANALYZE_RESPONSE_FORMAT_DIGEST,
     ANALYZE_RESPONSE_SCHEMA_JSON,
@@ -233,7 +234,6 @@ from outrider.schemas.pr_context import ChangedFile  # noqa: TC001 — payload m
 from outrider.schemas.triage_result import ReviewTier
 
 if TYPE_CHECKING:
-    import asyncio
     from collections.abc import Iterable, Mapping
 
     from unidiff import PatchedFile
@@ -480,6 +480,37 @@ def _model_for_tier(tier: ReviewTier, *, analyze_model: str, standard_analyze_mo
     return standard_analyze_model if tier is ReviewTier.STANDARD else analyze_model
 
 
+class AnalyzeConcurrencyGate:
+    """Per-event-loop semaphore factory for the `analyze_file` workers.
+
+    A bare `asyncio.Semaphore` created at `build_graph` time lazily binds
+    to the FIRST event loop it is contended on and then raises
+    "bound to a different event loop" if the same compiled graph is ever
+    driven on a second loop (a module-scoped graph fixture, an
+    import-time build, sequential `asyncio.run` calls). This gate holds
+    the permit COUNT and mints one semaphore per running loop on demand,
+    so the bound is per-(graph, loop) — semantically identical for the
+    single-loop production server, crash-proof everywhere else.
+    """
+
+    def __init__(self, permits: int) -> None:
+        if permits < 1:
+            raise ValueError(f"permits must be >= 1, got {permits}")
+        self._permits = permits
+        # Weak keys: a finished loop's semaphore is garbage, not a leak.
+        self._by_loop: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+            weakref.WeakKeyDictionary()
+        )
+
+    def current(self) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        semaphore = self._by_loop.get(loop)
+        if semaphore is None:
+            semaphore = asyncio.Semaphore(self._permits)
+            self._by_loop[loop] = semaphore
+        return semaphore
+
+
 class AnalyzeWorkerPayload(BaseModel):
     """The self-contained Send payload for one `analyze_file` worker.
 
@@ -530,7 +561,7 @@ async def analyze_file(
     profile_id: str | None = None,
     reasoning_enabled: bool | None = None,
     profile_contract_digest: str | None = None,
-    concurrency_semaphore: asyncio.Semaphore | None = None,
+    concurrency_semaphore: asyncio.Semaphore | AnalyzeConcurrencyGate | None = None,
 ) -> dict[str, object]:
     """The per-file Send worker: one `(file, pass)` slot per invocation.
 
@@ -552,7 +583,10 @@ async def analyze_file(
     with the sequential loop's abort behavior.
 
     `concurrency_semaphore` bounds in-flight worker bodies
-    (`ANALYZE_MAX_CONCURRENCY`); None (tests, direct invocation) runs
+    (`ANALYZE_MAX_CONCURRENCY`): build_graph closes in an
+    `AnalyzeConcurrencyGate` (one semaphore per running loop — a bare
+    Semaphore would bind to the first loop and crash on a second); tests
+    may pass a bare `asyncio.Semaphore`. None (direct invocation) runs
     unbounded.
     """
     phase_key = f"file:{payload.changed_file.path}#{payload.pass_index}"
@@ -561,7 +595,12 @@ async def analyze_file(
         node_id="analyze",
         attempt_key=phase_key,
     )
-    async with concurrency_semaphore if concurrency_semaphore is not None else nullcontext():
+    gate = (
+        concurrency_semaphore.current()
+        if isinstance(concurrency_semaphore, AnalyzeConcurrencyGate)
+        else concurrency_semaphore
+    )
+    async with gate if gate is not None else nullcontext():
         await phase_event_sink.emit_phase(
             ReviewPhaseEvent(
                 review_id=payload.review_id,
@@ -842,9 +881,6 @@ async def analyze(
     # pass 1 (`pass_index > 0`) — pass 0 still rejects per the V1 stub
     # (no trace context exists yet at that point).
     triage_result = state.triage_result
-    # 3b-2c-1: pass-0 worker outcomes (defined for BOTH passes — the pass-1
-    # re-entry returns it empty; the trace-fetched pass stays sequential).
-    worker_outcomes: list[AnalyzeWorkerOutcome] = []
     if pass_index == 0:
         # ---- THE PLANNER STEP (fan-out cutover) ----
         # Kept-file worklist exactly as the sequential loop built it:
@@ -1044,7 +1080,7 @@ async def analyze(
                 n_trace_candidates_dropped_malformed += (
                     file_outcome.parser_result.counters.n_trace_candidates_dropped_malformed
                 )
-                _admit_with_dedup(
+                admit_with_pair_dedup(
                     file_outcome.parser_result.admitted_findings,
                     admitted_findings,
                     admitted_keys_seen,
@@ -1288,9 +1324,10 @@ async def analyze(
         update={
             "analysis_rounds": [new_round],
             "trace_candidates": list(trace_candidates),
-            # Empty on the pass-1 re-entry — the trace-fetched pass stays
-            # sequential and out of fan-out scope.
-            "analyze_worker_outcomes": worker_outcomes,
+            # Always empty here: only pass 1 reaches this tail, and the
+            # trace-fetched pass stays sequential and out of fan-out scope
+            # (workers own the pass-0 writes).
+            "analyze_worker_outcomes": [],
         },
         goto="synthesize",
     )
@@ -1303,12 +1340,12 @@ def _worker_outcome_for(
     pass_index: int,
     review_tier: ReviewTier,
 ) -> AnalyzeWorkerOutcome:
-    """Map one `_FileOutcome` to its `AnalyzeWorkerOutcome` (parallel-analyze
-    3b-2c-1): the sequential branch union discriminates the source, and the
-    builders receive the ORIGINAL objects (producer originals pre-clone —
-    origin truth intersects by object identity; cloning happens inside the
-    builders). Until the fan-out cutover these outcomes ride state ALONGSIDE
-    the sequential accumulation; the parity test folds them and compares."""
+    """Map one `_FileOutcome` to its `AnalyzeWorkerOutcome`: the per-file
+    branch union discriminates the source, and the builders receive the
+    ORIGINAL objects (producer originals pre-clone — origin truth intersects
+    by object identity; cloning happens inside the builders). Called by the
+    `analyze_file` worker; the aggregate folds the outcomes into the pass's
+    round (the sequential-parity contract lives in the wiring tests)."""
     if file_outcome.parser_result is not None:
         parser_result = file_outcome.parser_result
         return worker_outcome_from_parser(
@@ -1477,7 +1514,7 @@ async def _serve_cache_hit(
     included_scope_units: tuple[ScopeUnit, ...],
     analyze_event_sink: AnalyzeEventSink,
     file_examination_sink: FileExaminationSink,
-    phase_key: str | None = None,
+    phase_key: str | None,
 ) -> _FileOutcome:
     """Serve a live analyze-cache hit (Stage B): reconstruct the cached findings
     + trace candidates onto THIS review, emit the audit trail, and return a
@@ -1812,7 +1849,7 @@ async def _emit_skip(
     is_eval: bool,
     file_path: str,
     skip_reason: SkipReason,
-    phase_key: str | None = None,
+    phase_key: str | None,
 ) -> _FileOutcome:
     """Emit a single `FileExaminationEvent(parse_status="skipped", skip_reason=...)`
     and return a zero-cost `_FileOutcome`. Used by every skip path in
@@ -1853,7 +1890,7 @@ async def _emit_skip_with_module_findings(
     module_matches: tuple[ObservedMatch, ...],
     installation_id: int,
     active_policy_version: str,
-    phase_key: str | None = None,
+    phase_key: str | None,
 ) -> _FileOutcome:
     """A skip that still emits the module arm's OBSERVED findings
     (DECISIONS.md#062): the deterministic finding costs ZERO LLM tokens, so an
@@ -1921,7 +1958,7 @@ async def _emit_examination(
     is_eval: bool,
     file_path: str,
     parse_status: _ParseStatus = "clean",
-    phase_key: str | None = None,
+    phase_key: str | None,
 ) -> None:
     """Emit the single `FileExaminationEvent` for a KEPT (non-skipped) file —
     sibling to `_emit_skip` (FUP-178). The clean, trace, and serve paths share this
@@ -1939,25 +1976,6 @@ async def _emit_examination(
             phase_key=phase_key,
         )
     )
-
-
-def _admit_with_dedup(
-    findings: Iterable[ReviewFinding],
-    admitted_findings: list[ReviewFinding],
-    admitted_keys_seen: set[tuple[str, str]],
-) -> None:
-    """Append each finding to `admitted_findings` unless its
-    `(content_hash, proposal_hash)` key was already admitted this round (FUP-178).
-    The round-build merges findings from several source contexts (cold parse,
-    served payload, trace-fetched files); `AnalysisRound` enforces uniqueness on
-    both keys, so this dedup stops a logically-identical finding from being
-    double-admitted before the round validators run."""
-    for f in findings:
-        key = (f.content_hash, f.proposal_hash)
-        if key in admitted_keys_seen:
-            continue
-        admitted_keys_seen.add(key)
-        admitted_findings.append(f)
 
 
 async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orchestration boundary; outcome branches resist further extraction without losing audit clarity
@@ -1983,7 +2001,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     profile_id: str | None = None,
     reasoning_enabled: bool | None = None,
     profile_contract_digest: str | None = None,
-    phase_key: str | None = None,
+    phase_key: str | None,
 ) -> _FileOutcome:
     """Process one triage-kept file through parse → outcome → cost
     gate → trivial-scope classification → LLM call → parser → audit
@@ -3136,6 +3154,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
             review_id=review_id,
             is_eval=is_eval,
             file_path=fetched_file.path,
+            phase_key=None,  # pass 1 is the legacy un-keyed stream by design
             skip_reason=SkipReason.UNSUPPORTED_LANGUAGE,
         )
 
@@ -3161,6 +3180,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
             review_id=review_id,
             is_eval=is_eval,
             file_path=fetched_file.path,
+            phase_key=None,  # pass 1 is the legacy un-keyed stream by design
             skip_reason=parser_skip_reason,
         )
 
@@ -3178,6 +3198,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
             review_id=review_id,
             is_eval=is_eval,
             file_path=fetched_file.path,
+            phase_key=None,  # pass 1 is the legacy un-keyed stream by design
             skip_reason=SkipReason.NO_REVIEWABLE_CONTEXT,
         )
 
@@ -3206,6 +3227,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
             review_id=review_id,
             is_eval=is_eval,
             file_path=fetched_file.path,
+            phase_key=None,  # pass 1 is the legacy un-keyed stream by design
             skip_reason=SkipReason.NO_REVIEWABLE_CONTEXT,
         )
 
@@ -3269,6 +3291,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
             review_id=review_id,
             is_eval=is_eval,
             file_path=fetched_file.path,
+            phase_key=None,  # pass 1 is the legacy un-keyed stream by design
             skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
         )
 
@@ -3277,6 +3300,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         review_id=review_id,
         is_eval=is_eval,
         file_path=fetched_file.path,
+        phase_key=None,  # pass 1 is the legacy un-keyed stream by design
     )
 
     # `inclusion_reason="trace_expansion"` per the ContextManifestEntry
@@ -3367,7 +3391,9 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
 
     for proposal_rej in parser_result.proposal_rejections:
         await analyze_event_sink.emit_finding_proposal_rejected(
-            _lift_proposal_rejection(proposal_rej, review_id=review_id, is_eval=is_eval)
+            _lift_proposal_rejection(
+                proposal_rej, review_id=review_id, is_eval=is_eval, phase_key=None
+            )
         )
     if parser_result.response_rejection is not None:
         await analyze_event_sink.emit_analyze_response_rejected(
@@ -3375,6 +3401,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
                 parser_result.response_rejection,
                 review_id=review_id,
                 is_eval=is_eval,
+                phase_key=None,  # pass 1: legacy un-keyed stream
             )
         )
 
@@ -3399,7 +3426,7 @@ def _lift_proposal_rejection(
     *,
     review_id: UUID,
     is_eval: bool,
-    phase_key: str | None = None,
+    phase_key: str | None,
 ) -> FindingProposalRejectedEvent:
     """Lift a parser-side `ProposalRejection` payload into a
     `FindingProposalRejectedEvent`. The parser produced the content
@@ -3426,7 +3453,7 @@ def _lift_response_rejection(
     *,
     review_id: UUID,
     is_eval: bool,
-    phase_key: str | None = None,
+    phase_key: str | None,
 ) -> AnalyzeResponseRejectedEvent:
     """Lift a parser-side `ResponseRejection` into an
     `AnalyzeResponseRejectedEvent`. Same audit-context add as
