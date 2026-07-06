@@ -15,6 +15,7 @@ import {
   summarizeEvent,
 } from "../lib/auditEvent";
 import { formatDurationMs, spanMs } from "../lib/format";
+import { hitlOutcomeLabel, severityLabel, typeLabel } from "../lib/findingSections";
 import { AuditFeed } from "./AuditFeed";
 
 type TimelineData = components["schemas"]["ReplayTimelineResponse"];
@@ -76,7 +77,8 @@ function flatBody(e: AuditEvent): ReactNode {
     case "finding":
       return (
         <>
-          <b>{e.severity}</b> {e.finding_type} · <span className="mono">{e.evidence_tier}</span> ·{" "}
+          <b>{severityLabel(e.severity)}</b> {typeLabel(e.finding_type)} ·{" "}
+          <span className="mono">{e.evidence_tier.toUpperCase()}</span> ·{" "}
           <span className="mono">
             {e.file_path}:{e.line_start}
           </span>
@@ -131,7 +133,7 @@ function FindingContentPanel({ content, proof }: { content: FindingContent; proo
     <div className="tl-content">
       {/* Proof artifacts render unconditionally — they survive content redaction. */}
       <div className="tl-c-proof mono">
-        {proof.tier}
+        {proof.tier.toUpperCase()}
         {proof.queryMatchId ? <span> · {proof.queryMatchId}</span> : null}
         {proof.tracePath && proof.tracePath.length > 0 ? (
           <span> · trace {proof.tracePath.join(" → ")}</span>
@@ -150,11 +152,11 @@ function FindingContentPanel({ content, proof }: { content: FindingContent; proo
           {h ? (
             // Override provenance from the HITLDecisionEvent stream (DECISIONS#034), not the table.
             <div className="f-prov">
-              {h.outcome}
+              {hitlOutcomeLabel(h.outcome)}
               {h.original_severity && h.override_severity ? (
                 <span className="prov-sev">
                   {" "}
-                  · {h.original_severity} → {h.override_severity}
+                  · {severityLabel(h.original_severity)} → {severityLabel(h.override_severity)}
                 </span>
               ) : null}
               <span className="prov-by"> · by {h.reviewer_id}</span>

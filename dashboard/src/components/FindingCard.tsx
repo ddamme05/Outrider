@@ -1,6 +1,16 @@
 import type { components } from "../api/schema";
 import { DecisionControls } from "./DecisionControls";
+import { CodeBlock } from "./CodeBlock";
 import type { DecisionDraft } from "../lib/hitl";
+import {
+  destLabel,
+  dimensionLabel,
+  eligibilityPhrase,
+  eligibilityReasonPhrase,
+  hitlOutcomeLabel,
+  severityLabel,
+  typeLabel,
+} from "../lib/findingSections";
 
 type FindingView = components["schemas"]["FindingView"];
 
@@ -15,7 +25,7 @@ function loc(f: FindingView): string {
 // review summary (medium), dashboard_only never reaches GitHub (faint/dashed).
 // Keys are the LOWERCASE wire values the `PublishDestination` StrEnum serializes
 // (`inline_comment`/`review_body`/`dashboard_only`) — the API never sends uppercase;
-// the label is uppercased only for display (mockup shows INLINE_COMMENT).
+// the label is HUMANIZED for display (destLabel: "Inline comment"), not the raw enum.
 const DEST_CLASS: Record<string, string> = {
   inline_comment: "dest-inline",
   review_body: "dest-review",
@@ -72,9 +82,10 @@ function ProofBox({ finding, tier }: { finding: FindingView; tier: string }) {
 
 // One finding card (mockup-faithful). When `decision`/`onDecisionChange` are passed
 // (review is at the HITL gate AND this finding is gated), the decision controls
-// render at the bottom; otherwise read-only. severity/tier/dimension values are
-// lowercase per the policy enums, so they map straight to the sev-*/tier-*/dim-*
-// classes. Gated findings carry the sev-high left edge (.gated).
+// render at the bottom; otherwise read-only. The head badges display HUMANIZED
+// labels from lib/findingSections (the TS mirror of the Python presentation layer);
+// the raw lowercase wire values still key the sev-*/tier-*/dim-*/dest-* CSS classes.
+// Gated findings carry the sev-high left edge (.gated).
 export function FindingCard({
   finding,
   wasGated,
@@ -98,11 +109,13 @@ export function FindingCard({
       <div className="f-head">
         <span className={`pill sev-pill sev-${sev}`}>
           <span className="dot" aria-hidden="true" />
-          {finding.severity}
+          {severityLabel(finding.severity)}
         </span>
+        {/* tier acronym in the badge (OBSERVED/INFERRED/JUDGED); the full phrase
+            lives in the proof box below. */}
         <span className={`tier tier-${tier}`}>
           <span className="dot" aria-hidden="true" />
-          {tier}
+          {tier.toUpperCase()}
         </span>
         {finding.publish_destination ? (
           <span className={`dest ${DEST_CLASS[finding.publish_destination] ?? ""}`}>
@@ -111,13 +124,13 @@ export function FindingCard({
               aria-hidden="true"
               style={{ background: DEST_DOT[finding.publish_destination] ?? "var(--muted)" }}
             />
-            {finding.publish_destination.toUpperCase()}
+            {destLabel(finding.publish_destination)}
           </span>
         ) : null}
         <span className="ft-tag">
-          {finding.finding_type} ·{" "}
+          {typeLabel(finding.finding_type)} ·{" "}
           <span className={`dim-dot dim-${dim}`} aria-hidden="true" />
-          <span className={`dim-w-${dim}`}>{dim}</span>
+          <span className={`dim-w-${dim}`}>{dimensionLabel(dim)}</span>
         </span>
         <span className="f-loc mono">{loc(finding)}</span>
       </div>
@@ -133,13 +146,19 @@ export function FindingCard({
             title/description/evidence/fix were purged per the retention policy.
           </div>
         ) : (
-          <div className="f-desc">{finding.description ?? finding.title ?? "—"}</div>
+          <>
+            {/* Lead with the title (the one-line summary), description below — matching
+                the GitHub/Slack renderers, which both lead with the title. */}
+            {finding.title ? <div className="f-title">{finding.title}</div> : null}
+            {finding.description ? <div className="f-desc">{finding.description}</div> : null}
+            {!finding.title && !finding.description ? <div className="f-desc">—</div> : null}
+          </>
         )}
 
         <ProofBox finding={finding} tier={tier} />
 
         {!finding.content_redacted && finding.evidence ? (
-          <div className="f-evidence">{finding.evidence}</div>
+          <CodeBlock code={finding.evidence} filePath={finding.file_path} />
         ) : null}
 
         {!finding.content_redacted && finding.suggested_fix ? (
@@ -150,8 +169,10 @@ export function FindingCard({
 
         {finding.eligibility ? (
           <div className="f-elig">
-            {finding.eligibility}
-            {finding.eligibility_reason ? ` · ${finding.eligibility_reason}` : ""}
+            {eligibilityPhrase(finding.eligibility)}
+            {finding.eligibility_reason
+              ? ` · ${eligibilityReasonPhrase(finding.eligibility_reason)}`
+              : ""}
           </div>
         ) : null}
 
@@ -160,12 +181,13 @@ export function FindingCard({
             outcome "severity_override" — guard before rendering the arrow. */}
         {finding.hitl_decision ? (
           <div className="f-prov">
-            <span className="prov-k">HITL · {finding.hitl_decision.outcome}</span>
+            <span className="prov-k">HITL · {hitlOutcomeLabel(finding.hitl_decision.outcome)}</span>
             {finding.hitl_decision.outcome === "severity_override" &&
             finding.hitl_decision.original_severity &&
             finding.hitl_decision.override_severity ? (
               <span className="prov-sev mono">
-                {finding.hitl_decision.original_severity} → {finding.hitl_decision.override_severity}
+                {severityLabel(finding.hitl_decision.original_severity)} →{" "}
+                {severityLabel(finding.hitl_decision.override_severity)}
               </span>
             ) : null}
             <span className="prov-by">by {finding.hitl_decision.reviewer_id}</span>

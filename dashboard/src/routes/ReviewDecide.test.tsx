@@ -177,7 +177,7 @@ test("severity_override requires a severity different from the finding's", async
 
 test("non-gated findings on an actionable review show no decision controls", async () => {
   mount({ findings: [finding({ finding_id: "f-low", severity: "low" })] });
-  await screen.findByText(/sql_injection/);
+  await screen.findByText(/SQL injection/);
   expect(screen.queryByRole("button", { name: "approve" })).not.toBeInTheDocument();
   // No gated findings → no submit bar at all.
   expect(screen.queryByRole("button", { name: /Submit decision/ })).not.toBeInTheDocument();
@@ -185,7 +185,7 @@ test("non-gated findings on an actionable review show no decision controls", asy
 
 test("a gated finding on a non-actionable review is read-only", async () => {
   mount({ status: "completed" }); // gatedIds defaults to ["f-high"] — still in the snapshot
-  await screen.findByText(/sql_injection/);
+  await screen.findByText(/SQL injection/);
   expect(screen.queryByRole("button", { name: "approve" })).not.toBeInTheDocument();
   expect(screen.getByText(/gated the PR/)).toBeInTheDocument();
 });
@@ -194,7 +194,7 @@ test("gating follows the authoritative set, not severity — a high finding not 
   // Severity is "high" (the old inference would have gated it) but the server's
   // findings_requiring_approval does NOT include it → no controls, no submit bar.
   mount({ gatedIds: [] });
-  await screen.findByText(/sql_injection/);
+  await screen.findByText(/SQL injection/);
   expect(screen.queryByRole("button", { name: "approve" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /Submit decision/ })).not.toBeInTheDocument();
 });
