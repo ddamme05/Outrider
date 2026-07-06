@@ -492,14 +492,18 @@ async def test_concurrency_gate_survives_simultaneous_cross_thread_misses() -> N
 
 
 @pytest.mark.asyncio
-async def test_concurrency_gate_mutates_the_map_only_under_its_lock() -> None:
-    """DETERMINISTIC lock-usage pin: every `current()` call — miss (create),
-    hit, and the per-call prune scan — must run its map access inside
-    `self._lock`. The probe lock counts acquisitions and flags any map
-    mutation made while it is NOT held, so deleting the `with self._lock:`
-    block fails this test on the first call, no race required (the
-    GIL makes the pure-sync section uninterleavable in practice, which is
-    why the cross-thread smoke above cannot be the guarantee)."""
+async def test_concurrency_gate_full_critical_section_under_its_lock() -> None:
+    """DETERMINISTIC lock pin, self-verifying coverage: every map operation
+    the critical section performs — create (set), lookup (get), prune scan
+    (iter), AND eviction (del) — must run while `self._lock` is held, and
+    each must actually be EXERCISED by this test (the ops_seen assertion),
+    so no operation can be vacuously guarded. The eviction arm needs a
+    closed-loop entry: loop B is seeded through the guarded map in its own
+    thread, closes, and the test loop's subsequent MISS prunes it — a
+    deletion hoisted outside the lock fails on that call, no race
+    required."""
+    import threading
+
     from outrider.agent.nodes.analyze import AnalyzeConcurrencyGate
 
     gate = AnalyzeConcurrencyGate(2)
@@ -518,42 +522,61 @@ async def test_concurrency_gate_mutates_the_map_only_under_its_lock() -> None:
             self.held = False
 
     class _GuardedMap(dict):  # type: ignore[type-arg]
-        """Rejects any access — reads AND writes — outside the probe lock.
-
-        Reads are guarded too: a `get()` or prune-scan iteration hoisted
-        outside the lock reintroduces the read/write and iterate/write
-        races the lock exists to prevent, while still passing a
-        write-only guard."""
+        """Rejects any access — reads, writes, iteration, deletion —
+        outside the probe lock, and records which ops ran so the test can
+        prove each guard was exercised, not just present."""
 
         def __init__(self, probe: _ProbeLock) -> None:
             super().__init__()
             self._probe = probe
+            self.ops_seen: set[str] = set()
+
+        def _check(self, op: str) -> None:
+            assert self._probe.held, f"gate map {op} outside its lock"
+            self.ops_seen.add(op)
 
         def __setitem__(self, key: object, value: object) -> None:
-            assert self._probe.held, "gate map WRITTEN outside its lock"
+            self._check("set")
             super().__setitem__(key, value)
 
         def __delitem__(self, key: object) -> None:
-            assert self._probe.held, "gate map entry DELETED outside its lock"
+            self._check("del")
             super().__delitem__(key)
 
         def __getitem__(self, key: object) -> object:
-            assert self._probe.held, "gate map READ outside its lock"
+            self._check("get")
             return super().__getitem__(key)
 
         def get(self, key: object, default: object = None) -> object:
-            assert self._probe.held, "gate map get() outside its lock"
+            self._check("get")
             return super().get(key, default)
 
         def __iter__(self) -> object:
-            assert self._probe.held, "gate map ITERATED outside its lock"
-            return super().__iter__()
+            self._check("iter")
+            return iter(list(super().keys()))
 
     probe = _ProbeLock()
+    guarded = _GuardedMap(probe)
     gate._lock = probe  # type: ignore[assignment]
-    gate._by_loop = _GuardedMap(probe)  # type: ignore[assignment]
+    gate._by_loop = guarded  # type: ignore[assignment]
 
-    first = gate.current()  # miss: create + insert — inside the lock
-    second = gate.current()  # hit: prune scan + lookup — inside the lock
-    assert first is second
-    assert probe.acquisitions == 2  # zero here = the `with self._lock:` was removed
+    # Seed loop B THROUGH the guarded map (exercises set under the lock),
+    # then let it close — the eviction target.
+    seed_thread = threading.Thread(target=lambda: asyncio.run(_touch_gate(gate)))
+    seed_thread.start()
+    seed_thread.join()
+    assert len(guarded) == 1  # closed B is present, awaiting eviction
+
+    # The test loop's MISS: get (lookup) + iter (prune scan) + del (evict
+    # closed B) + set (create) — the full critical section, in one call.
+    semaphore = gate.current()
+    assert gate.current() is semaphore  # and a plain HIT for good measure
+    assert probe.acquisitions == 3  # seed + miss + hit, each under the lock
+    assert len(guarded) == 1  # B evicted, only the live test loop remains
+    # Coverage is self-verifying: every guarded operation actually ran.
+    assert guarded.ops_seen == {"set", "get", "iter", "del"}
+
+
+async def _touch_gate(gate: object) -> None:
+    async with gate.current():  # type: ignore[attr-defined]
+        await asyncio.sleep(0)
