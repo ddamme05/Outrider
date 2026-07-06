@@ -518,7 +518,12 @@ async def test_concurrency_gate_mutates_the_map_only_under_its_lock() -> None:
             self.held = False
 
     class _GuardedMap(dict):  # type: ignore[type-arg]
-        """Rejects any mutation performed while the probe lock is not held."""
+        """Rejects any access — reads AND writes — outside the probe lock.
+
+        Reads are guarded too: a `get()` or prune-scan iteration hoisted
+        outside the lock reintroduces the read/write and iterate/write
+        races the lock exists to prevent, while still passing a
+        write-only guard."""
 
         def __init__(self, probe: _ProbeLock) -> None:
             super().__init__()
@@ -531,6 +536,18 @@ async def test_concurrency_gate_mutates_the_map_only_under_its_lock() -> None:
         def __delitem__(self, key: object) -> None:
             assert self._probe.held, "gate map entry DELETED outside its lock"
             super().__delitem__(key)
+
+        def __getitem__(self, key: object) -> object:
+            assert self._probe.held, "gate map READ outside its lock"
+            return super().__getitem__(key)
+
+        def get(self, key: object, default: object = None) -> object:
+            assert self._probe.held, "gate map get() outside its lock"
+            return super().get(key, default)
+
+        def __iter__(self) -> object:
+            assert self._probe.held, "gate map ITERATED outside its lock"
+            return super().__iter__()
 
     probe = _ProbeLock()
     gate._lock = probe  # type: ignore[assignment]
