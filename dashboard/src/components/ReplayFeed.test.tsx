@@ -56,7 +56,10 @@ function findingEvent(eventId: string, findingId: string): Record<string, unknow
   };
 }
 
-function cacheLookupEvent(eventId: string): Record<string, unknown> {
+function cacheLookupEvent(
+  eventId: string,
+  outcome: "miss" | "would_hit" = "miss",
+): Record<string, unknown> {
   return {
     event_id: eventId,
     review_id: "r1",
@@ -65,7 +68,7 @@ function cacheLookupEvent(eventId: string): Record<string, unknown> {
     sequence_number: 5,
     is_eval: false,
     node_id: "analyze",
-    outcome: "miss",
+    outcome,
     file_path: "app/db/user_repository.py",
     phase_key: "file:app/db/user_repository.py#0",
   };
@@ -196,6 +199,26 @@ test("diagnostic events are hidden by default; the toggle reveals them with a co
   // Toggling back hides it again.
   await user.click(screen.getByRole("button", { name: /Hide 1 diagnostic events/ }));
   expect(screen.queryByText("cache_lookup")).toBeNull();
+});
+
+test("a cache would_hit stays visible (causal in serve mode) — phase-card AND flat views", () => {
+  // A "would_hit" means the model was skipped and a cache_serve follows: causal review
+  // behavior, NOT shadow noise. Only "miss" is hidden. Pinned in both feed renders.
+  const hit = cacheLookupEvent("e-hit", "would_hit");
+  const miss = cacheLookupEvent("e-miss", "miss");
+
+  const { rerender } = render(
+    <ReplayFeed data={data({ events: [hit, miss], phases: [phaseWith([hit, miss])] })} />,
+  );
+  // Phase-card view (default): the would_hit shows, the miss is hidden, toggle counts only the miss.
+  expect(screen.getByText("cache_lookup")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Show 1 hidden diagnostic events/ })).toBeInTheDocument();
+
+  // Flat view: same — would_hit visible even with diagnostics collapsed.
+  rerender(
+    <ReplayFeed data={data({ events: [hit, miss], phases: [phaseWith([hit, miss])] })} flat />,
+  );
+  expect(screen.getByText("cache_lookup")).toBeInTheDocument();
 });
 
 test("clicking a finding row expands its content + proof + HITL provenance", async () => {

@@ -217,7 +217,7 @@ export function ReplayFeed({
   // analyze fan-out — one set per file. Hidden by default so the feed reads as review signal; a
   // toggle with the explicit count reveals them (nothing silently dropped — audit-completeness).
   const diagCount = useMemo(
-    () => rendered.filter((e) => isDiagnosticEvent(e.event_type)).length,
+    () => rendered.filter((e) => isDiagnosticEvent(e)).length,
     [rendered],
   );
   // Relative-timestamp baseline for the flat feed (client-computed — no server field): the
@@ -393,7 +393,7 @@ export function ReplayFeed({
     let currentPhaseId: string | null = null;
     const feedEvents = showDiag
       ? rendered
-      : rendered.filter((e) => !isDiagnosticEvent(e.event_type));
+      : rendered.filter((e) => !isDiagnosticEvent(e));
     for (const e of feedEvents) {
       const ph = phaseByEventId.get(e.event_id ?? "") ?? null;
       if (ph && ph.phase_id !== currentPhaseId) {
@@ -436,7 +436,7 @@ export function ReplayFeed({
       {phases.map((phase) => {
         const evs = showDiag
           ? phase.events
-          : phase.events.filter((e) => !isDiagnosticEvent(e.event_type));
+          : phase.events.filter((e) => !isDiagnosticEvent(e));
         return (
           <div key={phase.phase_id} className="tl-phase">
             <div className="tl-phase-head">

@@ -75,17 +75,25 @@ export function eventFamily(eventType: string): string {
   return EV_FAMILY[eventType] ?? "framing";
 }
 
-// Shadow-mode / telemetry events the analyze fan-out emits once per file (the trivial-scope
-// shadow filter, the SHADOW cache lookups, the OBSERVED-producer shadow) — high volume, no
-// review signal. The feed hides them by default behind an explicit count + toggle so the
-// review-relevant rows (file_examination, llm_call, finding) stay readable. NOT `cache_serve`
-// (an actual served-from-cache hit is meaningful) — only the shadow lookup.
-export const DIAGNOSTIC_EVENTS: ReadonlySet<string> = new Set([
-  "cache_lookup",
-  "scope_exclusion",
-  "observed_skip_shadow",
-]);
-
-export function isDiagnosticEvent(eventType: string): boolean {
-  return DIAGNOSTIC_EVENTS.has(eventType);
+// Whether an event is pure telemetry (no causal effect on the review) vs signal. The analyze
+// fan-out emits high-volume shadow/telemetry once per file; the feed hides these by default
+// behind an explicit count + toggle so review-relevant rows stay readable. Payload-aware, NOT
+// by-type: a cache `would_hit` and an `applied` scope exclusion ARE causal (in serve/enforcing
+// mode) and must stay visible — only their misses/shadow counterparts are noise.
+export function isDiagnosticEvent(e: AuditEvent): boolean {
+  switch (e.event_type) {
+    case "observed_skip_shadow":
+      // The OBSERVED-producer shadow — always telemetry (never serves/enforces anything).
+      return true;
+    case "cache_lookup":
+      // outcome is "would_hit" | "miss". A "would_hit" is causal under SERVE mode (the model
+      // is skipped and a `cache_serve` follows); a "miss" always means "the model ran" — noise.
+      return e.outcome === "miss";
+    case "scope_exclusion":
+      // applied=true actually dropped scopes from the prompt (causal); the shadow classifier
+      // (applied=false) changes nothing.
+      return !e.applied;
+    default:
+      return false;
+  }
 }
