@@ -109,6 +109,17 @@ class ReviewFinding(BaseModel):
     # which routes through the full validator chain.
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
+    def validated_clone(self) -> "ReviewFinding":
+        """Validator-safe deep clone — the single-sourced recipe for the
+        WARNING above: `model_validate` over the dump re-runs the FULL
+        validator chain (`model_copy(deep=True)` would copy without
+        re-validating). The parallel-analyze non-aliasing boundaries
+        (worker outcomes; the aggregate fold) clone through this so no
+        live object is shared across state surfaces; the re-validation is
+        deliberate defense-in-depth at the proof boundary, accepted over
+        a cheaper unvalidated deep copy."""
+        return ReviewFinding.model_validate(self.model_dump())
+
     finding_id: UUID = Field(default_factory=uuid4)
     review_id: UUID
     installation_id: int

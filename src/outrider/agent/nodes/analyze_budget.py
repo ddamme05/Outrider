@@ -4,9 +4,15 @@
 The sequential analyze loop enforces its cost cap post-hoc: each file's
 gate reads the pools as drawn down by every earlier file. N concurrent
 workers cannot share that running state, so the fan-out allocates BEFORE
-dispatch: `plan_file_budgets` mirrors the sequential gate and drawdown
-exactly, once per file in input (triage) order, and each worker later
-enforces its own allocation instead of a shared remainder. No-overspend
+dispatch: `plan_file_budgets` mirrors the sequential FUNDING DECISION —
+cap-rejects-not-clamps, reserved-then-general draw, estimate-debited —
+once per file in the caller-supplied order, and each worker later
+enforces its own allocation instead of a shared remainder. Two accepted
+divergences from the sequential drawdown (spec Non-goals): allocations
+debit the PROXY estimate up front, so a file the worker later skips
+(budget, cache serve, coverage) still holds its allocation where the
+sequential loop would have debited 0 and let later files benefit; and
+unspent allocations are never redistributed. No-overspend
 is structural — sum of allocations can never exceed the pools (the
 accounting equation is asserted at construction) and a worker never
 exceeds its allocation — so it does not depend on estimate quality.
@@ -197,9 +203,13 @@ def plan_file_budgets(
     reserved_pool_tokens: int,
     per_file_cap_tokens: int,
 ) -> BudgetPlan:
-    """Allocate per-file budgets in input (triage) order.
+    """Allocate per-file budgets in the CALLER-SUPPLIED request order.
 
-    Mirrors the sequential gate exactly: funded iff
+    Order is load-bearing, not cosmetic: who wins under budget pressure is
+    decided by iteration position, and the analyze planner passes the
+    tier-descending worklist (DEEP before STANDARD) so higher-tier files
+    fund first — "fixing" the order to alphabetical or input-file order
+    would silently reshuffle starvation. Funding decision per file: funded iff
     `estimate <= per_file_cap_tokens` AND estimate fits the remaining
     class budget (general + reserved for high-risk; general only
     otherwise); funded files draw their FULL estimate (reserved-first for

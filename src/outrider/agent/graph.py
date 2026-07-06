@@ -148,7 +148,6 @@ graphs are invoked via `await graph.ainvoke(state)` / `.astream(...)`.
 
 from __future__ import annotations
 
-import asyncio
 import functools
 from typing import TYPE_CHECKING, Any
 
@@ -158,6 +157,7 @@ from langgraph.graph.state import CompiledStateGraph
 from outrider.agent.nodes.analyze import (
     ANALYZE_MAX_CONCURRENCY,
     DEFAULT_REVIEW_BUDGET_TOKENS,
+    AnalyzeConcurrencyGate,
     analyze,
     analyze_file,
 )
@@ -553,10 +553,13 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         # to the store-or-None enable switch.
         cache_mode=cache_mode,
     )
-    # Per-file Send worker (the fan-out cutover). The semaphore is created
-    # ONCE per compiled graph, so the in-flight bound is global across
-    # concurrent reviews sharing this graph — deliberate: the provider's
-    # rate limits are global, not per-review (see ANALYZE_MAX_CONCURRENCY).
+    # Per-file Send worker (the fan-out cutover). ONE gate per compiled
+    # graph, so the in-flight bound is global across concurrent reviews
+    # sharing this graph — deliberate: the provider's rate limits are
+    # global, not per-review (see ANALYZE_MAX_CONCURRENCY). The gate mints
+    # its semaphore PER RUNNING LOOP (a bare Semaphore binds to the first
+    # loop it is contended on and crashes on any other — a latent footgun
+    # for module-scoped graph fixtures or sequential asyncio.run callers).
     analyze_file_callable = functools.partial(
         analyze_file,
         provider=provider,
@@ -574,7 +577,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         profile_id=profile_id,
         reasoning_enabled=reasoning_enabled,
         profile_contract_digest=profile_contract_digest,
-        concurrency_semaphore=asyncio.Semaphore(analyze_max_concurrency),
+        concurrency_semaphore=AnalyzeConcurrencyGate(analyze_max_concurrency),
     )
     analyze_aggregate_callable = functools.partial(
         analyze_aggregate,

@@ -283,6 +283,53 @@ async def test_proxy_estimate_covers_real_rendered_estimate(deps: dict[str, Any]
 
 
 @pytest.mark.asyncio
+async def test_proxy_covers_real_on_overlap_dense_scope_context(deps: dict[str, Any]) -> None:
+    """CALIBRATION, the adversarial shape: many small functions with dense
+    same-file call links, all changed — the rendered scope context includes
+    every unit PLUS same-file caller/callee excerpts, so content regions
+    DUPLICATE into the prompt (the exact overlap DUP_FACTOR exists to
+    absorb). The proxy must still cover the real rendered estimate."""
+    n = 14
+    lines: list[str] = []
+    for i in range(n):
+        callee = f"f{(i + 1) % n}"
+        lines.append(f"def f{i}(x):")
+        lines.append(f"    y = {callee}(x) if x > {i} else x  # link {i}")
+        lines.append(f"    return y + {i}")
+    body = "\n".join(lines) + "\n"
+    n_lines = body.count("\n")
+    patch = f"--- a/src/dense.py\n+++ b/src/dense.py\n@@ -0,0 +1,{n_lines} @@\n" + "".join(
+        "+" + line + "\n" for line in body.splitlines()
+    )
+    cf = _build_changed_file(
+        path="src/dense.py", content=body.encode(), patch=patch, content_base=""
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(cf,)),
+        triage_result=_build_triage_result(file_tiers={"src/dense.py": ReviewTier.DEEP}),
+    )
+    result = await run_analyze_pass(state, deps)
+    (outcome,) = result["analyze_worker_outcomes"]
+    assert outcome.source == "parser"  # funded and LLM-run — the gate is live
+    empty_parts = analyze_prompt.render(
+        file_path="", scope_unit_context="", query_match_id_list="", diff_hunks="", pass_index=0
+    )
+    fixed_overhead = (
+        _estimate_tokens(empty_parts.system_prompt)
+        + _estimate_tokens(empty_parts.user_prompt)
+        + analyze_prompt.MAX_TOKENS
+        + _PROXY_RENDER_MARGIN_TOKENS
+    )
+    proxy = proxy_estimate_tokens(
+        len(body.encode()), len(patch.encode()), fixed_overhead_tokens=fixed_overhead
+    )
+    assert proxy >= outcome.estimated_tokens, (
+        f"proxy under-covers the overlap-dense file: {proxy} < {outcome.estimated_tokens} — "
+        f"DUP_FACTOR/margin need re-calibration before trusting the planner on dense files"
+    )
+
+
+@pytest.mark.asyncio
 async def test_composed_pass_matches_default_budget(deps: dict[str, Any]) -> None:
     """Sanity for the helper contract: composed pass over two files under
     the default budget examines both files, emits one round + one
@@ -351,3 +398,34 @@ async def test_pass_one_events_stay_none_keyed(deps: dict[str, Any]) -> None:
     assert all(e.phase_key is None for e in pass_one_phases)
     pass_one_completed = deps["analyze_event_sink"].completed[n_completed_before:]
     assert all(e.phase_key is None for e in pass_one_completed)
+
+
+@pytest.mark.asyncio
+async def test_concurrency_gate_works_across_event_loops() -> None:
+    """The build-time gate mints one semaphore per running loop — a bare
+    Semaphore captured at build_graph time would bind to the first loop it
+    is contended on and raise on any other (module-scoped graph fixtures,
+    sequential asyncio.run callers)."""
+    import threading
+
+    from outrider.agent.nodes.analyze import AnalyzeConcurrencyGate
+
+    gate = AnalyzeConcurrencyGate(2)
+
+    async def contend() -> int:
+        sem = gate.current()
+        async with sem, sem:
+            await asyncio.sleep(0)
+        return id(sem)
+
+    first_id = await contend()  # loop A (the running test loop)
+
+    result: dict[str, int] = {}
+
+    def run_on_fresh_loop() -> None:
+        result["second_id"] = asyncio.run(contend())  # loop B
+
+    thread = threading.Thread(target=run_on_fresh_loop)
+    thread.start()
+    thread.join()
+    assert result["second_id"] != first_id  # a fresh semaphore, not a rebind

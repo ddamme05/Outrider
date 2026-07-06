@@ -103,3 +103,24 @@ def cap_findings_by_severity(
 
 
 __all__ = ["FindingCapOverflowError", "cap_findings_by_severity"]
+
+
+def admit_with_pair_dedup(
+    findings: Sequence[ReviewFinding],
+    admitted: list[ReviewFinding],
+    keys_seen: set[tuple[str, str]],
+) -> None:
+    """Append each finding unless its `(content_hash, proposal_hash)` pair was
+    already admitted (FUP-178). The SINGLE admission-dedup implementation for
+    both round-assembly paths — the sequential pass-1 accumulation
+    (`analyze.py`) and the fan-out fold (`analyze_aggregate.py`); `AnalysisRound`
+    enforces uniqueness on both keys, so this stops a logically-identical
+    finding from double-admitting before the round validators run. A key change
+    here changes BOTH paths together (drift between them was previously guarded
+    only by the parity test)."""
+    for finding in findings:
+        key = (finding.content_hash, finding.proposal_hash)
+        if key in keys_seen:
+            continue
+        keys_seen.add(key)
+        admitted.append(finding)

@@ -45,7 +45,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from outrider.agent.nodes.finding_cap import cap_findings_by_severity
+from outrider.agent.nodes.finding_cap import admit_with_pair_dedup, cap_findings_by_severity
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.models import SkipReason
 from outrider.audit.events import AnalyzeCompletedEvent, ReviewPhaseEvent
@@ -57,7 +57,6 @@ from outrider.schemas.analysis_round import (
     MAX_FINDINGS_PER_ROUND,
     AnalysisRound,
 )
-from outrider.schemas.review_finding import ReviewFinding
 from outrider.schemas.triage_result import ReviewTier
 
 if TYPE_CHECKING:
@@ -68,6 +67,7 @@ if TYPE_CHECKING:
     from outrider.schemas import ReviewState
     from outrider.schemas.analyze_worker import AnalyzeWorkerOutcome
     from outrider.schemas.observed_subsumption import ObservedSubsumedMatch
+    from outrider.schemas.review_finding import ReviewFinding
     from outrider.schemas.trace_candidate import TraceCandidate
 
 logger = logging.getLogger(__name__)
@@ -120,9 +120,10 @@ class AggregateFold:
 
 
 def _clone(finding: ReviewFinding) -> ReviewFinding:
-    """Validator-safe deep clone (non-aliasing gate): `model_validate` over
-    the dump re-runs the full validator chain; `model_copy` would skip it."""
-    return ReviewFinding.model_validate(finding.model_dump())
+    """Non-aliasing gate — delegates to the single-sourced
+    `ReviewFinding.validated_clone()` (re-validation is deliberate; see the
+    method's docstring)."""
+    return finding.validated_clone()
 
 
 def fold_worker_outcomes(
@@ -200,13 +201,10 @@ def fold_worker_outcomes(
         cache_read += o.cache_read_tokens
         cache_write += o.cache_write_tokens
         total_cost += o.cost
-        # Cross-source admission dedup on the (content_hash, proposal_hash)
-        # pair — the sequential `_admit_with_dedup` contract (FUP-178).
-        for finding in o.admitted_findings:
-            key = (finding.content_hash, finding.proposal_hash)
-            if key not in admitted_keys:
-                admitted_keys.add(key)
-                admitted.append(finding)
+        # Cross-source admission dedup — the SAME implementation the
+        # sequential pass-1 accumulation uses (FUP-178; extracted so the
+        # two round-assembly paths cannot drift on the admission key).
+        admit_with_pair_dedup(o.admitted_findings, admitted, admitted_keys)
         trace_candidates.extend(o.trace_candidates)
         subsumed.extend(o.subsumed_matches)
 
