@@ -110,6 +110,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
@@ -313,14 +314,15 @@ _DEGRADED_HUNK_CHAR_CAP: Final[int] = 8192
 
 # Default bound on in-flight `analyze_file` workers (the Send fan-out per
 # specs/2026-07-05-parallel-analyze.md). The Send count itself is unbounded
-# — every kept file gets a worker — but the semaphore built at build_graph
-# admits at most this many worker BODIES at once. The semaphore is created
-# once per compiled graph, so the bound is global across concurrent reviews
-# sharing that graph — deliberate: the provider's rate limits are global,
-# not per-review. Prompt-cache stampede note (spec): the first concurrent
-# wave can each cache-WRITE the shared system prefix; the bounded 1.25×
-# write overhead on at most (cap - 1) redundant writes per tier-model is
-# accepted rather than serializing the first call.
+# — every kept file gets a worker — but the gate built at build_graph
+# admits at most this many worker BODIES at once PER (graph, event loop):
+# on the single-loop production server that is graph-global across
+# concurrent reviews; simultaneous multi-loop driving gets an independent
+# cap per loop (the AnalyzeConcurrencyGate contract). Prompt-cache
+# stampede note (spec): the first concurrent wave can each cache-WRITE
+# the shared system prefix; the bounded 1.25× write overhead on at most
+# (cap - 1) redundant writes per tier-model is accepted rather than
+# serializing the first call.
 ANALYZE_MAX_CONCURRENCY: Final[int] = 4
 
 # Per-file render margin folded into the planner proxy's fixed overhead.
@@ -509,16 +511,28 @@ class AnalyzeConcurrencyGate:
         if permits < 1:
             raise ValueError(f"permits must be >= 1, got {permits}")
         self._permits = permits
+        # Simultaneous loops mean simultaneous THREADS, so the map is
+        # guarded by a threading.Lock: two same-instant misses (or two
+        # threads pruning the same closed loop) would otherwise race the
+        # iterate/del/set sequence — GIL atomicity is not a contract
+        # (free-threaded builds), and a double-del raises KeyError.
+        # Uncontended acquisition is nanoseconds against seconds-long
+        # worker bodies.
+        self._lock = threading.Lock()
         self._by_loop: dict[asyncio.AbstractEventLoop, asyncio.Semaphore] = {}
 
     def current(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()
-        semaphore = self._by_loop.get(loop)
-        if semaphore is None:
+        with self._lock:
+            # Prune on EVERY call (the map is a handful of loops at most):
+            # miss-only pruning would retain a closed secondary loop's
+            # semaphore indefinitely when no new loop ever appears.
             for stale in [known for known in self._by_loop if known.is_closed()]:
                 del self._by_loop[stale]
-            semaphore = asyncio.Semaphore(self._permits)
-            self._by_loop[loop] = semaphore
+            semaphore = self._by_loop.get(loop)
+            if semaphore is None:
+                semaphore = asyncio.Semaphore(self._permits)
+                self._by_loop[loop] = semaphore
         return semaphore
 
 
