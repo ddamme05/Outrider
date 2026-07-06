@@ -2677,7 +2677,7 @@ export interface components {
          *     - Analyze-stage (rule rooted in analyze's decision rationale):
          *       `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,
          *       `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`,
-         *       `ALL_SCOPES_TRIVIAL`. Set by the
+         *       `ALL_SCOPES_TRIVIAL`, `PATCH_HEAD_MISALIGNED`. Set by the
          *       analyze node body when it skips a file mid-pass.
          *       `UNSUPPORTED_LANGUAGE` is capability-scoped: it fires for
          *       extensions with no registered ast_facts adapter (the registry
@@ -2688,7 +2688,7 @@ export interface components {
          *     Imported by `outrider/audit/events.py` per `DECISIONS.md#018`.
          * @enum {string}
          */
-        SkipReason: "OVERSIZED" | "VENDORED" | "GENERATED_FILENAME" | "MINIFIED" | "GENERATED_BANNER" | "BINARY" | "COST_BUDGET_EXHAUSTED" | "NO_REVIEWABLE_CONTEXT" | "NO_CHANGED_SCOPE_UNITS" | "UNSUPPORTED_LANGUAGE" | "ALL_SCOPES_TRIVIAL";
+        SkipReason: "OVERSIZED" | "VENDORED" | "GENERATED_FILENAME" | "MINIFIED" | "GENERATED_BANNER" | "BINARY" | "COST_BUDGET_EXHAUSTED" | "NO_REVIEWABLE_CONTEXT" | "NO_CHANGED_SCOPE_UNITS" | "UNSUPPORTED_LANGUAGE" | "ALL_SCOPES_TRIVIAL" | "PATCH_HEAD_MISALIGNED";
         /**
          * SlackNotificationEvent
          * @description A Slack notification posted for a review (dashboard-in-Slack, V1).

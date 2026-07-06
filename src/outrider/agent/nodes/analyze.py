@@ -206,6 +206,7 @@ from outrider.coordinates import (
     changed_line_spans,
     extract_scope_unit_body,
     lookup_patched_file,
+    patched_file_has_added_lines,
     patched_file_has_removed_lines,
 )
 from outrider.llm.base import LLMRequest, _canonical_prompt_hash
@@ -2132,11 +2133,50 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # degraded prompt below also needs `patched_file`.
     patched_file = lookup_patched_file(changed_file.patch, changed_file.path)
 
+    # FUP-217: patch/head misalignment probe. `added_line_byte_ranges` raises
+    # CoordinateError when a patch target line lies beyond the fetched source
+    # (force-push racing intake's files-list vs content fetches). Probed ONCE
+    # here, before any route, because every downstream coordinate anchor for
+    # the file is unsound against mismatched content: the degraded span veto
+    # recomputes these ranges AFTER the LLM call (an uncontained raise there
+    # aborted the whole review), the module-scope arm denies on them, and a
+    # "clean" review would hand publish wrong-line comment locations. Added
+    # lines are HEAD-side coordinates, so the probe anchors on head content
+    # ONLY: when head is absent, an added-line patch has nothing to anchor
+    # against and skips as the same misalignment class — probing the base
+    # fallback would validate head coordinates against the wrong text and
+    # pass wrongly. Deletion-only patches over base content (removed files)
+    # carry no added lines and proceed unprobed, unchanged.
+    if patched_file is not None:
+        if changed_file.content_head is None:
+            misaligned = patched_file_has_added_lines(patched_file)
+        else:
+            try:
+                added_line_byte_ranges(patched_file, changed_file.content_head)
+                misaligned = False
+            except CoordinateError:
+                misaligned = True
+        if misaligned:
+            logger.warning(
+                "patch/head-content misalignment for %s — file skipped "
+                "(PATCH_HEAD_MISALIGNED; review continues)",
+                changed_file.path,
+            )
+            return await _emit_skip(
+                file_examination_sink=file_examination_sink,
+                review_id=review_id,
+                is_eval=is_eval,
+                file_path=changed_file.path,
+                skip_reason=SkipReason.PATCH_HEAD_MISALIGNED,
+            )
+
     # Module-scope arm inputs (DECISIONS.md#062), derived through the ONE
     # gated helper (fully error-free parse; patch/head-misalignment
-    # contained to an inert arm) — needed on the clean route too (the
-    # with-scopes arm + its cache-key digest), so derived up front. The
-    # ROUTING SWEEP below is lazy; only this derivation is unconditional.
+    # contained to an inert arm — production-unreachable now that the
+    # probe above skips misaligned files first; kept as defense) — needed
+    # on the clean route too (the with-scopes arm + its cache-key
+    # digest), so derived up front. The ROUTING SWEEP below is lazy; only
+    # this derivation is unconditional.
     module_all_scope_units, module_added_ranges = module_admission_inputs(
         parse_result, patched_file, changed_file.content_head
     )
