@@ -34,12 +34,16 @@ _SEVERITY_ORDER: Final[tuple[FindingSeverity, ...]] = (
 )
 _SEVERITY_RANK: Final[dict[FindingSeverity, int]] = {s: i for i, s in enumerate(_SEVERITY_ORDER)}
 
-# Slack Block Kit caps a section's mrkdwn text at 3000 chars. The attacker-controlled
-# pr_title / file_path / title are otherwise uncapped → a pathological value would trip
-# `msg_too_long`. `_cap_text` truncates per-section WITHOUT dropping blocks, so the overflow +
-# deep-link/action blocks (appended after, no attacker text) always survive. Total block count
-# is bounded well under Slack's 50-block message limit by `top_n`.
+# Slack length limits. Primary defense: clip each raw attacker-controlled string (pr_title, repo,
+# file_path) to `_SLACK_INPUT_MAX` code points BEFORE escaping + composition — this bounds both the
+# section blocks AND the top-level `text` notification fallback, keeps the UTF-16 length Slack
+# actually counts well under its cap (even all-astral input stays ~2× the clip), and means later
+# truncation never lands mid-escape-entity. `_cap_text` is the per-section backstop (≤3000-char
+# mrkdwn limit); it truncates WITHOUT dropping blocks, so the overflow + deep-link/action blocks
+# (appended after, no attacker text) always survive. Total block count is bounded under Slack's
+# 50-block message limit by `top_n`.
 _SLACK_SECTION_MAX: Final[int] = 2900
+_SLACK_INPUT_MAX: Final[int] = 300
 
 
 class RenderedSlackMessage(NamedTuple):
@@ -59,9 +63,18 @@ def _escape_mrkdwn(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _clip(raw: str) -> str:
+    """Clip a raw attacker-controlled string to a display bound BEFORE escaping/composition.
+    The primary length defense: bounds the section blocks AND the `text` fallback, keeps the
+    UTF-16 length under Slack's cap, and (by clipping the raw value) guarantees later escaping +
+    truncation never split a multi-char `&amp;`/`&lt;` entity."""
+    return raw if len(raw) <= _SLACK_INPUT_MAX else raw[: _SLACK_INPUT_MAX - 1] + "…"
+
+
 def _cap_text(text: str) -> str:
-    """Truncate a section's mrkdwn to Slack's per-section limit (ellipsis-terminated) so an
-    uncapped attacker-controlled value (pr_title / file_path / title) can't trip msg_too_long."""
+    """Per-section backstop: truncate composed mrkdwn to Slack's ≤3000-char section limit. With
+    raw inputs already `_clip`-ped this rarely fires; kept as defense in depth for any future
+    section that composes many inputs."""
     return text if len(text) <= _SLACK_SECTION_MAX else text[: _SLACK_SECTION_MAX - 1] + "…"
 
 
@@ -90,7 +103,7 @@ def _finding_line(f: ReviewFinding) -> str:
     line_range = str(f.line_start) if f.line_start == f.line_end else f"{f.line_start}-{f.line_end}"
     return (
         f"*{sections.severity_label}* · {sections.type_label} — "
-        f"`{_escape_mrkdwn(f.file_path)}:{line_range}`\n{_escape_mrkdwn(f.title)}"
+        f"`{_escape_mrkdwn(_clip(f.file_path))}:{line_range}`\n{_escape_mrkdwn(_clip(f.title))}"
     )
 
 
@@ -105,7 +118,7 @@ def build_hitl_pending_message(
 ) -> RenderedSlackMessage:
     """The rich HITL-pending card: PR identity, severity counts, top-N findings by
     severity, an overflow line for the rest, and a deep-link button."""
-    repo_s, pr_title_s = _escape_mrkdwn(repo), _escape_mrkdwn(pr_title)
+    repo_s, pr_title_s = _escape_mrkdwn(_clip(repo)), _escape_mrkdwn(_clip(pr_title))
     ordered = sorted(findings, key=lambda f: _SEVERITY_RANK[f.severity])
     counts = _severity_counts(ordered)
     total = len(ordered)
@@ -163,7 +176,7 @@ def build_review_posted_message(
     """The compact one-line review-posted FYI (non-gated reviews). Counts come from
     publish routing: `posted_count` = inline + review-body (on the PR);
     `dashboard_only_count` = findings not posted to GitHub."""
-    repo_s = _escape_mrkdwn(repo)
+    repo_s = _escape_mrkdwn(_clip(repo))
     total = posted_count + dashboard_only_count
     if total == 0:
         summary = "no findings"
