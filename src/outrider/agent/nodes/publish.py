@@ -1411,13 +1411,15 @@ def _build_finding_comment_body(
     sanitizer enforces the byte cap including the truncation marker
     and any fencing overhead the body composes.
 
-    The uncuttable tail is, in human-visible order: the feature-2 GitHub
-    ```suggestion block (`suggestion`, from `_render_suggestion_block`; the Apply
-    button must not be truncated), then the S1.5 agent-prompt block (`agent_prompt`),
-    then the S1 agent-marker block (`markers`). All are pre-bounded; the PROSE is
-    size-capped reserving room for them, then each is appended UNCUT, so truncation
-    can never cut the suggestion fence or the marker block. With all empty, the prose
-    is capped alone (original behaviour).
+    The uncuttable tail is, in order: the proof line (`_render_proof_line`, always
+    present — carries the evidence-tier phrase), the fenced evidence snippet
+    (`evidence_block`, omitted when `finding.evidence` is empty), the labelled
+    ```suggestion block (`fix_block`, whose Apply button must not be truncated), the
+    S1.5 agent-prompt block (`agent_prompt`), and the S1 agent-marker block (`markers`).
+    All are pre-bounded; the PROSE (header + description) is size-capped reserving room
+    for the whole suffix, then each block is appended UNCUT, so truncation can never cut
+    a code fence, the suggestion Apply button, or the marker block. With every tail block
+    empty the prose is capped alone (original behaviour).
     """
     # Local import to keep the module top-level clean and to avoid
     # pulling the sanitizer's HMAC-secret env-read at import time.
