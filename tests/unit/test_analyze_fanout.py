@@ -401,31 +401,50 @@ async def test_pass_one_events_stay_none_keyed(deps: dict[str, Any]) -> None:
 
 
 @pytest.mark.asyncio
-async def test_concurrency_gate_works_across_event_loops() -> None:
-    """The build-time gate mints one semaphore per running loop — a bare
-    Semaphore captured at build_graph time would bind to the first loop it
-    is contended on and raise on any other (module-scoped graph fixtures,
-    sequential asyncio.run callers)."""
+async def test_concurrency_gate_contends_per_loop_and_prunes_closed_loops() -> None:
+    """REAL contention on each loop (permits=1: the second task must WAIT,
+    which is what makes asyncio bind the semaphore to its loop — the
+    failure mode a bare build-time Semaphore has on a second loop), plus
+    the leak guard: a closed loop's entry is pruned on the next miss
+    (weak keys cannot work here — a contended semaphore strongly retains
+    its bound loop, so the map must prune, not rely on collection)."""
     import threading
 
     from outrider.agent.nodes.analyze import AnalyzeConcurrencyGate
 
-    gate = AnalyzeConcurrencyGate(2)
+    gate = AnalyzeConcurrencyGate(1)
 
     async def contend() -> int:
         sem = gate.current()
-        async with sem, sem:
-            await asyncio.sleep(0)
+        order: list[int] = []
+
+        async def hold(tag: int) -> None:
+            async with sem:  # tag 2 must WAIT on tag 1 → loop binding happens
+                order.append(tag)
+                await asyncio.sleep(0)
+
+        await asyncio.gather(hold(1), hold(2))
+        assert order == [1, 2]
         return id(sem)
 
     first_id = await contend()  # loop A (the running test loop)
+    assert len(gate._by_loop) == 1
 
     result: dict[str, int] = {}
 
     def run_on_fresh_loop() -> None:
-        result["second_id"] = asyncio.run(contend())  # loop B
+        result["second_id"] = asyncio.run(contend())  # loop B; then B closes
 
     thread = threading.Thread(target=run_on_fresh_loop)
     thread.start()
     thread.join()
-    assert result["second_id"] != first_id  # a fresh semaphore, not a rebind
+    assert result["second_id"] != first_id  # a fresh semaphore, no cross-loop rebind
+
+    def run_on_third_loop() -> None:
+        result["third_id"] = asyncio.run(contend())  # loop C: miss → prunes closed B
+
+    thread = threading.Thread(target=run_on_third_loop)
+    thread.start()
+    thread.join()
+    # Loop A (still alive) + loop C survive; closed loop B was pruned on miss.
+    assert len(gate._by_loop) == 2

@@ -554,12 +554,14 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         cache_mode=cache_mode,
     )
     # Per-file Send worker (the fan-out cutover). ONE gate per compiled
-    # graph, so the in-flight bound is global across concurrent reviews
-    # sharing this graph — deliberate: the provider's rate limits are
-    # global, not per-review (see ANALYZE_MAX_CONCURRENCY). The gate mints
-    # its semaphore PER RUNNING LOOP (a bare Semaphore binds to the first
-    # loop it is contended on and crashes on any other — a latent footgun
-    # for module-scoped graph fixtures or sequential asyncio.run callers).
+    # graph; the gate mints its semaphore PER RUNNING LOOP (a bare
+    # Semaphore binds to the first loop it is contended on and crashes on
+    # any other — a latent footgun for module-scoped graph fixtures or
+    # sequential asyncio.run callers). The in-flight bound is therefore
+    # per-(graph, loop): on the single-loop production server that IS
+    # graph-global across concurrent reviews; simultaneous multi-loop
+    # driving would get an independent cap per loop (accepted — see the
+    # AnalyzeConcurrencyGate contract).
     analyze_file_callable = functools.partial(
         analyze_file,
         provider=provider,

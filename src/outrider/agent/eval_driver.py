@@ -1132,9 +1132,11 @@ async def _arun_review(
 
 def _require_concurrency_safe_scripting(fixture: EvalFixture, analyze_max_concurrency: int) -> None:
     """Fail loud on the unsafe combination: concurrent workers + index-keyed
-    analyze scripting. With more than one scripted analyze response and no
-    by-path map, completion order decides which file gets which response —
-    a silently misattributed scenario is worse than a refused one."""
+    analyze scripting. With ANY scripted analyze response and no by-path
+    map, completion order decides which file gets which response (how many
+    files reach the LLM is runtime behavior, so one response is no safer
+    than five) — a silently misattributed scenario is worse than a refused
+    one."""
     if (
         analyze_max_concurrency > 1
         and fixture.analyze_responses_by_path is None
@@ -1198,18 +1200,20 @@ def run_review(
         fixture = EvalFixture.model_validate(json.load(fh))
 
     _require_concurrency_safe_scripting(fixture, analyze_max_concurrency)
-    if probe is not None and analyze_max_concurrency > 1:
-        # The in-flight-aware cache model prices a concurrent first wave
-        # CORRECTLY, but HOW MANY workers land in that wave depends on real
-        # persist() I/O timing — run-to-run the modeled cost varies 1..cap
-        # writes. The probe exists for deterministic before/after cost
-        # comparisons (COST_ANALYSIS workflow), so the nondeterministic
-        # combination is refused rather than silently irreproducible.
+    if probe is not None and probe.model_cache and analyze_max_concurrency > 1:
+        # Narrow to the CACHE-MODELED probe only: the in-flight-aware model
+        # prices a concurrent first wave CORRECTLY, but HOW MANY workers land
+        # in that wave depends on real persist() I/O timing — run-to-run the
+        # modeled cost varies 1..cap writes, defeating the deterministic
+        # before/after purpose (COST_ANALYSIS workflow). A cache-OFF probe is
+        # timing-independent (per-call token counts + per-call pricing;
+        # only the .calls list ORDER varies) and stays allowed.
         raise EvalDriverError(
-            "CostProbe with analyze_max_concurrency > 1: the modeled "
-            "cache-write count depends on worker timing, so probe runs would "
-            "not be reproducible. Measure cost at analyze_max_concurrency=1 "
-            "(per-call token counts are concurrency-independent)."
+            "CostProbe(model_cache=True) with analyze_max_concurrency > 1: "
+            "the modeled cache-write count depends on worker timing, so probe "
+            "runs would not be reproducible. Measure cache-modeled cost at "
+            "analyze_max_concurrency=1, or drop model_cache for a concurrent "
+            "run (per-call token counts are concurrency-independent)."
         )
     return asyncio.run(
         _arun_review(
