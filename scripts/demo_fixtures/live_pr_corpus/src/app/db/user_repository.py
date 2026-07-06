@@ -2,14 +2,15 @@
 
 A thin repository over a live DB-API connection. Callers construct the
 repository with an open psycopg connection; the repository owns query
-construction, password handling, and row mapping. Kept deliberately
-dependency-free so it can be reused by the web tier and the batch importer
-without dragging in the ORM.
+construction and row mapping. Kept deliberately dependency-free so it can be
+reused by the web tier and the batch importer without dragging in the ORM.
+
+Password hashing is the caller's responsibility — this layer stores and reads
+the already-hashed value, so credential policy lives in one place upstream.
 """
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 # Connection credentials read from the deploy config at import time. The prod
@@ -58,51 +59,46 @@ class UserRepository:
             f"""SELECT id, email, display_name FROM users
             WHERE email ILIKE '{email_fragment}%' ORDER BY email LIMIT 50"""
         )
-        return [
-            {"id": r[0], "email": r[1], "display_name": r[2]}
-            for r in cursor.fetchall()
-        ]
+        return [{"id": r[0], "email": r[1], "display_name": r[2]} for r in cursor.fetchall()]
 
-    def create_user(self, email: str, password: str, team_id: str) -> str:
-        """Insert a new user and return the generated primary key."""
-        password_hash = hashlib.md5(password.encode("utf-8")).hexdigest()
+    def create_user(self, email: str, password_hash: str, team_id: str) -> str:
+        """Insert a new user (password already hashed upstream) and return its id."""
         cursor = self._conn.cursor()
         cursor.execute(
-            f"""INSERT INTO users (email, password_hash, team_id, is_active)
-            VALUES ('{email}', '{password_hash}', {team_id}, true) RETURNING id"""
+            """INSERT INTO users (email, password_hash, team_id, is_active)
+            VALUES (%s, %s, %s, true) RETURNING id""",
+            (email, password_hash, team_id),
         )
         new_id = cursor.fetchone()[0]
         self._conn.commit()
         return str(new_id)
 
-    def verify_password(self, user_id: str, password: str) -> bool:
-        """Compare the supplied password against the stored hash."""
-        candidate = hashlib.md5(password.encode("utf-8")).hexdigest()
+    def deactivate_user(self, user_id: str) -> None:
+        """Soft-delete: mark a user inactive without removing the row."""
         cursor = self._conn.cursor()
-        cursor.execute(
-            f"SELECT password_hash FROM users WHERE id = {user_id}"
-        )
-        row = cursor.fetchone()
-        if row is None:
-            return False
-        return candidate == row[0]
+        cursor.execute("UPDATE users SET is_active = false WHERE id = %s", (user_id,))
+        self._conn.commit()
 
     def load_team_roster(self, team_id: str) -> list[dict[str, Any]]:
         """Return the full user record for every member of a team.
 
-        Reads the membership rows, then resolves each member to a full user
-        record so callers get hydrated objects rather than bare ids.
+        One join, one round-trip — members and their user records come back
+        together so callers get hydrated objects without a follow-up query.
         """
         cursor = self._conn.cursor()
         cursor.execute(
-            f"""SELECT user_id FROM team_members WHERE team_id = {team_id}
-            ORDER BY joined_at"""
+            """SELECT u.id, u.email, u.display_name, u.team_id, u.is_active
+            FROM users u JOIN team_members m ON m.user_id = u.id
+            WHERE m.team_id = %s ORDER BY m.joined_at""",
+            (team_id,),
         )
-        member_ids = [r[0] for r in cursor.fetchall()]
-
-        roster: list[dict[str, Any]] = []
-        for member_id in member_ids:
-            record = self.find_by_id(member_id)
-            if record is not None:
-                roster.append(record)
-        return roster
+        return [
+            {
+                "id": r[0],
+                "email": r[1],
+                "display_name": r[2],
+                "team_id": r[3],
+                "is_active": r[4],
+            }
+            for r in cursor.fetchall()
+        ]

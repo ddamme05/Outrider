@@ -89,11 +89,13 @@ each listed query provably fires on the corpus file.
 ### 1. `src/app/db/user_repository.py` — DEEP
 | Finding type | Severity | Tier | Note |
 |---|---|---|---|
-| `sql_injection` | CRITICAL | **[O]** | `python.sql_injection_string_concat` — fires on **all 5 DB methods** (f-string SQL into `cursor.execute`): `find_by_id`, `search_by_email`, `create_user`, `verify_password`, `load_team_roster` |
-| `weak_password_hash` | CRITICAL | [J] | md5 password hashing — no Python hash query, so JUDGED |
+| `sql_injection` | CRITICAL | **[O]** | `python.sql_injection_string_concat` — fires on **2 methods** (f-string SQL into `cursor.execute`): `find_by_id`, `search_by_email` |
 | `hardcoded_secret` | HIGH | [J] | module-level `DB_PASSWORD` literal |
-| `n_plus_one_query` | MEDIUM | [J] | per-row `find_by_id()` in a loop |
-| `missing_error_handling` | LOW | [J] | raw cursor use, no try/except |
+
+**Negative controls (must produce NO finding — this file is the precision test):** `create_user`,
+`deactivate_user`, and `load_team_roster` all use parameterized `%s` queries. If any of the three
+gets flagged `sql_injection`, that's a **false positive** to investigate — the OBSERVED producer
+proves it won't (validated: 2 matches, not 5).
 
 ### 2. `src/app/tasks/report_runner.py` — DEEP
 | Finding type | Severity | Tier | Note |
@@ -157,18 +159,22 @@ No `analyze_file` worker Sent (triage classifies non-code as SKIM/SKIP). Verify 
 ## Aggregate expected outcome (diff the run against this)
 
 - **Files kept/examined:** 9 code files (README not analyzed). ~6 DEEP + ~2 STANDARD + 1 trace-fetched.
-- **OBSERVED matches (guaranteed — offline-validated):** **20** query matches across 5 files:
-  `user_repository.py` 5 SQLi · `report_runner.py` 5 (cmd-inj, unsafe-deser, tls, broken-cipher,
+- **OBSERVED matches (guaranteed — offline-validated):** **17** query matches across 5 files:
+  `user_repository.py` 2 SQLi · `report_runner.py` 5 (cmd-inj, unsafe-deser, tls, broken-cipher,
   ecb — the last two on one line → **1 weak_crypto finding**) · `deploy_helpers.js` 4 (cmd-inj +
   3 weak-crypto) · `user_repository.ts` 4 (SQLi, tls-verify ×2, tls-env) · `ExpressionPreview.tsx`
   2 (eval, md5). Each carries a `query_match_id`; a missing one = a silent parse/skip or catalog
   regression. (Match count > finding count where content-hash dedup collapses same-line/same-type
   hits, e.g. the broken-cipher+ecb pair.)
+- **Negative controls (must produce NOTHING):** the 3 parameterized methods in `user_repository.py`
+  (`create_user`, `deactivate_user`, `load_team_roster`) + the STANDARD files' safe code. Any
+  OBSERVED finding on these is a false positive — precision, not just recall, is on display.
 - **JUDGED findings (likely):** ~10, spanning CRITICAL→INFO. Count/wording varies by host.
 - **Severity spread:** CRITICAL, HIGH, MEDIUM, LOW, INFO all represented.
 - **HITL:** fires (multiple CRITICAL/HIGH) → `status=awaiting_approval`, checkpointed.
 - **Trace:** `analysis_rounds == 2`, `files_traced_beyond_diff >= 1`, one DASHBOARD_ONLY finding.
-- **Parallel:** at `n=4`, multiple `file:<path>#0` analyze phases overlap in the timeline.
+- **Parallel:** at `n=4`, max-concurrent open `file:<path>#` analyze phases **≥2** (temporal
+  overlap in the timeline); at `n=1`, exactly 1 open at a time. Overlap — not wall-clock — is the proof.
 
 ---
 
@@ -178,7 +184,7 @@ No `analyze_file` worker Sent (triage classifies non-code as SKIM/SKIP). Verify 
 |---|---|---|
 | **Python** | files 1–6 | Python OBSERVED (SQLi/cmd/deser/tls/crypto) + JUDGED spread |
 | **JS/TS** | files 7–9 (.js, .ts, .tsx) | `javascript.*` OBSERVED fire under all three grammars |
-| **Parallelization** | 8 kept files at `n=4` | overlapping `file:*#0` phases; `n=1` A/B: same findings, longer wall-clock |
+| **Parallelization** | 8 kept files at `n=4` | max-concurrent `file:*#` phases **≥2** (overlap); `n=1` A/B: **exactly 1** open at a time, same findings |
 | **Policy table** | severity spread across files | every band CRITICAL→INFO present; severity from `SEVERITY_POLICY`, not model |
 | **Trace node** | files 3 → 4 | `analysis_rounds==2`, resolved TraceDecision, DASHBOARD_ONLY publish |
 
@@ -203,11 +209,26 @@ benchmark: treat it as proving parallelization changes *scheduling, not outcome*
 **not** a clean signal here — the provider's own prompt cache warms on Run 1, so Run 1b's
 per-call latency/cost is confounded by provider-side cache hits (that's the LLM vendor's cache,
 separate from Outrider's SHADOW analyze-cache). What to assert instead:
-- Findings/severities/HITL/trace/`policy_version` **identical** to Run 1.
-- **`LLMCallEvent` count identical** across the two arms — this is the real proof the sequential
-  run isn't being served from Outrider's cache (SHADOW never serves, so every file still calls
-  the model in both arms). A lower count in Run 1b = a cache-serve leak to investigate.
+
+**Parallelism (the actual concurrency proof — NOT wall-clock, NOT LLMCallEvent count):** measure
+**keyed worker-phase overlap** from the timeline. Each analyzed file opens a `file:<path>#<pass>`
+`review_phase` with start+end timestamps; "in-flight at instant *t*" = phases with `start ≤ t < end`.
+- Run 1 (n=4): **max concurrent** open `file:*#` phases must be **≥ 2** (up to 4). That temporal
+  overlap is the *only* thing that proves workers ran concurrently.
+- Run 1b (n=1): max concurrent must be **exactly 1** — each worker phase closes before the next
+  opens (no overlap). That's the sequential baseline.
+- Compute from the per-`phase_key` timeline (`inspect_review --phase analyze` now retains every
+  worker phase — the scalar-open bug that dropped interleaved siblings is fixed). Equal
+  `LLMCallEvent` count does **not** distinguish n=1 from n=4: n=1 makes all the same calls, serially.
+
+**No cache-serve leak (a separate check):**
+- **`LLMCallEvent` count identical** across the two arms — proves the sequential run isn't served
+  from Outrider's cache (SHADOW never serves, so every file calls the model in both arms). A lower
+  count in Run 1b = a cache-serve leak to investigate.
 - Inspect `CacheLookupEvent` rows (would_hit/miss) to confirm SHADOW behavior, not serves.
+
+**Functional equivalence:** findings/severities/HITL/trace/`policy_version` **identical** across
+Run 1 and Run 1b.
 
 **Run 2 — Fireworks GLM-5.2 (single model, all nodes), same PR/head_sha:**
 ```
