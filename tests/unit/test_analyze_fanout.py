@@ -110,9 +110,12 @@ async def test_zero_worker_route_goes_to_aggregate_and_folds_empty_pass(
     (completed,) = deps["analyze_event_sink"].completed
     assert completed.n_files_analyzed == 0
     assert completed.n_llm_calls == 0
-    # The phase envelope still closes: start (planner) + end (aggregate).
+    # Two keyed pairs on the zero-worker route: plan + aggregate (no
+    # worker envelopes — there were no workers).
+    keys = [e.phase_key for e in deps["phase_event_sink"].events]
+    assert keys == ["plan#0", "plan#0", "aggregate#0", "aggregate#0"]
     markers = [e.marker for e in deps["phase_event_sink"].events]
-    assert markers == ["start", "end"]
+    assert markers == ["start", "end"] * 2
 
 
 @pytest.mark.asyncio
@@ -288,5 +291,63 @@ async def test_composed_pass_matches_default_budget(deps: dict[str, Any]) -> Non
     result = await run_analyze_pass(_two_file_state(), deps)
     (round_,) = result["analysis_rounds"]
     assert set(round_.files_examined) == {"src/a.py", "src/b.py"}
-    markers = [e.marker for e in deps["phase_event_sink"].events]
-    assert markers == ["start", "end"]
+    # Four keyed pairs: plan + two workers + aggregate.
+    keys = [e.phase_key for e in deps["phase_event_sink"].events]
+    assert keys == [
+        "plan#0",
+        "plan#0",
+        "file:src/a.py#0",
+        "file:src/a.py#0",
+        "file:src/b.py#0",
+        "file:src/b.py#0",
+        "aggregate#0",
+        "aggregate#0",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Phase-key stamping (increment 4): per-operation attribution.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_per_operation_events_carry_the_worker_key(deps: dict[str, Any]) -> None:
+    """Every per-file event the worker path emits carries the worker's
+    `file:<path>#<pass>` key: the FileExaminationEvent (worker sink), the
+    LLMRequest (propagated by providers onto LLMCallEvent — pinned here at
+    the request, the provider pass-through has its own contract test),
+    while the FindingEvent and AnalyzeCompletedEvent are AGGREGATE-keyed
+    (admission and pass-level accounting are aggregate work)."""
+    result = await run_analyze_pass(_build_review_state(), deps)
+    assert result["analysis_rounds"][0].findings  # the scenario admitted work
+
+    worker_key = "file:src/example.py#0"
+    (fe_event,) = deps["file_examination_sink"].events
+    assert fe_event.phase_key == worker_key
+    (request,) = deps["provider"].calls
+    assert request.phase_key == worker_key
+    (finding_event,) = deps["analyze_event_sink"].findings
+    assert finding_event.phase_key == "aggregate#0"
+    (completed,) = deps["analyze_event_sink"].completed
+    assert completed.phase_key == "aggregate#0"
+
+
+@pytest.mark.asyncio
+async def test_pass_one_events_stay_none_keyed(deps: dict[str, Any]) -> None:
+    """The sequential pass-1 body emits the LEGACY shape: an un-keyed
+    analyze-pass-1 envelope and None-keyed per-operation events — the
+    replay hybrid's None-branch contract depends on sequential-era events
+    never carrying keys."""
+    pass_zero = await run_analyze_pass(_build_review_state(), deps)
+    state_pass_one = _build_review_state().model_copy(
+        update={"analysis_rounds": pass_zero["analysis_rounds"]}
+    )
+    n_phase_before = len(deps["phase_event_sink"].events)
+    n_completed_before = len(deps["analyze_event_sink"].completed)
+    await analyze(state_pass_one, **deps)
+
+    pass_one_phases = deps["phase_event_sink"].events[n_phase_before:]
+    assert [e.marker for e in pass_one_phases] == ["start", "end"]
+    assert all(e.phase_key is None for e in pass_one_phases)
+    pass_one_completed = deps["analyze_event_sink"].completed[n_completed_before:]
+    assert all(e.phase_key is None for e in pass_one_completed)

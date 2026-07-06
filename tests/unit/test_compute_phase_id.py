@@ -180,3 +180,27 @@ def test_known_golden() -> None:
     )
     expected = hashlib.sha256(expected_payload).hexdigest()
     assert result == expected
+
+
+def test_fanout_phase_ids_distinct_across_same_pass_phases() -> None:
+    """The parallel-analyze fan-out emits THREE keyed phases per pass under
+    the one logical node_id="analyze"; attempt_key = phase_key VERBATIM is
+    what keeps their phase_ids distinct (the legacy analyze-pass-<n> key
+    would collide all three onto one id)."""
+    review_id = "00000000-0000-0000-0000-000000000000"
+    keys = ["plan#0", "file:src/a.py#0", "file:src/b.py#0", "aggregate#0"]
+    ids = [compute_phase_id(review_id=review_id, node_id="analyze", attempt_key=k) for k in keys]
+    assert len(set(ids)) == len(ids)
+
+
+def test_fanout_worker_phase_id_distinct_across_passes_and_retry_stable() -> None:
+    """Same file, different pass → different id (the integer final segment
+    disambiguates); same inputs re-derived → the identical id (retry
+    stability, the PhaseEventSink idempotency anchor)."""
+    review_id = "00000000-0000-0000-0000-000000000000"
+    p0 = compute_phase_id(review_id=review_id, node_id="analyze", attempt_key="file:src/a.py#0")
+    p1 = compute_phase_id(review_id=review_id, node_id="analyze", attempt_key="file:src/a.py#1")
+    assert p0 != p1
+    assert p0 == compute_phase_id(
+        review_id=review_id, node_id="analyze", attempt_key="file:src/a.py#0"
+    )

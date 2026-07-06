@@ -519,6 +519,7 @@ async def analyze_file(
     analyze_model: str,
     standard_analyze_model: str,
     import_path_resolver: ImportPathResolver,
+    phase_event_sink: PhaseEventSink,
     file_examination_sink: FileExaminationSink,
     analyze_event_sink: AnalyzeEventSink,
     active_policy_version: str = ACTIVE_POLICY_VERSION,
@@ -538,8 +539,14 @@ async def analyze_file(
     under the logical `node_id="analyze"` per `DECISIONS.md#064`) and
     returns the slot's `AnalyzeWorkerOutcome` for the slot-guard reducer;
     the aggregate step folds outcomes into the pass's round. Emits no
-    round, no pass-level event, and no phase marker (phase pairs are the
-    phase-emission increment).
+    round and no pass-level event; it DOES own its keyed phase pair —
+    `phase_key = file:<path>#<pass>` (injective even for paths containing
+    `#`: the pass index is an integer final segment) — and stamps the
+    same key on every per-operation event `_process_one_file` emits,
+    including `LLMRequest.phase_key` for the provider to mirror onto
+    `LLMCallEvent`. The pair opens AFTER the semaphore admits the body:
+    the envelope bounds work, and queueing is not work
+    (`phase-events-bound-work`).
 
     Failure policy (spec): NO worker-level retry machinery — provider
     retries are unchanged, and a worker exception fails the pass, parity
@@ -549,7 +556,23 @@ async def analyze_file(
     (`ANALYZE_MAX_CONCURRENCY`); None (tests, direct invocation) runs
     unbounded.
     """
+    phase_key = f"file:{payload.changed_file.path}#{payload.pass_index}"
+    worker_phase_id = compute_phase_id(
+        review_id=str(payload.review_id),
+        node_id="analyze",
+        attempt_key=phase_key,
+    )
     async with concurrency_semaphore if concurrency_semaphore is not None else nullcontext():
+        await phase_event_sink.emit_phase(
+            ReviewPhaseEvent(
+                review_id=payload.review_id,
+                phase_id=worker_phase_id,
+                node_id="analyze",
+                marker="start",
+                is_eval=payload.is_eval,
+                phase_key=phase_key,
+            )
+        )
         model_for_file = _model_for_tier(
             payload.review_tier,
             analyze_model=analyze_model,
@@ -581,12 +604,23 @@ async def analyze_file(
             profile_id=profile_id,
             reasoning_enabled=reasoning_enabled,
             profile_contract_digest=profile_contract_digest,
+            phase_key=phase_key,
         )
         outcome = _worker_outcome_for(
             file_outcome,
             path=payload.changed_file.path,
             pass_index=payload.pass_index,
             review_tier=payload.review_tier,
+        )
+        await phase_event_sink.emit_phase(
+            ReviewPhaseEvent(
+                review_id=payload.review_id,
+                phase_id=worker_phase_id,
+                node_id="analyze",
+                marker="end",
+                is_eval=payload.is_eval,
+                phase_key=phase_key,
+            )
         )
     return {"analyze_worker_outcomes": [outcome]}
 
@@ -644,15 +678,26 @@ async def analyze(
     # reducer + silently drop the second pass). The depth-2 ceiling is
     # enforced at `agent/graph.py::_trace_router` via `MAX_ANALYSIS_ROUNDS`.
     pass_index = len(state.analysis_rounds)
-    # Per `compute_phase_id`'s contract, `attempt_key` is derived from
-    # `pass_index` BEFORE the round is appended — same pre-merge state on
-    # replay produces the same key, so the PhaseEventSink idempotency
-    # collapses re-emissions to one row.
-    phase_id = compute_phase_id(
-        review_id=str(state.review_id),
-        node_id="analyze",
-        attempt_key=f"analyze-pass-{pass_index}",
-    )
+    # Phase identity per pass shape (increment 4): pass 0 emits the keyed
+    # PLANNER pair (`plan#<pass>`; attempt_key = phase_key VERBATIM, so
+    # phase_id inherits the key's retry stability and collision-freedom);
+    # the sequential pass-1 body keeps the legacy un-keyed
+    # `analyze-pass-<n>` envelope. Both derive from pre-merge state, so
+    # replay re-emission collapses on the PhaseEventSink idempotency.
+    if pass_index == 0:
+        plan_phase_key: str | None = f"plan#{pass_index}"
+        phase_id = compute_phase_id(
+            review_id=str(state.review_id),
+            node_id="analyze",
+            attempt_key=f"plan#{pass_index}",
+        )
+    else:
+        plan_phase_key = None
+        phase_id = compute_phase_id(
+            review_id=str(state.review_id),
+            node_id="analyze",
+            attempt_key=f"analyze-pass-{pass_index}",
+        )
     started_at = datetime.now(UTC)
     # Monotonic anchor for the round DURATION (FUP-141): `ended_at` is derived
     # from this rather than a second wall-clock read, so a backwards clock jump
@@ -664,8 +709,9 @@ async def analyze(
     started_mono = time.monotonic()
     per_file_cap_tokens = _compute_per_file_cap(total_review_budget_tokens)
 
-    # Step 1: start phase event. If this raises (audit infra outage),
-    # the node fails before any work — no dangling start.
+    # Step 1: start phase event (the plan# pair on pass 0; the legacy
+    # envelope on pass 1). If this raises (audit infra outage), the node
+    # fails before any work — no dangling start.
     await phase_event_sink.emit_phase(
         ReviewPhaseEvent(
             review_id=state.review_id,
@@ -673,7 +719,7 @@ async def analyze(
             node_id="analyze",
             marker="start",
             is_eval=state.is_eval,
-            phase_key=None,
+            phase_key=plan_phase_key,
         )
     )
 
@@ -877,6 +923,18 @@ async def analyze(
             )
             for changed_file, tier in pass_zero_worklist
         ]
+        # Close the planner's own phase pair: planning work is bounded
+        # here; the workers and the aggregate own their own envelopes.
+        await phase_event_sink.emit_phase(
+            ReviewPhaseEvent(
+                review_id=state.review_id,
+                phase_id=phase_id,
+                node_id="analyze",
+                marker="end",
+                is_eval=state.is_eval,
+                phase_key=plan_phase_key,
+            )
+        )
         # `analyze_pass_started_at` rides state to the aggregate (the pass
         # spans vertices; a monotonic anchor cannot). Zero-worker route:
         # no Sends would strand the aggregate — route to it by name so the
@@ -1420,6 +1478,7 @@ async def _serve_cache_hit(
     included_scope_units: tuple[ScopeUnit, ...],
     analyze_event_sink: AnalyzeEventSink,
     file_examination_sink: FileExaminationSink,
+    phase_key: str | None = None,
 ) -> _FileOutcome:
     """Serve a live analyze-cache hit (Stage B): reconstruct the cached findings
     + trace candidates onto THIS review, emit the audit trail, and return a
@@ -1519,6 +1578,7 @@ async def _serve_cache_hit(
             review_id=review_id,
             is_eval=is_eval,
             file_path=file_path,
+            phase_key=phase_key,
             cache_key=cache_key,
             installation_id=installation_id,
             repo_id=repo_id,
@@ -1750,6 +1810,7 @@ async def _emit_skip(
     is_eval: bool,
     file_path: str,
     skip_reason: SkipReason,
+    phase_key: str | None = None,
 ) -> _FileOutcome:
     """Emit a single `FileExaminationEvent(parse_status="skipped", skip_reason=...)`
     and return a zero-cost `_FileOutcome`. Used by every skip path in
@@ -1764,6 +1825,7 @@ async def _emit_skip(
             node_id="analyze",
             parse_status="skipped",
             skip_reason=skip_reason,
+            phase_key=phase_key,
         )
     )
     return _FileOutcome(
@@ -1789,6 +1851,7 @@ async def _emit_skip_with_module_findings(
     module_matches: tuple[ObservedMatch, ...],
     installation_id: int,
     active_policy_version: str,
+    phase_key: str | None = None,
 ) -> _FileOutcome:
     """A skip that still emits the module arm's OBSERVED findings
     (DECISIONS.md#062): the deterministic finding costs ZERO LLM tokens, so an
@@ -1808,6 +1871,7 @@ async def _emit_skip_with_module_findings(
         is_eval=is_eval,
         file_path=file_path,
         skip_reason=skip_reason,
+        phase_key=phase_key,
     )
     produced = produce_observed_findings(
         module_matches,
@@ -1855,6 +1919,7 @@ async def _emit_examination(
     is_eval: bool,
     file_path: str,
     parse_status: _ParseStatus = "clean",
+    phase_key: str | None = None,
 ) -> None:
     """Emit the single `FileExaminationEvent` for a KEPT (non-skipped) file —
     sibling to `_emit_skip` (FUP-178). The clean, trace, and serve paths share this
@@ -1869,6 +1934,7 @@ async def _emit_examination(
             node_id="analyze",
             parse_status=parse_status,
             skip_reason=None,
+            phase_key=phase_key,
         )
     )
 
@@ -1915,6 +1981,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     profile_id: str | None = None,
     reasoning_enabled: bool | None = None,
     profile_contract_digest: str | None = None,
+    phase_key: str | None = None,
 ) -> _FileOutcome:
     """Process one triage-kept file through parse → outcome → cost
     gate → trivial-scope classification → LLM call → parser → audit
@@ -1971,6 +2038,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             review_id=review_id,
             is_eval=is_eval,
             file_path=changed_file.path,
+            phase_key=phase_key,
             skip_reason=SkipReason.UNSUPPORTED_LANGUAGE,
         )
 
@@ -1988,6 +2056,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             review_id=review_id,
             is_eval=is_eval,
             file_path=changed_file.path,
+            phase_key=phase_key,
             skip_reason=SkipReason.NO_REVIEWABLE_CONTEXT,
         )
 
@@ -2023,6 +2092,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             review_id=review_id,
             is_eval=is_eval,
             file_path=changed_file.path,
+            phase_key=phase_key,
             skip_reason=parser_skip_reason,
         )
 
@@ -2124,6 +2194,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             review_id=review_id,
             is_eval=is_eval,
             file_path=changed_file.path,
+            phase_key=phase_key,
             skip_reason=skip_reason,
         )
     degradation_reason: DegradationReason | None = decision.degradation_reason
@@ -2231,12 +2302,14 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 module_matches=budget_module_matches,
                 installation_id=installation_id,
                 active_policy_version=active_policy_version,
+                phase_key=phase_key,
             )
         return await _emit_skip(
             file_examination_sink=file_examination_sink,
             review_id=review_id,
             is_eval=is_eval,
             file_path=changed_file.path,
+            phase_key=phase_key,
             skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
         )
 
@@ -2304,6 +2377,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         await analyze_event_sink.emit_scope_exclusion(
             ScopeExclusionEvent(
                 review_id=review_id,
+                phase_key=phase_key,
                 is_eval=is_eval,
                 file_path=changed_file.path,
                 applied=trivial_scope_filter_enabled,
@@ -2347,12 +2421,14 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                         module_matches=trivial_module_matches,
                         installation_id=installation_id,
                         active_policy_version=active_policy_version,
+                        phase_key=phase_key,
                     )
                 return await _emit_skip(
                     file_examination_sink=file_examination_sink,
                     review_id=review_id,
                     is_eval=is_eval,
                     file_path=changed_file.path,
+                    phase_key=phase_key,
                     skip_reason=SkipReason.ALL_SCOPES_TRIVIAL,
                 )
             included_scope_units = tuple(su for su, _ in kept)
@@ -2464,6 +2540,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 # replaces exactly the analyze LLM call.
                 try:
                     return await _serve_cache_hit(
+                        phase_key=phase_key,
                         entry=cache_entry,
                         cache_key=cache_key,
                         review_id=review_id,
@@ -2504,6 +2581,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 await analyze_event_sink.emit_cache_lookup(
                     CacheLookupEvent(
                         review_id=review_id,
+                        phase_key=phase_key,
                         is_eval=is_eval,
                         file_path=changed_file.path,
                         outcome="would_hit" if cache_would_hit else "miss",
@@ -2518,6 +2596,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         is_eval=is_eval,
         file_path=changed_file.path,
         parse_status=parse_status_for_event,
+        phase_key=phase_key,
     )
 
     # Step 3e.5 (Step 3b-mechanism): compute the OBSERVED coverage decision BEFORE the
@@ -2619,7 +2698,11 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             # audit-event contract enforced even if the gate above ever changes.
             await analyze_event_sink.emit_observed_skip_shadow(
                 ObservedSkipShadowEvent.model_validate(
-                    {**observed_skip_event.model_dump(), "skip_enforced": True}
+                    {
+                        **observed_skip_event.model_dump(),
+                        "skip_enforced": True,
+                        "phase_key": phase_key,
+                    }
                 )
             )
             # FindingEvent emission for these OBSERVED findings is DEFERRED to the
@@ -2660,6 +2743,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         prompt_template_version=analyze_prompt.VERSION,
         degraded_mode=degraded_mode,
         degradation_reason=degradation_reason,
+        # Worker phase attribution (parallel-analyze increment 4): providers
+        # mirror this verbatim onto LLMCallEvent.phase_key.
+        phase_key=phase_key,
         context_summary=context_summary,
         # Constrained decoding (FUP-096): the pinned analyze response schema
         # rides every analyze call — pass-0 and trace-fetched alike — so the
@@ -2928,12 +3014,20 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         # emitted it (skip_enforced=True) and returned; `skip_enforced` stays False here
         # (the LLM ran, so no skip was enforced).
         if observed_skip_event is not None:
-            await analyze_event_sink.emit_observed_skip_shadow(observed_skip_event)
+            await analyze_event_sink.emit_observed_skip_shadow(
+                # Re-validated (not model_copy) to stamp the worker's phase
+                # key — compute_observed_skip_shadow is phase-blind by design.
+                ObservedSkipShadowEvent.model_validate(
+                    {**observed_skip_event.model_dump(), "phase_key": phase_key}
+                )
+            )
 
     # Lift parser rejection payloads into audit events.
     for proposal_rej in parser_result.proposal_rejections:
         await analyze_event_sink.emit_finding_proposal_rejected(
-            _lift_proposal_rejection(proposal_rej, review_id=review_id, is_eval=is_eval)
+            _lift_proposal_rejection(
+                proposal_rej, review_id=review_id, is_eval=is_eval, phase_key=phase_key
+            )
         )
     if parser_result.response_rejection is not None:
         await analyze_event_sink.emit_analyze_response_rejected(
@@ -2941,6 +3035,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 parser_result.response_rejection,
                 review_id=review_id,
                 is_eval=is_eval,
+                phase_key=phase_key,
             )
         )
 
@@ -3341,6 +3436,7 @@ def _lift_proposal_rejection(
     *,
     review_id: UUID,
     is_eval: bool,
+    phase_key: str | None = None,
 ) -> FindingProposalRejectedEvent:
     """Lift a parser-side `ProposalRejection` payload into a
     `FindingProposalRejectedEvent`. The parser produced the content
@@ -3349,6 +3445,7 @@ def _lift_proposal_rejection(
     `timestamp`, `sequence_number`, `node_id`, `event_type`) populate
     via the event's default factories / Literal defaults."""
     return FindingProposalRejectedEvent(
+        phase_key=phase_key,
         review_id=review_id,
         is_eval=is_eval,
         file_path=rej.file_path,
@@ -3366,11 +3463,13 @@ def _lift_response_rejection(
     *,
     review_id: UUID,
     is_eval: bool,
+    phase_key: str | None = None,
 ) -> AnalyzeResponseRejectedEvent:
     """Lift a parser-side `ResponseRejection` into an
     `AnalyzeResponseRejectedEvent`. Same audit-context add as
     `_lift_proposal_rejection`."""
     return AnalyzeResponseRejectedEvent(
+        phase_key=phase_key,
         review_id=review_id,
         is_eval=is_eval,
         file_path=rej.file_path,

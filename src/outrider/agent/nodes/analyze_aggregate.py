@@ -316,6 +316,25 @@ async def analyze_aggregate(
     under a backwards clock jump, trading exact duration for it.
     """
     pass_index = len(state.analysis_rounds)
+    # The aggregate's own keyed phase pair (increment 4): attempt_key =
+    # phase_key VERBATIM, so phase_id inherits the recipe's retry
+    # stability; node_id stays the logical "analyze" (DECISIONS.md#064).
+    phase_key = f"aggregate#{pass_index}"
+    phase_id = compute_phase_id(
+        review_id=str(state.review_id),
+        node_id="analyze",
+        attempt_key=phase_key,
+    )
+    await phase_event_sink.emit_phase(
+        ReviewPhaseEvent(
+            review_id=state.review_id,
+            phase_id=phase_id,
+            node_id="analyze",
+            marker="start",
+            is_eval=state.is_eval,
+            phase_key=phase_key,
+        )
+    )
     outcomes = tuple(o for o in state.analyze_worker_outcomes if o.pass_index == pass_index)
     started_at = state.analyze_pass_started_at
     if started_at is None:
@@ -369,6 +388,8 @@ async def analyze_aggregate(
         profile_id=profile_id,
         reasoning_enabled=reasoning_enabled,
         profile_contract_digest=profile_contract_digest,
+        # Aggregate-keyed: pass-level accounting is aggregate work.
+        phase_key=phase_key,
     )
 
     # Side effects, in the sequential tail's order. Both anomalies are
@@ -410,27 +431,25 @@ async def analyze_aggregate(
             logger.exception("analyze_gated_findings_over_cap_anomaly_emit_failed")
 
     # One FindingEvent per kept finding — the emitted set equals the
-    # round by construction (fold output IS the round).
+    # round by construction (fold output IS the round). Aggregate-keyed
+    # (admission is aggregate work); per-file attribution rides the
+    # event's own file_path field.
     for finding in fold.round.findings:
-        await analyze_event_sink.emit_finding(finding, is_eval=state.is_eval)
+        await analyze_event_sink.emit_finding(finding, is_eval=state.is_eval, phase_key=phase_key)
 
     await analyze_event_sink.emit_analyze_completed(completed_event)
 
-    # Phase END: same phase_id recipe as the planner's start marker —
-    # pass_index here equals the planner's (the round merges AFTER this
-    # node returns), so the pair closes the same envelope.
+    # Close the aggregate's own phase pair (the planner and each worker
+    # closed theirs; three keyed envelopes per pass replace the
+    # sequential era's single analyze-pass envelope).
     await phase_event_sink.emit_phase(
         ReviewPhaseEvent(
             review_id=state.review_id,
-            phase_id=compute_phase_id(
-                review_id=str(state.review_id),
-                node_id="analyze",
-                attempt_key=f"analyze-pass-{pass_index}",
-            ),
+            phase_id=phase_id,
             node_id="analyze",
             marker="end",
             is_eval=state.is_eval,
-            phase_key=None,
+            phase_key=phase_key,
         )
     )
 

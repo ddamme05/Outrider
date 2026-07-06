@@ -122,7 +122,9 @@ class _AnalyzeSink:
         self.findings: list[Any] = []
         self.completed: list[Any] = []
 
-    async def emit_finding(self, finding: Any, *, is_eval: bool) -> None:  # noqa: ARG002
+    async def emit_finding(  # noqa: ARG002
+        self, finding: Any, *, is_eval: bool, phase_key: str | None = None
+    ) -> None:
         self.findings.append(finding)
 
     async def emit_finding_proposal_rejected(self, event: Any) -> None:
