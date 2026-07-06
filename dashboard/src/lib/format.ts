@@ -15,6 +15,43 @@ export function spanMs(start: string | null | undefined, end: string | null | un
   return Number.isFinite(ms) && ms >= 0 ? ms : null;
 }
 
+// Total wall-time covered by a set of possibly-overlapping intervals: the UNION of the
+// intervals, not the sum of their spans. Parallel analyze fans out into concurrent worker
+// phases whose spans overlap — summing them would multi-count wall-time (up to the
+// concurrency factor). Merging collapses that overlap. And because a node's phases can
+// straddle multiple analyze⇄trace passes with trace time BETWEEN them, merging (rather than
+// a single earliest→latest span) correctly excludes the trace gap: non-overlapping clusters
+// stay separate and only their own durations are summed. Endpoints are validated with the
+// same guard as spanMs (absent/unparseable/negative dropped). Returns null when none valid.
+export function unionDurationMs(
+  spans: ReadonlyArray<{ start: string | null | undefined; end: string | null | undefined }>,
+): number | null {
+  const intervals: Array<[number, number]> = [];
+  for (const { start, end } of spans) {
+    if (!start || !end) continue;
+    const a = new Date(start).getTime();
+    const b = new Date(end).getTime();
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) continue;
+    intervals.push([a, b]);
+  }
+  if (intervals.length === 0) return null;
+  intervals.sort((x, y) => x[0] - y[0]);
+  let total = 0;
+  let cur: [number, number] | null = null;
+  for (const [s, e] of intervals) {
+    if (cur === null) {
+      cur = [s, e];
+    } else if (s <= cur[1]) {
+      if (e > cur[1]) cur[1] = e; // overlapping/contiguous — extend the merged interval
+    } else {
+      total += cur[1] - cur[0]; // disjoint (e.g. a trace gap) — bank and restart
+      cur = [s, e];
+    }
+  }
+  if (cur !== null) total += cur[1] - cur[0];
+  return total;
+}
+
 // Human "expires in Xm/Xh/Xd" from an ISO timestamp. Returns null when absent or
 // unparseable, "expired" when already past, and null again when more than a year out —
 // no countdown is meaningful for a far-future timeout (e.g. the demo's pinned-pending

@@ -1,10 +1,12 @@
 import type { components } from "../api/schema";
-import { formatDurationMs, spanMs } from "../lib/format";
+import { formatDurationMs, unionDurationMs } from "../lib/format";
 
 type TimelineData = components["schemas"]["ReplayTimelineResponse"];
-// One reconstructed phase from the server's replay-VERIFIED grouping. A node can own
-// more than one phase (analyze runs once per analyze⇄trace round), so per-node stats
-// aggregate across all of a node's phases.
+// One reconstructed phase from the server's replay-VERIFIED grouping. A node can own MANY
+// phases: analyze fans out per file (a plan phase + one worker phase per concurrent file +
+// an aggregate phase, keyed by phase_key) and repeats across analyze⇄trace rounds. Per-node
+// stats aggregate across all of a node's phases — cost sums; duration takes the interval
+// union (concurrent worker spans overlap, so summing would multi-count wall-time).
 type Phase = NonNullable<TimelineData["phases"]>[number];
 type AuditEvent = components["schemas"]["ReviewEventsResponse"]["events"][number];
 type LLMCall = Extract<AuditEvent, { event_type: "llm_call" }>;
@@ -56,7 +58,7 @@ export function PipelineStrip({
   const phasesLoaded = phases !== null;
   const awaiting = status.startsWith("awaiting_approval");
 
-  // All of a node's phases (analyze may own >1 across analyze⇄trace rounds).
+  // All of a node's phases (analyze owns many: plan + per-file workers + aggregate, ×rounds).
   const phasesFor = (node: NodeName): Phase[] =>
     (phases ?? []).filter((p) => p.node_id === node);
   // The per-operation events recorded inside a node's phases, by type.
@@ -64,26 +66,26 @@ export function PipelineStrip({
 
   const ended = (node: NodeName): boolean => phasesFor(node).some((p) => p.end != null);
 
-  // Total wall-time the node held across its phases (sum of each closed phase's span).
-  const durationMs = (node: NodeName): number | null => {
-    let total = 0;
-    let any = false;
-    for (const p of phasesFor(node)) {
-      const ms = spanMs(p.start?.timestamp, p.end?.timestamp);
-      if (ms !== null) {
-        total += ms;
-        any = true;
-      }
-    }
-    return any ? total : null;
-  };
+  // Total wall-time the node held across its phases — the UNION of phase intervals, not the
+  // sum. Parallel analyze overlaps concurrent worker phases (summing multi-counts), and its
+  // phases straddle multiple analyze⇄trace passes (a single earliest→latest span would swallow
+  // the trace gap between them). unionDurationMs handles both — see its docstring in format.ts.
+  const durationMs = (node: NodeName): number | null =>
+    unionDurationMs(
+      phasesFor(node).map((p) => ({ start: p.start?.timestamp, end: p.end?.timestamp })),
+    );
 
   const llmFor = (node: NodeName): { model: string; cost: number } | null => {
     const calls = eventsIn(node).filter((e): e is LLMCall => e.event_type === "llm_call");
-    const last = calls[calls.length - 1];
-    if (!last) return null;
+    if (calls.length === 0) return null;
+    // A node can call MORE than one model in a single review: analyze routes DEEP-tier files
+    // to Sonnet and STANDARD-tier files to Haiku (tiered routing, DECISIONS.md#041), so a
+    // mixed-tier review legitimately uses both. Show every DISTINCT model, sorted for a stable
+    // label — fan-out completion order is nondeterministic, so keying off the last (or first)
+    // call would flip the label run to run. Cost still sums across all calls.
+    const models = [...new Set(calls.map((c) => prettyModel(c.model)))].sort();
     return {
-      model: prettyModel(last.model),
+      model: models.join(" + "),
       cost: calls.reduce((s, c) => s + c.cost_usd, 0),
     };
   };
