@@ -7,7 +7,13 @@ import {
 } from "react";
 
 import type { components } from "../api/schema";
-import { type AuditEvent, eventFamily, eventNode, summarizeEvent } from "../lib/auditEvent";
+import {
+  type AuditEvent,
+  eventFamily,
+  eventNode,
+  isDiagnosticEvent,
+  summarizeEvent,
+} from "../lib/auditEvent";
 import { formatDurationMs, spanMs } from "../lib/format";
 import { AuditFeed } from "./AuditFeed";
 
@@ -207,6 +213,13 @@ export function ReplayFeed({
 }) {
   const rendered = useMemo(() => renderedEvents(data), [data]);
   const total = rendered.length;
+  // Shadow/telemetry events (cache_lookup, scope_exclusion, observed_skip_shadow) dominate the
+  // analyze fan-out — one set per file. Hidden by default so the feed reads as review signal; a
+  // toggle with the explicit count reveals them (nothing silently dropped — audit-completeness).
+  const diagCount = useMemo(
+    () => rendered.filter((e) => isDiagnosticEvent(e.event_type)).length,
+    [rendered],
+  );
   // Relative-timestamp baseline for the flat feed (client-computed — no server field): the
   // EARLIEST timestamp across the first phase-start marker AND every rendered event. Taking the
   // min (not phases[0].start alone) keeps relTime ≥ 0 for a leading inter-phase transition that
@@ -235,6 +248,7 @@ export function ReplayFeed({
   // change (so an open panel survives the 2s poll / a play step).
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   useEffect(() => setExpanded(new Set()), [data.review_id]);
+  const [showDiag, setShowDiag] = useState(false);
   const toggle = (id: string) =>
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -351,6 +365,17 @@ export function ReplayFeed({
 
   const phases = data.phases;
 
+  // Reveal control for the shadow/telemetry rows — shown only when there are any. Explicit
+  // count keeps the audit complete: hidden, not dropped, and one click away.
+  const diagToggle =
+    diagCount > 0 ? (
+      <button type="button" className="tl-diagtoggle" onClick={() => setShowDiag((v) => !v)}>
+        {showDiag
+          ? `Hide ${diagCount} diagnostic events`
+          : `Show ${diagCount} hidden diagnostic events (cache · scope · OBSERVED shadow)`}
+      </button>
+    ) : null;
+
   // Flat feed (review-detail audit-of-record, mockup #screen-detail): append-only banner, then a
   // single CHRONOLOGICAL walk of the sequence-ordered stream. A `.ae-phase` divider is emitted when
   // a new phase's events begin; inter-phase transitions (e.g. analyze→trace — phase-unbounded, so
@@ -366,7 +391,10 @@ export function ReplayFeed({
     }
     const feed: ReactNode[] = [];
     let currentPhaseId: string | null = null;
-    for (const e of rendered) {
+    const feedEvents = showDiag
+      ? rendered
+      : rendered.filter((e) => !isDiagnosticEvent(e.event_type));
+    for (const e of feedEvents) {
       const ph = phaseByEventId.get(e.event_id ?? "") ?? null;
       if (ph && ph.phase_id !== currentPhaseId) {
         currentPhaseId = ph.phase_id;
@@ -389,6 +417,7 @@ export function ReplayFeed({
           Append-only by database policy — events cannot be edited or deleted; corrections append
           new events. This is what makes replay-equivalence verifiable.
         </div>
+        {diagToggle}
         {feed}
       </div>
     );
@@ -396,6 +425,7 @@ export function ReplayFeed({
 
   return (
     <div className="panel-b">
+      {diagToggle}
       {data.inter_phase_events.length > 0 ? (
         <div className="tl-inter">
           <div className="dist-sub-h">between phases</div>
@@ -403,20 +433,25 @@ export function ReplayFeed({
         </div>
       ) : null}
 
-      {phases.map((phase) => (
-        <div key={phase.phase_id} className="tl-phase">
-          <div className="tl-phase-head">
-            <span className="tl-node mono">{phase.node_id}</span>
-            <span className="tl-dur mono">{phaseDuration(phase)}</span>
-            {phase.end === null ? <span className="pill">in-flight</span> : null}
+      {phases.map((phase) => {
+        const evs = showDiag
+          ? phase.events
+          : phase.events.filter((e) => !isDiagnosticEvent(e.event_type));
+        return (
+          <div key={phase.phase_id} className="tl-phase">
+            <div className="tl-phase-head">
+              <span className="tl-node mono">{phase.node_id}</span>
+              <span className="tl-dur mono">{phaseDuration(phase)}</span>
+              {phase.end === null ? <span className="pill">in-flight</span> : null}
+            </div>
+            {evs.length === 0 ? (
+              <div className="tl-empty">no operations</div>
+            ) : (
+              evs.map((e) => row(e, true))
+            )}
           </div>
-          {phase.events.length === 0 ? (
-            <div className="tl-empty">no operations</div>
-          ) : (
-            phase.events.map((e) => row(e, true))
-          )}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

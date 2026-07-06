@@ -56,6 +56,21 @@ function findingEvent(eventId: string, findingId: string): Record<string, unknow
   };
 }
 
+function cacheLookupEvent(eventId: string): Record<string, unknown> {
+  return {
+    event_id: eventId,
+    review_id: "r1",
+    event_type: "cache_lookup",
+    timestamp: "2026-06-01T00:00:00Z",
+    sequence_number: 5,
+    is_eval: false,
+    node_id: "analyze",
+    outcome: "miss",
+    file_path: "app/db/user_repository.py",
+    phase_key: "file:app/db/user_repository.py#0",
+  };
+}
+
 function phaseMarker(node: string, marker: "start" | "end", ts: string): Record<string, unknown> {
   return {
     event_id: `e-${node}-${marker}`,
@@ -161,6 +176,26 @@ test("an in-flight phase (no end marker) is labeled", () => {
     />,
   );
   expect(document.querySelector(".tl-phase-head .pill")).toHaveTextContent("in-flight");
+});
+
+test("diagnostic events are hidden by default; the toggle reveals them with a count", async () => {
+  const user = userEvent.setup();
+  const llm = llmEvent("e1", "analyze", 0.27); // signal (not expandable — no llm content)
+  const cache = cacheLookupEvent("e2"); // diagnostic (cache_lookup)
+  render(<ReplayFeed data={data({ events: [llm, cache], phases: [phaseWith([llm, cache])] })} />);
+
+  // Signal row shown; diagnostic row hidden.
+  expect(screen.getByText("llm_call")).toBeInTheDocument();
+  expect(screen.queryByText("cache_lookup")).toBeNull();
+
+  // Toggle names the exact hidden count (nothing silently dropped).
+  const show = screen.getByRole("button", { name: /Show 1 hidden diagnostic events/ });
+  await user.click(show);
+  expect(screen.getByText("cache_lookup")).toBeInTheDocument();
+
+  // Toggling back hides it again.
+  await user.click(screen.getByRole("button", { name: /Hide 1 diagnostic events/ }));
+  expect(screen.queryByText("cache_lookup")).toBeNull();
 });
 
 test("clicking a finding row expands its content + proof + HITL provenance", async () => {

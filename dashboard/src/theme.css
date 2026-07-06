@@ -2355,6 +2355,21 @@ table.policy tbody tr:hover {
   font-size: 11px;
   font-style: italic;
 }
+.tl-diagtoggle {
+  display: inline-block;
+  margin: 4px 0 10px;
+  padding: 3px 10px;
+  background: transparent;
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  color: var(--muted, #888);
+  font-size: 11px;
+  cursor: pointer;
+}
+.tl-diagtoggle:hover {
+  color: var(--fg, #ddd);
+  border-color: var(--muted, #888);
+}
 .tl-evrow {
   display: grid;
   grid-template-columns: 168px 84px 1fr;

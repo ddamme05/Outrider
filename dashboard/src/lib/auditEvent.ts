@@ -28,7 +28,10 @@ export function summarizeEvent(e: AuditEvent): string {
     case "scope_exclusion":
       return `${e.applied ? "applied" : "shadow"} · ${e.entries.length} scope(s) · ${e.file_path}`;
     case "observed_skip_shadow":
-      return `${e.outcome}${e.skip_enforced ? " (LLM skipped)" : ""} · ${e.blockers.length}/${e.changed_regions.length} blocked · ${e.file_path}`;
+      // OBSERVED-producer shadow telemetry: how many of the file's changed regions had NO
+      // eligible query match backing a module-level OBSERVED claim (so the model's OBSERVED
+      // citations there stay unproven). `not_eligible · 38/38` read as cryptic — spell it out.
+      return `OBSERVED shadow · ${e.blockers.length}/${e.changed_regions.length} changed regions unbacked by a query${e.skip_enforced ? " · LLM skipped" : ""} · ${e.file_path}`;
     case "analyze_completed":
       return `${e.n_findings_emitted} finding(s)${e.n_findings_dropped_over_cap ? ` · ${e.n_findings_dropped_over_cap} over-cap dropped` : ""}`;
     case "synthesize_completed":
@@ -70,4 +73,19 @@ export const EV_FAMILY: Record<string, string> = {
 
 export function eventFamily(eventType: string): string {
   return EV_FAMILY[eventType] ?? "framing";
+}
+
+// Shadow-mode / telemetry events the analyze fan-out emits once per file (the trivial-scope
+// shadow filter, the SHADOW cache lookups, the OBSERVED-producer shadow) — high volume, no
+// review signal. The feed hides them by default behind an explicit count + toggle so the
+// review-relevant rows (file_examination, llm_call, finding) stay readable. NOT `cache_serve`
+// (an actual served-from-cache hit is meaningful) — only the shadow lookup.
+export const DIAGNOSTIC_EVENTS: ReadonlySet<string> = new Set([
+  "cache_lookup",
+  "scope_exclusion",
+  "observed_skip_shadow",
+]);
+
+export function isDiagnosticEvent(eventType: string): boolean {
+  return DIAGNOSTIC_EVENTS.has(eventType);
 }
