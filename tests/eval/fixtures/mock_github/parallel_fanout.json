@@ -1,0 +1,58 @@
+{
+ "installation_id": 134482928,
+ "owner": "ddamme05",
+ "repo": "outrider-smoke-test",
+ "pr_number": 9101,
+ "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+ "pr_title": "parallel fan-out concurrency scenario",
+ "pr_body": null,
+ "author": "eval",
+ "total_additions": 6,
+ "total_deletions": 0,
+ "files": [
+  {
+   "path": "app/alpha.py",
+   "status": "added",
+   "additions": 2,
+   "deletions": 0,
+   "patch": "@@ -0,0 +1,2 @@\n+def fetch(q):\n+    return run_query(q)\n",
+   "previous_path": null,
+   "content_base": null,
+   "content_head": "def fetch(q):\n    return run_query(q)\n"
+  },
+  {
+   "path": "app/beta.py",
+   "status": "added",
+   "additions": 2,
+   "deletions": 0,
+   "patch": "@@ -0,0 +1,2 @@\n+def apply(payload):\n+    return handler(payload[\"cmd\"])\n",
+   "previous_path": null,
+   "content_base": null,
+   "content_head": "def apply(payload):\n    return handler(payload[\"cmd\"])\n"
+  },
+  {
+   "path": "app/gamma.py",
+   "status": "added",
+   "additions": 2,
+   "deletions": 0,
+   "patch": "@@ -0,0 +1,2 @@\n+def push(item):\n+    queue.put(item)\n",
+   "previous_path": null,
+   "content_base": null,
+   "content_head": "def push(item):\n    queue.put(item)\n"
+  }
+ ],
+ "llm_responses": {
+  "triage": [
+   "{\"file_tiers\": {\"app/alpha.py\": \"deep\", \"app/beta.py\": \"deep\", \"app/gamma.py\": \"deep\"}, \"overall_risk\": \"critical\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"String-built SQL in alpha; unvalidated payload dispatch in beta.\"}"
+  ],
+  "synthesize": [
+   "One CRITICAL SQL injection in alpha.fetch; beta dispatches unvalidated payload input; gamma lacks error handling around queue.put."
+  ]
+ },
+ "analyze_responses_by_path": {
+  "app/alpha.py": "{\"findings\": [{\"finding_type\": \"sql_injection\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"String-concatenated SQL in fetch\", \"description\": \"User-controlled q is concatenated into the SQL statement.\", \"evidence\": \"return run_query(q)\", \"line_start\": 1, \"line_end\": 2, \"trace_candidates\": []}]}",
+  "app/beta.py": "{\"findings\": [{\"finding_type\": \"missing_input_validation\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Unvalidated payload dispatch\", \"description\": \"payload['cmd'] is dispatched without validation.\", \"evidence\": \"return handler(payload[\\\"cmd\\\"])\", \"line_start\": 1, \"line_end\": 2, \"trace_candidates\": []}]}",
+  "app/gamma.py": "{\"findings\": [{\"finding_type\": \"missing_error_handling\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"queue.put without error handling\", \"description\": \"A full queue raises and propagates unhandled.\", \"evidence\": \"queue.put(item)\", \"line_start\": 1, \"line_end\": 2, \"trace_candidates\": []}]}"
+ }
+}

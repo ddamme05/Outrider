@@ -192,6 +192,16 @@ class EvalFixture(BaseModel):
     # the base64 wire-shape normalization is exercised identically.
     repository_contents_head: dict[str, str] = Field(default_factory=dict)
     llm_responses: dict[str, list[str]]
+    # Opt-in CONCURRENCY-SAFE analyze scripting (parallel-analyze increment 6):
+    # pass-0 analyze responses keyed BY FILE PATH instead of call order. Under
+    # `analyze_max_concurrency > 1` worker completion order is nondeterministic,
+    # so the index-keyed `llm_responses["analyze"]` list cannot attribute
+    # responses to files — the provider serves from this map via the worker's
+    # `LLMRequest.phase_key` (`file:<path>#<pass>`) instead. Keyless analyze
+    # calls (the sequential pass-1 trace-fetched pass) still draw from
+    # `llm_responses["analyze"]` in call order. None (the default) keeps the
+    # index-keyed behavior, which requires analyze_max_concurrency == 1.
+    analyze_responses_by_path: dict[str, str] | None = None
     # Opt-in per-review analyze token budget (analyze-cost-fairness Stage 1c seam).
     # None → use build_graph's DEFAULT_REVIEW_BUDGET_TOKENS (200k). A starvation /
     # budget-pressure scenario sets a tight value here so the analyze cost gate
@@ -381,11 +391,16 @@ class _FixtureScriptedProvider:
         persister: LLMExchangePersister,
         probe: CostProbe | None = None,
         host: str | None = None,
+        analyze_responses_by_path: dict[str, str] | None = None,
     ) -> None:
         self._responses = responses
         self._counts: dict[str, int] = {}
         self._persister = persister
         self._probe = probe
+        # Concurrency-safe pass-0 analyze scripting (increment 6): responses
+        # keyed by file path, served via the worker's LLMRequest.phase_key —
+        # completion order can't misattribute them. None = index-keyed legacy.
+        self._analyze_responses_by_path = analyze_responses_by_path
         # Host-identity triad stamped on every response/event (DECISIONS.md#056).
         # Default None -> anthropic: resolve_host_identity("anthropic", False) returns
         # the SAME (ANTHROPIC_PROFILE_ID, False, ANTHROPIC_CONTRACT_DIGEST) the
@@ -418,16 +433,33 @@ class _FixtureScriptedProvider:
         )
 
         node = request.node_id
-        idx = self._counts.get(node, 0)
-        try:
-            text_out = self._responses[node][idx]
-        except (KeyError, IndexError) as exc:
-            raise EvalDriverError(
-                f"no scripted LLM response for node_id={node!r} call-index={idx} "
-                f"(fixture scripts {len(self._responses.get(node, []))} call(s) for "
-                f"this node). Add the response to the fixture's llm_responses."
-            ) from exc
-        self._counts[node] = idx + 1
+        by_path = self._analyze_responses_by_path
+        request_key = request.phase_key
+        if node == "analyze" and by_path is not None and request_key is not None:
+            # Pass-0 worker call: serve BY FILE PATH (phase_key is
+            # `file:<path>#<pass>`; the integer final segment disambiguates
+            # paths containing `#`). Deterministic under any completion order.
+            path = request_key.removeprefix("file:").rsplit("#", 1)[0]
+            try:
+                text_out = by_path[path]
+            except KeyError as exc:
+                raise EvalDriverError(
+                    f"no scripted analyze response for file {path!r} in the "
+                    f"fixture's analyze_responses_by_path (has: "
+                    f"{sorted(by_path)}). Every LLM-reaching pass-0 file needs "
+                    f"an entry."
+                ) from exc
+        else:
+            idx = self._counts.get(node, 0)
+            try:
+                text_out = self._responses[node][idx]
+            except (KeyError, IndexError) as exc:
+                raise EvalDriverError(
+                    f"no scripted LLM response for node_id={node!r} call-index={idx} "
+                    f"(fixture scripts {len(self._responses.get(node, []))} call(s) for "
+                    f"this node). Add the response to the fixture's llm_responses."
+                ) from exc
+            self._counts[node] = idx + 1
         # Token counts: fixed sentinels for correctness runs; REAL prompt-derived
         # counts when a CostProbe is attached (zero-spend cost measurement). The
         # graph has ALREADY rendered the real system+user prompts by this point, so
@@ -867,6 +899,7 @@ def _build_eval_graph(
     cache_mode: CacheMode = CacheMode.SHADOW,
     model_config: ModelConfig | None = None,
     host: str | None = None,
+    analyze_max_concurrency: int = 1,
 ) -> Any:
     """Build the seven-logical-node graph wired with the eval doubles.
 
@@ -929,14 +962,13 @@ def _build_eval_graph(
         checkpointer=checkpointer,
         publisher=publisher,
         import_path_resolver=_NoOpImportPathResolver(),
-        # Scripted-response determinism: `_FixtureScriptedProvider` keys
-        # responses by (node_id, call-index), so concurrent analyze workers
-        # would race for indices — a fixture's per-file responses could land
-        # on the wrong file. One worker at a time preserves the Send-dispatch
-        # (tier-descending worklist) order the fixtures script against.
-        # File-keyed scripting + real driver concurrency is the increment-6
-        # hardening item (specs/2026-07-05-parallel-analyze.md).
-        analyze_max_concurrency=1,
+        # Default 1: index-keyed `llm_responses["analyze"]` scripting depends
+        # on deterministic call order. A concurrency scenario opts in with
+        # `analyze_max_concurrency > 1` + the fixture's
+        # `analyze_responses_by_path` map (served via LLMRequest.phase_key,
+        # correct under ANY completion order); the entry points fail loud on
+        # the unsafe combination.
+        analyze_max_concurrency=analyze_max_concurrency,
         # Shadow mode by default, matching production: the classifier runs
         # and audits would-exclude verdicts on every eval scenario. An
         # enforce-mode scenario opts in through this seam
@@ -969,6 +1001,7 @@ async def _drive(
     analyze_observed_skip_enforced: bool = False,
     model_config: ModelConfig | None = None,
     host: str | None = None,
+    analyze_max_concurrency: int = 1,
 ) -> EvalRunResult:
     """Run the graph once against `db_url` (already migrated) and collect results.
 
@@ -990,7 +1023,11 @@ async def _drive(
         )
         publisher = _CapturingPublisher()
         provider = _FixtureScriptedProvider(
-            fixture.llm_responses, persister=persister, probe=probe, host=host
+            fixture.llm_responses,
+            persister=persister,
+            probe=probe,
+            host=host,
+            analyze_responses_by_path=fixture.analyze_responses_by_path,
         )
         graph = _build_eval_graph(
             fixture=fixture,
@@ -1000,6 +1037,7 @@ async def _drive(
             provider=provider,
             publisher=publisher,
             checkpointer=InMemorySaver(),
+            analyze_max_concurrency=analyze_max_concurrency,
             analyze_cache_store=analyze_cache_store,
             cache_mode=cache_mode,
             analyze_observed_skip_enforced=analyze_observed_skip_enforced,
@@ -1055,10 +1093,37 @@ async def _arun_review(
     probe: CostProbe | None = None,
     model_config: ModelConfig | None = None,
     host: str | None = None,
+    analyze_max_concurrency: int = 1,
 ) -> EvalRunResult:
     async with ephemeral_database(base_url=base_url) as db_url:
         await run_alembic_upgrade_head(db_url)
-        return await _drive(fixture, db_url, probe=probe, model_config=model_config, host=host)
+        return await _drive(
+            fixture,
+            db_url,
+            probe=probe,
+            model_config=model_config,
+            host=host,
+            analyze_max_concurrency=analyze_max_concurrency,
+        )
+
+
+def _require_concurrency_safe_scripting(fixture: EvalFixture, analyze_max_concurrency: int) -> None:
+    """Fail loud on the unsafe combination: concurrent workers + index-keyed
+    analyze scripting. With more than one scripted analyze response and no
+    by-path map, completion order decides which file gets which response —
+    a silently misattributed scenario is worse than a refused one."""
+    if (
+        analyze_max_concurrency > 1
+        and fixture.analyze_responses_by_path is None
+        and len(fixture.llm_responses.get("analyze", [])) > 1
+    ):
+        raise EvalDriverError(
+            "analyze_max_concurrency > 1 with index-keyed analyze scripting: "
+            "the fixture scripts multiple llm_responses['analyze'] entries but "
+            "no analyze_responses_by_path map, so worker completion order would "
+            "decide response attribution. Add analyze_responses_by_path to the "
+            "fixture (or run with analyze_max_concurrency=1)."
+        )
 
 
 def run_review(
@@ -1067,6 +1132,7 @@ def run_review(
     probe: CostProbe | None = None,
     model_config: ModelConfig | None = None,
     host: str | None = None,
+    analyze_max_concurrency: int = 1,
 ) -> EvalRunResult:
     """Drive the real 7-logical-node graph against a JSON PR fixture; return the result.
 
@@ -1101,8 +1167,16 @@ def run_review(
     with open(fixture_path, encoding="utf-8") as fh:
         fixture = EvalFixture.model_validate(json.load(fh))
 
+    _require_concurrency_safe_scripting(fixture, analyze_max_concurrency)
     return asyncio.run(
-        _arun_review(fixture, base_url, probe=probe, model_config=model_config, host=host)
+        _arun_review(
+            fixture,
+            base_url,
+            probe=probe,
+            model_config=model_config,
+            host=host,
+            analyze_max_concurrency=analyze_max_concurrency,
+        )
     )
 
 
@@ -1193,7 +1267,11 @@ def _validate_eval_db_url(db_url: str) -> None:
 
 
 async def run_review_with_resume(
-    fixture_path: str | os.PathLike[str], *, db_url: str, host: str | None = None
+    fixture_path: str | os.PathLike[str],
+    *,
+    db_url: str,
+    host: str | None = None,
+    analyze_max_concurrency: int = 1,
 ) -> ResumedRunResult:
     """Drive the graph through the HITL interrupt, restart, resume, and publish.
 
@@ -1229,6 +1307,7 @@ async def run_review_with_resume(
 
     with open(fixture_path, encoding="utf-8") as fh:
         fixture = EvalFixture.model_validate(json.load(fh))
+    _require_concurrency_safe_scripting(fixture, analyze_max_concurrency)
 
     # psycopg wants a bare URL; strip SQLAlchemy's driver suffix (mirrors lifespan).
     checkpoint_url = db_url.replace("postgresql+psycopg://", "postgresql://", 1)
@@ -1249,7 +1328,12 @@ async def run_review_with_resume(
             session_factory=session_factory, retention_settings=RetentionSettings()
         )
         publisher = _CapturingPublisher()
-        provider = _FixtureScriptedProvider(fixture.llm_responses, persister=persister, host=host)
+        provider = _FixtureScriptedProvider(
+            fixture.llm_responses,
+            persister=persister,
+            host=host,
+            analyze_responses_by_path=fixture.analyze_responses_by_path,
+        )
 
         # Phase A (process 1): drive to the interrupt on saver A, then CLOSE it.
         async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as saver_a:
@@ -1262,6 +1346,7 @@ async def run_review_with_resume(
                 publisher=publisher,
                 checkpointer=saver_a,
                 host=host,
+                analyze_max_concurrency=analyze_max_concurrency,
             )
             result_a = await graph_a.ainvoke(_seed_state(fixture, review_id), config=thread_config)
 
@@ -1288,6 +1373,7 @@ async def run_review_with_resume(
                 publisher=publisher,
                 checkpointer=saver_b,
                 host=host,
+                analyze_max_concurrency=analyze_max_concurrency,
             )
             result_b = await graph_b.ainvoke(
                 Command(resume=decision.model_dump(mode="json")), config=thread_config
@@ -1329,6 +1415,7 @@ async def run_review_persisting(
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
     analyze_observed_skip_enforced: bool = False,
+    analyze_max_concurrency: int = 1,
 ) -> EvalRunResult:
     """Drive the graph ONCE against a caller-supplied, already-migrated `db_url`.
 
@@ -1355,10 +1442,12 @@ async def run_review_persisting(
     with open(fixture_path, encoding="utf-8") as fh:
         fixture = EvalFixture.model_validate(json.load(fh))
 
+    _require_concurrency_safe_scripting(fixture, analyze_max_concurrency)
     return await _drive(
         fixture,
         db_url,
         analyze_cache_store=analyze_cache_store,
         cache_mode=cache_mode,
         analyze_observed_skip_enforced=analyze_observed_skip_enforced,
+        analyze_max_concurrency=analyze_max_concurrency,
     )
