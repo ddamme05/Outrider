@@ -736,7 +736,7 @@ async def test_severity_override_renders_override_severity_in_comment_and_audit(
     assert len(posted_comments) == 1
     body = posted_comments[0].body
     # Header begins with `**LOW**` (the override), NOT `**CRITICAL**` (baseline).
-    assert "**LOW**" in body, f"expected override severity LOW in body, got: {body[:80]!r}"
+    assert "**Low**" in body, f"expected override severity Low in body, got: {body[:80]!r}"
     assert "**CRITICAL**" not in body, (
         f"baseline CRITICAL should not appear in body, got: {body[:80]!r}"
     )
@@ -1765,7 +1765,7 @@ async def test_eligible_review_body_finding_posts_related_concerns(
     assert posted["comments"] == ()  # zero inline comments
     assert posted["body"].startswith("<!-- outrider-review-id:")  # marker first
     assert "## Related concerns" in posted["body"]
-    assert finding.finding_type.value in posted["body"]
+    assert "Missing input validation" in posted["body"]  # humanized type label
     pr = result["publish_result"]
     assert pr.outcome == "success"
     assert pr.review_body_findings_posted == 1
@@ -1986,7 +1986,7 @@ async def test_review_body_tier_filters_withheld_keeps_eligible(
     )
 
     body = publisher.create_calls[0]["body"]
-    assert eligible.finding_type.value in body  # missing_input_validation (eligible)
+    assert "Missing input validation" in body  # humanized (eligible)
     assert withheld.finding_type.value not in body  # sql_injection (withheld) excluded
     assert result["publish_result"].review_body_findings_posted == 1
 

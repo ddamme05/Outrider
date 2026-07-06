@@ -69,6 +69,10 @@ from outrider.policy.publish_eligibility import (
     is_eligible_for_v1_publish,
     is_hitl_gated_severity,
 )
+from outrider.presentation.finding_sections import (
+    FindingSections,
+    build_finding_sections,
+)
 from outrider.schemas import (
     InlineComment,
     PublishDestination,
@@ -1369,6 +1373,23 @@ def _render_suggestion_block(suggested_fix: str | None) -> str:
     return f"```suggestion\n{suggested_fix}\n```"
 
 
+def _render_proof_line(sections: FindingSections) -> str:
+    """The visible evidence-tier line (the human-readable replacement for the raw enum / the
+    old `PROOF · JUDGED →` slug). `tier_phrase` is developer-authored (safe). The OBSERVED
+    `query_match_id` and the INFERRED `trace_path` chain are model/registry-influenced, so they
+    pass through `sanitize_display_string` and render as PLAIN text — not a code span, where a
+    stray backtick could break out. Display of an already-decided tier; never re-derived."""
+    from outrider.policy.output_sanitizer import sanitize_display_string  # noqa: PLC0415
+
+    detail = sections.tier_phrase
+    if sections.query_match_id:
+        detail += f" · {sanitize_display_string(sections.query_match_id)}"
+    elif sections.trace_path:
+        chain = " → ".join(sanitize_display_string(step) for step in sections.trace_path)
+        detail += f" · {chain}"
+    return f"**Detected:** {detail}"
+
+
 def _build_finding_comment_body(
     finding: ReviewFinding,
     *,
@@ -1402,21 +1423,39 @@ def _build_finding_comment_body(
     # pulling the sanitizer's HMAC-secret env-read at import time.
     from outrider.policy.output_sanitizer import (  # noqa: PLC0415
         apply_size_cap,
+        render_fenced_block,
         sanitize_display_string,
     )
 
+    sections = build_finding_sections(finding, effective_severity=effective_severity)
     title_sanitized = sanitize_display_string(finding.title)
     description_sanitized = sanitize_display_string(finding.description)
-    header = (
-        f"**{effective_severity.value.upper()}** · "
-        f"**{finding.finding_type.value}** — {title_sanitized}"
+    # Humanized header (no emoji — a11y: markdown can't hide it from a screen reader).
+    # severity_label is policy/HITL-resolved (never model-set); type_label is developer-authored.
+    header = f"**{sections.severity_label}** · {sections.type_label} — {title_sanitized}"
+    prose = f"{header}\n\n{description_sanitized}"
+
+    # Each block below is handled INDEPENDENTLY on the output-sanitization boundary and joins the
+    # RESERVED (uncuttable) suffix, so the byte cap can never truncate INSIDE a code fence (which
+    # would strand its closing ```), sever the ```suggestion Apply button, or cut the offset-tail
+    # markers. Only the header+description prose is cappable.
+    proof_line = _render_proof_line(sections)  # always non-empty (carries the tier phrase)
+    # Restore the referenced code (finding.evidence was dropped before): the breakout-safe fence
+    # (fence longer than any internal run; control codes stripped). Empty evidence → no block.
+    evidence_block = (
+        render_fenced_block(finding.evidence, language=sections.language)
+        if finding.evidence.strip()
+        else ""
     )
-    body = f"{header}\n\n{description_sanitized}"
-    tail_blocks = tuple(block for block in (suggestion, agent_prompt, markers) if block)
-    if not tail_blocks:
-        return apply_size_cap(body)
+    # `suggestion` is the already-safe ```suggestion block (or "") from `_render_suggestion_block`
+    # (the canonical `suggested_fix`, never parsed from description); label it when present.
+    fix_block = f"**Suggested fix:**\n{suggestion}" if suggestion else ""
+
+    tail_blocks = tuple(
+        block for block in (proof_line, evidence_block, fix_block, agent_prompt, markers) if block
+    )
     suffix = "\n\n" + "\n\n".join(tail_blocks)
-    capped_prose = apply_size_cap(body, reserve_bytes=len(suffix.encode("utf-8")))
+    capped_prose = apply_size_cap(prose, reserve_bytes=len(suffix.encode("utf-8")))
     return f"{capped_prose}{suffix}"
 
 
@@ -1469,10 +1508,8 @@ def _render_related_concern_entry(
     # ids): no `)`/whitespace, so the markdown link target needs no escaping. If
     # the base URL ever becomes less trusted, wrap it in <...> here.
     link = f" — [view in dashboard]({deep_link})" if deep_link else " (see the Outrider dashboard)"
-    return (
-        f"- **{effective_severity.value.upper()}** · "
-        f"**{finding.finding_type.value}** — {location} — {title}{link}"
-    )
+    sections = build_finding_sections(finding, effective_severity=effective_severity)
+    return f"- **{sections.severity_label}** · {sections.type_label} — {location} — {title}{link}"
 
 
 def _render_review_body(
