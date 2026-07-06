@@ -42,11 +42,20 @@ _ENTRY = re.compile(r'(?:"([^"]+)"|(\w+)):\s*"([^"]*)"')
 
 
 def _ts_map(name: str) -> dict[str, str]:
-    """Extract the `key: "value"` pairs from a `export const <name>: Record<…> = {…};` block."""
+    """Extract the `key: "value"` pairs from a `export const <name>: Record<…> = {…};` block. The
+    closing brace is matched line-anchored (`^[ \\t]*};`) so a formatter reindenting the block can't
+    turn a real label drift into a spurious not-found."""
     src = _TS.read_text(encoding="utf-8")
-    m = re.search(rf"export const {name}: Record<string, string> = \{{(.*?)\n\}};", src, re.DOTALL)
+    m = re.search(
+        rf"export const {name}: Record<string, string> = \{{(.*?)^[ \t]*\}};",
+        src,
+        re.DOTALL | re.MULTILINE,
+    )
     if m is None:
-        raise AssertionError(f"{name} not found in {_TS.name}")
+        raise AssertionError(
+            f"{name} block not found in {_TS.name} — renamed, or its "
+            f"`export const … = {{…}};` shape reformatted? (NOT a label-drift failure)"
+        )
     return {(quoted or bare): value for quoted, bare, value in _ENTRY.findall(m.group(1))}
 
 
