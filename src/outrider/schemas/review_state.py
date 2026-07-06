@@ -152,9 +152,10 @@ class ReviewState(BaseModel):
         append_with_dedup_by(lambda r: r.round_id),
     ] = Field(default_factory=list)
 
-    # Per-(file, pass) worker outcomes from the parallel-analyze fan-out
-    # (specs/2026-07-05-parallel-analyze.md; dormant until the graph split
-    # wires the Send workers). Slot key is POSITIONAL, so the merge is the
+    # Per-(file, pass) worker outcomes for the parallel-analyze fan-out
+    # (specs/2026-07-05-parallel-analyze.md) — populated at pass 0 by the
+    # analyze node's per-file branches; the Send workers own the writes
+    # after the fan-out cutover. Slot key is POSITIONAL, so the merge is the
     # #063 slot guard, not first-wins dedup: identical-digest retries are
     # replay no-ops, divergent same-slot content raises (state must not
     # fork from audit). The digest recomputes over the canonical dump at

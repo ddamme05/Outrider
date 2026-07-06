@@ -16,7 +16,7 @@ augmentation). The shipped shape instead records what only the worker
 knows, as explicit identity:
 
 - `source` — the sequential branch, discriminated (parser / cache_serve /
-  observed_skip / plain_skip), never inferred.
+  observed_coverage / observed_skip / plain_skip), never inferred.
 - `producer_observed_hashes` — WHICH findings the deterministic OBSERVED
   producer made this pass. Origin is identity, not tier: a model-cited
   OBSERVED proposal is a legitimate proposal and stays out of this list.
@@ -174,8 +174,9 @@ class AnalyzeWorkerOutcome(BaseModel):
           contract — but does NOT preclude producer-OBSERVED augmentation.
         - Identity lists are canonical (hex, sorted, unique), subsets of
           the admitted set, and per-source: producer hashes cover EXACTLY
-          the admitted set on `observed_skip`, served hashes EXACTLY the
-          admitted set on `cache_serve`, both empty on `plain_skip`;
+          the admitted set on `observed_coverage` (non-empty — coverage
+          requires matches) and on `observed_skip`, served hashes EXACTLY
+          the admitted set on `cache_serve`, both empty on `plain_skip`;
           served is cache_serve-exclusive; every producer-listed finding
           is OBSERVED-tier (the producer makes nothing else).
         - Cross-file attribution is unrepresentable (the sequential
