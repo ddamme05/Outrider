@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from outrider.audit.events import PublishEligibility, PublishEligibilityReason
 from outrider.presentation.finding_sections import (
+    _LANGUAGE_BY_EXT,
     DEST_LABEL,
     DIMENSION_LABEL,
     SEVERITY_LABEL,
@@ -35,7 +36,9 @@ if TYPE_CHECKING:
     from enum import Enum
 
 _TS = Path(__file__).resolve().parents[2] / "dashboard" / "src" / "lib" / "findingSections.ts"
-_ENTRY = re.compile(r'(\w+):\s*"([^"]*)"')
+# A `key: "value"` entry with either a bare identifier key (`sql_injection: …`) or a quoted key
+# (`".py": …`, used by LANGUAGE_BY_EXT).
+_ENTRY = re.compile(r'(?:"([^"]+)"|(\w+)):\s*"([^"]*)"')
 
 
 def _ts_map(name: str) -> dict[str, str]:
@@ -44,7 +47,7 @@ def _ts_map(name: str) -> dict[str, str]:
     m = re.search(rf"export const {name}: Record<string, string> = \{{(.*?)\n\}};", src, re.DOTALL)
     if m is None:
         raise AssertionError(f"{name} not found in {_TS.name}")
-    return dict(_ENTRY.findall(m.group(1)))
+    return {(quoted or bare): value for quoted, bare, value in _ENTRY.findall(m.group(1))}
 
 
 def _py_by_wire(mapping: dict[Enum, str]) -> dict[str, str]:
@@ -76,3 +79,12 @@ def test_dashboard_only_maps_are_total_over_enums() -> None:
             f"{name} in findingSections.ts is missing labels for {sorted(missing)} — "
             f"every {enum.__name__} member needs one."
         )
+
+
+def test_language_map_mirrors_python_byte_for_byte() -> None:
+    """LANGUAGE_BY_EXT drives the fence highlight token (GitHub) and the .codeblock-lang chip
+    (dashboard); a drift would highlight the same snippet as different languages across channels."""
+    assert _ts_map("LANGUAGE_BY_EXT") == _LANGUAGE_BY_EXT, (
+        "LANGUAGE_BY_EXT in dashboard/src/lib/findingSections.ts drifted from "
+        "presentation/finding_sections.py's _LANGUAGE_BY_EXT — reconcile the TS mirror."
+    )
