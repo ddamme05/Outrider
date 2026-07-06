@@ -259,7 +259,9 @@ class _RecordingFileExaminationSink:
         self.events.append(event)
 
 
-def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEvent:
+def _lift_finding_event(
+    finding: ReviewFinding, *, is_eval: bool, phase_key: str | None = None
+) -> FindingEvent:
     """Lift an admitted ``ReviewFinding`` to its metadata-only ``FindingEvent``,
     mirroring ``AuditPersister._lift_finding_event`` so the recorder captures the
     same event the production sink would emit (keeps ``is_eval`` /
@@ -283,6 +285,7 @@ def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEven
         trace_path=finding.trace_path,
         policy_version=finding.policy_version,
         proposal_hash=finding.proposal_hash,
+        phase_key=phase_key,
     )
 
 
@@ -300,7 +303,7 @@ class _RecordingAnalyzeEventSink:
     async def emit_finding(
         self, finding: ReviewFinding, *, is_eval: bool, phase_key: str | None = None
     ) -> None:
-        self.findings.append(_lift_finding_event(finding, is_eval=is_eval))
+        self.findings.append(_lift_finding_event(finding, is_eval=is_eval, phase_key=phase_key))
 
     async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:
         self.proposal_rejections.append(event)
@@ -693,6 +696,9 @@ async def test_clean_eligible_file_flows_through_analyze(
     # FindingEvent emitted from analyze.
     assert len(ae_sink.findings) == 1
     assert ae_sink.findings[0].file_path == _DEEP_FILE_PATH
+    # Aggregate-keyed through the REAL graph (admission is aggregate work);
+    # the recorder mirrors the persister's lift, so a dropped stamp fails here.
+    assert ae_sink.findings[0].phase_key == "aggregate#0"
     assert ae_sink.completed[0].n_findings_emitted == 1
 
     # FileExaminationEvent shows clean parse_status for analyze.

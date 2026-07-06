@@ -1039,3 +1039,42 @@ async def test_module_scope_degraded_route_has_no_cache_activity() -> None:
     assert store.lookup_calls == []
     assert store.write_calls == []
     assert sink.cache_lookups == []
+
+
+@pytest.mark.asyncio
+async def test_serve_path_events_carry_the_worker_phase_key() -> None:
+    """The serve short-circuit emits its OWN FileExaminationEvent, inside
+    the worker's keyed envelope — an unkeyed event there is exactly what
+    the strict replay hybrid's None-branch rejects, so both it and the
+    CacheServeEvent must carry the worker's `file:<path>#<pass>` key."""
+    source_finding = _build_cached_finding()
+    entry = CacheEntry(
+        cache_key="c" * 64,
+        payload={"findings": [source_finding.model_dump(mode="json")], "trace_candidates": []},
+        source_review_id=uuid4(),
+        file_path="src/cached.py",
+        created_at=datetime(2026, 6, 13, 12, 0, 0, tzinfo=UTC),
+    )
+    store = _FakeCacheStore(scope=_SCOPE, entry=entry)
+    fe_sink = _RecordingFileExaminationSink()
+    sink = _RecordingAnalyzeEventSink()
+    await run_analyze_pass_kw(
+        _state(),
+        provider=_StubLLMProvider(None),  # type: ignore[arg-type]
+        analyze_model="claude-sonnet-4-6",
+        standard_analyze_model="claude-sonnet-4-6",
+        phase_event_sink=_NoOpPhaseSink(),
+        file_examination_sink=fe_sink,
+        analyze_event_sink=sink,
+        anomaly_sink=AsyncMock(),
+        import_path_resolver=MagicMock(),
+        active_policy_version=ACTIVE_POLICY_VERSION,
+        total_review_budget_tokens=DEFAULT_REVIEW_BUDGET_TOKENS,
+        analyze_cache_store=store,  # type: ignore[arg-type]
+        cache_mode=CacheMode.SERVE,
+    )
+    worker_key = "file:src/cached.py#0"
+    [fe_event] = fe_sink.events
+    assert fe_event.phase_key == worker_key
+    [serve] = sink.cache_serves
+    assert serve.phase_key == worker_key
