@@ -1,6 +1,6 @@
 """End-to-end smoke test: real graph run through publish, then replay-equivalent.
 
-It drives the REAL compiled graph (built from the full seven-node topology:
+It drives the REAL compiled graph (built from the full seven-logical-node topology:
 intake -> triage -> analyze <-> trace -> synthesize -> hitl -> publish) with
 the REAL `AuditPersister` / `ReviewStatusPersister` / `AnomalyPersister` writing
 to a REAL Postgres (`migrated_db`), and fakes only at the two network

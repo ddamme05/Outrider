@@ -251,7 +251,9 @@ class AnalyzeEventSink(Protocol):
     only, not signature shape; mypy strict is the write-time gate.
     """
 
-    async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
+    async def emit_finding(
+        self, finding: ReviewFinding, *, is_eval: bool, phase_key: str | None = None
+    ) -> None:
         """Persist an admitted finding: BOTH the `FindingEvent` audit row AND
         the `findings` content row, co-inserted in one transaction.
 

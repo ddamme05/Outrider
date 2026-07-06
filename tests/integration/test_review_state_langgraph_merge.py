@@ -139,7 +139,7 @@ class _MockLLMProvider:
 # intake's pr_context-replacement is a structural no-op at the
 # changed_files level, and tests that asserted "pr_context survives"
 # (originally written under the single-node triage graph) still hold
-# under the current seven-node intake → triage → analyze ⇄ trace →
+# under the current seven-logical-node intake → triage → analyze ⇄ trace →
 # synthesize → hitl → publish graph.
 
 
@@ -333,7 +333,9 @@ class _RecordingAnalyzeEventSink:
         self.cache_serves: list[object] = []
         self.observed_skip_shadows: list[object] = []
 
-    async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
+    async def emit_finding(
+        self, finding: ReviewFinding, *, is_eval: bool, phase_key: str | None = None
+    ) -> None:
         self.findings.append(_lift_finding_event(finding, is_eval=is_eval))
 
     async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:
@@ -589,7 +591,7 @@ def _build_seed_dict_with_naive_datetime() -> dict[str, object]:
 # ---------------------------------------------------------------------------
 #
 # Originally rebuilt 2026-05-17 for the then-current two-node intake →
-# triage graph; the graph has since extended to seven nodes (intake →
+# triage graph; the graph has since extended to seven logical nodes (intake →
 # triage → analyze ⇄ trace → synthesize → hitl → publish) and these
 # tests still hold because the intake-side stubs produce a
 # `ChangedFile` tuple byte-identical to the seed's pr_context
@@ -825,13 +827,21 @@ async def test_phase_events_have_matching_phase_id_through_graph(
             f"start+end pair must share node_id"
         )
 
-    # Distinct phase_ids across distinct node invocations: total unique
-    # phase_ids equals total unique node_ids (one phase_id per node invocation).
-    unique_phase_ids = len(by_phase_id)
-    unique_node_ids = len({e.node_id for e in events})
-    assert unique_phase_ids == unique_node_ids, (
-        f"{unique_phase_ids} unique phase_ids vs {unique_node_ids} unique node_ids; "
-        f"each node invocation should have its own phase_id"
+    # Distinct phase_ids across distinct phases. Every non-analyze node
+    # emits exactly ONE phase pair; analyze emits one KEYED pair per
+    # physical phase (plan + one per worker + aggregate on pass 0) under
+    # its single logical node_id — DECISIONS.md#064 / the fan-out's
+    # phase-emission increment.
+    non_analyze_phase_node_ids = [
+        pair[0].node_id for pair in by_phase_id.values() if pair[0].node_id != "analyze"
+    ]
+    assert len(non_analyze_phase_node_ids) == len(set(non_analyze_phase_node_ids)), (
+        f"a non-analyze node emitted more than one phase pair: {non_analyze_phase_node_ids}"
     )
+    analyze_pairs = [pair for pair in by_phase_id.values() if pair[0].node_id == "analyze"]
+    assert len(analyze_pairs) >= 2, "pass 0 emits at least the plan + aggregate pairs"
+    analyze_keys = sorted(pair[0].phase_key for pair in analyze_pairs)
+    assert len(analyze_keys) == len(set(analyze_keys)), f"duplicate analyze keys: {analyze_keys}"
+    assert all(k is not None for k in analyze_keys), "pass-0 analyze phases are all keyed"
     for ev in events:
         assert ev.review_id == state.review_id

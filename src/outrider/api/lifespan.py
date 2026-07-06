@@ -26,7 +26,7 @@ Constructs at startup, in dependency order:
      lifespan-validated settings. Per `DECISIONS.md#020` + the
      `nodes-receive-deps-via-closure` invariant, installation-token
      minting happens at intake call-site, not at webhook receipt.
-  8. `compiled_graph = build_graph(...)` — the V1 seven-node intake →
+  8. `compiled_graph = build_graph(...)` — the V1 seven-logical-node intake →
      triage → analyze ⇄ trace → synthesize → hitl → publish graph with
      all required deps injected at construction time (`db_factory`,
      `github_factory`, `provider`, `model_config`, eight audit-side sink

@@ -92,7 +92,9 @@ class _StubFileExaminationSink:
 class _StubAnalyzeEventSink:
     """Satisfies AnalyzeEventSink Protocol structurally (has all 7 emit_* members)."""
 
-    async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:  # noqa: ARG002
+    async def emit_finding(  # noqa: ARG002
+        self, finding: ReviewFinding, *, is_eval: bool, phase_key: str | None = None
+    ) -> None:
         return None
 
     async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:

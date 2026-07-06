@@ -2,7 +2,7 @@
 # See specs/2026-06-01-eval-graph-driver.md (resolution A). LLM-provider boundary #8 +
 # input boundary #5: the adapters implement the LLMProvider / GitHub / GitHubPublisher
 # Protocols WITHOUT importing anthropic/githubkit — they replay fixture data only.
-"""The eval graph driver — drive the real 7-node graph from a JSON fixture.
+"""The eval graph driver — drive the real 7-logical-node graph from a JSON fixture.
 
 `run_review(fixture_path)` is the shim every non-structural eval scenario
 imports (`from outrider.agent import run_review`). It generalizes the
@@ -868,7 +868,7 @@ def _build_eval_graph(
     model_config: ModelConfig | None = None,
     host: str | None = None,
 ) -> Any:
-    """Build the seven-node graph wired with the eval doubles.
+    """Build the seven-logical-node graph wired with the eval doubles.
 
     The single build-graph-deps bundle shared by the single-pass `_drive` and the
     resume driver, so they cannot drift on which sinks/deps are injected. Only the
@@ -1068,7 +1068,7 @@ def run_review(
     model_config: ModelConfig | None = None,
     host: str | None = None,
 ) -> EvalRunResult:
-    """Drive the real 7-node graph against a JSON PR fixture; return the result.
+    """Drive the real 7-logical-node graph against a JSON PR fixture; return the result.
 
     Synchronous wrapper (the eval scenarios call it without `await`); the async
     graph runs inside `asyncio.run`. Fail-closed: requires `OUTRIDER_IS_EVAL=1`

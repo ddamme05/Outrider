@@ -18,7 +18,8 @@ Sections, in order:
   1. reviews row — the durable record (status, metrics, timestamps, retention)
   2. replay verdict — reconstruct() mode + assert_replay_equivalent() pass/fail
      + orphan detection (findings-rows with no audit event)
-  3. phase timeline — every ReviewPhaseEvent start/end pair (the 7 graph nodes),
+  3. phase timeline — every ReviewPhaseEvent start/end pair (grouped under the 7
+     logical nodes; analyze emits several keyed pairs per pass since the fan-out),
      and under each, every per-operation event IN SEQUENCE with its full payload
   4. LLM exchanges — per analyze/triage/synthesize/trace call: token/cost/cache
      metadata + the full prompt and completion text (within retention)

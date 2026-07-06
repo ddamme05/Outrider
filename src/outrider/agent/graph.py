@@ -1,5 +1,5 @@
-# Seven-node StateGraph(ReviewState) factory for the V1 review pipeline.
-"""Seven-node `StateGraph(ReviewState)` factory.
+# StateGraph(ReviewState) factory: seven LOGICAL nodes (DECISIONS.md#064).
+"""`StateGraph(ReviewState)` factory — seven LOGICAL nodes, nine physical vertices.
 
 Graph topology (logical): intake → triage → analyze ⇄ trace → synthesize → hitl → publish.
 
@@ -255,7 +255,12 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     reasoning_enabled: bool | None = None,
     profile_contract_digest: str | None = None,
 ) -> _CompiledTriageGraph:
-    """Build the seven-node intake → triage → analyze ⇄ trace → synthesize → hitl → publish graph.
+    """Build the intake → triage → analyze ⇄ trace → synthesize → hitl → publish graph.
+
+    Seven LOGICAL nodes, nine physical vertices — analyze spans three
+    (planner / `analyze_file` workers / `analyze_aggregate`) per
+    `DECISIONS.md#064`; audit vocabulary and replay grouping know only
+    the seven.
 
     Keyword-only arguments prevent positional-confusion bugs at callsites
     with multiple deps. Validation order: None checks first (cheaper),
@@ -558,6 +563,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         analyze_model=model_config.analyze_model,
         standard_analyze_model=model_config.standard_analyze_model,
         import_path_resolver=import_path_resolver,
+        phase_event_sink=phase_event_sink,
         file_examination_sink=file_examination_sink,
         analyze_event_sink=analyze_event_sink,
         total_review_budget_tokens=total_review_budget_tokens,

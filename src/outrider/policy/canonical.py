@@ -573,9 +573,18 @@ def compute_phase_id(
     `attempt_key` derivation per node:
       - `intake`: `"intake"`.
       - `triage`: `"triage"`.
-      - `analyze`: `f"analyze-pass-{len(state.analysis_rounds)}"` BEFORE
-        appending the round (same length on re-run from the same
-        pre-merge checkpoint).
+      - `analyze`, pass 0 (the fan-out; specs/2026-07-05-parallel-analyze.md):
+        THREE keyed phases per pass, each phase's `attempt_key` equal to its
+        `ReviewPhaseEvent.phase_key` VERBATIM — planner `f"plan#{pass}"`,
+        worker `f"file:{path}#{pass}"` (injective even for paths containing
+        `#`: the pass index is an integer final segment), aggregate
+        `f"aggregate#{pass}"` — so `phase_id` inherits the key recipes'
+        retry stability and collision-freedom. All derive from pre-merge
+        state (`pass = len(state.analysis_rounds)` before the round
+        appends).
+      - `analyze`, pass 1 (sequential trace re-entry):
+        `f"analyze-pass-{len(state.analysis_rounds)}"` BEFORE appending
+        the round — the legacy un-keyed envelope.
       - `trace`: `f"trace-pass-{len(state.analysis_rounds)}"`.
       - `publish`: `"publish"`.
       - `hitl`: `"hitl"`.

@@ -297,7 +297,9 @@ class _RecordingAnalyzeEventSink:
         self.cache_serves: list[object] = []
         self.observed_skip_shadows: list[object] = []
 
-    async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
+    async def emit_finding(
+        self, finding: ReviewFinding, *, is_eval: bool, phase_key: str | None = None
+    ) -> None:
         self.findings.append(_lift_finding_event(finding, is_eval=is_eval))
 
     async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:

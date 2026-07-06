@@ -128,7 +128,9 @@ class _RecordingPhaseEventSink:
         self.events.append(event)
 
 
-def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEvent:
+def _lift_finding_event(
+    finding: ReviewFinding, *, is_eval: bool, phase_key: str | None = None
+) -> FindingEvent:
     """Lift an admitted ``ReviewFinding`` to its metadata-only ``FindingEvent``,
     mirroring ``AuditPersister._lift_finding_event`` so the recorder captures the
     same event the production sink would emit (keeps FindingEvent-field assertions
@@ -152,6 +154,7 @@ def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEven
         trace_path=finding.trace_path,
         policy_version=finding.policy_version,
         proposal_hash=finding.proposal_hash,
+        phase_key=phase_key,
     )
 
 
@@ -172,8 +175,10 @@ class _RecordingAnalyzeEventSink:
         self.observed_skip_shadows: list[object] = []
         self.events: list[Any] = []
 
-    async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
-        event = _lift_finding_event(finding, is_eval=is_eval)
+    async def emit_finding(
+        self, finding: ReviewFinding, *, is_eval: bool, phase_key: str | None = None
+    ) -> None:
+        event = _lift_finding_event(finding, is_eval=is_eval, phase_key=phase_key)
         self.findings.append(event)
         self.events.append(event)
 
@@ -430,6 +435,7 @@ def deps() -> dict[str, Any]:
 # present (the worker's closure deps are a subset of the node's).
 _WORKER_DEP_KEYS = (
     "provider",
+    "phase_event_sink",
     "analyze_model",
     "standard_analyze_model",
     "import_path_resolver",
@@ -538,11 +544,18 @@ async def test_clean_file_admits_one_finding(deps: dict[str, Any]) -> None:
     assert round_.files_examined == ("src/example.py",)
     assert round_.files_skipped == ()
 
-    # Audit events
+    # Audit events: three keyed phase pairs per pass-0 (plan + one per
+    # file + aggregate) since the fan-out's phase-emission increment.
     phase_events = deps["phase_event_sink"].events
-    assert len(phase_events) == 2
-    assert phase_events[0].marker == "start"
-    assert phase_events[1].marker == "end"
+    assert [e.phase_key for e in phase_events] == [
+        "plan#0",
+        "plan#0",
+        "file:src/example.py#0",
+        "file:src/example.py#0",
+        "aggregate#0",
+        "aggregate#0",
+    ]
+    assert [e.marker for e in phase_events] == ["start", "end"] * 3
     assert phase_events[0].phase_id == phase_events[1].phase_id
 
     fe_events = deps["file_examination_sink"].events
@@ -1133,13 +1146,16 @@ async def test_phase_events_bracket_the_pass(deps: dict[str, Any]) -> None:
     await run_analyze_pass(state, deps)
 
     phase_events = deps["phase_event_sink"].events
-    assert len(phase_events) == 2
-    assert phase_events[0].marker == "start"
-    assert phase_events[1].marker == "end"
-    assert phase_events[0].node_id == "analyze"
-    assert phase_events[1].node_id == "analyze"
-    # Same phase_id
-    assert phase_events[0].phase_id == phase_events[1].phase_id
+    # Three keyed pairs bound the pass's work: plan, the file's worker,
+    # aggregate — each pair sharing a phase_id derived from its key, all
+    # under the logical node_id="analyze" (DECISIONS.md#064).
+    assert len(phase_events) == 6
+    assert [e.marker for e in phase_events] == ["start", "end"] * 3
+    assert all(e.node_id == "analyze" for e in phase_events)
+    for start, end in zip(phase_events[::2], phase_events[1::2], strict=True):
+        assert start.phase_id == end.phase_id
+        assert start.phase_key == end.phase_key
+    assert len({e.phase_id for e in phase_events}) == 3  # distinct per phase
 
 
 @pytest.mark.asyncio

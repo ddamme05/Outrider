@@ -67,7 +67,9 @@ class _NullSink:
     async def emit_file_examination(self, event: Any) -> None:  # noqa: ARG002
         return None
 
-    async def emit_finding(self, finding: Any, *, is_eval: bool) -> None:  # noqa: ARG002
+    async def emit_finding(  # noqa: ARG002
+        self, finding: Any, *, is_eval: bool, phase_key: str | None = None
+    ) -> None:
         return None
 
     async def emit_finding_proposal_rejected(self, event: Any) -> None:  # noqa: ARG002
@@ -244,6 +246,7 @@ async def run_analyze_under_model(
             analyze_model=model,
             standard_analyze_model=model,
             import_path_resolver=resolver,
+            phase_event_sink=sink,
             file_examination_sink=sink,
             analyze_event_sink=sink,
         )

@@ -2,7 +2,7 @@
 # ================================================================
 #  Outrider — live GitHub demo (real LLM · REAL GitHub · real DB)
 # ================================================================
-"""Direct-invoke the real 7-node graph against a REAL GitHub PR.
+"""Direct-invoke the real 7-logical-node graph against a REAL GitHub PR.
 
 This is step C2 of `docs/live-verification.md`: it swaps the two faked
 boundaries of `scripts/live_claude_smoke.py` (stub GitHub client + recording

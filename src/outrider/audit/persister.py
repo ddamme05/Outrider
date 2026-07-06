@@ -1594,7 +1594,9 @@ def _serialize_event_payload(
 # ---------------------------------------------------------------------------
 
 
-def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEvent:
+def _lift_finding_event(
+    finding: ReviewFinding, *, is_eval: bool, phase_key: str | None = None
+) -> FindingEvent:
     """Lift an admitted `ReviewFinding` to its metadata-only `FindingEvent`.
 
     The audit row stays metadata-only per DECISIONS.md#014; the human-
@@ -1619,6 +1621,7 @@ def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEven
         trace_path=finding.trace_path,
         policy_version=finding.policy_version,
         proposal_hash=finding.proposal_hash,
+        phase_key=phase_key,
     )
 
 
@@ -2401,7 +2404,9 @@ class AuditPersister:
                 # back the freshly-inserted row.
                 _assert_fresh_triad_qualified(event)
 
-    async def emit_finding(self, finding: ReviewFinding, *, is_eval: bool) -> None:
+    async def emit_finding(
+        self, finding: ReviewFinding, *, is_eval: bool, phase_key: str | None = None
+    ) -> None:
         """Co-insert the `FindingEvent` audit row + the `findings` content row.
 
         One transaction, mirroring the DECISIONS.md#016 `LLMCallEvent` +
@@ -2417,7 +2422,7 @@ class AuditPersister:
         FK-scope source), then cross-checked against the finding's own value.
         See specs/2026-05-30-findings-content-writer.md.
         """
-        event = _lift_finding_event(finding, is_eval=is_eval)
+        event = _lift_finding_event(finding, is_eval=is_eval, phase_key=phase_key)
         payload = _serialize_event_payload(event)
 
         async with self._session_factory() as session, session.begin():
