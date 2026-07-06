@@ -28,8 +28,8 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import pytest  # noqa: TC002 — used at runtime as parameter type
+from test_analyze_node import run_analyze_pass_kw
 
-from outrider.agent.nodes.analyze import analyze
 from outrider.audit.events import compute_finding_content_hash
 from outrider.llm.base import LLMResponse
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
@@ -300,7 +300,7 @@ async def test_pass_index_derives_from_analysis_rounds_state() -> None:
     # → analyze iterates pr-files (zero) → emits AnalyzeCompletedEvent
     # with pass_index=0.
     state_pass_0 = _build_seed_state(analysis_rounds=[], trace_fetched_files=[])
-    await analyze(
+    await run_analyze_pass_kw(
         state_pass_0,
         provider=provider,  # type: ignore[arg-type]
         analyze_model="claude-sonnet-4-6-20251015",
@@ -322,7 +322,7 @@ async def test_pass_index_derives_from_analysis_rounds_state() -> None:
         analysis_rounds=[_build_round_0()],
         trace_fetched_files=[],
     )
-    await analyze(
+    await run_analyze_pass_kw(
         state_pass_1,
         provider=provider,  # type: ignore[arg-type]
         analyze_model="claude-sonnet-4-6-20251015",
@@ -416,7 +416,7 @@ async def test_pass_1_emits_round_with_pass_index_1_and_distinct_round_id() -> N
     file_examination_sink = _RecordingFileExaminationSink()
     analyze_event_sink = _RecordingAnalyzeEventSink()
 
-    state_delta = await analyze(
+    state_delta = await run_analyze_pass_kw(
         state,
         provider=provider,  # type: ignore[arg-type]
         analyze_model="claude-sonnet-4-6-20251015",

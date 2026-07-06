@@ -28,8 +28,8 @@ from test_analyze_node import (  # noqa: F401  (deps is a fixture)
     _build_triage_result,
     _ConfigurableTokensStubProvider,
     _StubLLMProvider,
-    analyze,
     deps,
+    run_analyze_pass,
 )
 
 import outrider.queries.registry as query_registry
@@ -65,7 +65,7 @@ async def test_ride_out_produces_observed_skip_outcome_with_real_producer_origin
         triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
     )
     deps["total_review_budget_tokens"] = 100
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     (outcome,) = result["analyze_worker_outcomes"]
     assert outcome.source == "observed_skip"
@@ -135,7 +135,7 @@ async def test_model_cited_observed_is_excluded_from_producer_list_end_to_end(
         pr_context=_build_pr_context(changed_files=(cf,)),
         triage_result=_build_triage_result(file_tiers={"src/runner.py": ReviewTier.DEEP}),
     )
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     (outcome,) = result["analyze_worker_outcomes"]
     assert outcome.source == "parser"
@@ -226,7 +226,7 @@ async def test_fold_over_state_outcomes_reproduces_the_sequential_round(
             }
         ),
     )
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     assert len(result["analyze_worker_outcomes"]) == 2
     _assert_fold_parity(result, deps)
@@ -242,7 +242,7 @@ async def test_every_pass_zero_file_yields_exactly_one_outcome(
         pr_context=_build_pr_context(changed_files=(plain,)),
         triage_result=_build_triage_result(file_tiers={"src/example.py": ReviewTier.DEEP}),
     )
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
     (outcome,) = result["analyze_worker_outcomes"]
     assert outcome.source == "parser"
     assert outcome.path == "src/example.py"
@@ -357,7 +357,7 @@ async def test_parity_with_every_transcription_channel_non_zero(
         pr_context=_build_pr_context(changed_files=(cf,)),
         triage_result=_build_triage_result(file_tiers={"src/mixed.py": ReviewTier.DEEP}),
     )
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     (outcome,) = result["analyze_worker_outcomes"]
     assert outcome.source == "parser"
@@ -438,7 +438,7 @@ async def test_cap_drop_parity_with_low_cap(
         pr_context=_build_pr_context(changed_files=(cf,)),
         triage_result=_build_triage_result(file_tiers={"src/funcs.py": ReviewTier.DEEP}),
     )
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     (outcome,) = result["analyze_worker_outcomes"]
     assert len(outcome.admitted_findings) == 4  # the outcome is PRE-cap
@@ -494,7 +494,7 @@ async def test_enforced_coverage_skip_maps_to_observed_coverage_live(
         pr_context=_build_pr_context(changed_files=(cf,)),
         triage_result=_build_triage_result(file_tiers={"src/vuln.py": ReviewTier.DEEP}),
     )
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     assert deps["provider"].calls == []  # the LLM never ran
     (outcome,) = result["analyze_worker_outcomes"]

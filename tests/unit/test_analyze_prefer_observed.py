@@ -19,8 +19,9 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
+from test_analyze_node import run_analyze_pass_kw
 
-from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
+from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS
 from outrider.llm.anthropic_provider import (
     _ANTHROPIC_CONTRACT_DIGEST,
     _ANTHROPIC_PROFILE_ID,
@@ -174,7 +175,7 @@ async def test_prefer_observed_collision_counter_accounting() -> None:
     survives, exactly one FindingEvent fires, and the AnalyzeCompletedEvent
     balances with n_proposals_superseded_by_observed == 1."""
     analyze_sink = _AnalyzeSink()
-    await analyze(
+    await run_analyze_pass_kw(
         _state(),
         provider=_JudgedProvider(),  # type: ignore[arg-type]
         analyze_model="claude-sonnet-4-6",

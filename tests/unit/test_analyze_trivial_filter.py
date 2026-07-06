@@ -19,8 +19,9 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
+from test_analyze_node import run_analyze_pass_kw
 
-from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze
+from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS
 from outrider.ast_facts.models import SkipReason, TrivialityReason
 from outrider.ast_facts.triviality import TRIVIAL_FILTER_VERSION
 from outrider.llm.anthropic_provider import (
@@ -233,7 +234,7 @@ async def _run(
     provider = _StubLLMProvider()
     exam_sink = _RecordingFileExaminationSink()
     analyze_sink = _RecordingAnalyzeEventSink()
-    await analyze(
+    await run_analyze_pass_kw(
         state,
         provider=provider,  # type: ignore[arg-type]
         analyze_model="claude-sonnet-4-6",

@@ -49,6 +49,7 @@ from outrider.agent.nodes.analyze import (
     _estimate_tokens,
     _round_ended_at,
     analyze,
+    analyze_file,
 )
 from outrider.agent.nodes.finding_cap import FindingCapOverflowError
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
@@ -425,6 +426,96 @@ def deps() -> dict[str, Any]:
     }
 
 
+# Keys `analyze_file` accepts, drawn from the analyze-node deps bundle when
+# present (the worker's closure deps are a subset of the node's).
+_WORKER_DEP_KEYS = (
+    "provider",
+    "analyze_model",
+    "standard_analyze_model",
+    "import_path_resolver",
+    "file_examination_sink",
+    "analyze_event_sink",
+    "active_policy_version",
+    "total_review_budget_tokens",
+    "trivial_scope_filter_enabled",
+    "analyze_observed_skip_enforced",
+    "analyze_cache_store",
+    "cache_mode",
+    "profile_id",
+    "reasoning_enabled",
+    "profile_contract_digest",
+)
+_AGGREGATE_DEP_KEYS = (
+    "analyze_event_sink",
+    "phase_event_sink",
+    "anomaly_sink",
+    "analyze_model",
+    "standard_analyze_model",
+    "total_review_budget_tokens",
+    "active_policy_version",
+    "profile_id",
+    "reasoning_enabled",
+    "profile_contract_digest",
+)
+
+
+async def run_analyze_pass(state: ReviewState, deps: dict[str, Any]) -> dict[str, Any]:
+    """Drive one FULL analyze pass through the real three-vertex composition.
+
+    The fan-out cutover split the analyze pass across three graph
+    vertices: the `analyze` planner (Command-routing), the per-file
+    `analyze_file` Send workers, and the `analyze_aggregate` fold. This
+    helper composes them in-process exactly as the graph does — planner
+    Command → one worker call per Send (in Send order) → aggregate over
+    the merged outcomes — and returns the combined state delta in the
+    pre-cutover shape (`analysis_rounds` / `trace_candidates` /
+    `analyze_worker_outcomes`), so per-file pipeline scenarios keep
+    asserting against one pass-shaped result. The sequential pass-1
+    branch returns its Command update directly (the tail already did
+    everything).
+
+    `total_review_budget_tokens` is required in `deps` (the fixture
+    default supplies it): the planner's pools and the worker's per-file
+    cap must derive from the SAME value, exactly as build_graph closes
+    one value into both vertices.
+    """
+    from langgraph.types import Send
+
+    from outrider.agent.nodes.analyze_aggregate import analyze_aggregate
+
+    cmd = await analyze(state, **deps)
+    update: dict[str, Any] = dict(cmd.update or {})
+    goto = cmd.goto
+    if goto == "synthesize":
+        return update  # sequential pass-1 tail: already assembled + emitted
+
+    worker_deps = {k: deps[k] for k in _WORKER_DEP_KEYS if k in deps}
+    worker_deps.setdefault("total_review_budget_tokens", DEFAULT_REVIEW_BUDGET_TOKENS)
+    sends = [goto] if isinstance(goto, Send) else [s for s in goto if isinstance(s, Send)]
+    outcomes: list[Any] = []  # AnalyzeWorkerOutcome; annotation-light on purpose
+    for send in sends:
+        worker_update = await analyze_file(send.arg, **worker_deps)
+        outcomes.extend(worker_update["analyze_worker_outcomes"])
+
+    state_after = state.model_copy(
+        update={
+            "analyze_worker_outcomes": [*state.analyze_worker_outcomes, *outcomes],
+            "analyze_pass_started_at": update["analyze_pass_started_at"],
+        }
+    )
+    aggregate_deps = {k: deps[k] for k in _AGGREGATE_DEP_KEYS if k in deps}
+    aggregate_deps.setdefault("total_review_budget_tokens", DEFAULT_REVIEW_BUDGET_TOKENS)
+    aggregate_update = await analyze_aggregate(state_after, **aggregate_deps)
+    return {**update, **aggregate_update, "analyze_worker_outcomes": outcomes}
+
+
+async def run_analyze_pass_kw(state: ReviewState, **deps: Any) -> dict[str, Any]:
+    """Kwargs-form of `run_analyze_pass` for call sites that spelled the
+    analyze deps inline (the pre-cutover `await analyze(state, key=...)`
+    shape migrates by renaming the callable, kwargs untouched)."""
+    return await run_analyze_pass(state, deps)
+
+
 # ---------------------------------------------------------------------------
 # Scenario 1 — clean file admits one finding
 # ---------------------------------------------------------------------------
@@ -436,7 +527,7 @@ async def test_clean_file_admits_one_finding(deps: dict[str, Any]) -> None:
     scope unit → 1 admitted finding in AnalysisRound + 1 FindingEvent
     emitted + AnalyzeCompletedEvent shows n_findings_emitted=1."""
     state = _build_review_state()
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     # State delta shape
     assert "analysis_rounds" in result
@@ -485,7 +576,7 @@ async def test_over_cap_drops_non_gated_no_strand(
     lowest NON-gated, and STILL emits AnalyzeCompletedEvent (no strand). Emitted
     FindingEvents equal the round's findings; the dropped + accounting counters are
     recorded with the proposal equation balanced (proven by the event constructing)."""
-    monkeypatch.setattr("outrider.agent.nodes.analyze.MAX_FINDINGS_PER_ROUND", 2)
+    monkeypatch.setattr("outrider.agent.nodes.analyze_aggregate.MAX_FINDINGS_PER_ROUND", 2)
     # 4 JUDGED proposals: sql_injection=CRITICAL, hardcoded_secret=HIGH (both gated),
     # missing_input_validation=MEDIUM, unused_import=INFO (non-gated). soft_cap=2 keeps
     # the 2 gated, drops the 2 non-gated.
@@ -495,7 +586,7 @@ async def test_over_cap_drops_non_gated_no_strand(
         )
     )
     state = _build_review_state()
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     round_ = result["analysis_rounds"][0]
     assert len(round_.findings) == 2
@@ -530,13 +621,13 @@ async def test_gated_findings_never_dropped_emit_anomaly(
     """FUP-180 design call: gated (CRITICAL/HIGH) findings are NEVER dropped to fit the
     soft cap. 4 distinct gated findings with soft_cap=2 → ALL 4 kept (the round exceeds
     the soft cap), nothing dropped, and a loud GATED_FINDINGS_OVER_CAP anomaly fires."""
-    monkeypatch.setattr("outrider.agent.nodes.analyze.MAX_FINDINGS_PER_ROUND", 2)
+    monkeypatch.setattr("outrider.agent.nodes.analyze_aggregate.MAX_FINDINGS_PER_ROUND", 2)
     # 4 distinct gated types (2 CRITICAL + 2 HIGH), distinct content_hashes.
     deps["provider"] = _StubLLMProvider(
         _build_multi_finding_json(["sql_injection", "auth_bypass", "hardcoded_secret", "xss"])
     )
     state = _build_review_state()
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     round_ = result["analysis_rounds"][0]
     assert len(round_.findings) == 4  # ALL gated kept, exceeding soft_cap=2
@@ -561,15 +652,15 @@ async def test_hard_cap_fails_loud_on_gated_overflow(
     dropping a CRITICAL below HITL. soft_cap=1, hard_cap=2, 3 gated findings → analyze
     raises, and because the cap runs BEFORE emission it is a clean crash: NO FindingEvents
     and NO AnalyzeCompletedEvent (no strand)."""
-    monkeypatch.setattr("outrider.agent.nodes.analyze.MAX_FINDINGS_PER_ROUND", 1)
-    monkeypatch.setattr("outrider.agent.nodes.analyze.MAX_FINDINGS_HARD_CAP", 2)
+    monkeypatch.setattr("outrider.agent.nodes.analyze_aggregate.MAX_FINDINGS_PER_ROUND", 1)
+    monkeypatch.setattr("outrider.agent.nodes.analyze_aggregate.MAX_FINDINGS_HARD_CAP", 2)
     # 3 distinct gated findings (2 CRITICAL + 1 HIGH) — exceeds hard_cap=2.
     deps["provider"] = _StubLLMProvider(
         _build_multi_finding_json(["sql_injection", "auth_bypass", "hardcoded_secret"])
     )
     state = _build_review_state()
     with pytest.raises(FindingCapOverflowError):
-        await analyze(state, **deps)
+        await run_analyze_pass(state, deps)
 
     # Clean crash (no strand): the cap raised before any FindingEvent / completion fired.
     assert deps["analyze_event_sink"].findings == []
@@ -590,7 +681,7 @@ async def test_triage_skim_file_excluded_from_iteration(deps: dict[str, Any]) ->
     state = _build_review_state(
         triage_result=_build_triage_result(file_tiers={"src/example.py": ReviewTier.SKIM}),
     )
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     round_ = result["analysis_rounds"][0]
     assert round_.files_examined == ()
@@ -628,7 +719,7 @@ async def test_parser_rejection_lifts_to_audit_event(deps: dict[str, Any]) -> No
     )
     state = _build_review_state()
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     round_ = result["analysis_rounds"][0]
     assert len(round_.findings) == 0
@@ -663,7 +754,7 @@ async def test_budget_exhausted_skips_file_without_llm_call(deps: dict[str, Any]
     deps["total_review_budget_tokens"] = 100
     state = _build_review_state()
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     round_ = result["analysis_rounds"][0]
     assert round_.files_skipped == ("src/example.py",)
@@ -734,6 +825,13 @@ async def test_reserve_rescues_high_risk_file_under_budget_pressure(
     reserve — and a benign file at position 4 (app/d.py) starves in the SAME run,
     which is the re-prioritization the reserve exists to produce."""
     monkeypatch.setattr("outrider.agent.nodes.analyze._estimate_tokens", lambda _text: 0)
+    # Pin the planner PROXY to the same E the worker's real estimate produces
+    # under the zero-text patch (fixed overhead = MAX_TOKENS = E; the byte-
+    # variable term would break the exact-fit regime) — the reserve semantics
+    # under test are the PLAN's, funded through the real plan_file_budgets.
+    monkeypatch.setattr(
+        "outrider.agent.nodes.analyze.proxy_estimate_tokens", lambda *_a, **_k: _E_TOKENS
+    )
     deps["total_review_budget_tokens"] = _RESERVE_TEST_BUDGET
     paths = ["app/a.py", "app/b.py", "app/c.py", "app/d.py", "app/danger.py"]
     changed = (
@@ -748,7 +846,7 @@ async def test_reserve_rescues_high_risk_file_under_budget_pressure(
         triage_result=_build_triage_result(file_tiers=dict.fromkeys(paths, ReviewTier.DEEP)),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
     round_ = result["analysis_rounds"][0]
 
     # General drained by the first 3 benign files; app/d.py (benign, position 4)
@@ -767,6 +865,13 @@ async def test_benign_file_starves_where_high_risk_would_be_rescued(
     difference from the rescue case is the signature in the patch, so the flipped
     outcome (examined → skipped) isolates the reserve's effect to policy.recall."""
     monkeypatch.setattr("outrider.agent.nodes.analyze._estimate_tokens", lambda _text: 0)
+    # Pin the planner PROXY to the same E the worker's real estimate produces
+    # under the zero-text patch (fixed overhead = MAX_TOKENS = E; the byte-
+    # variable term would break the exact-fit regime) — the reserve semantics
+    # under test are the PLAN's, funded through the real plan_file_budgets.
+    monkeypatch.setattr(
+        "outrider.agent.nodes.analyze.proxy_estimate_tokens", lambda *_a, **_k: _E_TOKENS
+    )
     deps["total_review_budget_tokens"] = _RESERVE_TEST_BUDGET
     paths = ["app/a.py", "app/b.py", "app/c.py", "app/d.py", "app/benign.py"]
     changed = tuple(_build_changed_file(path=p) for p in paths)
@@ -775,7 +880,7 @@ async def test_benign_file_starves_where_high_risk_would_be_rescued(
         triage_result=_build_triage_result(file_tiers=dict.fromkeys(paths, ReviewTier.DEEP)),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
     round_ = result["analysis_rounds"][0]
 
     # Benign 5th file gets no reserve → starves where the high-risk file was rescued.
@@ -796,6 +901,13 @@ async def test_reserve_is_bounded_second_high_risk_overflows(
     exhaust the budget, so BOTH high-risk files would skip. The reserve is what
     admits the first one (`h1`); the second (`h2`) skipping is the bound."""
     monkeypatch.setattr("outrider.agent.nodes.analyze._estimate_tokens", lambda _text: 0)
+    # Pin the planner PROXY to the same E the worker's real estimate produces
+    # under the zero-text patch (fixed overhead = MAX_TOKENS = E; the byte-
+    # variable term would break the exact-fit regime) — the reserve semantics
+    # under test are the PLAN's, funded through the real plan_file_budgets.
+    monkeypatch.setattr(
+        "outrider.agent.nodes.analyze.proxy_estimate_tokens", lambda *_a, **_k: _E_TOKENS
+    )
     deps["total_review_budget_tokens"] = _RESERVE_TEST_BUDGET
     paths = ["app/a.py", "app/b.py", "app/c.py", "app/d.py", "app/h1.py", "app/h2.py"]
     changed = (
@@ -811,7 +923,7 @@ async def test_reserve_is_bounded_second_high_risk_overflows(
         triage_result=_build_triage_result(file_tiers=dict.fromkeys(paths, ReviewTier.DEEP)),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
     round_ = result["analysis_rounds"][0]
 
     assert "app/h1.py" in round_.files_examined  # reserve admits the first high-risk
@@ -834,6 +946,13 @@ async def test_reserve_not_wasted_when_high_risk_iterates_early(
     + 2 benign, skipping app/c.py too (throughput 3, reserve wasted). The
     `app/c.py examined` + `calls == 4` assertions fail under general-first."""
     monkeypatch.setattr("outrider.agent.nodes.analyze._estimate_tokens", lambda _text: 0)
+    # Pin the planner PROXY to the same E the worker's real estimate produces
+    # under the zero-text patch (fixed overhead = MAX_TOKENS = E; the byte-
+    # variable term would break the exact-fit regime) — the reserve semantics
+    # under test are the PLAN's, funded through the real plan_file_budgets.
+    monkeypatch.setattr(
+        "outrider.agent.nodes.analyze.proxy_estimate_tokens", lambda *_a, **_k: _E_TOKENS
+    )
     deps["total_review_budget_tokens"] = _RESERVE_TEST_BUDGET
     paths = ["app/danger.py", "app/a.py", "app/b.py", "app/c.py", "app/d.py"]
     changed = (
@@ -848,7 +967,7 @@ async def test_reserve_not_wasted_when_high_risk_iterates_early(
         triage_result=_build_triage_result(file_tiers=dict.fromkeys(paths, ReviewTier.DEEP)),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
     round_ = result["analysis_rounds"][0]
 
     assert "app/danger.py" in round_.files_examined  # high-risk drew the reserve
@@ -883,7 +1002,7 @@ async def test_pass0_processes_deep_tier_before_standard(deps: dict[str, Any]) -
         triage_result=_build_triage_result(file_tiers=tiers),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
     round_ = result["analysis_rounds"][0]
 
     # DEEP first (stable: deep1 before deep2), then STANDARD (stable: std1 before std2).
@@ -915,7 +1034,7 @@ async def test_cost_budget_starvation_anomaly_emitted_above_threshold(
         triage_result=_build_triage_result(file_tiers=dict.fromkeys(paths, ReviewTier.DEEP)),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
     round_ = result["analysis_rounds"][0]
     assert len(round_.files_skipped) == 4  # all four starved COST_BUDGET_EXHAUSTED
 
@@ -942,7 +1061,7 @@ async def test_no_starvation_anomaly_below_threshold(deps: dict[str, Any]) -> No
         triage_result=_build_triage_result(file_tiers=dict.fromkeys(paths, ReviewTier.DEEP)),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
     assert len(result["analysis_rounds"][0].files_skipped) == 2
     assert deps["anomaly_sink"].anomalies == []
 
@@ -993,7 +1112,7 @@ async def test_completed_event_counters_match_local_bookkeeping(deps: dict[str, 
     deps["provider"] = _StubLLMProvider(response_json)
     state = _build_review_state()
 
-    await analyze(state, **deps)
+    await run_analyze_pass(state, deps)
 
     completed = deps["analyze_event_sink"].completed[0]
     # Accounting equation
@@ -1011,7 +1130,7 @@ async def test_phase_events_bracket_the_pass(deps: dict[str, Any]) -> None:
     end fires after all per-file work + completed event."""
     state = _build_review_state()
 
-    await analyze(state, **deps)
+    await run_analyze_pass(state, deps)
 
     phase_events = deps["phase_event_sink"].events
     assert len(phase_events) == 2
@@ -1030,7 +1149,7 @@ async def test_is_eval_propagates_through_emitted_events(deps: dict[str, Any]) -
     guard `all(...)` from passing vacuously when an event list is empty."""
     state = _build_review_state(is_eval=True)
 
-    await analyze(state, **deps)
+    await run_analyze_pass(state, deps)
 
     phase_events = deps["phase_event_sink"].events
     fe_events = deps["file_examination_sink"].events
@@ -1173,7 +1292,7 @@ async def test_inflated_budget_does_not_lift_per_file_cap_past_absolute(
     deps["total_review_budget_tokens"] = 1_000_000
     state = _build_review_state()
 
-    await analyze(state, **deps)
+    await run_analyze_pass(state, deps)
 
     # Provider was called — confirms cost gate did not block.
     assert len(deps["provider"].calls) == 1
@@ -1261,7 +1380,7 @@ async def test_unregistered_language_routed_to_skip_without_calling_provider(
         ),
     )
 
-    await analyze(state, **deps)
+    await run_analyze_pass(state, deps)
 
     # No LLM call: the gate fires before content selection / parse.
     assert deps["provider"].calls == []
@@ -1302,7 +1421,7 @@ async def test_javascript_file_flows_through_analyze_judged_only(
         ),
     )
 
-    await analyze(state, **deps)
+    await run_analyze_pass(state, deps)
 
     # The LLM ran, with the scope context fenced as javascript (the
     # user-prompt language surface) and NO python fence.
@@ -1371,7 +1490,7 @@ async def test_observed_claim_on_js_file_is_rejected_at_admission(
         ),
     )
 
-    await analyze(state, **deps)
+    await run_analyze_pass(state, deps)
 
     # Nothing admitted — the observed claim cannot cite a fired query.
     assert deps["analyze_event_sink"].findings == []
@@ -1424,7 +1543,7 @@ async def test_js_file_with_catalog_match_produces_observed_finding(
         ),
     )
 
-    await analyze(state, **deps)
+    await run_analyze_pass(state, deps)
 
     # The LLM ran (signal_only: OBSERVED augments, never skips) and
     # proposed nothing; the producer finding is the only emission.
@@ -1468,7 +1587,7 @@ async def test_system_prompt_is_byte_identical_across_languages(
             reasoning="python side of the cross-language prompt pin",
         ),
     )
-    await analyze(state_py, **deps)
+    await run_analyze_pass(state_py, deps)
     [py_request] = deps["provider"].calls
     assert "```python" in py_request.user_prompt
 
@@ -1492,7 +1611,7 @@ async def test_system_prompt_is_byte_identical_across_languages(
             reasoning="js side of the cross-language prompt pin",
         ),
     )
-    await analyze(state_js, **deps)
+    await run_analyze_pass(state_js, deps)
     [js_request] = js_provider.calls
     assert "```javascript" in js_request.user_prompt
     # The load-bearing assertion: one shared, byte-identical system prefix.
@@ -1537,7 +1656,7 @@ async def test_no_changed_scope_units_when_patch_targets_outside_scopes(
     cf = _build_changed_file(content=extended_content, patch=out_of_scope_patch)
     state = _build_review_state(pr_context=_build_pr_context(changed_files=(cf,)))
 
-    await analyze(state, **deps)
+    await run_analyze_pass(state, deps)
 
     fe_events = deps["file_examination_sink"].events
     assert len(fe_events) == 1
@@ -1555,7 +1674,7 @@ async def test_no_patch_clean_parse_skips_as_no_changed_scope_units(
     cf = _build_changed_file(patch="")
     state = _build_review_state(pr_context=_build_pr_context(changed_files=(cf,)))
 
-    await analyze(state, **deps)
+    await run_analyze_pass(state, deps)
 
     fe_events = deps["file_examination_sink"].events
     assert len(fe_events) == 1
@@ -1592,7 +1711,7 @@ async def test_parser_skipped_file_skips_before_patch_lookup(
         triage_result=_build_triage_result(file_tiers={"vendor/lib.py": ReviewTier.DEEP}),
     )
 
-    result = await analyze(state, **deps)  # must NOT raise
+    result = await run_analyze_pass(state, deps)  # must NOT raise
 
     round_ = result["analysis_rounds"][0]
     assert round_.files_skipped == ("vendor/lib.py",)
@@ -1614,7 +1733,7 @@ async def test_changed_region_intersection_includes_only_intersecting_unit(
     zero for `another_function`."""
     state = _build_review_state()
 
-    await analyze(state, **deps)
+    await run_analyze_pass(state, deps)
 
     request = deps["provider"].calls[0]
     summary_names = {entry.scope_unit_name for entry in request.context_summary}
@@ -1634,7 +1753,7 @@ async def test_registry_query_firing_populates_query_match_id_list(
     cross-file stable cache prefix per the analyze-v4 repartition)."""
     state = _build_review_state()
 
-    await analyze(state, **deps)
+    await run_analyze_pass(state, deps)
 
     request = deps["provider"].calls[0]
     assert "python.function_definition" in request.user_prompt
@@ -1669,7 +1788,7 @@ async def test_observed_proposal_with_registered_query_id_admits(
     deps["provider"] = _StubLLMProvider(response_json)
     state = _build_review_state()
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     round_ = result["analysis_rounds"][0]
     assert len(round_.findings) == 1
@@ -1707,7 +1826,7 @@ async def test_observed_proposal_with_unregistered_query_id_rejects(
     deps["provider"] = _StubLLMProvider(response_json)
     state = _build_review_state()
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     round_ = result["analysis_rounds"][0]
     assert len(round_.findings) == 0
@@ -1741,7 +1860,7 @@ async def test_degraded_path_when_has_error_in_changed_scope_unit(
     cf = _build_changed_file(content=broken_content, patch=broken_patch)
     state = _build_review_state(pr_context=_build_pr_context(changed_files=(cf,)))
 
-    await analyze(state, **deps)
+    await run_analyze_pass(state, deps)
 
     fe_events = deps["file_examination_sink"].events
     # FileExaminationEvent.parse_status="degraded" per spec §7 step 3e
@@ -1790,7 +1909,7 @@ async def test_module_scope_route_cross_event_pairing_and_observed_emission(
         triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     # Cross-event pairing: clean parse status + the module-scope reason.
     fe_events = deps["file_examination_sink"].events
@@ -1843,7 +1962,7 @@ async def test_syntax_error_beats_module_candidate_and_emits_zero_observed(
         triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     request = deps["provider"].calls[0]
     assert request.degraded_mode is True
@@ -1882,7 +2001,7 @@ async def test_budget_exhausted_module_route_still_emits_the_observed_finding(
         triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     # The LLM pass skipped for budget, with the skip recorded...
     assert deps["provider"].calls == []
@@ -1934,7 +2053,7 @@ async def test_budget_exhausted_with_scopes_file_still_emits_module_finding(
         triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     assert deps["provider"].calls == []
     fe_events = deps["file_examination_sink"].events
@@ -1967,7 +2086,7 @@ async def test_patch_head_misalignment_does_not_abort_the_review(
         triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     fe_events = deps["file_examination_sink"].events
     assert len(fe_events) == 1
@@ -1996,7 +2115,7 @@ async def test_module_only_diff_without_eligible_match_still_skips(
         triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
     )
 
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     fe_events = deps["file_examination_sink"].events
     assert len(fe_events) == 1
@@ -2110,7 +2229,7 @@ async def test_aggregate_cache_tokens_keep_read_and_write_distinct(
     )
     state = _build_review_state()
 
-    await analyze(state, **deps)
+    await run_analyze_pass(state, deps)
 
     completed = deps["analyze_event_sink"].completed
     assert len(completed) == 1
@@ -2197,7 +2316,7 @@ async def test_total_cost_usd_is_decimal_sum_then_float_cast(deps: dict[str, Any
     # the rest of the dep bundle.
     deps_copy: dict[str, Any] = {**deps, "provider": provider}
 
-    await analyze(state, **deps_copy)
+    await run_analyze_pass(state, deps_copy)
 
     completed = deps_copy["analyze_event_sink"].completed
     assert len(completed) == 1
@@ -2309,7 +2428,7 @@ async def test_analyze_round_ordering_holds_under_backwards_wall_clock(
 
     monkeypatch.setattr(analyze_mod, "datetime", _BackwardsWallClock())
     state = _build_review_state()
-    result = await analyze(state, **deps)
+    result = await run_analyze_pass(state, deps)
 
     round_ = result["analysis_rounds"][0]
     # started_at is the single wall read (the later instant); ended_at is
@@ -2350,7 +2469,7 @@ async def test_analyze_routes_standard_tier_to_standard_model(deps: dict[str, An
         "standard_analyze_model": "claude-haiku-4-5",
     }
 
-    await analyze(state, **routed_deps)
+    await run_analyze_pass(state, routed_deps)
 
     # Two LLM calls, routed by tier — iteration order is `changed_files` order.
     assert [c.model for c in provider.calls] == ["claude-sonnet-4-6", "claude-haiku-4-5"]
@@ -2374,7 +2493,7 @@ async def test_analyze_standard_model_none_when_no_standard_file(deps: dict[str,
         "standard_analyze_model": "claude-haiku-4-5",
     }
 
-    await analyze(state, **routed_deps)
+    await run_analyze_pass(state, routed_deps)
 
     assert provider.calls[0].model == "claude-sonnet-4-6"  # DEEP file on analyze_model
     event = routed_deps["analyze_event_sink"].completed[0]
@@ -2403,7 +2522,7 @@ async def test_analyze_standard_model_recorded_even_when_equals_deep_inert(
         "standard_analyze_model": "claude-sonnet-4-6",
     }
 
-    await analyze(state, **routed_deps)
+    await run_analyze_pass(state, routed_deps)
 
     assert provider.calls[0].model == "claude-sonnet-4-6"  # STANDARD routed (== DEEP)
     event = routed_deps["analyze_event_sink"].completed[0]
@@ -2415,12 +2534,14 @@ async def test_analyze_standard_model_recorded_even_when_equals_deep_inert(
 async def test_analyze_completed_event_carries_host_identity_triad(deps: dict[str, Any]) -> None:
     """The triad closed in at build_graph (DECISIONS.md#056) rides the AnalyzeCompletedEvent."""
     state = _build_review_state()
-    await analyze(
+    await run_analyze_pass(
         state,
-        **deps,
-        profile_id="baseten",
-        reasoning_enabled=False,
-        profile_contract_digest="a" * 64,
+        {
+            **deps,
+            "profile_id": "baseten",
+            "reasoning_enabled": False,
+            "profile_contract_digest": "a" * 64,
+        },
     )
     completed = deps["analyze_event_sink"].completed[0]
     assert completed.profile_id == "baseten"

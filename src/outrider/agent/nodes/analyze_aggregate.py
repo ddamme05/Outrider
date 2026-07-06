@@ -37,26 +37,42 @@ finding via `model_validate` round-trip (the validator-safe clone —
 live object is shared between `analyze_worker_outcomes` and the round.
 """
 
-from dataclasses import dataclass
-from decimal import Decimal
+from __future__ import annotations
 
-from pydantic import AwareDatetime
+import logging
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from outrider.agent.nodes.finding_cap import cap_findings_by_severity
+from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.models import SkipReason
-from outrider.policy.canonical import compute_round_id
+from outrider.audit.events import AnalyzeCompletedEvent, ReviewPhaseEvent
+from outrider.llm.pricing import PRICING_VERSION
+from outrider.policy.canonical import compute_phase_id, compute_round_id
+from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas.analysis_round import (
     MAX_FINDINGS_HARD_CAP,
     MAX_FINDINGS_PER_ROUND,
     AnalysisRound,
 )
-from outrider.schemas.analyze_worker import AnalyzeWorkerOutcome
-from outrider.schemas.observed_subsumption import ObservedSubsumedMatch
 from outrider.schemas.review_finding import ReviewFinding
-from outrider.schemas.trace_candidate import TraceCandidate
 from outrider.schemas.triage_result import ReviewTier
 
-__all__ = ["AggregateFold", "FoldInputError", "fold_worker_outcomes"]
+if TYPE_CHECKING:
+    from pydantic import AwareDatetime
+
+    from outrider.anomaly.sinks import AnomalySink
+    from outrider.audit.sinks import AnalyzeEventSink, PhaseEventSink
+    from outrider.schemas import ReviewState
+    from outrider.schemas.analyze_worker import AnalyzeWorkerOutcome
+    from outrider.schemas.observed_subsumption import ObservedSubsumedMatch
+    from outrider.schemas.trace_candidate import TraceCandidate
+
+logger = logging.getLogger(__name__)
+
+__all__ = ["AggregateFold", "FoldInputError", "analyze_aggregate", "fold_worker_outcomes"]
 
 
 class FoldInputError(ValueError):
@@ -264,3 +280,161 @@ def fold_worker_outcomes(
         gated_overflow=len(kept) > MAX_FINDINGS_PER_ROUND,
         standard_tier_llm_used=standard_tier_llm_used,
     )
+
+
+async def analyze_aggregate(
+    state: ReviewState,
+    *,
+    analyze_event_sink: AnalyzeEventSink,
+    phase_event_sink: PhaseEventSink,
+    anomaly_sink: AnomalySink,
+    analyze_model: str,
+    standard_analyze_model: str,
+    total_review_budget_tokens: int,
+    active_policy_version: str = ACTIVE_POLICY_VERSION,
+    profile_id: str | None = None,
+    reasoning_enabled: bool | None = None,
+    profile_contract_digest: str | None = None,
+) -> dict[str, object]:
+    """The pass-0 aggregate vertex: fold worker outcomes into the round.
+
+    Runs once per pass-0 superstep, after every `analyze_file` worker
+    completes (or directly from the planner on the zero-worker route).
+    Folds this pass's slot-guarded outcomes and turns the pure
+    `AggregateFold` into the pass's side effects, mirroring the
+    sequential tail's ORDER exactly: starvation anomaly → gated-overflow
+    anomaly → one `FindingEvent` per kept finding → the accounting-
+    validated `AnalyzeCompletedEvent` → the phase END marker (the same
+    `phase_id` recipe the planner's start marker used — the pass's
+    envelope spans the three physical vertices under one logical
+    `node_id="analyze"`, per `DECISIONS.md#064`).
+
+    `ended_at` is clamped to `max(started_at, now)`: the pass spans
+    vertices (and possibly processes, across a checkpoint resume), so
+    the sequential loop's single-process monotonic anchor (FUP-141)
+    cannot apply — the clamp preserves the round's ordering invariant
+    under a backwards clock jump, trading exact duration for it.
+    """
+    pass_index = len(state.analysis_rounds)
+    outcomes = tuple(o for o in state.analyze_worker_outcomes if o.pass_index == pass_index)
+    started_at = state.analyze_pass_started_at
+    if started_at is None:
+        raise RuntimeError(
+            "analyze_aggregate: state.analyze_pass_started_at is unset — the "
+            "planner step writes it before any Send; reaching the aggregate "
+            "without it is a graph-wiring bug"
+        )
+    ended_at = max(started_at, datetime.now(UTC))
+
+    fold = fold_worker_outcomes(
+        outcomes,
+        pass_index=pass_index,
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+
+    # Construct the accounting-validated event BEFORE any side effect
+    # (the sequential strand-prevention contract: a validator raise
+    # crashes cleanly with nothing emitted).
+    completed_event = AnalyzeCompletedEvent(
+        review_id=state.review_id,
+        is_eval=state.is_eval,
+        pass_index=pass_index,
+        n_files_analyzed=fold.n_files_analyzed,
+        n_files_skipped=fold.n_files_skipped,
+        n_llm_calls=fold.n_llm_calls,
+        n_proposals_seen=fold.n_proposals_seen,
+        n_findings_emitted=fold.n_findings_emitted,
+        n_findings_served=fold.n_findings_served,
+        n_findings_observed=fold.n_findings_observed,
+        n_proposals_superseded_by_observed=fold.n_proposals_superseded_by_observed,
+        n_proposals_dropped=fold.n_proposals_dropped,
+        n_findings_dropped_over_cap=fold.n_findings_dropped_over_cap,
+        subsumed_matches=fold.subsumed_matches,
+        n_proposals_rejected=fold.n_proposals_rejected,
+        n_responses_rejected=fold.n_responses_rejected,
+        n_trace_candidates_emitted=fold.n_trace_candidates_emitted,
+        n_trace_candidates_dropped_malformed=fold.n_trace_candidates_dropped_malformed,
+        total_input_tokens=fold.total_input_tokens,
+        total_cache_read_tokens=fold.total_cache_read_tokens,
+        total_cache_write_tokens=fold.total_cache_write_tokens,
+        total_output_tokens=fold.total_output_tokens,
+        # Decimal-summed across outcomes, cast to float ONCE (the
+        # sequential FP discipline).
+        total_cost_usd=float(fold.total_cost),
+        pricing_version=PRICING_VERSION,
+        policy_version=active_policy_version,
+        analyze_model=analyze_model,
+        standard_analyze_model=(standard_analyze_model if fold.standard_tier_llm_used else None),
+        profile_id=profile_id,
+        reasoning_enabled=reasoning_enabled,
+        profile_contract_digest=profile_contract_digest,
+    )
+
+    # Side effects, in the sequential tail's order. Both anomalies are
+    # best-effort — observability must never fail the review. The
+    # threshold import is function-scoped so the FOLD stays import-light
+    # for direct structural testing (this node only runs in graph
+    # context, where analyze is imported anyway).
+    from outrider.agent.nodes.analyze import COST_BUDGET_STARVATION_THRESHOLD  # noqa: PLC0415
+
+    if fold.budget_skip_count >= COST_BUDGET_STARVATION_THRESHOLD:
+        try:
+            await anomaly_sink.emit_anomaly(
+                review_id=state.review_id,
+                rule_name=AnomalyRuleName.COST_BUDGET_STARVATION,
+                severity=AnomalySeverity.MEDIUM,
+                details={
+                    "budget_skipped_count": fold.budget_skip_count,
+                    "total_review_budget_tokens": total_review_budget_tokens,
+                    "pass_index": pass_index,
+                },
+                is_eval=state.is_eval,
+            )
+        except Exception:
+            logger.exception("analyze_cost_budget_starvation_anomaly_emit_failed")
+    if fold.gated_overflow:
+        try:
+            await anomaly_sink.emit_anomaly(
+                review_id=state.review_id,
+                rule_name=AnomalyRuleName.GATED_FINDINGS_OVER_CAP,
+                severity=AnomalySeverity.HIGH,
+                details={
+                    "n_kept": len(fold.round.findings),
+                    "soft_cap": MAX_FINDINGS_PER_ROUND,
+                    "pass_index": pass_index,
+                },
+                is_eval=state.is_eval,
+            )
+        except Exception:
+            logger.exception("analyze_gated_findings_over_cap_anomaly_emit_failed")
+
+    # One FindingEvent per kept finding — the emitted set equals the
+    # round by construction (fold output IS the round).
+    for finding in fold.round.findings:
+        await analyze_event_sink.emit_finding(finding, is_eval=state.is_eval)
+
+    await analyze_event_sink.emit_analyze_completed(completed_event)
+
+    # Phase END: same phase_id recipe as the planner's start marker —
+    # pass_index here equals the planner's (the round merges AFTER this
+    # node returns), so the pair closes the same envelope.
+    await phase_event_sink.emit_phase(
+        ReviewPhaseEvent(
+            review_id=state.review_id,
+            phase_id=compute_phase_id(
+                review_id=str(state.review_id),
+                node_id="analyze",
+                attempt_key=f"analyze-pass-{pass_index}",
+            ),
+            node_id="analyze",
+            marker="end",
+            is_eval=state.is_eval,
+            phase_key=None,
+        )
+    )
+
+    return {
+        "analysis_rounds": [fold.round],
+        "trace_candidates": list(fold.trace_candidates),
+    }

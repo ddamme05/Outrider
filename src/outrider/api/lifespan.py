@@ -830,6 +830,7 @@ def build_lifespan(
                 hitl_config=hitl_config,
                 patch_config=patch_config,
                 total_review_budget_tokens=analyze_config.review_budget_tokens,
+                analyze_max_concurrency=analyze_config.max_concurrency,
                 checkpointer=checkpointer,
                 publisher=GitHubKitPublisher(),
                 import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
