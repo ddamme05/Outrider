@@ -51,10 +51,15 @@ class LiveAuthOutcome(StrEnum):
     differentiated caller behavior — the caller branches on `LiveAuthResult.authorized`."""
 
     AUTHORIZED = "authorized"
+    # SUSPENDED / UNINSTALLED are only produced by the GET install-check, where the
+    # pinned 2026-03-10 REST contract makes them reliable (`suspended_at` body field /
+    # 404). The token-mint step never claims a specific cause — see UNCERTAIN.
     SUSPENDED = "suspended"
     UNINSTALLED = "uninstalled"
-    REPO_INACCESSIBLE = "repo_inaccessible"  # install active, repo not covered (422)
-    UNCERTAIN = "uncertain"  # network / 401 / 429 / 5xx / unparseable → fail closed
+    # Fail-closed catch-all: any token-mint failure (the contract does not reliably
+    # attribute 403/404/422/401/429/5xx to a cause), a network error, or an unparseable
+    # install response. Authorization is denied; we simply do not over-label the reason.
+    UNCERTAIN = "uncertain"
 
 
 @dataclass(frozen=True)
@@ -144,10 +149,14 @@ async def check_installation_authorization(
         )
 
     # Check 2 — repo accessible. Mint a token scoped to this repo by IMMUTABLE id; 201 means
-    # the install still covers it. We discard the minted token — the mint attempt IS the
-    # probe. Only a 422 (repo not covered) is a genuine "repo inaccessible"; 403 → suspended,
-    # 404 → uninstalled; 401 (our JWT) / 429 (rate limit) / 5xx / network are UNCERTAINTY,
-    # not repo-denial (they still fail closed, but the telemetry must not lie).
+    # the install still covers it. We discard the minted token — the mint attempt IS the probe.
+    # (Publish, per #065, needs the token itself; it mints+consumes its own via a separate
+    # wrapper op — slice 3 — because this probe is authorize-only.) The GET above already
+    # settled existence + suspension reliably; a mint failure here is a non-affirmative repo
+    # probe, but the pinned 2026-03-10 REST contract does NOT reliably attribute a cause to
+    # 403 ("Forbidden"), 404, 422 ("Validation failed or spammed"), 401, 429, or 5xx — so we
+    # do not claim suspended / repo-inaccessible. Any failure fails closed as UNCERTAIN; the
+    # status is in `detail` for ops.
     try:
         await app_client.arequest(
             "POST",
@@ -156,22 +165,11 @@ async def check_installation_authorization(
             headers=_API_VERSION_HEADER,
         )
     except Exception as exc:
-        status = _status_code(exc)
-        if status == 403:
-            outcome = LiveAuthOutcome.SUSPENDED
-        elif status == 404:
-            outcome = LiveAuthOutcome.UNINSTALLED
-        elif status == 422:
-            outcome = LiveAuthOutcome.REPO_INACCESSIBLE
-        else:
-            # 401 (our JWT), 429 (rate limit), 5xx, None (network), any other code → we
-            # cannot conclude the repo is inaccessible. Uncertainty → fail closed.
-            outcome = LiveAuthOutcome.UNCERTAIN
         return _denied(
-            outcome,
+            LiveAuthOutcome.UNCERTAIN,
             installation_id,
             repo_id,
-            f"repo-scoped token mint failed: status={status}",
+            f"repo-scoped token mint failed: status={_status_code(exc)}",
         )
 
     logger.info(
