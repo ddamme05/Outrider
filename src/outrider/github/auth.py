@@ -146,13 +146,15 @@ def make_app_client(settings: GitHubAppSettings) -> AppGitHubClient:
     window to minimize). Same explicit `_GITHUB_CLIENT_TIMEOUT` as the installation
     client so both SDK surfaces behave consistently under upstream stalls.
 
-    LIFECYCLE — the caller OWNS the returned client's async lifecycle. Because it is
-    long-lived and shared (one per deployment), `lifespan` MUST enter it into its
-    `AsyncExitStack` (`await stack.enter_async_context(make_app_client(settings))`) so
-    githubkit's underlying httpx client is closed at shutdown rather than leaked — an
-    un-entered shared client risks per-request client churn / a resource-leak warning.
-    (The per-installation client is fresh per call and short-lived, so it does not need
-    this; the shared app client does.)
+    LIFECYCLE — the returned `GitHub` is an async context manager (no `aclose`). Callers
+    MUST use it under `async with` so its underlying httpx client is created once, reused
+    across the calls in the block, and closed on exit — githubkit's reusing-client guidance
+    (0.15.3) warns the un-entered path creates a NEW client per request and that repeatedly
+    doing so "may lead to memory leaks". The #065 authorizer (`github/authz.py`) constructs a
+    fresh client here per authorization and `async with`-scopes it for the GET + POST pair
+    (one client, closed together). A githubkit context manager cannot be entered twice, so a
+    fresh client per authorization — not a shared long-lived one — is the correct shape; the
+    PEM read here is the same brief-window pattern as the per-installation client.
     """
     return GitHub(
         AppAuthStrategy(
