@@ -136,15 +136,17 @@ def make_app_client(settings: GitHubAppSettings) -> AppGitHubClient:
     Unlike `make_installation_client_factory` (a fresh per-installation client so
     short-lived installation tokens stay tenant-isolated), the App-JWT client carries
     NO per-installation token — it is the single app identity (one app, one private key
-    per deployment, per `#066`). So it is constructed ONCE at startup and reused across
-    installations; githubkit mints/refreshes the App-JWT internally. It authorizes the
-    App-level endpoints the live check calls (`GET /app/installations/{id}`,
-    `POST /app/installations/{id}/access_tokens`).
+    per deployment, per `#066`); githubkit mints/refreshes the App-JWT internally. It
+    authorizes the App-level endpoints the live check calls (`GET /app/installations/{id}`,
+    `POST /app/installations/{id}/access_tokens`). The #065 authorizer constructs a fresh
+    client PER AUTHORIZATION — NOT once at startup — and `async with`-scopes it; see
+    LIFECYCLE below for why a shared long-lived client is not usable here.
 
-    Reads `settings.app_private_key.get_secret_value()` once here (the client is
-    long-lived, so unlike the per-call installation factory there is no per-call PEM
-    window to minimize). Same explicit `_GITHUB_CLIENT_TIMEOUT` as the installation
-    client so both SDK surfaces behave consistently under upstream stalls.
+    Reads `settings.app_private_key.get_secret_value()` once per construction; because the
+    client is fresh per authorization, that is a brief per-review PEM window — the same
+    pattern as the per-installation client factory, not a long-lived exposure. Same explicit
+    `_GITHUB_CLIENT_TIMEOUT` as the installation client so both SDK surfaces behave
+    consistently under upstream stalls.
 
     LIFECYCLE — the returned `GitHub` is an async context manager (no `aclose`). Callers
     MUST use it under `async with` so its underlying httpx client is created once, reused
