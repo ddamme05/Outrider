@@ -134,9 +134,11 @@ async def test_created_is_idempotent_under_redelivery(migrated_db: str) -> None:
         await engine.dispose()
 
 
-async def test_created_clears_tombstone_optimistic_restore(migrated_db: str) -> None:
-    """A `created` on a currently-tombstoned install clears the tombstone (optimistic restore;
-    the janitor re-tombstones a still-gone install — DECISIONS.md#012/#065)."""
+async def test_created_does_not_clear_existing_tombstone(migrated_db: str) -> None:
+    """A `created` on a currently-tombstoned install does NOT clear the tombstone: a redelivered
+    OLD `created` after a `deleted` is indistinguishable from a real reinstall, so clearing blindly
+    would cancel the #012 purge. Restore is the janitor's live-confirmed path. Non-lifecycle fields
+    ARE still refreshed (app_slug 'old' -> 'test-app')."""
     engine = create_async_engine(migrated_db)
     sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
     try:
@@ -162,9 +164,31 @@ async def test_created_clears_tombstone_optimistic_restore(migrated_db: str) -> 
                     {"id": _INSTALLATION_ID},
                 )
             ).one()
-        assert row.tombstoned_at is None
-        assert row.purge_after_at is None
-        assert row.app_slug == "test-app"  # non-lifecycle fields refreshed too
+        assert row.tombstoned_at is not None  # tombstone PRESERVED (no blind restore)
+        assert row.purge_after_at is not None
+        assert row.app_slug == "test-app"  # non-lifecycle fields still refreshed
+    finally:
+        await engine.dispose()
+
+
+async def test_repositories_added_unknown_install_no_op(migrated_db: str) -> None:
+    """`installation_repositories.added` for an install with no cache row NO-OPs (2xx `ignored`)
+    rather than FK-violating on the membership INSERT — a lost / out-of-order `created` must not
+    5xx the webhook (the cache is best-effort under #065; the janitor / a later `created`
+    reconciles)."""
+    engine = create_async_engine(migrated_db)
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session, session.begin():
+            result = await handle_installation_repositories_event(
+                _repos_event("added", added=(_REPO,)), session
+            )
+        assert result == {"status": "ignored", "reason": "unknown_installation"}
+        async with engine.connect() as conn:
+            count = (
+                await conn.execute(text("SELECT COUNT(*) FROM installation_repositories"))
+            ).scalar_one()
+        assert count == 0
     finally:
         await engine.dispose()
 

@@ -18,10 +18,13 @@ no-op so GitHub doesn't retry) rather than pinned in the schema `Literal`, per t
 round-12 finding (only `created` / `installation_repositories.added` are doc-pinned).
 
 Deferred to the reconcile janitor (not this slice): the `all->selected` transition reconcile
-(non-load-bearing under `#065`'s live check — FUP-225 note) and live-confirmed restore. On
-`installation.created` the tombstone is cleared OPTIMISTICALLY (a reinstall reactivates); the
-janitor is the `#012` restore backstop — it re-tombstones any install GitHub no longer lists in
-`GET /app/installations`, so a redelivered stale `created` cannot permanently cancel a purge.
+(non-load-bearing under `#065`'s live check — FUP-227) and the LIVE-confirmed RESTORE. A `created`
+here deliberately does NOT clear an existing tombstone — a redelivered OLD `created` after a
+`deleted` is indistinguishable from a real reinstall, and clearing blindly would cancel a `#012`
+purge (spec round-12 finding). Restore happens ONLY through the janitor's `GET /app/installations`
+App-JWT confirmation (clears the tombstone for installs GitHub still lists). Until the janitor
+lands, a reinstall-within-grace does not auto-reactivate — but retention stays correct, which is
+the safe failure direction.
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from outrider.db.models.installations import Installation, InstallationRepository
@@ -99,6 +102,19 @@ async def handle_installation_repositories_event(
     if action not in _INSTALLATION_REPO_ACTIONS:
         return _IGNORED_ACTION
     inst_id = payload.installation.id
+    # #065 cache-hint: if the parent install row is unknown (a lost / out-of-order `created`,
+    # or one already hard-deleted), NO-OP rather than FK-violating on the membership INSERT —
+    # a 5xx here would make GitHub retry a hint that can never land. The cache is best-effort;
+    # a later `created` or the janitor reconciles it, and the authority is the live check anyway.
+    parent = await session.execute(
+        select(Installation.installation_id).where(Installation.installation_id == inst_id)
+    )
+    if parent.first() is None:
+        logger.warning(
+            "installation_repositories event for unknown installation; no-op",
+            extra={"installation_id": inst_id, "action": action},
+        )
+        return {"status": "ignored", "reason": "unknown_installation"}
     # Every event re-persists repository_selection (spec line 96) — a no-op if unchanged.
     await session.execute(
         update(Installation)
@@ -119,8 +135,13 @@ async def _upsert_installation(
     inst: WebhookInstallationDetail,
     repositories: tuple[InstallationRepositoryRef, ...],
 ) -> None:
-    """Upsert the `installations` cache row on `created` and OPTIMISTICALLY clear any tombstone
-    (a reinstall reactivates; the janitor re-tombstones a still-gone install — see module doc).
+    """Upsert the `installations` cache row on `created`. Does NOT touch the tombstone: per the
+    spec's round-12 restore finding, a redelivered OLD `created` (from before an uninstall) is
+    indistinguishable from a real reinstall, so blindly clearing `tombstoned_at` would silently
+    CANCEL a legitimate `#012` retention purge. Restore is therefore deferred to the janitor's
+    LIVE App-JWT-confirmed path (clears the tombstone only for installs GitHub still lists). A
+    FRESH install inserts with `tombstoned_at = NULL` (column default); an EXISTING tombstone is
+    left untouched here (the non-lifecycle fields are still refreshed).
 
     For a `selected` install, seed `installation_repositories` from the payload's granted repos
     (`all` never enumerates the unbounded list — the gate reads the install itself)."""
@@ -133,12 +154,14 @@ async def _upsert_installation(
         "permissions_at_install": inst.permissions,
         "repository_selection": inst.repository_selection,
         "suspended_at": inst.suspended_at,
-        "tombstoned_at": None,
-        "purge_after_at": None,
     }
     stmt = pg_insert(Installation).values(**values)
     stmt = stmt.on_conflict_do_update(
         index_elements=[Installation.installation_id],
+        # Refresh the non-lifecycle cache fields only. `tombstoned_at` / `purge_after_at` are
+        # deliberately NOT in the set: a `created` must not clear a tombstone (that is the
+        # janitor's live-confirmed restore — see docstring), or a stale redelivered `created`
+        # would cancel a retention purge.
         set_={
             "app_slug": stmt.excluded.app_slug,
             "account_id": stmt.excluded.account_id,
@@ -147,11 +170,6 @@ async def _upsert_installation(
             "permissions_at_install": stmt.excluded.permissions_at_install,
             "repository_selection": stmt.excluded.repository_selection,
             "suspended_at": stmt.excluded.suspended_at,
-            # Optimistic restore: a reinstall clears the tombstone. The janitor is the #012
-            # backstop (re-tombstones an install GitHub no longer lists), so a redelivered
-            # stale `created` cannot permanently cancel a legitimate retention purge.
-            "tombstoned_at": None,
-            "purge_after_at": None,
         },
     )
     await session.execute(stmt)
