@@ -302,3 +302,44 @@ def make_installation_authorizer(settings: GitHubAppSettings) -> InstallationAut
         )
 
     return authorize
+
+
+# `GET /app/installations` list-page size (GitHub caps per_page at 100) + a safety cap on pages
+# for the reconcile janitor. A self-host serves one org's installs (#066), so pagination is
+# defensive — a real deployment has a handful of installs, well under a single page.
+_LIST_PAGE_SIZE: Final[int] = 100
+_MAX_LIST_PAGES: Final[int] = 100
+
+
+async def list_installation_ids(settings: GitHubAppSettings) -> set[int]:
+    """Return the installation ids GitHub currently lists for this App (App-JWT
+    `GET /app/installations`, paginated). The reconcile janitor (`#065` / `#012` / `#067`) uses
+    this as the AUTHORITY to catch MISSED lifecycle events: a local install absent from this set is
+    a missed `installation.deleted` (→ tombstone); a tombstoned local install present here is a
+    live-confirmed reinstall (→ clear the tombstone).
+
+    RAISES on any failure (network error, non-2xx, non-list body, missing `id`, page-cap exceeded)
+    — the janitor MUST NOT reconcile against a partial or empty-by-error list, or it would wrongly
+    tombstone live installs. A fresh App-JWT client is `async with`-scoped for the paginated GET
+    (githubkit reusing-client guidance, same shape as `make_installation_authorizer`)."""
+    ids: set[int] = set()
+    async with make_app_client(settings) as app_client:
+        for page in range(1, _MAX_LIST_PAGES + 1):
+            resp = await app_client.arequest(
+                "GET",
+                f"/app/installations?per_page={_LIST_PAGE_SIZE}&page={page}",
+                headers=_API_VERSION_HEADER,
+            )
+            batch = json.loads(resp.text)
+            if not isinstance(batch, list):
+                raise TypeError(
+                    f"GET /app/installations returned {type(batch).__name__}, expected list"
+                )
+            for item in batch:
+                ids.add(int(item["id"]))
+            if len(batch) < _LIST_PAGE_SIZE:
+                return ids
+    raise RuntimeError(
+        f"GET /app/installations exceeded the {_MAX_LIST_PAGES}-page cap; refusing to "
+        "reconcile against a truncated list"
+    )
