@@ -438,6 +438,33 @@ def test_unsupported_pr_action_returns_2xx_ignored() -> None:
     assert response.json() == {"status": "ignored", "reason": "action"}
 
 
+def test_ready_for_review_is_in_allowlist() -> None:
+    """Arc B2: `ready_for_review` (draft → ready) triggers a review."""
+    from outrider.api.webhooks.router import _PULL_REQUEST_ACTION_ALLOWLIST
+
+    assert "ready_for_review" in _PULL_REQUEST_ACTION_ALLOWLIST
+
+
+def test_draft_pull_request_returns_2xx_ignored() -> None:
+    """Arc B2: a draft PR (allowed action, `draft=true`) is a 2xx no-op BEFORE any
+    DB hit — the review runs later when `ready_for_review` fires. The session stub
+    errors if hit, so this also proves the skip is pre-DB."""
+    client = TestClient(_make_app())
+    payload = _valid_pr_opened_payload()
+    payload["pull_request"]["draft"] = True
+    body = json.dumps(payload).encode()
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": _sign(_SECRET, body),
+            "X-GitHub-Event": "pull_request",
+        },
+    )
+    assert response.status_code == 202
+    assert response.json() == {"status": "ignored", "reason": "draft"}
+
+
 def test_malformed_payload_returns_400() -> None:
     """Valid signature, valid event/action, but the JSON shape doesn't
     match `PullRequestEventPayload` → 400."""

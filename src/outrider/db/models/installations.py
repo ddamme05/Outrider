@@ -65,6 +65,17 @@ class Installation(Base):
     tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     purge_after_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Arc B2 / DECISIONS.md#065: suspension is a reversible pause (#012 — never a
+    # purge). Set on `installation.suspend`, cleared on `unsuspend`. The
+    # active-membership gate excludes suspended installs (`suspended_at IS NULL`).
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # `all` | `selected` (GitHub install repository_selection). `selected` requires a
+    # per-repo `installation_repositories` row (fail-closed); `all` authorizes at the
+    # install level. Server-default `selected` so any pre-B2 row is fail-closed.
+    repository_selection: Mapped[str] = mapped_column(
+        Text, server_default=text("'selected'"), nullable=False
+    )
+
     # Per-installation Slack config (dashboard-in-Slack, commit 6). All nullable —
     # Slack is opt-in per install; an install that never connects Slack leaves them
     # NULL. The bot token is stored ENCRYPTED at rest, never plaintext (see

@@ -80,7 +80,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-_PULL_REQUEST_ACTION_ALLOWLIST: frozenset[str] = frozenset({"opened", "synchronize", "reopened"})
+# Arc B2 autorun: `ready_for_review` fires when a draft PR becomes ready — the
+# trigger to review a PR that opened as a draft. Draft PRs themselves are skipped
+# by the draft-check below (a draft `opened`/`synchronize` is a 2xx no-op).
+_PULL_REQUEST_ACTION_ALLOWLIST: frozenset[str] = frozenset(
+    {"opened", "synchronize", "reopened", "ready_for_review"}
+)
 
 # Hard cap on webhook body size at the FastAPI/ASGI boundary. GitHub's
 # real `pull_request` payloads are well under 1 MiB (the heaviest cases
@@ -276,6 +281,16 @@ async def receive_pull_request_webhook(
         )
         return {"status": "ignored", "reason": "action"}
 
+    # Step 6b (Arc B2 autorun): skip DRAFT PRs. A draft `opened`/`synchronize` is
+    # a 2xx no-op — the review runs when `ready_for_review` fires (draft → ready),
+    # at which point `pull_request.draft` is False.
+    if payload.pull_request.draft:
+        logger.info(
+            "webhook ignored: draft pull request",
+            extra={"action": payload.action, "x_github_delivery": x_github_delivery},
+        )
+        return {"status": "ignored", "reason": "draft"}
+
     # Step 7: active-membership SELECT BEFORE the reviews INSERT — otherwise
     # the FK on reviews.installation_id ON DELETE RESTRICT produces an
     # IntegrityError indistinguishable from the natural-key conflict.
@@ -284,20 +299,35 @@ async def receive_pull_request_webhook(
     repo_id = payload.repository.id
 
     async with session_factory() as session:
-        membership_row = await session.execute(
-            select(InstallationRepository, Installation)
-            .join(
-                Installation,
-                Installation.installation_id == InstallationRepository.installation_id,
+        # Active install: exists, not tombstoned (#012), not suspended (Arc B2).
+        install = (
+            await session.execute(
+                select(Installation).where(
+                    Installation.installation_id == installation_id,
+                    Installation.tombstoned_at.is_(None),
+                    Installation.suspended_at.is_(None),
+                )
             )
-            .where(
-                InstallationRepository.installation_id == installation_id,
-                InstallationRepository.repo_id == repo_id,
-                InstallationRepository.removed_at.is_(None),
-                Installation.tombstoned_at.is_(None),
-            )
+        ).scalar_one_or_none()
+        # Arc B2 repository_selection gate: `all` installs authorize at the install
+        # level (no per-repo row); `selected` installs require the active per-repo
+        # membership row. Absent/tombstoned/suspended install → not authorized.
+        # (Per DECISIONS.md#065 the cache is the EARLY-OUT here; the authoritative
+        # live GitHub auth check is the intake node's first step — tracked B2 work.)
+        authorized = install is not None and (
+            install.repository_selection == "all"
+            or (
+                await session.execute(
+                    select(InstallationRepository.id).where(
+                        InstallationRepository.installation_id == installation_id,
+                        InstallationRepository.repo_id == repo_id,
+                        InstallationRepository.removed_at.is_(None),
+                    )
+                )
+            ).first()
+            is not None
         )
-        if membership_row.first() is None:
+        if not authorized:
             logger.warning(
                 "webhook rejected: unknown or inactive installation+repo membership",
                 extra={

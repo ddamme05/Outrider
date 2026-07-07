@@ -245,6 +245,10 @@ class WebhookPullRequest(BaseModel):
     base: PullRequestRef
     additions: int = Field(ge=0)
     deletions: int = Field(ge=0)
+    # Arc B2 autorun: draft PRs are skipped (2xx no-op); the review runs when the
+    # `ready_for_review` action fires (draft → ready). Default False so a payload
+    # without the field (defensive) is treated as ready.
+    draft: bool = Field(default=False)
 
 
 class PullRequestEventPayload(BaseModel):
