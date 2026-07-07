@@ -1,4 +1,5 @@
 # See DECISIONS.md#012-data-retention-ttls-configurable-purge-on-installationdeleted
+# See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
 """Retention sweep — purge content past its TTL.
 
 Per DECISIONS.md#012/#014: retention purge applies to the four content

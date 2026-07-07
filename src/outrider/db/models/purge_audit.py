@@ -1,4 +1,5 @@
 # See DECISIONS.md#012-data-retention-ttls-configurable-purge-on-installationdeleted
+# See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
 """PURGE_AUDIT.
 
 Append-only forever per #012, alongside `audit_events`. The append-only trigger
