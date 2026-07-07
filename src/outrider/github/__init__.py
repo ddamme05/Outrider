@@ -29,7 +29,18 @@ Settings live in `outrider.github.config.GitHubAppSettings`.
 # `githubkit.AppInstallationAuthStrategy`"), the alias is defined in
 # auth.py and re-exported here for ergonomic import from
 # `outrider.github`.
-from outrider.github.auth import InstallationGitHubClient
+from outrider.github.auth import (
+    AppGitHubClient,
+    InstallationGitHubClient,
+    make_app_client,
+)
+from outrider.github.authz import (
+    InstallationAuthorizer,
+    LiveAuthOutcome,
+    LiveAuthResult,
+    check_installation_authorization,
+    make_installation_authorizer,
+)
 from outrider.github.publisher import (
     GitHubKitPublisher,
     GitHubPublisher,
@@ -39,10 +50,17 @@ from outrider.github.publisher import (
 )
 
 __all__ = [
+    "AppGitHubClient",
     "GitHubKitPublisher",
     "GitHubPublishError",
     "GitHubPublisher",
     "GitHubReviewValidationError",
     "GitHubSecondaryRateLimitError",
+    "InstallationAuthorizer",
     "InstallationGitHubClient",
+    "LiveAuthOutcome",
+    "LiveAuthResult",
+    "check_installation_authorization",
+    "make_app_client",
+    "make_installation_authorizer",
 ]

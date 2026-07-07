@@ -1,4 +1,5 @@
 # Vendor wrapper for githubkit's GitHub App installation authentication.
+# See DECISIONS.md#065-authorization-is-a-live-github-check-the-local-install-db-is-a-cache
 """Thin wrapper over `githubkit.AppInstallationAuthStrategy`.
 
 Only file in the codebase that imports `githubkit.AppInstallationAuthStrategy`
@@ -32,12 +33,14 @@ from collections.abc import Callable
 from typing import Final
 
 import httpx
-from githubkit import AppInstallationAuthStrategy, GitHub
+from githubkit import AppAuthStrategy, AppInstallationAuthStrategy, GitHub
 
 from outrider.github.config import GitHubAppSettings
 
 __all__ = [
+    "AppGitHubClient",
     "InstallationGitHubClient",
+    "make_app_client",
     "make_installation_client_factory",
 ]
 
@@ -66,6 +69,13 @@ _GITHUB_CLIENT_TIMEOUT: Final[httpx.Timeout] = httpx.Timeout(
 # consumers (`agent/`, etc.) import via `outrider.github` and never
 # touch `githubkit` directly.
 InstallationGitHubClient = GitHub[AppInstallationAuthStrategy]
+
+# Type alias for a GitHub client authenticated AS THE APP (App-JWT), not as an
+# installation. Used ONLY by the #065 live-authorization check (App-level endpoints:
+# `GET /app/installations/{id}`, `POST .../access_tokens`). `auth.py` is the sole file
+# importing `githubkit.AppAuthStrategy`, mirroring the `AppInstallationAuthStrategy`
+# confinement above; `github/authz.py` consumes this alias without touching githubkit.
+AppGitHubClient = GitHub[AppAuthStrategy]
 
 
 def make_installation_client_factory(
@@ -117,3 +127,29 @@ def make_installation_client_factory(
         )
 
     return make_installation_client
+
+
+def make_app_client(settings: GitHubAppSettings) -> AppGitHubClient:
+    """Build a GitHub client authenticated AS THE APP (App-JWT) for the #065
+    live-authorization check.
+
+    Unlike `make_installation_client_factory` (a fresh per-installation client so
+    short-lived installation tokens stay tenant-isolated), the App-JWT client carries
+    NO per-installation token — it is the single app identity (one app, one private key
+    per deployment, per `#066`). So it is constructed ONCE at startup and reused across
+    installations; githubkit mints/refreshes the App-JWT internally. It authorizes the
+    App-level endpoints the live check calls (`GET /app/installations/{id}`,
+    `POST /app/installations/{id}/access_tokens`).
+
+    Reads `settings.app_private_key.get_secret_value()` once here (the client is
+    long-lived, so unlike the per-call installation factory there is no per-call PEM
+    window to minimize). Same explicit `_GITHUB_CLIENT_TIMEOUT` as the installation
+    client so both SDK surfaces behave consistently under upstream stalls.
+    """
+    return GitHub(
+        AppAuthStrategy(
+            settings.app_id,
+            settings.app_private_key.get_secret_value(),
+        ),
+        timeout=_GITHUB_CLIENT_TIMEOUT,
+    )
