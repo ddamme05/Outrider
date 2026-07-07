@@ -19,6 +19,7 @@ import pytest
 from outrider.github.authz import (
     LiveAuthOutcome,
     check_installation_authorization,
+    list_installation_ids,
     make_installation_authorizer,
 )
 
@@ -359,3 +360,73 @@ def test_only_authorized_is_authorized(outcome: LiveAuthOutcome) -> None:
 
     assert LiveAuthResult(outcome, "x").authorized is False
     assert LiveAuthResult(LiveAuthOutcome.AUTHORIZED, "x").authorized is True
+
+
+# ---------------------------------------------------------------------------
+# list_installation_ids — the reconcile janitor's App-JWT paginated list (#065/#012/#067)
+# ---------------------------------------------------------------------------
+
+
+class _PaginatingAppClient:
+    """Fake App-JWT client for `list_installation_ids`. Each `arequest` GET returns `pages[page-1]`
+    as a JSON-array response body (empty array past the end). An async context manager."""
+
+    def __init__(self, pages: list[list[dict[str, Any]]]) -> None:
+        self._page_texts = [json.dumps(p) for p in pages]
+        self.calls: list[str] = []
+
+    async def __aenter__(self) -> _PaginatingAppClient:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+    async def arequest(
+        self, method: str, path: str, *, json: Any = None, headers: Any = None
+    ) -> Any:
+        self.calls.append(path)
+        page = int(path.rsplit("page=", 1)[-1])
+        text = self._page_texts[page - 1] if 0 <= page - 1 < len(self._page_texts) else "[]"
+        return types.SimpleNamespace(text=text)
+
+
+async def test_list_installation_ids_single_short_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One page under the page-size stops after a single fetch and returns the ids."""
+    client = _PaginatingAppClient([[{"id": 1}, {"id": 2}, {"id": 3}]])
+    monkeypatch.setattr("outrider.github.authz.make_app_client", lambda _s: client)
+    ids = await list_installation_ids(_SETTINGS_SENTINEL)
+    assert ids == {1, 2, 3}
+    assert len(client.calls) == 1
+
+
+async def test_list_installation_ids_paginates_until_short_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A FULL first page (100 = page size) triggers a second fetch; a short second page stops."""
+    page1 = [{"id": i} for i in range(100)]
+    page2 = [{"id": 100}, {"id": 101}]
+    client = _PaginatingAppClient([page1, page2])
+    monkeypatch.setattr("outrider.github.authz.make_app_client", lambda _s: client)
+    ids = await list_installation_ids(_SETTINGS_SENTINEL)
+    assert len(ids) == 102
+    assert {100, 101} <= ids
+    assert len(client.calls) == 2
+
+
+async def test_list_installation_ids_non_list_body_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-array body (GitHub contract violation) raises — the janitor must NOT reconcile against
+    a shape it can't trust."""
+
+    class _BadClient:
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        async def arequest(self, *args: Any, **kwargs: Any) -> Any:
+            return types.SimpleNamespace(text='{"not": "a list"}')
+
+    monkeypatch.setattr("outrider.github.authz.make_app_client", lambda _s: _BadClient())
+    with pytest.raises(TypeError, match="expected list"):
+        await list_installation_ids(_SETTINGS_SENTINEL)
