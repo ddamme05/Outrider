@@ -3,18 +3,21 @@
 
 The local install tables are a cache; GitHub is the authorization authority, checked
 LIVE at intake. As the App (App-JWT), this module confirms — for a given
-`(installation_id, owner, repo)` — that:
+`(installation_id, repo_id)` — that:
 
   1. the installation still exists and is NOT suspended
      (`GET /app/installations/{id}` → 200 with `suspended_at` null; 404 → uninstalled), and
   2. the target repo is still accessible
-     (`POST /app/installations/{id}/access_tokens` with a repo-scoped body → 201).
+     (`POST /app/installations/{id}/access_tokens` scoped to the repo → 201).
+
+Authorization keys on the IMMUTABLE `repo_id` (via `repository_ids`), not the mutable repo
+name: a rename must not silently deny (or, worse, mis-authorize) a still-covered repo.
 
 Per #065 the two checks fail CLOSED: any non-affirmative result — suspended, uninstalled,
-repo-removed, OR a network error / uncertainty — collapses to a single `authorized == False`
-(the caller drives the review to `skipped`). The local cache is never consulted for the
-answer. It is the GitHub-authority counterpart to the DB-cache `active_repo_membership()`
-gate on the webhook path.
+repo-removed, OR a network error / uncertainty — collapses to `authorized == False` (the
+caller drives the review to `skipped`). The local cache is never consulted for the answer.
+It is the GitHub-authority counterpart to the DB-cache `active_repo_membership()` gate on
+the webhook path.
 
 Lives under `github/` (the only subsystem that may touch githubkit). It calls the App-level
 endpoints through the injected `AppGitHubClient`'s `arequest` escape hatch — githubkit has no
@@ -50,8 +53,8 @@ class LiveAuthOutcome(StrEnum):
     AUTHORIZED = "authorized"
     SUSPENDED = "suspended"
     UNINSTALLED = "uninstalled"
-    REPO_INACCESSIBLE = "repo_inaccessible"
-    UNCERTAIN = "uncertain"  # network error / 5xx / unparseable → fail closed
+    REPO_INACCESSIBLE = "repo_inaccessible"  # install active, repo not covered (422)
+    UNCERTAIN = "uncertain"  # network / 401 / 429 / 5xx / unparseable → fail closed
 
 
 @dataclass(frozen=True)
@@ -68,9 +71,9 @@ class LiveAuthResult:
 
 
 # The closure intake receives (built by `make_installation_authorizer` over an
-# `AppGitHubClient`). Kept githubkit-free at the type level so `agent/` never imports
-# the SDK: `(installation_id, owner, repo) -> LiveAuthResult`.
-InstallationAuthorizer = Callable[[int, str, str], Awaitable[LiveAuthResult]]
+# `AppGitHubClient`). Kept githubkit-free at the type level so `agent/` never imports the
+# SDK: `(installation_id, repo_id) -> LiveAuthResult`.
+InstallationAuthorizer = Callable[[int, int], Awaitable[LiveAuthResult]]
 
 
 def _status_code(exc: Exception) -> int | None:
@@ -84,19 +87,14 @@ async def check_installation_authorization(
     app_client: AppGitHubClient,
     *,
     installation_id: int,
-    owner: str,
-    repo: str,
+    repo_id: int,
 ) -> LiveAuthResult:
-    """Live App-JWT authorization check for `(installation_id, owner, repo)`. Fail-closed
-    on any non-affirmative result (#065). Never consults the local cache.
-
-    `owner` is accepted for symmetry/logging but the App-level endpoints key on
-    `installation_id` + the repo NAME; the repo-scoped token body uses `repo` (a name
-    string, per `POST /app/installations/{id}/access_tokens` `repositories: [name]`).
-    """
+    """Live App-JWT authorization check for `(installation_id, repo_id)`. Fail-closed on any
+    non-affirmative result (#065). Never consults the local cache."""
     # Check 1 — installation exists AND is not suspended. GET returns 200 for an existing
-    # install (with `suspended_at` null when active) and 404 when uninstalled; suspension
-    # is signalled by the body field, NOT a status code (per the REST contract).
+    # install and 404 when uninstalled; suspension is signalled by the body's `suspended_at`
+    # field (non-null), NOT a status code, so the field's PRESENCE is required — a response
+    # missing it is treated as uncertainty (fail closed), never silently "active".
     try:
         inst_resp = await app_client.arequest(
             "GET",
@@ -109,43 +107,52 @@ async def check_installation_authorization(
             return _denied(
                 LiveAuthOutcome.UNINSTALLED,
                 installation_id,
-                repo,
+                repo_id,
                 f"GET /app/installations/{installation_id} → 404 (uninstalled)",
             )
         return _denied(
             LiveAuthOutcome.UNCERTAIN,
             installation_id,
-            repo,
+            repo_id,
             f"install check errored: {type(exc).__name__} status={status}",
         )
 
     try:
         installation = json.loads(inst_resp.text)
-        suspended = installation.get("suspended_at") is not None
     except (json.JSONDecodeError, AttributeError, TypeError) as exc:
-        # Can't confirm active → fail closed (uncertainty).
         return _denied(
             LiveAuthOutcome.UNCERTAIN,
             installation_id,
-            repo,
-            f"install response unparseable: {type(exc).__name__}",
+            repo_id,
+            f"install response not JSON: {type(exc).__name__}",
         )
-    if suspended:
+    if not isinstance(installation, dict) or "suspended_at" not in installation:
+        # Can't confirm active — the affirmative signal (an explicit `suspended_at`) is
+        # absent. Fail closed.
+        return _denied(
+            LiveAuthOutcome.UNCERTAIN,
+            installation_id,
+            repo_id,
+            "install response missing the suspended_at field",
+        )
+    if installation["suspended_at"] is not None:
         return _denied(
             LiveAuthOutcome.SUSPENDED,
             installation_id,
-            repo,
+            repo_id,
             "installation suspended (suspended_at is set)",
         )
 
-    # Check 2 — repo accessible. Mint a token scoped to THIS repo; 201 means the install
-    # still covers it. Any non-201 (403 suspended, 404 gone, 422 repo-not-covered, network
-    # error) fails closed. We discard the minted token — the mint attempt IS the probe.
+    # Check 2 — repo accessible. Mint a token scoped to this repo by IMMUTABLE id; 201 means
+    # the install still covers it. We discard the minted token — the mint attempt IS the
+    # probe. Only a 422 (repo not covered) is a genuine "repo inaccessible"; 403 → suspended,
+    # 404 → uninstalled; 401 (our JWT) / 429 (rate limit) / 5xx / network are UNCERTAINTY,
+    # not repo-denial (they still fail closed, but the telemetry must not lie).
     try:
         await app_client.arequest(
             "POST",
             f"/app/installations/{installation_id}/access_tokens",
-            json={"repositories": [repo]},
+            json={"repository_ids": [repo_id]},
             headers=_API_VERSION_HEADER,
         )
     except Exception as exc:
@@ -154,28 +161,28 @@ async def check_installation_authorization(
             outcome = LiveAuthOutcome.SUSPENDED
         elif status == 404:
             outcome = LiveAuthOutcome.UNINSTALLED
-        elif status is None:
-            outcome = LiveAuthOutcome.UNCERTAIN
-        else:
-            # 422 (repo not covered), 401 (our JWT), any other 4xx → repo not accessible
-            # under this install. Fail closed regardless; the status is in `detail`.
+        elif status == 422:
             outcome = LiveAuthOutcome.REPO_INACCESSIBLE
+        else:
+            # 401 (our JWT), 429 (rate limit), 5xx, None (network), any other code → we
+            # cannot conclude the repo is inaccessible. Uncertainty → fail closed.
+            outcome = LiveAuthOutcome.UNCERTAIN
         return _denied(
             outcome,
             installation_id,
-            repo,
+            repo_id,
             f"repo-scoped token mint failed: status={status}",
         )
 
     logger.info(
         "live_auth authorized",
-        extra={"installation_id": installation_id, "repo": repo},
+        extra={"installation_id": installation_id, "repo_id": repo_id},
     )
     return LiveAuthResult(LiveAuthOutcome.AUTHORIZED, "installation active and repo accessible")
 
 
 def _denied(
-    outcome: LiveAuthOutcome, installation_id: int, repo: str, detail: str
+    outcome: LiveAuthOutcome, installation_id: int, repo_id: int, detail: str
 ) -> LiveAuthResult:
     """Build a fail-closed result and log it at WARNING (there is no audit event for the
     denial per #065 — the log + the terminal `skipped` transition carry it)."""
@@ -183,7 +190,7 @@ def _denied(
         "live_auth denied",
         extra={
             "installation_id": installation_id,
-            "repo": repo,
+            "repo_id": repo_id,
             "outcome": outcome.value,
             "detail": detail,
         },
@@ -194,12 +201,12 @@ def _denied(
 def make_installation_authorizer(app_client: AppGitHubClient) -> InstallationAuthorizer:
     """Bind an `AppGitHubClient` into an `InstallationAuthorizer` closure for injection
     into `build_graph` → intake. `lifespan` constructs the app client once
-    (`make_app_client`) and calls this; intake calls the returned closure and stays
-    githubkit-free."""
+    (`make_app_client`, entered into lifespan's `AsyncExitStack` for cleanup) and calls
+    this; intake calls the returned closure and stays githubkit-free."""
 
-    async def authorize(installation_id: int, owner: str, repo: str) -> LiveAuthResult:
+    async def authorize(installation_id: int, repo_id: int) -> LiveAuthResult:
         return await check_installation_authorization(
-            app_client, installation_id=installation_id, owner=owner, repo=repo
+            app_client, installation_id=installation_id, repo_id=repo_id
         )
 
     return authorize

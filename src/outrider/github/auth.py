@@ -145,6 +145,14 @@ def make_app_client(settings: GitHubAppSettings) -> AppGitHubClient:
     long-lived, so unlike the per-call installation factory there is no per-call PEM
     window to minimize). Same explicit `_GITHUB_CLIENT_TIMEOUT` as the installation
     client so both SDK surfaces behave consistently under upstream stalls.
+
+    LIFECYCLE — the caller OWNS the returned client's async lifecycle. Because it is
+    long-lived and shared (one per deployment), `lifespan` MUST enter it into its
+    `AsyncExitStack` (`await stack.enter_async_context(make_app_client(settings))`) so
+    githubkit's underlying httpx client is closed at shutdown rather than leaked — an
+    un-entered shared client risks per-request client churn / a resource-leak warning.
+    (The per-installation client is fresh per call and short-lived, so it does not need
+    this; the shared app client does.)
     """
     return GitHub(
         AppAuthStrategy(
