@@ -74,6 +74,11 @@ export function Sidebar() {
             </div>
           </div>
         </div>
+        {/* B3: persistent privacy-disclosure link → the public /privacy page
+            (same origin, served by the FastAPI app; not a SPA route). */}
+        <a className="sb-privacy" href="/privacy">
+          Privacy &amp; data handling
+        </a>
       </div>
     </nav>
   );

@@ -36,6 +36,9 @@ _DEMO_ALLOWLIST = {
     ("/api/reviews/{review_id}/events", frozenset({"GET"})),
     ("/api/reviews/{review_id}/findings", frozenset({"GET"})),
     ("/api/reviews/{review_id}/replay-timeline", frozenset({"GET"})),
+    # B3: public, unauthenticated privacy page — always mounted (it must be
+    # reachable pre-install), read-only, so it belongs in the demo allowlist.
+    ("/privacy", frozenset({"GET"})),
 }
 
 # Production adds EXACTLY these mutation + side-effecting routers on top.

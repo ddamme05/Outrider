@@ -60,6 +60,7 @@ from outrider.api.dashboard import (
     policy_router,
     reviews_router,
 )
+from outrider.api.privacy import router as privacy_router
 from outrider.api.slack import slack_oauth_router
 from outrider.api.webhooks.router import router as webhook_router
 
@@ -89,6 +90,10 @@ def _include_routers(app: FastAPI, *, demo_mode: bool) -> None:
     # Feature 3 / S2: read-only agent-view endpoint on its own require_agent_api_key
     # router (separate scope from the admin-gated routers above).
     app.include_router(agent_view_router)
+    # B3: PUBLIC, unauthenticated privacy page (GET /privacy) — the App-listing
+    # privacy-policy URL + the dashboard footer target. Always mounted (incl. demo
+    # mode): it must be readable before any install exists, and it is read-only.
+    app.include_router(privacy_router)
     if demo_mode:
         return
     # Production-only: mutation + side-effecting routers.

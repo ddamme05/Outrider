@@ -494,6 +494,25 @@
         }
       }
     },
+    "/privacy": {
+      "get": {
+        "summary": "Privacy Page",
+        "description": "PUBLIC, unauthenticated privacy disclosure (the App-listing privacy URL +\nthe dashboard footer target). Renders the mandated #013/#015/#016 statement,\nhost-qualified for a non-Anthropic configured host.",
+        "operationId": "privacy_page_privacy_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/webhooks/github": {
       "post": {
         "summary": "Receive Pull Request Webhook",
