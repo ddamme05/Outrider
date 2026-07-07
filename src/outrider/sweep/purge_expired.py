@@ -256,3 +256,37 @@ async def purge_installation(
     )
 
     return rows_per_table
+
+
+async def purge_expired_installations(
+    conn: AsyncConnection,
+    *,
+    purge_role: str = "sweep",
+) -> dict[str, dict[str, int]]:
+    """Hard-delete installations whose #012 grace window has expired.
+
+    Arc B2 fix (DECISIONS.md#065 / #012): `purge_installation` existed but had NO
+    scheduled caller, so tombstoned installs were never actually hard-deleted and
+    #012 retention silently never completed on uninstall. This selects the expired
+    tombstones (`tombstoned_at IS NOT NULL AND purge_after_at < NOW()` — BOTH
+    predicates: the `tombstoned_at IS NOT NULL` guard prevents a stray
+    `purge_after_at` on a live/reinstalled install from deleting live data) and calls
+    `purge_installation` for each.
+
+    Shares `SWEEP_LOCK_ID` via `conn` (reentrant within the tick's transaction, per
+    `purge_installation`'s note), so it slots into `run_all_sweeps` after the
+    time-based `purge_expired`. Returns `{installation_id: rows_per_table}` for each
+    purged install (empty if none are due).
+    """
+    due = await conn.execute(
+        text(
+            "SELECT installation_id FROM installations "
+            "WHERE tombstoned_at IS NOT NULL AND purge_after_at < NOW()"
+        )
+    )
+    purged: dict[str, dict[str, int]] = {}
+    for (installation_id,) in due.fetchall():
+        purged[str(installation_id)] = await purge_installation(
+            conn, installation_id, purge_role=purge_role
+        )
+    return purged

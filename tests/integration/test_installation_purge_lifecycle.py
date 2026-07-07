@@ -174,3 +174,47 @@ async def test_purge_installation_full_lifecycle(migrated_db: str) -> None:
                 assert purge_role == "install-purge"
     finally:
         await engine.dispose()
+
+
+async def test_purge_expired_installations_selects_only_due_tombstones(migrated_db: str) -> None:
+    """Arc B2: the scheduled caller purges ONLY installs past their grace window.
+
+    Revert-the-fold on TWO round-11 requirements: (1) without the caller, a tombstoned
+    install is never hard-deleted — here it IS; (2) the `tombstoned_at IS NOT NULL`
+    guard protects a live/reinstalled install that has a stray past `purge_after_at`.
+    """
+    from outrider.sweep.purge_expired import purge_expired_installations
+
+    engine = create_async_engine(migrated_db)
+    try:
+        async with engine.begin() as conn:
+            # 111: tombstoned + grace EXPIRED → purged.
+            # 222: tombstoned + grace still OPEN (purge_after_at future) → survives.
+            # 333: NOT tombstoned (live) + stray past purge_after_at → survives (guard).
+            await conn.execute(
+                text(
+                    "INSERT INTO installations (installation_id, app_slug, account_id, "
+                    " account_login, account_type, permissions_at_install, tombstoned_at, "
+                    " purge_after_at) VALUES "
+                    "(111, 'a', 1, 'x', 'User', '{}'::jsonb, NOW() - INTERVAL '40 days', "
+                    "   NOW() - INTERVAL '10 days'), "
+                    "(222, 'a', 1, 'y', 'User', '{}'::jsonb, NOW() - INTERVAL '2 days', "
+                    "   NOW() + INTERVAL '5 days'), "
+                    "(333, 'a', 1, 'z', 'User', '{}'::jsonb, NULL, NOW() - INTERVAL '10 days')"
+                )
+            )
+
+        async with engine.begin() as conn:
+            purged = await purge_expired_installations(conn, purge_role="install-purge")
+
+        assert set(purged) == {"111"}, "only the grace-expired tombstone is due"
+
+        async with engine.connect() as conn:
+            surviving = await conn.execute(
+                text("SELECT installation_id FROM installations ORDER BY installation_id")
+            )
+            assert [r[0] for r in surviving] == [222, 333], (
+                "222 (still in grace) and 333 (not tombstoned) must survive; 111 purged"
+            )
+    finally:
+        await engine.dispose()
