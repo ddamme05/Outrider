@@ -247,8 +247,9 @@ class WebhookPullRequest(BaseModel):
     deletions: int = Field(ge=0)
     # Arc B2 autorun: draft PRs are skipped (2xx no-op); the review runs when the
     # `ready_for_review` action fires (draft → ready). REQUIRED (no default): GitHub always
-    # sends `draft` on pull_request events, so a payload missing it is malformed — reject it
-    # (422) rather than defaulting to ready and autorunning what may be a draft. Fail-closed.
+    # sends `draft` on pull_request events, so a payload missing it is malformed — the router
+    # rejects it (ValidationError → 400 "invalid payload shape", router.py) rather than
+    # defaulting to ready and autorunning what may be a draft. Fail-closed.
     draft: bool
 
 
