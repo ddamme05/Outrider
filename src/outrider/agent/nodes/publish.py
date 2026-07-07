@@ -18,11 +18,13 @@ WITHOUT emitting end (the dangling-start is the audit signal for
 "publish interrupted"). The per-finding `try/except` around routing
 emission catches into `PublishEligibilityEvent(withheld,
 routing_emission_failed)` so the per-finding audit contract holds
-even when routing emit fails — but a genuine failure of the GitHub POST
+even when routing emit fails — but a genuine failure of a publish GitHub call
 (422 / 5xx / network) propagates after emitting `PublishAttemptEvent(failed)`.
-A 401/403/404 at the POST is authorization revoked (DECISIONS.md#065), NOT a
-failure: it emits `PublishAttemptEvent(not_published_auth_revoked)` and RETAINS
-the review (marked `completed`) instead of propagating.
+A 401/403/404 at EITHER publish GitHub call — the external-record GET
+(`find_existing_review_on_head_sha`) or the review POST (`create_review`) — is
+authorization revoked (DECISIONS.md#065), NOT a failure: it emits
+`PublishAttemptEvent(not_published_auth_revoked)` and RETAINS the review (marked
+`completed`) instead of propagating (shared `_emit_auth_revoked_and_retain`).
 
 Pre-flight order (intra-Outrider + external):
   1. Per-finding routing + eligibility loop (always).
@@ -453,14 +455,17 @@ async def publish(
         # PublishEvent), so the external-record body-marker query on
         # GitHub is the load-bearing signal here.
         #
-        # Symmetric with Steps 4 + 7 failure handling: if the GitHub
-        # GET raises (network drop, 403 App-uninstalled mid-run, 5xx
-        # upstream, pagination cap exhausted), emit
+        # Symmetric with Steps 4 + 7 failure handling. This GET is the
+        # FIRST publish GitHub call, so a revocation surfaces HERE before
+        # the POST: a 401/403/404 is authorization revoked (#065) → retain
+        # the review + record NOT_PUBLISHED_AUTH_REVOKED (shared handler with
+        # Step 7), NOT FAILED. Any OTHER raise (network drop, 5xx upstream,
+        # pagination cap exhausted) emits
         # `PublishAttemptEvent(FAILED, failure_class=type(exc).__name__)`
-        # BEFORE re-raising so the audit trail records the failure
-        # class — otherwise the dangling phase-start is the only signal
-        # and operators can't distinguish "external-record query
-        # crashed" from "node hung mid-execution".
+        # BEFORE re-raising so the audit trail records the failure class —
+        # otherwise the dangling phase-start is the only signal and operators
+        # can't distinguish "external-record query crashed" from "node hung
+        # mid-execution".
         try:
             # `github_factory(...)` is inside the try because
             # installation-token minting can raise (App uninstalled,
@@ -477,6 +482,22 @@ async def publish(
                 body_marker=body_marker,
             )
         except Exception as exc:
+            status_code = _extract_status_code(exc)
+            if status_code in _AUTH_REVOKED_STATUS_CODES:
+                # #065: the external-record GET (the first publish GitHub call) was rejected
+                # with 401/403/404 — auth revoked before publish. Retain, don't fail — same
+                # treatment as the Step-7 POST; the review can't publish, but it isn't an error.
+                return await _emit_auth_revoked_and_retain(
+                    publish_event_sink=publish_event_sink,
+                    review_status_sink=review_status_sink,
+                    phase_event_sink=phase_event_sink,
+                    review_id=state.review_id,
+                    phase_id=phase_id,
+                    is_eval=state.is_eval,
+                    sorted_finding_ids=sorted_finding_ids,
+                    comments_attempted=len(eligible_inline_comments),
+                    status_code=status_code,
+                )
             await _emit_attempt(
                 publish_event_sink=publish_event_sink,
                 review_id=state.review_id,
@@ -485,7 +506,7 @@ async def publish(
                 sorted_finding_ids=sorted_finding_ids,
                 comments_attempted=len(eligible_inline_comments),
                 failure_class=type(exc).__name__,
-                status_code=_extract_status_code(exc),
+                status_code=status_code,
                 is_eval=state.is_eval,
             )
             raise
@@ -562,32 +583,22 @@ async def publish(
         except Exception as exc:
             status_code = _extract_status_code(exc)
             if status_code in _AUTH_REVOKED_STATUS_CODES:
-                # #065: GitHub's authorization gate rejected the POST (401/403/404) — the
-                # App was uninstalled / suspended / lost repo access. This is authorized-
-                # away, NOT a FAILED error: RETAIN the review, record
-                # NOT_PUBLISHED_AUTH_REVOKED, mark `completed`, emit phase-end, and return
-                # a result rather than re-raising. `failure_class` is omitted (None) — the
-                # attempt validator requires it absent for any non-FAILED outcome. No
-                # PublishEvent + no Slack FYI: nothing was posted. B2 does NOT promise "no
-                # post after revocation"; the POST is best-effort, GitHub is the final gate.
-                await _emit_attempt(
+                # #065: GitHub's authorization gate rejected the POST (401/403/404) — the App
+                # was uninstalled / suspended / lost repo access. Authorized-away, NOT a FAILED
+                # error: retain the review + record NOT_PUBLISHED_AUTH_REVOKED (shared with the
+                # Step-6 GET path). B2 does NOT promise "no post after revocation"; the POST is
+                # best-effort, GitHub is the final gate.
+                return await _emit_auth_revoked_and_retain(
                     publish_event_sink=publish_event_sink,
-                    review_id=state.review_id,
-                    attempt_index=1,
-                    outcome=PublishAttemptOutcome.NOT_PUBLISHED_AUTH_REVOKED,
-                    sorted_finding_ids=sorted_finding_ids,
-                    comments_attempted=len(eligible_inline_comments),
-                    status_code=status_code,
-                    is_eval=state.is_eval,
-                )
-                await review_status_sink.mark_completed(review_id=state.review_id)
-                await _emit_phase_end(
+                    review_status_sink=review_status_sink,
                     phase_event_sink=phase_event_sink,
                     review_id=state.review_id,
                     phase_id=phase_id,
                     is_eval=state.is_eval,
+                    sorted_finding_ids=sorted_finding_ids,
+                    comments_attempted=len(eligible_inline_comments),
+                    status_code=status_code,
                 )
-                return {"publish_result": PublishResult.not_published_auth_revoked()}
             # Any other status (422 validation, 5xx, network, no HTTP context) is a genuine
             # failure → FAILED + re-raise so the audit trail records the failure_class and
             # the graph surfaces it (phase-start stays dangling per the analyze convention).
@@ -735,6 +746,48 @@ def _extract_status_code(exc: BaseException) -> int | None:
         if isinstance(cause_nested, int):
             return cause_nested
     return None
+
+
+async def _emit_auth_revoked_and_retain(
+    *,
+    publish_event_sink: PublishEventSink,
+    review_status_sink: ReviewStatusSink,
+    phase_event_sink: PhaseEventSink,
+    review_id: UUID,
+    phase_id: str,
+    is_eval: bool,
+    sorted_finding_ids: tuple[UUID, ...],
+    comments_attempted: int,
+    status_code: int,
+) -> dict[str, object]:
+    """#065: a publish-path GitHub call was rejected with 401/403/404 — authorization
+    revoked (App uninstalled / suspended / repo removed). Record the retained no-post —
+    emit `PublishAttemptEvent(not_published_auth_revoked, status_code=<code>,
+    failure_class=None)`, mark the review `completed`, emit phase-end, return the result.
+
+    Shared by BOTH publish GitHub-call except paths — Step-6 `find_existing_review_on_head_sha`
+    (the GET, the first call) and Step-7 `create_review` (the POST) — so a revocation surfacing
+    at EITHER call is retained identically, not FAILED at one and revoked at the other.
+    `failure_class` is omitted (None): the attempt validator requires it absent for any
+    non-FAILED outcome. No `PublishEvent` + no Slack FYI — nothing was posted."""
+    await _emit_attempt(
+        publish_event_sink=publish_event_sink,
+        review_id=review_id,
+        attempt_index=1,
+        outcome=PublishAttemptOutcome.NOT_PUBLISHED_AUTH_REVOKED,
+        sorted_finding_ids=sorted_finding_ids,
+        comments_attempted=comments_attempted,
+        status_code=status_code,
+        is_eval=is_eval,
+    )
+    await review_status_sink.mark_completed(review_id=review_id)
+    await _emit_phase_end(
+        phase_event_sink=phase_event_sink,
+        review_id=review_id,
+        phase_id=phase_id,
+        is_eval=is_eval,
+    )
+    return {"publish_result": PublishResult.not_published_auth_revoked()}
 
 
 def _collect_admitted_findings(state: ReviewState) -> list[ReviewFinding]:
