@@ -28,9 +28,11 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import Update
 
 from outrider.agent.graph import build_graph
 from outrider.audit.aggregates import ReviewLLMAggregates
+from outrider.github.authz import LiveAuthOutcome, LiveAuthResult
 from outrider.llm.config import ModelConfig
 from outrider.schemas.pr_context import ChangedFile, PRContext
 from outrider.schemas.review_state import ReviewState
@@ -148,6 +150,7 @@ _SEED_BASE_BYTES = b"old\n"
 _SEED_HEAD_BYTES = b"new\n"
 _SEED_PATCH = "@@ -1 +1 @@\n-old\n+new\n"
 _SEED_INSTALLATION_ID = 12345
+_SEED_REPO_ID = 500  # reviews.repo_id the #065 gate SELECT returns; forwarded to the authorizer
 _SEED_OWNER = "acme"
 _SEED_REPO = "widget"
 _SEED_PULL_NUMBER = 42
@@ -260,25 +263,43 @@ def _stub_github_factory(installation_id: int) -> Any:
     return _StubGitHub()
 
 
-# DB factory stub — intake's happy path only hits this for the size-gate /
-# failure-path branches, neither of which fires for the seed's single
-# small modified file.
-class _NeverCalledSession:
-    async def __aenter__(self) -> _NeverCalledSession:
+# DB factory stub. The #065 live-auth gate does ONE identity SELECT per intake invocation
+# (`_load_review_gate_state`), so the stub must answer it with the seed identity + 'running'.
+# It still ASSERTS on any UPDATE: these tests drive intake's happy path (single small file),
+# where no status write (skip/failed) should fire — a write here means a regression.
+class _GateReadSession:
+    async def __aenter__(self) -> _GateReadSession:
         return self
 
     async def __aexit__(self, *args: Any) -> None:
         return None
 
-    def begin(self) -> _NeverCalledSession:
+    def begin(self) -> _GateReadSession:
         return self
 
     async def execute(self, stmt: Any) -> Any:
-        raise AssertionError("intake happy-path should not write to reviews table in these tests")
+        if isinstance(stmt, Update):
+            raise AssertionError("intake happy-path should not write reviews.status in these tests")
+        # select(...) — the #065 identity gate load; `.first()` yields the seed identity.
+        return _GateSelectResult((_SEED_INSTALLATION_ID, _SEED_REPO_ID, "running"))
 
 
-def _stub_db_factory() -> _NeverCalledSession:
-    return _NeverCalledSession()
+@dataclass
+class _GateSelectResult:
+    _row: tuple[int, int, str] | None
+
+    def first(self) -> tuple[int, int, str] | None:
+        return self._row
+
+
+def _stub_db_factory() -> _GateReadSession:
+    return _GateReadSession()
+
+
+async def _always_authorized(installation_id: int, repo_id: int) -> LiveAuthResult:
+    """#065 live-auth stub: seed identity is a live authorized install → intake proceeds."""
+    assert installation_id == _SEED_INSTALLATION_ID, f"unexpected installation_id {installation_id}"
+    return LiveAuthResult(LiveAuthOutcome.AUTHORIZED, "merge test authorized")
 
 
 class _RecordingFileExaminationSink:
@@ -522,6 +543,7 @@ def _graph_kwargs(
     return {
         "db_factory": _stub_db_factory,  # type: ignore[arg-type]
         "github_factory": _stub_github_factory,
+        "installation_authorizer": _always_authorized,
         "provider": _MockLLMProvider(),
         "model_config": ModelConfig(),
         "phase_event_sink": phase_event_sink,

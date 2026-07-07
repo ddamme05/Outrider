@@ -1,10 +1,17 @@
 # Intake node — webhook-seeded ReviewState → PR file metadata + content.
+# See DECISIONS.md#065-authorization-is-a-live-github-check-the-local-install-db-is-a-cache
 """Intake enriches `pr_context.changed_files` per `DECISIONS.md#020`.
 
 Sequence per the intake-and-webhook spec:
 
   1. Emit `ReviewPhaseEvent(marker="start", node_id="intake")` via the
      injected `phase_event_sink`.
+  1.5. #065 live-authorization gate (first operational action): load
+     `(installation_id, repo_id)` from the review row — mismatch vs the seed
+     PRContext or a missing row → `failed` (raise); then
+     `installation_authorizer(installation_id, repo_id)` — a non-authorized
+     live result → `reviews.status='skipped'` + phase-end + `Command(goto=END)`,
+     WITHOUT calling `github_factory`.
   2. `gh = github_factory(state.pr_context.installation_id)`.
   3. Phase 1 (sequential): `gh.rest.pulls.async_list_files(...)` via
      `github.fetch.list_pr_files`. Returns the per-file metadata list.
@@ -42,7 +49,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from langgraph.graph import END
 from langgraph.types import Command
-from sqlalchemy import and_, update
+from sqlalchemy import and_, select, update
 
 from outrider.agent.nodes.intake_config import IntakeConfig
 from outrider.ast_facts.models import SkipReason
@@ -61,7 +68,7 @@ if TYPE_CHECKING:
 
     from outrider.agent.state import ReviewState
     from outrider.audit.sinks import FileExaminationSink, PhaseEventSink
-    from outrider.github import InstallationGitHubClient
+    from outrider.github import InstallationAuthorizer, InstallationGitHubClient
 
 __all__ = ["intake"]
 
@@ -94,6 +101,7 @@ async def intake(
     state: ReviewState,
     *,
     github_factory: Callable[[int], InstallationGitHubClient],
+    installation_authorizer: InstallationAuthorizer,
     db_factory: async_sessionmaker[AsyncSession],
     phase_event_sink: PhaseEventSink,
     file_examination_sink: FileExaminationSink,
@@ -143,6 +151,57 @@ async def intake(
         )
         await phase_event_sink.emit_phase(phase_start)
         phase_start_persisted = True
+
+        # #065 live-authorization gate — intake's FIRST operational action, before any
+        # GitHub data fetch or install-client mint. Two ordered steps:
+        #   (1) Load the PERSISTED (installation_id, repo_id) identity from the review row
+        #       and verify installation_id matches the seed PRContext. A missing row or a
+        #       mismatch is a DATA-INTEGRITY failure → the `failed` path (raise), NOT
+        #       `skipped` (the webhook creates the row with this identity before dispatch,
+        #       so a divergence is an invariant breach, not an authorization outcome).
+        #   (2) LIVE GitHub check (GitHub is the authority; the local cache is only a hint):
+        #       a non-authorized result — suspended / uninstalled / repo-removed / uncertain
+        #       — fails CLOSED to `skipped`, and `github_factory` is never called.
+        persisted_installation_id, repo_id, review_status = await _load_review_gate_state(
+            db_factory, state.review_id
+        )
+        if persisted_installation_id != pr_context.installation_id:
+            raise _ReviewIdentityError(
+                f"reviews.installation_id={persisted_installation_id} does not match "
+                f"pr_context.installation_id={pr_context.installation_id} "
+                f"for review {state.review_id}"
+            )
+        if review_status != "running":
+            # Already terminal (skipped / failed / completed / ...). A re-invocation — e.g. a
+            # checkpoint replay after a prior live-auth `skipped` — must NOT resurrect the
+            # review: do not re-run the live check and do not proceed to fetch, even if auth
+            # was since restored. Emit phase-end to pair THIS invocation's phase-start (avoid
+            # an orphan-start), leave the terminal status untouched, and route to END.
+            logger.warning(
+                "intake re-entry on non-running review; not resurrecting",
+                extra={
+                    "review_id": str(state.review_id),
+                    "installation_id": pr_context.installation_id,
+                    "status": review_status,
+                },
+            )
+            await _emit_phase_end(phase_event_sink, state, phase_id)
+            return Command(goto=END)  # type: ignore[arg-type]  # END is a runtime sentinel not in the named-dest Literal
+        auth_result = await installation_authorizer(pr_context.installation_id, repo_id)
+        if not auth_result.authorized:
+            logger.warning(
+                "intake live-auth denied; skipping review",
+                extra={
+                    "review_id": str(state.review_id),
+                    "installation_id": pr_context.installation_id,
+                    "repo_id": repo_id,
+                    "outcome": auth_result.outcome.value,
+                    "detail": auth_result.detail,
+                },
+            )
+            await _set_review_status(db_factory, state.review_id, "skipped")
+            await _emit_phase_end(phase_event_sink, state, phase_id)
+            return Command(goto=END)  # type: ignore[arg-type]  # END is a runtime sentinel not in the named-dest Literal
 
         gh = github_factory(pr_context.installation_id)
 
@@ -781,6 +840,41 @@ async def _emit_phase_end(
         marker="end",
     )
     await sink.emit_phase(event)
+
+
+class _ReviewIdentityError(RuntimeError):
+    """The persisted review identity is absent or does not match the seed `PRContext`.
+
+    A data-integrity failure (the webhook creates the reviews row with this identity
+    before dispatch, so a divergence is an invariant breach), routed to intake's `failed`
+    path — distinct from a live-auth DENIAL, which is `skipped`. On a MISSING row the
+    failure-handler's `_set_review_status` UPDATE simply no-ops (nothing to mark); the
+    raise still halts all downstream work.
+    """
+
+
+async def _load_review_gate_state(
+    db_factory: async_sessionmaker[AsyncSession],
+    review_id: Any,
+) -> tuple[int, int, str]:
+    """Load `(installation_id, repo_id, status)` from the `reviews` row for the #065 gate.
+
+    All three live on the row the webhook wrote before dispatch. Status is loaded WITH the
+    identity so the gate can refuse to RESURRECT an already-terminal review: a checkpoint
+    replay that re-enters intake after a prior `skipped` (or `failed`) must not proceed just
+    because live auth was since restored. Raises `_ReviewIdentityError` when the row is
+    absent (invariant breach) so the caller routes to the `failed` path, not `skipped`."""
+    async with db_factory() as session:
+        row = (
+            await session.execute(
+                select(Review.installation_id, Review.repo_id, Review.status).where(
+                    Review.id == review_id
+                )
+            )
+        ).first()
+    if row is None:
+        raise _ReviewIdentityError(f"no reviews row for review_id={review_id}")
+    return int(row[0]), int(row[1]), str(row[2])
 
 
 async def _set_review_status(

@@ -20,20 +20,25 @@ import asyncio
 import base64
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import pytest
 from langgraph.graph import END
 from langgraph.types import Command
+from sqlalchemy import Select, Update
 
-from outrider.agent.nodes.intake import intake
+from outrider.agent.nodes.intake import _ReviewIdentityError, intake
 from outrider.agent.state import ReviewState
 from outrider.audit.events import (  # noqa: TC001 — used in runtime list[X] annotations + isinstance assertions
     FileExaminationEvent,
     ReviewPhaseEvent,
 )
+from outrider.github.authz import LiveAuthOutcome, LiveAuthResult
 from outrider.schemas.pr_context import PRContext
+
+if TYPE_CHECKING:
+    from outrider.github.authz import InstallationAuthorizer
 
 # ---------------------------------------------------------------------------
 # Recording sinks (test fixtures only)
@@ -144,6 +149,69 @@ class _StubGitHub:
 
 
 _EXPECTED_INSTALLATION_ID = 12345  # matches `_build_state()` PRContext
+_EXPECTED_REPO_ID = 67890  # matches the identity row the stub session returns (reviews.repo_id)
+
+
+def _authorized_result() -> LiveAuthResult:
+    return LiveAuthResult(outcome=LiveAuthOutcome.AUTHORIZED, detail="live-auth ok (stub)")
+
+
+def _denied_result(
+    outcome: LiveAuthOutcome = LiveAuthOutcome.SUSPENDED,
+) -> LiveAuthResult:
+    return LiveAuthResult(outcome=outcome, detail=f"live-auth denied (stub {outcome.value})")
+
+
+def _stub_authorizer(result: LiveAuthResult | None = None) -> InstallationAuthorizer:
+    """Build an `InstallationAuthorizer` returning a fixed result (default AUTHORIZED).
+
+    Asserts it receives the seed identity `(installation_id, repo_id)` so a regression that
+    passes the wrong pair into the live check is caught, mirroring `_stub_github_factory`'s
+    installation-id guard. Paths that route to END before the live check (identity mismatch,
+    missing row, terminal-status re-entry) never invoke this closure.
+    """
+    res = result if result is not None else _authorized_result()
+
+    async def authorize(installation_id: int, repo_id: int) -> LiveAuthResult:
+        assert installation_id == _EXPECTED_INSTALLATION_ID, (
+            f"authorizer received installation_id={installation_id}, "
+            f"expected {_EXPECTED_INSTALLATION_ID} from seed state"
+        )
+        assert repo_id == _EXPECTED_REPO_ID, (
+            f"authorizer received repo_id={repo_id}, expected {_EXPECTED_REPO_ID}"
+        )
+        return res
+
+    return authorize
+
+
+class _RecordingAuthorizer:
+    """An `InstallationAuthorizer` that records every `(installation_id, repo_id)` it is
+    called with, so gate tests can assert whether the live check ran. `calls == []` proves
+    a path routed to END BEFORE consulting GitHub (identity mismatch / missing row /
+    terminal-status re-entry)."""
+
+    def __init__(self, result: LiveAuthResult | None = None) -> None:
+        self._result = result if result is not None else _authorized_result()
+        self.calls: list[tuple[int, int]] = []
+
+    async def __call__(self, installation_id: int, repo_id: int) -> LiveAuthResult:
+        self.calls.append((installation_id, repo_id))
+        return self._result
+
+
+def _never_called_github_factory() -> Any:
+    """A `github_factory` that fails the test if invoked — pins that a denied/re-entry
+    gate path never mints an installation client (`github_factory` is never called)."""
+
+    def factory(installation_id: int) -> Any:
+        msg = (
+            f"github_factory must NOT be called on a gate-denied / re-entry path "
+            f"(received installation_id={installation_id})"
+        )
+        raise AssertionError(msg)
+
+    return factory
 
 
 def _stub_github_factory(gh: Any) -> Any:
@@ -177,15 +245,47 @@ def _stub_github_factory(gh: Any) -> Any:
 
 
 @dataclass
+class _StubSelectResult:
+    """`.first()`-able result for the #065 gate's identity SELECT."""
+
+    row: tuple[int, int, str] | None
+
+    def first(self) -> tuple[int, int, str] | None:
+        return self.row
+
+
+@dataclass
+class _StubUpdateResult:
+    """`.rowcount`-bearing result for `_set_review_status`'s UPDATE."""
+
+    rowcount: int
+
+
+@dataclass
 class _RecordingSession:
-    """Records every `execute` call without touching a real DB."""
+    """Records every `execute` call; answers the two statement shapes intake issues.
+
+    A `select(...)` (the #065 identity gate load in `_load_review_gate_state`) returns a
+    `.first()`-able result yielding `identity_row` — default `(installation_id, repo_id,
+    'running')`, or `None` to simulate a missing reviews row. An `update(...)` (the
+    `_set_review_status` write) returns a `.rowcount`-bearing result.
+    """
 
     executed: list[Any] = field(default_factory=list)
+    identity_row: tuple[int, int, str] | None = (
+        _EXPECTED_INSTALLATION_ID,
+        _EXPECTED_REPO_ID,
+        "running",
+    )
+    update_rowcount: int = 1
 
     async def execute(self, stmt: Any) -> Any:
         self.executed.append(stmt)
-        # Mimic SQLAlchemy's CursorResult enough for the call site
-        return None
+        if isinstance(stmt, Update):
+            return _StubUpdateResult(self.update_rowcount)
+        # select(...) — the gate identity load; anything else falls through here too.
+        assert isinstance(stmt, Select)
+        return _StubSelectResult(self.identity_row)
 
     async def commit(self) -> None:
         return None
@@ -262,8 +362,19 @@ class _DualPurposeSession:
 
 
 class _StubSessionFactoryV2:
-    def __init__(self) -> None:
-        self.recording = _RecordingSession()
+    def __init__(
+        self,
+        *,
+        identity_row: tuple[int, int, str] | None = (
+            _EXPECTED_INSTALLATION_ID,
+            _EXPECTED_REPO_ID,
+            "running",
+        ),
+        update_rowcount: int = 1,
+    ) -> None:
+        self.recording = _RecordingSession(
+            identity_row=identity_row, update_rowcount=update_rowcount
+        )
         self.call_count = 0
 
     def __call__(self) -> _DualPurposeSession:
@@ -329,6 +440,7 @@ async def test_happy_path_returns_command_to_triage() -> None:
     result = await intake(
         state,
         github_factory=_stub_github_factory(gh),
+        installation_authorizer=_stub_authorizer(),
         db_factory=session_factory,  # type: ignore[arg-type]
         phase_event_sink=phase_sink,
         file_examination_sink=file_sink,
@@ -358,8 +470,8 @@ async def test_happy_path_returns_command_to_triage() -> None:
     assert file_sink.events[0].parse_status == "clean"
     assert file_sink.events[0].file_path == "src/example.py"
 
-    # No DB writes on the happy path.
-    assert session_factory.call_count == 0
+    # One DB open on the happy path: the #065 identity SELECT. No status write on success.
+    assert session_factory.call_count == 1
 
 
 # ===========================================================================
@@ -384,6 +496,7 @@ async def test_size_gate_lines_skips_to_end_without_per_file_events() -> None:
     result = await intake(
         state,
         github_factory=_stub_github_factory(gh),
+        installation_authorizer=_stub_authorizer(),
         db_factory=session_factory,  # type: ignore[arg-type]
         phase_event_sink=phase_sink,
         file_examination_sink=file_sink,
@@ -400,8 +513,8 @@ async def test_size_gate_lines_skips_to_end_without_per_file_events() -> None:
     # No per-file events — the fan-out was bypassed.
     assert file_sink.events == []
 
-    # DB write happened (status='skipped').
-    assert session_factory.call_count == 1
+    # Two DB opens: the #065 identity SELECT + the status='skipped' write.
+    assert session_factory.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -420,6 +533,7 @@ async def test_size_gate_file_count_skips_to_end() -> None:
     result = await intake(
         state,
         github_factory=_stub_github_factory(gh),
+        installation_authorizer=_stub_authorizer(),
         db_factory=session_factory,  # type: ignore[arg-type]
         phase_event_sink=phase_sink,
         file_examination_sink=file_sink,
@@ -427,7 +541,8 @@ async def test_size_gate_file_count_skips_to_end() -> None:
 
     assert result.goto == END
     assert file_sink.events == []
-    assert session_factory.call_count == 1
+    # Two DB opens: the #065 identity SELECT + the status='skipped' write.
+    assert session_factory.call_count == 2
 
 
 # ===========================================================================
@@ -469,6 +584,7 @@ async def test_per_file_oversize_emits_skipped_event_drops_from_changed_files() 
     result = await intake(
         state,
         github_factory=_stub_github_factory(gh),
+        installation_authorizer=_stub_authorizer(),
         db_factory=session_factory,  # type: ignore[arg-type]
         phase_event_sink=phase_sink,
         file_examination_sink=file_sink,
@@ -523,6 +639,7 @@ async def test_per_file_binary_content_skipped_not_silently_corrupted() -> None:
     result = await intake(
         state,
         github_factory=_stub_github_factory(gh),
+        installation_authorizer=_stub_authorizer(),
         db_factory=session_factory,  # type: ignore[arg-type]
         phase_event_sink=phase_sink,
         file_examination_sink=file_sink,
@@ -575,6 +692,7 @@ async def test_per_file_malformed_utf8_emits_skip_not_corruption() -> None:
     result = await intake(
         state,
         github_factory=_stub_github_factory(gh),
+        installation_authorizer=_stub_authorizer(),
         db_factory=session_factory,  # type: ignore[arg-type]
         phase_event_sink=phase_sink,
         file_examination_sink=file_sink,
@@ -799,6 +917,7 @@ async def test_modified_file_releases_clean_side_when_other_side_binary() -> Non
         result = await intake(
             state,
             github_factory=_stub_github_factory(gh),
+            installation_authorizer=_stub_authorizer(),
             db_factory=session_factory,  # type: ignore[arg-type]
             phase_event_sink=phase_sink,
             file_examination_sink=file_sink,
@@ -876,6 +995,7 @@ async def test_renamed_file_releases_clean_side_when_other_side_binary() -> None
         result = await intake(
             state,
             github_factory=_stub_github_factory(gh),
+            installation_authorizer=_stub_authorizer(),
             db_factory=session_factory,  # type: ignore[arg-type]
             phase_event_sink=phase_sink,
             file_examination_sink=file_sink,
@@ -945,6 +1065,7 @@ async def test_aggregate_bytes_cap_emits_oversized_when_total_exceeded(
     result = await intake(
         state,
         github_factory=_stub_github_factory(gh),
+        installation_authorizer=_stub_authorizer(),
         db_factory=session_factory,  # type: ignore[arg-type]
         phase_event_sink=phase_sink,
         file_examination_sink=file_sink,
@@ -994,6 +1115,7 @@ async def test_unknown_status_logged_and_dropped(
         result = await intake(
             state,
             github_factory=_stub_github_factory(gh),
+            installation_authorizer=_stub_authorizer(),
             db_factory=session_factory,  # type: ignore[arg-type]
             phase_event_sink=phase_sink,
             file_examination_sink=file_sink,
@@ -1065,6 +1187,7 @@ async def test_binary_blob_does_not_consume_budget_before_text(
     result = await intake(
         state,
         github_factory=_stub_github_factory(gh),
+        installation_authorizer=_stub_authorizer(),
         db_factory=session_factory,  # type: ignore[arg-type]
         phase_event_sink=phase_sink,
         file_examination_sink=file_sink,
@@ -1125,6 +1248,7 @@ async def test_intake_failure_reraises_after_status_write() -> None:
         await intake(
             state,
             github_factory=_stub_github_factory(gh),
+            installation_authorizer=_stub_authorizer(),
             db_factory=session_factory,  # type: ignore[arg-type]
             phase_event_sink=phase_sink,
             file_examination_sink=file_sink,
@@ -1134,8 +1258,8 @@ async def test_intake_failure_reraises_after_status_write() -> None:
     assert len(phase_sink.events) == 2
     assert [e.marker for e in phase_sink.events] == ["start", "end"]
 
-    # Status='failed' write happened.
-    assert session_factory.call_count == 1
+    # Two opens: the #065 identity SELECT + the status='failed' write.
+    assert session_factory.call_count == 2
     # No FileExaminationEvent — phase 2 was never reached.
     assert file_sink.events == []
 
@@ -1161,14 +1285,18 @@ async def test_intake_status_write_failure_preserves_original_exception(
     file_sink = _RecordingFileExaminationSink()
 
     class _StatusWriteFailingFactory:
-        """db_factory that raises on every session open — simulates a
-        DB connection loss mid-failure-handling."""
+        """Serves the #065 identity SELECT normally (call 1), then raises on the
+        status-write UPDATE session open (call 2) — a DB connection loss that strikes
+        during failure-handling, AFTER the gate's identity load already succeeded."""
 
         def __init__(self) -> None:
             self.call_count = 0
+            self._recording = _RecordingSession()
 
         def __call__(self) -> Any:
             self.call_count += 1
+            if self.call_count == 1:
+                return _DualPurposeSession(self._recording)
             msg = "simulated db error during status write"
             raise OSError(msg)
 
@@ -1185,13 +1313,15 @@ async def test_intake_status_write_failure_preserves_original_exception(
         await intake(
             state,
             github_factory=_stub_github_factory(gh),
+            installation_authorizer=_stub_authorizer(),
             db_factory=failing_factory,  # type: ignore[arg-type]
             phase_event_sink=phase_sink,
             file_examination_sink=file_sink,
         )
 
-    # The status-write attempt was made (and failed loud in logs).
-    assert failing_factory.call_count == 1
+    # Two session opens: the #065 identity SELECT (succeeded) + the status-write
+    # UPDATE (raised, and failed loud in logs).
+    assert failing_factory.call_count == 2
 
     # The status-write failure was logged with the expected message
     # shape so an operator searching for stuck-running diagnoses can
@@ -1269,6 +1399,7 @@ async def test_intake_compound_phase_start_and_status_write_failure(
         await intake(
             state,
             github_factory=_stub_github_factory(gh),
+            installation_authorizer=_stub_authorizer(),
             db_factory=failing_factory,  # type: ignore[arg-type]
             phase_event_sink=phase_sink,
             file_examination_sink=file_sink,
@@ -1386,6 +1517,7 @@ async def test_intake_phase2_failure_unwraps_taskgroup_exception() -> None:
         await intake(
             state,
             github_factory=_stub_github_factory(boom_gh),
+            installation_authorizer=_stub_authorizer(),
             db_factory=session_factory,  # type: ignore[arg-type]
             phase_event_sink=phase_sink,
             file_examination_sink=file_sink,
@@ -1409,8 +1541,8 @@ async def test_intake_phase2_failure_unwraps_taskgroup_exception() -> None:
         "(the per-file `_process_one_file` body raises before emit)"
     )
 
-    # status='failed' write happened.
-    assert session_factory.call_count == 1
+    # Two opens: the #065 identity SELECT + the status='failed' write.
+    assert session_factory.call_count == 2
 
 
 # ===========================================================================
@@ -1463,6 +1595,7 @@ async def test_intake_phase_start_emit_failure_does_not_emit_orphan_phase_end() 
         await intake(
             state,
             github_factory=_stub_github_factory(gh),
+            installation_authorizer=_stub_authorizer(),
             db_factory=session_factory,  # type: ignore[arg-type]
             phase_event_sink=phase_sink,
             file_examination_sink=file_sink,
@@ -1476,7 +1609,9 @@ async def test_intake_phase_start_emit_failure_does_not_emit_orphan_phase_end() 
         "`phase_start_persisted` gate regressed; orphan end-only marker would land."
     )
 
-    # status='failed' write still happened (cleanup is independent of phase-end).
+    # One open: only the status='failed' write. The #065 identity SELECT is never
+    # reached — phase-start emit fails before the gate runs. Cleanup is independent
+    # of phase-end.
     assert session_factory.call_count == 1
     # No file events — intake never reached phase-2.
     assert file_sink.events == []
@@ -1523,6 +1658,7 @@ async def test_previous_filename_empty_string_normalizes_to_none() -> None:
     result = await intake(
         state,
         github_factory=_stub_github_factory(gh),
+        installation_authorizer=_stub_authorizer(),
         db_factory=session_factory,  # type: ignore[arg-type]
         phase_event_sink=phase_sink,
         file_examination_sink=file_sink,
@@ -1583,6 +1719,7 @@ async def test_patch_empty_string_normalizes_to_none() -> None:
     result = await intake(
         state,
         github_factory=_stub_github_factory(gh),
+        installation_authorizer=_stub_authorizer(),
         db_factory=session_factory,  # type: ignore[arg-type]
         phase_event_sink=phase_sink,
         file_examination_sink=file_sink,
@@ -1635,6 +1772,7 @@ async def test_both_empty_sentinels_combined_file_still_admitted() -> None:
     result = await intake(
         state,
         github_factory=_stub_github_factory(gh),
+        installation_authorizer=_stub_authorizer(),
         db_factory=session_factory,  # type: ignore[arg-type]
         phase_event_sink=phase_sink,
         file_examination_sink=file_sink,
@@ -1651,3 +1789,161 @@ async def test_both_empty_sentinels_combined_file_still_admitted() -> None:
     assert cf.previous_path is None
     assert len(file_sink.events) == 1
     assert file_sink.events[0].parse_status == "clean"
+
+
+# ===========================================================================
+# #065 live-authorization gate (DECISIONS.md#065)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_gate_authorized_proceeds_and_consults_live_check() -> None:
+    """Identity matches + status 'running' + live check AUTHORIZED → intake proceeds to
+    triage, and the live check was consulted with the PERSISTED `(installation_id,
+    repo_id)` (not the PR number or a swapped pair)."""
+    state = _build_state()
+    files = [
+        _StubFileMeta(
+            filename="src/example.py",
+            status="modified",
+            additions=1,
+            deletions=0,
+            patch="@@ -1 +1 @@\n-old\n+new\n",
+        ),
+    ]
+    content = {
+        ("src/example.py", "b" * 40): b"old\n",
+        ("src/example.py", "h" * 40): b"new\n",
+    }
+    gh = _StubGitHub(files_metadata=files, content_by_key=content)
+    authorizer = _RecordingAuthorizer()  # AUTHORIZED
+    session_factory = _StubSessionFactoryV2()
+
+    result = await intake(
+        state,
+        github_factory=_stub_github_factory(gh),
+        installation_authorizer=authorizer,
+        db_factory=session_factory,  # type: ignore[arg-type]
+        phase_event_sink=_RecordingPhaseEventSink(),
+        file_examination_sink=_RecordingFileExaminationSink(),
+    )
+
+    assert isinstance(result, Command)
+    assert result.goto == "triage"
+    # The live check ran exactly once, with the PERSISTED identity from the reviews row.
+    assert authorizer.calls == [(_EXPECTED_INSTALLATION_ID, _EXPECTED_REPO_ID)]
+
+
+@pytest.mark.asyncio
+async def test_gate_identity_mismatch_routes_to_failed_not_skipped() -> None:
+    """The persisted `reviews.installation_id` disagrees with the seed `PRContext` → a
+    DATA-INTEGRITY breach: intake raises `_ReviewIdentityError` (→ 'failed'), and the live
+    check is NEVER consulted. Distinct from an auth DENIAL, which is 'skipped'."""
+    state = _build_state()
+    # Persisted identity has a DIFFERENT installation_id than the seed PRContext (12345).
+    session_factory = _StubSessionFactoryV2(identity_row=(99999, _EXPECTED_REPO_ID, "running"))
+    authorizer = _RecordingAuthorizer()
+
+    with pytest.raises(_ReviewIdentityError, match="does not match"):
+        await intake(
+            state,
+            github_factory=_never_called_github_factory(),
+            installation_authorizer=authorizer,
+            db_factory=session_factory,  # type: ignore[arg-type]
+            phase_event_sink=_RecordingPhaseEventSink(),
+            file_examination_sink=_RecordingFileExaminationSink(),
+        )
+
+    # The live check never ran — the mismatch short-circuits before it.
+    assert authorizer.calls == []
+    # Two opens: the identity SELECT + the failure-path status='failed' write.
+    assert session_factory.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_gate_missing_review_row_routes_to_failed() -> None:
+    """No `reviews` row for the review id (invariant breach — the webhook writes it before
+    dispatch) → `_ReviewIdentityError` (→ 'failed'), live check never consulted."""
+    state = _build_state()
+    session_factory = _StubSessionFactoryV2(identity_row=None, update_rowcount=0)
+    authorizer = _RecordingAuthorizer()
+
+    with pytest.raises(_ReviewIdentityError, match="no reviews row"):
+        await intake(
+            state,
+            github_factory=_never_called_github_factory(),
+            installation_authorizer=authorizer,
+            db_factory=session_factory,  # type: ignore[arg-type]
+            phase_event_sink=_RecordingPhaseEventSink(),
+            file_examination_sink=_RecordingFileExaminationSink(),
+        )
+
+    assert authorizer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_gate_live_auth_denied_routes_to_skipped_without_fetch() -> None:
+    """Identity matches but the live check is non-affirmative (SUSPENDED) → intake fails
+    CLOSED: status='skipped', Command(goto=END), and `github_factory` is NEVER called
+    (no installation client minted, no PR fetch)."""
+    state = _build_state()
+    authorizer = _RecordingAuthorizer(_denied_result(LiveAuthOutcome.SUSPENDED))
+    session_factory = _StubSessionFactoryV2()
+    phase_sink = _RecordingPhaseEventSink()
+    file_sink = _RecordingFileExaminationSink()
+
+    result = await intake(
+        state,
+        github_factory=_never_called_github_factory(),
+        installation_authorizer=authorizer,
+        db_factory=session_factory,  # type: ignore[arg-type]
+        phase_event_sink=phase_sink,
+        file_examination_sink=file_sink,
+    )
+
+    assert isinstance(result, Command)
+    assert result.goto == END
+    assert result.update is None
+    # The live check ran; the fetch did not (no per-file events, github_factory unused).
+    assert authorizer.calls == [(_EXPECTED_INSTALLATION_ID, _EXPECTED_REPO_ID)]
+    assert file_sink.events == []
+    # Phase start + end both emitted (the skip pairs its own phase markers).
+    assert [e.marker for e in phase_sink.events] == ["start", "end"]
+    # Two opens: the identity SELECT + the status='skipped' write.
+    assert session_factory.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_gate_skipped_then_authorized_reentry_does_not_resurrect() -> None:
+    """A checkpoint replay re-enters intake on an already-terminal ('skipped') review. Even
+    though the live check WOULD now authorize (auth since restored), intake must NOT
+    resurrect: it routes to END without consulting GitHub, without re-fetching, and without
+    rewriting the terminal status."""
+    state = _build_state()
+    # Persisted row is terminal ('skipped'), identity matches, and the authorizer — if it
+    # were (wrongly) consulted — would say AUTHORIZED.
+    session_factory = _StubSessionFactoryV2(
+        identity_row=(_EXPECTED_INSTALLATION_ID, _EXPECTED_REPO_ID, "skipped")
+    )
+    authorizer = _RecordingAuthorizer()  # AUTHORIZED — must NOT be consulted
+    phase_sink = _RecordingPhaseEventSink()
+    file_sink = _RecordingFileExaminationSink()
+
+    result = await intake(
+        state,
+        github_factory=_never_called_github_factory(),
+        installation_authorizer=authorizer,
+        db_factory=session_factory,  # type: ignore[arg-type]
+        phase_event_sink=phase_sink,
+        file_examination_sink=file_sink,
+    )
+
+    assert isinstance(result, Command)
+    assert result.goto == END
+    # Live check NOT consulted; no resurrection.
+    assert authorizer.calls == []
+    assert file_sink.events == []
+    # Phase start + end paired for THIS invocation (no orphan start).
+    assert [e.marker for e in phase_sink.events] == ["start", "end"]
+    # Exactly one open: the identity SELECT. No status rewrite (terminal status untouched).
+    assert session_factory.call_count == 1

@@ -97,6 +97,7 @@ from sqlalchemy.pool import NullPool  # noqa: E402
 # (no --diff-file) path runs the exact proven scenario; --diff-file swaps the
 # analyzed file via the local Scenario stubs below.
 from tests.integration.test_e2e_smoke import (  # noqa: E402
+    _always_authorized,
     _RecordingPublisher,
     _seed_installation,
     _seed_review,
@@ -504,6 +505,7 @@ async def _drive(
     graph = build_graph(
         db_factory=session_factory,
         github_factory=github_factory,
+        installation_authorizer=_always_authorized,
         provider=provider,
         model_config=ModelConfig(),
         phase_event_sink=persister,

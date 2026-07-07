@@ -92,6 +92,7 @@ from outrider.audit.config import RetentionSettings
 from outrider.audit.persister import AuditPersister
 from outrider.coordinates import COORDINATES_IMPORT_PATH_RESOLVER
 from outrider.github.auth import make_installation_client_factory
+from outrider.github.authz import make_installation_authorizer
 from outrider.github.config import GitHubAppSettings
 from outrider.github.publisher import GitHubKitPublisher
 from outrider.llm.anthropic_provider import AnthropicProvider
@@ -662,6 +663,17 @@ def build_lifespan(
             # defeat the env-validation gate at startup.
             github_factory = make_installation_client_factory(github_app_settings)
 
+            # Step 7b: live-authorization closure for the #065 intake gate, bound to the
+            # validated settings. Per githubkit's reusing-client guidance (0.15.3), each
+            # authorization constructs and `async with`-scopes a FRESH App-JWT client for its
+            # GET+POST pair (one shared client, closed on exit) rather than leaking a new
+            # per-request client. There is NO long-lived shared client to enter into the
+            # AsyncExitStack: githubkit keeps its httpx client in a task-local ContextVar, so a
+            # client entered in this lifespan task would be invisible to intake's per-review
+            # task anyway. `make_installation_authorizer` yields the githubkit-free
+            # `(installation_id, repo_id) -> LiveAuthResult` closure intake calls first.
+            installation_authorizer = make_installation_authorizer(github_app_settings)
+
             # Step 8: build the compiled graph with all deps injected
             # at construction time. `db_factory` is the canonical first
             # parameter per `docs/spec.md §9.3`. `model_config` is the
@@ -836,6 +848,7 @@ def build_lifespan(
                 import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
                 db_factory=session_factory,
                 github_factory=github_factory,
+                installation_authorizer=installation_authorizer,
                 analyze_cache_store=analyze_cache_store,
                 cache_mode=cache_config.mode,
                 dashboard_base_url=_dashboard_settings.dashboard_base_url,

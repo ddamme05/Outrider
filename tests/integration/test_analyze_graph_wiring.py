@@ -35,10 +35,12 @@ from uuid import uuid4
 
 import pytest
 from langgraph.graph import START
+from sqlalchemy import Update
 
 from outrider.agent.graph import build_graph
 from outrider.ast_facts.models import SkipReason
 from outrider.audit.aggregates import ReviewLLMAggregates
+from outrider.github.authz import LiveAuthOutcome, LiveAuthResult
 from outrider.llm.config import ModelConfig
 from outrider.schemas.pr_context import ChangedFile, PRContext
 from outrider.schemas.review_state import ReviewState
@@ -135,6 +137,7 @@ class _RoutingMockLLMProvider:
 
 
 _SEED_INSTALLATION_ID = 12345
+_SEED_REPO_ID = 500  # reviews.repo_id the #065 gate SELECT returns; forwarded to the authorizer
 _SEED_OWNER = "acme"
 _SEED_REPO = "widget"
 _SEED_PULL_NUMBER = 42
@@ -228,22 +231,44 @@ def _stub_github_factory(installation_id: int) -> Any:
     return _StubGitHub()
 
 
-class _NeverCalledSession:
-    async def __aenter__(self) -> _NeverCalledSession:
+# The #065 live-auth gate does ONE identity SELECT per intake invocation
+# (`_load_review_gate_state`); this stub answers it with the seed identity + 'running' and
+# still ASSERTS on any UPDATE (these tests drive intake's happy path — a status write is a
+# regression). Shared by test_analyze_parallel.py, which imports `_stub_db_factory`.
+class _GateReadSession:
+    async def __aenter__(self) -> _GateReadSession:
         return self
 
     async def __aexit__(self, *args: Any) -> None:
         return None
 
-    def begin(self) -> _NeverCalledSession:
+    def begin(self) -> _GateReadSession:
         return self
 
     async def execute(self, stmt: Any) -> Any:
-        raise AssertionError("intake happy-path should not write to reviews table here")
+        if isinstance(stmt, Update):
+            raise AssertionError("intake happy-path should not write reviews.status here")
+        # select(...) — the #065 identity gate load; `.first()` yields the seed identity.
+        return _GateSelectResult((_SEED_INSTALLATION_ID, _SEED_REPO_ID, "running"))
 
 
-def _stub_db_factory() -> _NeverCalledSession:
-    return _NeverCalledSession()
+@dataclass
+class _GateSelectResult:
+    _row: tuple[int, int, str] | None
+
+    def first(self) -> tuple[int, int, str] | None:
+        return self._row
+
+
+def _stub_db_factory() -> _GateReadSession:
+    return _GateReadSession()
+
+
+async def _stub_authorizer(installation_id: int, repo_id: int) -> LiveAuthResult:
+    """#065 live-auth stub (shared with test_analyze_parallel.py): seed identity is a live
+    authorized install → intake proceeds through the gate."""
+    assert installation_id == _SEED_INSTALLATION_ID, f"unexpected installation_id {installation_id}"
+    return LiveAuthResult(LiveAuthOutcome.AUTHORIZED, "graph-wiring test authorized")
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +597,7 @@ def _build_kwargs(
     kwargs: dict[str, Any] = {
         "db_factory": _stub_db_factory,
         "github_factory": _stub_github_factory,
+        "installation_authorizer": _stub_authorizer,
         "provider": provider,
         "model_config": model_config or ModelConfig(),
         "phase_event_sink": phase_event_sink,
