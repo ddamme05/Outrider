@@ -1784,12 +1784,15 @@ class PublishEligibilityReason(StrEnum):
 
 
 class PublishAttemptOutcome(StrEnum):
-    """Terminal outcome of one `publisher.create_review` attempt.
+    """Terminal outcome of one publish attempt.
 
-    Single emission per attempt, AFTER the GitHub call resolves. No
-    `in_flight` outcome — an in-flight pre-call emission would be
-    incompatible with `audit-events-append-only` because
-    same-event_id-different-payload raises
+    Single emission per publish attempt — the publish node's terminal
+    GitHub-interaction outcome, which may be a no-call short-circuit
+    (`no_op_empty` / `idempotently_skipped`), a GET-path outcome (the
+    external-record `find_existing_review_on_head_sha` query), or a POST-path
+    outcome (`create_review`) — AFTER the flow resolves. No `in_flight`
+    outcome — an in-flight pre-call emission would be incompatible with
+    `audit-events-append-only` because same-event_id-different-payload raises
     `AuditPersisterIdempotencyConflict` rather than acting as an update.
     Crash-after-success defense via `find_existing_review_on_head_sha`.
     """

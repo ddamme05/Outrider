@@ -3487,7 +3487,7 @@
           "not_published_auth_revoked"
         ],
         "title": "PublishAttemptOutcome",
-        "description": "Terminal outcome of one `publisher.create_review` attempt.\n\nSingle emission per attempt, AFTER the GitHub call resolves. No\n`in_flight` outcome \u2014 an in-flight pre-call emission would be\nincompatible with `audit-events-append-only` because\nsame-event_id-different-payload raises\n`AuditPersisterIdempotencyConflict` rather than acting as an update.\nCrash-after-success defense via `find_existing_review_on_head_sha`."
+        "description": "Terminal outcome of one publish attempt.\n\nSingle emission per publish attempt \u2014 the publish node's terminal\nGitHub-interaction outcome, which may be a no-call short-circuit\n(`no_op_empty` / `idempotently_skipped`), a GET-path outcome (the\nexternal-record `find_existing_review_on_head_sha` query), or a POST-path\noutcome (`create_review`) \u2014 AFTER the flow resolves. No `in_flight`\noutcome \u2014 an in-flight pre-call emission would be incompatible with\n`audit-events-append-only` because same-event_id-different-payload raises\n`AuditPersisterIdempotencyConflict` rather than acting as an update.\nCrash-after-success defense via `find_existing_review_on_head_sha`."
       },
       "PublishDestination": {
         "type": "string",

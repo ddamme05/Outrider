@@ -316,9 +316,10 @@ class PublishEventSink(Protocol):
     decisions, not one combined gate): the publish node emits one
     `PublishRoutingEvent` per finding (coordinates-derived destination),
     one `PublishEligibilityEvent` per finding (policy-derived
-    materialization gate), at most one `PublishAttemptEvent` per
-    `publisher.create_review` attempt (terminal GitHub-call outcome),
-    and at most one `PublishEvent` per logical publication (success-path
+    materialization gate), at most one `PublishAttemptEvent` per publish
+    attempt (the terminal publish-interaction outcome — a no-call
+    short-circuit, or a GET-path / POST-path GitHub-call outcome), and at
+    most one `PublishEvent` per logical publication (success-path
     review-level summary, including external-record recovery).
 
     Production / durable implementations MUST:
