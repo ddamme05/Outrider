@@ -204,11 +204,13 @@ async def purge_installation(
 
     Deletes all content rows scoped to this installation in strict
     order (analyze_file_cache → llm_call_content → findings →
-    reviews), writes per-table
-    purge_audit rows, then deletes the installations row itself.
-    installation_repositories cascades automatically via the FK action
-    declared in migration 0001. purge_audit rows survive the
-    installation hard-delete (loose reference, no FK).
+    reviews), writes per-table purge_audit rows, then deletes the
+    installations row itself AND writes a `target_table="installations"`
+    evidence row for that delete — so even a zero-content install leaves
+    a forensic record it was purged. installation_repositories cascades
+    automatically via the FK action declared in migration 0001.
+    purge_audit rows survive the installation hard-delete (loose
+    reference, no FK).
 
     Returns rows_per_table for content tables (does not include the
     installations row itself, which is by definition deleted).
@@ -250,10 +252,24 @@ async def purge_installation(
             purge_role=purge_role,
         )
 
-    await conn.execute(
+    install_deleted = await conn.execute(
         text("DELETE FROM installations WHERE installation_id = :id"),
         {"id": installation_id},
     )
+
+    # Always audit the install-row hard-delete itself, even when the install had ZERO
+    # content rows (the per-table loop above wrote no audit). Without this a zero-content
+    # install is hard-deleted with NO purge_audit evidence, so #012 forensics ("did the
+    # uninstall purge complete for X?") can't be answered. target_table="installations".
+    deleted_count = install_deleted.rowcount or 0
+    if deleted_count > 0:
+        await _write_purge_audit(
+            conn,
+            installation_id=installation_id,
+            target_table="installations",
+            rows_affected=deleted_count,
+            purge_role=purge_role,
+        )
 
     return rows_per_table
 
@@ -289,10 +305,20 @@ async def purge_expired_installations(
         logger.info("install_purge_skipped: advisory lock held by another sweep")
         return {}
 
+    # `FOR UPDATE` row-locks each due install for this transaction, closing a TOCTOU
+    # window the advisory lock does NOT cover: the advisory lock serializes sweep-vs-sweep,
+    # but a NON-sweep writer (a future reinstall webhook clearing `tombstoned_at`) is not a
+    # sweep and never holds SWEEP_LOCK_ID. Without the row lock, such a writer could commit
+    # a tombstone-clear between this SELECT and the per-install content DELETE, so live data
+    # of a just-reinstalled install would be purged. With it, that writer either commits
+    # BEFORE the SELECT (excluded by `tombstoned_at IS NOT NULL`) or blocks until this purge
+    # commits and then no-ops (the row is gone). Belt-and-suspenders today (no such writer
+    # exists yet); required before the reinstall handler lands.
     due = await conn.execute(
         text(
             "SELECT installation_id FROM installations "
-            "WHERE tombstoned_at IS NOT NULL AND purge_after_at < NOW()"
+            "WHERE tombstoned_at IS NOT NULL AND purge_after_at < NOW() "
+            "FOR UPDATE"
         )
     )
     purged: dict[str, dict[str, int]] = {}
