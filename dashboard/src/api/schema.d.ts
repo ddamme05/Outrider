@@ -234,6 +234,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/privacy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Privacy Page
+         * @description PUBLIC, unauthenticated privacy disclosure (the App-listing privacy URL +
+         *     the dashboard footer target). Renders the mandated #013/#015/#016 statement,
+         *     host-qualified for a non-Anthropic configured host.
+         */
+        get: operations["privacy_page_privacy_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhooks/github": {
         parameters: {
             query?: never;
@@ -3386,6 +3408,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    privacy_page_privacy_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
                 };
             };
         };
