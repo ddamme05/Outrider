@@ -274,6 +274,30 @@ async def purge_installation(
     return rows_per_table
 
 
+async def _select_due_installation_ids_for_update(conn: AsyncConnection) -> list[int]:
+    """Select installations past their #012 grace window, row-locking each `FOR UPDATE`.
+
+    The lock is held until the CALLER's transaction commits, which closes a TOCTOU window
+    the advisory lock does NOT cover: the advisory lock serializes sweep-vs-sweep, but a
+    NON-sweep writer (a future reinstall webhook clearing `tombstoned_at`) never holds
+    `SWEEP_LOCK_ID`. Without the row lock, such a writer could commit a tombstone-clear
+    between selection and the per-install content DELETE, so live data of a just-reinstalled
+    install would be purged. With it, that writer either commits BEFORE this SELECT (excluded
+    by `tombstoned_at IS NOT NULL`) or blocks until the purge commits and then no-ops (row
+    gone). Belt-and-suspenders today (no such writer exists yet); required before the reinstall
+    handler lands. Extracted so the lock is regression-testable in isolation
+    (`test_sweep_advisory_lock.py`).
+    """
+    due = await conn.execute(
+        text(
+            "SELECT installation_id FROM installations "
+            "WHERE tombstoned_at IS NOT NULL AND purge_after_at < NOW() "
+            "FOR UPDATE"
+        )
+    )
+    return [row[0] for row in due.fetchall()]
+
+
 async def purge_expired_installations(
     conn: AsyncConnection,
     *,
@@ -305,24 +329,8 @@ async def purge_expired_installations(
         logger.info("install_purge_skipped: advisory lock held by another sweep")
         return {}
 
-    # `FOR UPDATE` row-locks each due install for this transaction, closing a TOCTOU
-    # window the advisory lock does NOT cover: the advisory lock serializes sweep-vs-sweep,
-    # but a NON-sweep writer (a future reinstall webhook clearing `tombstoned_at`) is not a
-    # sweep and never holds SWEEP_LOCK_ID. Without the row lock, such a writer could commit
-    # a tombstone-clear between this SELECT and the per-install content DELETE, so live data
-    # of a just-reinstalled install would be purged. With it, that writer either commits
-    # BEFORE the SELECT (excluded by `tombstoned_at IS NOT NULL`) or blocks until this purge
-    # commits and then no-ops (the row is gone). Belt-and-suspenders today (no such writer
-    # exists yet); required before the reinstall handler lands.
-    due = await conn.execute(
-        text(
-            "SELECT installation_id FROM installations "
-            "WHERE tombstoned_at IS NOT NULL AND purge_after_at < NOW() "
-            "FOR UPDATE"
-        )
-    )
     purged: dict[str, dict[str, int]] = {}
-    for (installation_id,) in due.fetchall():
+    for installation_id in await _select_due_installation_ids_for_update(conn):
         purged[str(installation_id)] = await purge_installation(
             conn, installation_id, purge_role=purge_role
         )
