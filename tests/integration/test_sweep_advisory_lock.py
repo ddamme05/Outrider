@@ -15,10 +15,16 @@ purge_installation can compose into one advisory-locked transaction
 per the schema-layer spec.
 """
 
+import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from outrider.sweep.purge_expired import purge_expired, purge_installation
+from outrider.sweep.purge_expired import (
+    _select_due_installation_ids_for_update,
+    purge_expired,
+    purge_installation,
+)
 
 _INSTALLATION_ID = 12345
 
@@ -230,7 +236,9 @@ async def test_compose_sweeps_purge_real_data_in_one_transaction(
       - purge_expired returns the expired-content row count
       - purge_installation returns empty (content already purged) AND
         the installations row is gone after commit
-      - per-table purge_audit row is written by purge_expired
+      - purge_expired writes the ("reviews") content purge_audit row, and
+        purge_installation writes the ("installations") install-row-delete
+        evidence row (#012 — present even when content is already gone)
     """
     engine = create_async_engine(migrated_db)
     try:
@@ -264,8 +272,62 @@ async def test_compose_sweeps_purge_real_data_in_one_transaction(
                 text("SELECT target_table, purge_role FROM purge_audit ORDER BY target_table")
             )
             rows = list(purge_rows)
-            assert rows == [("reviews", "step-1")], (
-                f"expected one purge_audit row from step-1; got {rows}"
+            # step-1 (purge_expired) writes the ("reviews") content row; step-2
+            # (purge_installation) writes the ("installations") install-row-delete
+            # evidence row — content was already swept, so no further content rows.
+            # ORDER BY target_table → "installations" sorts before "reviews".
+            assert rows == [("installations", "step-2"), ("reviews", "step-1")], (
+                f"expected step-1 content row + step-2 install-delete evidence row; got {rows}"
             )
+    finally:
+        await engine.dispose()
+
+
+async def test_install_purge_candidate_select_row_locks_for_update(migrated_db: str) -> None:
+    """Regression for the reinstall TOCTOU (code-review 2026-07-07): the install-purge
+    candidate SELECT row-locks each due install ``FOR UPDATE``, so a concurrent
+    tombstone-clear blocks until the purge commits (then no-ops) rather than slipping in
+    mid-purge and stranding a live install's content for deletion.
+
+    Deterministic via ``lock_timeout``: while one connection holds the production
+    ``FOR UPDATE`` lock (open txn), a second connection's tombstone-clear must block and
+    time out. Drop ``FOR UPDATE`` from ``_select_due_installation_ids_for_update`` and the
+    row is unlocked → the concurrent UPDATE succeeds → this test fails (DID NOT RAISE).
+    """
+    engine = create_async_engine(migrated_db)
+    inst_id = 777
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO installations (installation_id, app_slug, account_id, "
+                    " account_login, account_type, permissions_at_install, tombstoned_at, "
+                    " purge_after_at) VALUES "
+                    "(:id, 'a', 1, 'x', 'User', '{}'::jsonb, NOW() - INTERVAL '40 days', "
+                    "   NOW() - INTERVAL '10 days')"
+                ),
+                {"id": inst_id},
+            )
+
+        # Holder connection: run the PRODUCTION candidate SELECT (FOR UPDATE) and keep the
+        # transaction open, retaining the row lock on inst_id.
+        async with engine.connect() as conn_holder, conn_holder.begin():
+            locked_ids = await _select_due_installation_ids_for_update(conn_holder)
+            assert inst_id in locked_ids
+
+            # Writer connection: a concurrent tombstone-clear must block on that lock →
+            # lock_timeout → OperationalError.
+            async with engine.connect() as conn_writer:
+                writer_txn = await conn_writer.begin()
+                await conn_writer.execute(text("SET LOCAL lock_timeout = '750ms'"))
+                with pytest.raises(OperationalError):
+                    await conn_writer.execute(
+                        text(
+                            "UPDATE installations SET tombstoned_at = NULL "
+                            "WHERE installation_id = :id"
+                        ),
+                        {"id": inst_id},
+                    )
+                await writer_txn.rollback()
     finally:
         await engine.dispose()

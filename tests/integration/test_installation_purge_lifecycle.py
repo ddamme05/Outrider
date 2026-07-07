@@ -272,3 +272,56 @@ async def test_purge_expired_installations_labels_role_install_purge(migrated_db
             )
     finally:
         await engine.dispose()
+
+
+async def test_purge_installation_zero_content_still_audits(migrated_db: str) -> None:
+    """Arc B2 code-review #3/#4: a ZERO-content install (no rows in any of the four content
+    tables) is still hard-deleted AND leaves forensic evidence — exactly one purge_audit row,
+    target_table='installations', rows_affected=1. This is the motivating bug (the lifecycle
+    test seeds all four content tables, so it never exercises the empty case). Revert the
+    install-row evidence write → a zero-content purge leaves no purge_audit row and this fails.
+    """
+    engine = create_async_engine(migrated_db)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO installations (installation_id, app_slug, account_id, "
+                    " account_login, account_type, permissions_at_install, tombstoned_at, "
+                    " purge_after_at) VALUES "
+                    "(:id, 'a', 1, 'x', 'User', '{}'::jsonb, NOW() - INTERVAL '40 days', "
+                    "   NOW() - INTERVAL '10 days')"
+                ),
+                {"id": _INSTALLATION_ID},
+            )
+
+        async with engine.begin() as conn:
+            rows_per_table = await purge_installation(
+                conn, _INSTALLATION_ID, purge_role="install-purge"
+            )
+
+        # No content anywhere → the content-table return dict is empty (installations is
+        # never in the return; it's audit-only).
+        assert rows_per_table == {}
+
+        async with engine.connect() as conn:
+            install_count = await conn.execute(
+                text("SELECT COUNT(*) FROM installations WHERE installation_id = :id"),
+                {"id": _INSTALLATION_ID},
+            )
+            assert install_count.scalar_one() == 0, "zero-content install must still hard-delete"
+
+            audit = await conn.execute(
+                text(
+                    "SELECT target_table, rows_affected, purge_role FROM purge_audit "
+                    "WHERE installation_id = :id"
+                ),
+                {"id": _INSTALLATION_ID},
+            )
+            audit_rows = list(audit)
+            assert audit_rows == [("installations", 1, "install-purge")], (
+                "a zero-content install-purge must leave exactly one 'installations' evidence "
+                f"row (rows_affected=1); got {audit_rows}"
+            )
+    finally:
+        await engine.dispose()
