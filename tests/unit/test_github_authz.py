@@ -147,35 +147,18 @@ async def test_unparseable_install_body_is_uncertain() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Token-mint (POST) failures — install active, repo probe fails → fail closed.
-# Only 422 is genuine repo-inaccessible; 401/429/5xx/network are UNCERTAIN (F4).
+# Token-mint (POST) failures. The GET already settled existence + suspension reliably;
+# the pinned 2026-03-10 REST contract attributes no reliable cause to ANY mint-failure
+# status (403 "Forbidden" / 404 / 422 "validation or spam" / 401 / 429 / 5xx), so every
+# one fails closed as UNCERTAIN — never mislabelled suspended / repo-inaccessible.
 # ---------------------------------------------------------------------------
-async def test_repo_removed_422_is_repo_inaccessible() -> None:
-    client = _FakeAppClient(get_result=_active_installation(), post_result=_http_error(422))
-    result = await _check(client)
-    assert result.outcome is LiveAuthOutcome.REPO_INACCESSIBLE
-    assert result.authorized is False
-    assert [c[0] for c in client.calls] == ["GET", "POST"]
-
-
-async def test_mint_403_is_suspended() -> None:
-    client = _FakeAppClient(get_result=_active_installation(), post_result=_http_error(403))
-    assert (await _check(client)).outcome is LiveAuthOutcome.SUSPENDED
-
-
-async def test_mint_404_is_uninstalled() -> None:
-    client = _FakeAppClient(get_result=_active_installation(), post_result=_http_error(404))
-    assert (await _check(client)).outcome is LiveAuthOutcome.UNINSTALLED
-
-
-@pytest.mark.parametrize("status", [401, 429, 500, 503, None])
-async def test_mint_401_429_5xx_network_are_uncertain(status: int | None) -> None:
-    # These are NOT "repo inaccessible" — they are uncertainty. Still fail closed, but the
-    # telemetry must not claim the repo was denied (F4).
+@pytest.mark.parametrize("status", [401, 403, 404, 422, 429, 500, 503, None])
+async def test_any_token_mint_failure_is_uncertain(status: int | None) -> None:
     client = _FakeAppClient(get_result=_active_installation(), post_result=_http_error(status))
     result = await _check(client)
     assert result.outcome is LiveAuthOutcome.UNCERTAIN
     assert result.authorized is False
+    assert [c[0] for c in client.calls] == ["GET", "POST"]  # both checks ran
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +177,6 @@ async def test_make_installation_authorizer_binds_client() -> None:
     [
         LiveAuthOutcome.SUSPENDED,
         LiveAuthOutcome.UNINSTALLED,
-        LiveAuthOutcome.REPO_INACCESSIBLE,
         LiveAuthOutcome.UNCERTAIN,
     ],
 )
