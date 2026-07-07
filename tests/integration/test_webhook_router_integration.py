@@ -81,6 +81,7 @@ def _valid_payload(
             "base": {"sha": "b" * 40, "ref": "main"},
             "additions": 5,
             "deletions": 2,
+            "draft": False,
         },
         "repository": {
             "id": repo_id,

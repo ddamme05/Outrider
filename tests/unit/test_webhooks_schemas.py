@@ -30,6 +30,7 @@ def _valid_payload() -> dict[str, Any]:
             "base": {"sha": "b" * 40, "ref": "main"},
             "additions": 10,
             "deletions": 2,
+            "draft": False,
         },
         "repository": {
             "id": 999,
@@ -48,6 +49,17 @@ def test_valid_payload_parses() -> None:
     assert payload.pull_request.number == 42
     assert payload.repository.id == 999
     assert payload.installation.id == 12345
+    assert payload.pull_request.draft is False
+
+
+def test_missing_draft_rejected() -> None:
+    """`draft` is REQUIRED (fail-closed autorun gate): GitHub always sends it on
+    pull_request events, so a payload omitting it is malformed and must fail validation,
+    not silently default to ready and autorun what could be a draft PR."""
+    payload_dict = _valid_payload()
+    del payload_dict["pull_request"]["draft"]
+    with pytest.raises(ValidationError):
+        PullRequestEventPayload.model_validate(payload_dict)
 
 
 def test_unknown_top_level_field_is_ignored() -> None:

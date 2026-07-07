@@ -103,6 +103,7 @@ def _valid_pr_opened_payload() -> dict[str, Any]:
             "base": {"sha": "b" * 40, "ref": "main"},
             "additions": 5,
             "deletions": 2,
+            "draft": False,
         },
         "repository": {
             "id": 999,
