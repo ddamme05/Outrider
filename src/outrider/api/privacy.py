@@ -152,13 +152,16 @@ def resolve_privacy_context() -> PrivacyContext:
     into the render context.
 
     Plain env reads (like `main._demo_mode_from_env`) so the page renders in demo mode
-    without constructing the LLM provider. Host match is case-sensitive, mirroring
-    `resolve_host_identity`. An unrecognized host does NOT fall back to Anthropic — the
-    caller renders a fail-loud notice instead (a running app would already have crashed
-    at startup on an unknown host).
+    without constructing the LLM provider. Mirrors runtime host resolution
+    (`lifespan.py:621` → `resolve_host_identity`) EXACTLY: an UNSET `OUTRIDER_LLM_HOST`
+    defaults to Anthropic (the `.get` default), but a present-but-BLANK value (`""`) is
+    NOT collapsed to Anthropic — runtime passes `""` through and rejects it as unknown at
+    startup, so the public page must not silently claim Anthropic for a blank host either.
+    Host match is case-sensitive. An unrecognized (or blank) host renders a fail-loud
+    notice, never the Anthropic fallback (constraint #6).
     """
     host_id = os.environ.get("OUTRIDER_LLM_HOST", ANTHROPIC_PROFILE_ID).strip()
-    if not host_id or host_id == ANTHROPIC_PROFILE_ID:
+    if host_id == ANTHROPIC_PROFILE_ID:
         return PrivacyContext(
             configured_host=ANTHROPIC_PROFILE_ID,
             is_anthropic=True,
@@ -223,11 +226,12 @@ def _unrecognized_host_section(host_id: str) -> str:
     Provider-specific retention cannot be shown — and Anthropic's terms are NOT
     substituted (fail-loud). A running deployment fails startup on an unknown host;
     this notice is for pre-start / misconfiguration."""
+    display = host_id or "(blank)"
     return (
         '    <section class="host">\n'
         "      <h2>Configured LLM host</h2>\n"
         f"      <p>This deployment is configured for LLM host "
-        f"<code>{html.escape(host_id)}</code>, which Outrider does not recognize. "
+        f"<code>{html.escape(display)}</code>, which Outrider does not recognize. "
         "Provider-specific retention terms cannot be shown for it, and Anthropic's "
         "terms do not apply — resolve OUTRIDER_LLM_HOST to a supported host to restore "
         "the provider disclosure.</p>\n"
