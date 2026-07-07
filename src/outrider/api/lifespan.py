@@ -997,6 +997,10 @@ def build_lifespan(
                     audit_persister=persister,
                     checkpointer=checkpointer,
                     compiled_graph=compiled_graph,
+                    # Reconcile janitor (#065/#012/#067) rides the same loop, gated on the App being
+                    # configured. `app.state.github_app_settings` is set in BOTH the demo (None) and
+                    # non-demo branches above; demo mode → None → the janitor self-skips.
+                    github_app_settings=app.state.github_app_settings,
                 )
                 stack.push_async_callback(_cancel_task, sweep_task)
             app.state.sweep_task = sweep_task

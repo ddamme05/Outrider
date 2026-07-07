@@ -28,12 +28,13 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Final
 
 from sqlalchemy import text, update
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from outrider.db.models.installations import Installation
 from outrider.github.authz import list_installation_ids
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
     from outrider.github.config import GitHubAppSettings
 
@@ -60,7 +61,7 @@ class ReconcileResult:
 
 
 async def reconcile_installations(
-    session_factory: async_sessionmaker[AsyncSession],
+    engine: AsyncEngine,
     settings: GitHubAppSettings,
 ) -> ReconcileResult:
     """Run one reconcile tick under the `#067` session-scoped advisory lock.
@@ -68,35 +69,48 @@ async def reconcile_installations(
     Returns counts; a no-op `ReconcileResult(skipped_lock_held=True)` if another runner holds the
     lock. The GitHub list runs OUTSIDE any write transaction (the `#067` rationale) and raises on
     failure — a failed tick aborts WITHOUT reconciling, never tombstoning against partial data.
+
+    The lock lives on a DEDICATED connection: `pg_try_advisory_lock` acquires a SESSION-scoped lock,
+    then we COMMIT immediately so no transaction stays open across the `GET /app/installations` call
+    (a lingering txn would pin the connection through the network stall — the exact thing `#067`'s
+    session-scoped form exists to avoid). The lock persists on the connection across the commit +
+    the network call; the reconcile WRITES run on a separate short-lived session/transaction.
     """
-    async with session_factory() as lock_session:
+    sessionmaker: async_sessionmaker[AsyncSession] = async_sessionmaker(
+        engine, expire_on_commit=False
+    )
+    async with engine.connect() as lock_conn:
         acquired = (
-            await lock_session.execute(
+            await lock_conn.execute(
                 text("SELECT pg_try_advisory_lock(:lock_id)"),
                 {"lock_id": RECONCILE_LOCK_ID},
             )
         ).scalar_one()
+        # Commit the implicit (autobegin) transaction the SELECT opened so it does NOT stay open
+        # across the network call. The session-scoped lock is on the connection, not the txn, so
+        # it survives the commit (and the network call, and until pg_advisory_unlock / conn close).
+        await lock_conn.commit()
         if not acquired:
             logger.info("reconcile janitor: advisory lock held by another runner; skipping tick")
             return ReconcileResult(skipped_lock_held=True)
         try:
             github_ids = await list_installation_ids(settings)
-            return await _apply_reconcile(session_factory, github_ids)
+            return await _apply_reconcile(sessionmaker, github_ids)
         finally:
-            # Release the session-scoped lock explicitly. Connection close (including on crash)
-            # is the backstop release; this makes the happy-path release immediate.
-            await lock_session.execute(
+            # Release the session-scoped lock explicitly (connection close is the crash backstop).
+            await lock_conn.execute(
                 text("SELECT pg_advisory_unlock(:lock_id)"),
                 {"lock_id": RECONCILE_LOCK_ID},
             )
+            await lock_conn.commit()
 
 
 async def _apply_reconcile(
-    session_factory: async_sessionmaker[AsyncSession], github_ids: set[int]
+    sessionmaker: async_sessionmaker[AsyncSession], github_ids: set[int]
 ) -> ReconcileResult:
     """Apply the two reconcile writes in one short transaction (the lock is held across it)."""
     now = datetime.now(UTC)
-    async with session_factory() as session, session.begin():
+    async with sessionmaker() as session, session.begin():
         # Tombstone installs GitHub no longer lists (missed `installation.deleted`). The
         # `tombstoned_at IS NULL` guard is idempotent and preserves an existing grace deadline.
         # An empty `github_ids` (GitHub lists none — every install uninstalled) tombstones every
