@@ -63,7 +63,11 @@ from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 from outrider.api.webhooks.schemas import PullRequestEventPayload
 from outrider.api.webhooks.signature import verify_signature
 from outrider.db.models.audit_events import AuditEvent as AuditEventRow
-from outrider.db.models.installations import Installation, InstallationRepository
+from outrider.db.models.installations import (
+    Installation,
+    InstallationRepository,
+    active_repo_membership,
+)
 from outrider.db.models.reviews import Review
 
 if TYPE_CHECKING:
@@ -319,9 +323,7 @@ async def receive_pull_request_webhook(
             or (
                 await session.execute(
                     select(InstallationRepository.id).where(
-                        InstallationRepository.installation_id == installation_id,
-                        InstallationRepository.repo_id == repo_id,
-                        InstallationRepository.removed_at.is_(None),
+                        active_repo_membership(installation_id, repo_id)
                     )
                 )
             ).first()
