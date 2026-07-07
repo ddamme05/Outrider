@@ -79,6 +79,7 @@ from outrider.eval_support import (
     require_eval_mode,
     run_alembic_upgrade_head,
 )
+from outrider.github.authz import LiveAuthOutcome, LiveAuthResult
 from outrider.llm.config import ModelConfig
 from outrider.schemas.hitl import (
     HITLDecision,
@@ -794,6 +795,14 @@ class _NoOpImportPathResolver:
 # ---------------------------------------------------------------------------
 
 
+async def _eval_always_authorized(installation_id: int, repo_id: int) -> LiveAuthResult:
+    """Eval double for build_graph's `installation_authorizer` (#065). Eval fixtures are
+    trusted and there is no live GitHub App to probe, so the live-auth gate always
+    authorizes; the reviews row `_seed_review` writes carries the matching identity that
+    intake's `_load_review_gate_state` verifies before this runs."""
+    return LiveAuthResult(LiveAuthOutcome.AUTHORIZED, "eval fixture (trusted)")
+
+
 def _github_factory_for(fixture: EvalFixture) -> Any:
     """Build a `github_factory(installation_id)` serving the fixture's PR."""
     metas = [
@@ -962,6 +971,7 @@ def _build_eval_graph(
     return build_graph(
         db_factory=session_factory,
         github_factory=_github_factory_for(fixture),
+        installation_authorizer=_eval_always_authorized,
         provider=provider,
         model_config=model_config or ModelConfig.for_host(host_id),
         profile_id=profile_id,

@@ -71,6 +71,7 @@ from outrider.audit.events import PublishEvent
 from outrider.audit.persister import AuditPersister
 from outrider.audit.replay import AuditReplayer, ReplayMode
 from outrider.db.review_status_persister import ReviewStatusPersister
+from outrider.github.authz import LiveAuthOutcome, LiveAuthResult
 from outrider.llm.config import ModelConfig
 from outrider.schemas import GitHubReviewCreated
 from outrider.schemas.pr_context import ChangedFile, PRContext
@@ -245,6 +246,13 @@ class _StubGitHub:
 def _stub_github_factory(installation_id: int) -> Any:
     assert installation_id == _INSTALLATION_ID, f"unexpected installation_id {installation_id}"
     return _StubGitHub()
+
+
+async def _always_authorized(installation_id: int, repo_id: int) -> LiveAuthResult:
+    """#065 live-auth stub: the seeded review is a live, authorized install → intake's gate
+    passes and the graph proceeds. Asserts the gate forwards the seed installation identity."""
+    assert installation_id == _INSTALLATION_ID, f"unexpected installation_id {installation_id}"
+    return LiveAuthResult(outcome=LiveAuthOutcome.AUTHORIZED, detail="e2e smoke authorized")
 
 
 @dataclass
@@ -472,6 +480,7 @@ async def test_full_review_reaches_publish_and_replays_equivalent(engine: AsyncE
     graph = build_graph(
         db_factory=session_factory,
         github_factory=_stub_github_factory,
+        installation_authorizer=_always_authorized,
         provider=provider,
         model_config=ModelConfig(),
         # Anthropic triad (the scripted provider stamps anthropic) so completion events

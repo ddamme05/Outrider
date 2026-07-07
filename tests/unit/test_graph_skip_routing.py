@@ -220,6 +220,11 @@ def _stub_github_factory(installation_id: int) -> Any:  # noqa: ARG001
     raise NotImplementedError(msg)
 
 
+async def _stub_installation_authorizer(installation_id: int, repo_id: int) -> Any:  # noqa: ARG001
+    msg = "introspection test never runs the authorizer"
+    raise NotImplementedError(msg)
+
+
 @pytest.fixture
 def compiled_graph() -> Any:
     """Build a compiled graph with stub deps; only the wiring is read."""
@@ -235,6 +240,7 @@ def compiled_graph() -> Any:
     return build_graph(
         db_factory=_stub_db_factory,  # type: ignore[arg-type]
         github_factory=_stub_github_factory,
+        installation_authorizer=_stub_installation_authorizer,
         provider=_StubProvider(),
         model_config=_StubModelConfig(),  # type: ignore[arg-type]
         phase_event_sink=_StubPhaseSink(),

@@ -280,6 +280,10 @@ def _stub_github_factory(installation_id: int) -> InstallationGitHubClient:
     raise NotImplementedError("test stub")
 
 
+async def _stub_installation_authorizer(installation_id: int, repo_id: int) -> Any:
+    raise NotImplementedError("gate-guard tests never run the authorizer")
+
+
 def _valid_args() -> dict[str, Any]:
     """Build a complete, valid set of kwargs. Tests perturb one at a time."""
     from langgraph.checkpoint.memory import InMemorySaver  # noqa: PLC0415
@@ -306,6 +310,7 @@ def _valid_args() -> dict[str, Any]:
         "import_path_resolver": _StubImportPathResolver(),
         "db_factory": _stub_db_factory(),
         "github_factory": _stub_github_factory,
+        "installation_authorizer": _stub_installation_authorizer,
     }
 
 
@@ -540,6 +545,22 @@ def test_build_graph_rejects_github_factory_non_callable() -> None:
     args = _valid_args()
     args["github_factory"] = object()  # non-callable
     with pytest.raises(BuildGraphError, match="github_factory must be callable"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_installation_authorizer_none() -> None:
+    """The #065 live-auth gate authorizer is REQUIRED — a None value must fail the build,
+    never silently fail-open (skip the security gate)."""
+    args = _valid_args()
+    args["installation_authorizer"] = None
+    with pytest.raises(BuildGraphError, match="installation_authorizer must not be None"):
+        build_graph(**args)
+
+
+def test_build_graph_rejects_installation_authorizer_non_callable() -> None:
+    args = _valid_args()
+    args["installation_authorizer"] = object()  # non-callable
+    with pytest.raises(BuildGraphError, match="installation_authorizer must be callable"):
         build_graph(**args)
 
 

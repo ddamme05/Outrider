@@ -1719,7 +1719,7 @@ Webhook events only update the cache and set retention state. The periodic recon
 
 **Consequences.** Removes the whole "keep a synced mirror" class of problem: no delivery-ordering clock, no reconcile-generation fence, no per-event fail-closed state machine. Adds one GitHub call at intake (marginal — intake already calls GitHub to fetch the PR) and a hard dependency on GitHub reachability to review (unreachable → fail closed → no review, which is correct). Adds an App-JWT auth path to `github/auth.py` (which mints only installation tokens today) and an authorization-gate step to the intake node's responsibilities, while preserving `#020` (no webhook-side minting). Supersedes the earlier B2 reconciliation designs.
 
-**Referenced from.** `agent/nodes/intake.py`, `agent/nodes/publish.py`, `github/auth.py`, `api/webhooks/router.py` (the `# See DECISIONS.md#065` back-pointer comments are added when the B2 live-authorization implementation touches these files — the code they describe does not exist yet; this is the standard "when written" pattern), `specs/2026-07-06-b2-installation-lifecycle.md` (already cites this entry).
+**Referenced from.** `agent/nodes/intake.py`, `github/auth.py`, `github/authz.py`, `api/webhooks/router.py` (these four carry the `# See DECISIONS.md#065` back-pointer today — the intake live-auth gate, the App-JWT `make_app_client`, the `check_installation_authorization` live check, and the webhook cache early-out all landed with the B2 live-authorization implementation), `agent/nodes/publish.py` (back-pointer lands with the publish `NOT_PUBLISHED_AUTH_REVOKED` slice — not yet written), `specs/2026-07-06-b2-installation-lifecycle.md` (already cites this entry).
 
 ---
 

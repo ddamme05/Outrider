@@ -195,7 +195,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from outrider.cache import AnalyzeCacheStore
-    from outrider.github import InstallationGitHubClient
+    from outrider.github import InstallationAuthorizer, InstallationGitHubClient
     from outrider.llm.config import ModelConfig
     from outrider.notify.orchestrator import SlackTargetResolver
 
@@ -222,6 +222,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     *,
     db_factory: async_sessionmaker[AsyncSession],
     github_factory: Callable[[int], InstallationGitHubClient],
+    installation_authorizer: InstallationAuthorizer,
     provider: LLMProvider,
     model_config: ModelConfig,
     phase_event_sink: PhaseEventSink,
@@ -352,6 +353,10 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         raise BuildGraphError("db_factory must not be None")
     if github_factory is None:
         raise BuildGraphError("github_factory must not be None")
+    # Required, not optional-None: the #065 live-auth gate is a security check, so a missing
+    # authorizer must fail the build, never silently fail-open (skip the gate).
+    if installation_authorizer is None:
+        raise BuildGraphError("installation_authorizer must not be None")
 
     # `total_review_budget_tokens` is a public-input int; validate here so
     # a misconfigured caller fails before analyze ever runs. `bool` is
@@ -385,6 +390,11 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     if not callable(github_factory):
         raise BuildGraphError(
             f"github_factory must be callable (got type: {type(github_factory).__name__})"
+        )
+    if not callable(installation_authorizer):
+        raise BuildGraphError(
+            "installation_authorizer must be callable (got type: "
+            f"{type(installation_authorizer).__name__})"
         )
 
     # Slack is optional: a per-install resolver, or None to disable. The resolver
@@ -511,6 +521,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     intake_callable = functools.partial(
         intake,
         github_factory=github_factory,
+        installation_authorizer=installation_authorizer,
         db_factory=db_factory,
         phase_event_sink=phase_event_sink,
         file_examination_sink=file_examination_sink,

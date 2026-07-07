@@ -98,6 +98,7 @@ from outrider.db.models.installations import (  # noqa: E402
 )
 from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: E402
 from outrider.github.auth import make_installation_client_factory  # noqa: E402
+from outrider.github.authz import make_installation_authorizer  # noqa: E402
 from outrider.github.config import GitHubAppSettings  # noqa: E402
 from outrider.github.publisher import GitHubKitPublisher  # noqa: E402
 from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: E402
@@ -440,6 +441,9 @@ async def _run(args: argparse.Namespace) -> int:
         llm_host, reasoning=llm_reasoning
     )
     github_factory = make_installation_client_factory(github_settings)
+    # #065 live-authorization gate: the demo runs a REAL live check (App-JWT install probe +
+    # repo-scoped token mint) at intake, same as production — not a stub.
+    installation_authorizer = make_installation_authorizer(github_settings)
 
     _say(f"  Host ................. {llm_host}  (reasoning={llm_reasoning})")
     if model_config.analyze_model == model_config.triage_model:
@@ -527,6 +531,7 @@ async def _run(args: argparse.Namespace) -> int:
         graph = build_graph(
             db_factory=session_factory,
             github_factory=github_factory,
+            installation_authorizer=installation_authorizer,
             provider=provider,
             model_config=model_config,
             # Host-identity triad (DECISIONS.md#056) — required for a non-anthropic host, or

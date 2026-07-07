@@ -72,6 +72,7 @@ from sqlalchemy.pool import NullPool  # noqa: E402
 # Reuse the committed test's fakes + scenario verbatim (no drift).
 from tests.integration.test_e2e_smoke import (  # noqa: E402
     _FILE_PATH,
+    _always_authorized,
     _analyze_response,
     _RecordingPublisher,
     _ScriptedLLMProvider,
@@ -228,6 +229,7 @@ async def _drive(engine: AsyncEngine) -> bool:
     graph = build_graph(
         db_factory=session_factory,
         github_factory=_stub_github_factory,
+        installation_authorizer=_always_authorized,
         provider=provider,
         model_config=ModelConfig(),
         phase_event_sink=persister,
