@@ -1699,3 +1699,36 @@ Admission (`agent/nodes/analyze_observed.py`): a match is denied when any bindin
 **Consequences.** Public prose saying "the 7-node graph" describes the logical graph and remains accurate. The phrase sweep (`grep -rniE "(7|seven)([- ]graph)?[- ]nodes?"`, ~31 public occurrences) is verified at this entry's landing — every current occurrence is literally true until the physical vertices land — and re-verified when the fan-out increment ships. §3.2 and §16.1 point 1 carry reconciliation notes pointing here; `docs/architecture.md`'s annotation pairs with this entry. The parallel-analyze spec transitions to Approved on this entry's landing.
 
 **Referenced from:** `src/outrider/agent/graph.py`, `src/outrider/audit/events.py`, `src/outrider/audit/replay.py`, `specs/2026-07-05-parallel-analyze.md`.
+
+---
+
+## 065. Authorization is a live GitHub check; the local install DB is a cache
+
+**Status:** Accepted, 2026-07-06.
+
+**Context.** The installation-lifecycle feature (Arc B2) went through many design rounds that all shared one root cause: the local `installations` / `installation_repositories` tables were treated as the *authorization source*, but webhooks — out-of-order, lost, or redelivered — cannot keep such a mirror in sync with GitHub. Every sync-hardening attempt (a monotonic delivery clock, a generation-fenced concurrent reconciler, a "direct upsert + periodic reconcile" model) relocated the bug rather than fixing it. The correct pattern for "am I allowed to act on this?" is to check at the point of action against the authority, not to cache and trust the answer.
+
+**Decision.** The local install tables are a **cache plus retention bookkeeping** (tombstones, purge deadlines, display state), never the authorization authority. **GitHub is checked live at the two security-critical moments:**
+
+- **Intake** — inside the intake *node* (per `#020` the webhook handler mints no GitHub client; intake constructs one via the injected `github_factory(installation_id)`). The node's first action is a live check: App-JWT confirms the installation exists and is not suspended (`GET /app/installations/{id}`); an installation token confirms the repo is accessible. On failure or uncertainty it **fails closed** — the intake node drives the already-created review row to the existing terminal `skipped` status via the intake-local `_set_review_status(..., "skipped")` helper (the same one the oversized-PR skip uses) and does not proceed to analyze. No new audit event type is introduced; the phase events already emitted plus the terminal transition carry it.
+- **Publish** — a best-effort local pre-check, then POST with a fresh installation-auth (repo-scoped) token. On GitHub `401/403/404` the review is retained and recorded with a new `PublishAttemptOutcome.NOT_PUBLISHED_AUTH_REVOKED` value (the outcome string is self-describing; no `reason` field is added anywhere, preserving the `#023` publish-attempt hash contract). **This is one contract — best-effort pre-check plus GitHub-is-the-final-gate; B2 does not, and cannot cheaply, guarantee zero post after revocation** (an already-minted token may remain valid up to its ≤1h expiry; a hard guarantee would need a stronger protocol we are not building). The residual sub-token-lifetime window is documented, not promised away.
+
+Webhook events only update the cache and set retention state. The periodic reconcile is a **janitor** — it tombstones installs no longer present in `GET /app/installations` so their data still purges — run as a single in-process scheduled task.
+
+**Consequences.** Removes the whole "keep a synced mirror" class of problem: no delivery-ordering clock, no reconcile-generation fence, no per-event fail-closed state machine. Adds one GitHub call at intake (marginal — intake already calls GitHub to fetch the PR) and a hard dependency on GitHub reachability to review (unreachable → fail closed → no review, which is correct). Adds an App-JWT auth path to `github/auth.py` (which mints only installation tokens today) and an authorization-gate step to the intake node's responsibilities, while preserving `#020` (no webhook-side minting). Supersedes the earlier B2 reconciliation designs.
+
+**Referenced from.** `agent/nodes/intake.py`, `agent/nodes/publish.py`, `github/auth.py`, `api/webhooks/router.py` (the `# See DECISIONS.md#065` back-pointer comments are added when the B2 live-authorization implementation touches these files — the code they describe does not exist yet; this is the standard "when written" pattern), `specs/2026-07-06-b2-installation-lifecycle.md` (already cites this entry).
+
+---
+
+## 066. OSS self-host via GitHub App Manifest — one app per deployment
+
+**Status:** Accepted, 2026-07-06.
+
+**Context.** Outrider ships OSS and self-hosted (per `#011`). Users want an easy install without hand-registering an app, but a single shared GitHub App cannot serve many self-hosted servers: one app has one webhook URL (it cannot reach N different servers) and one private key (sharing it would let any self-hoster mint installation tokens for any installation, destroying tenant isolation). A hosted SaaS would put a central service in the data path, contradicting the self-host privacy story. Licensing and telemetry/phone-home were considered and rejected.
+
+**Decision.** Each deployment runs its **own GitHub App**, created via a published **GitHub App Manifest**: the user clicks a link, GitHub creates their app pre-configured and returns its app id, private key (PEM), and webhook secret to the user's own server (`POST /app-manifests/{code}/conversions`). No shared app, no central service in the data path, **no licensing surface, no telemetry, no phone-home.** This preserves `#011`/`#013`: code and data stay in the operator's infrastructure and the only egress is the LLM call. It also fixes B2's operating world as **one org per instance, operator equals user, no adversarial multi-tenancy** — which is what makes `#065`'s live-authorization model both correct and simple.
+
+**Consequences.** `docs/architecture.md`'s deployment-shape section (the "separately deployed" note) is amended LOCALLY alongside this entry to record the app-per-deployment manifest model, satisfying the enforce-decisions pairing. NOTE: `docs/` is currently gitignored (`.gitignore:12` — "ignored now; track when public"), so this DECISIONS entry is the only part of the pairing in the tracked/public diff today; the `architecture.md` amendment graduates into the public diff when `docs/` becomes tracked at the repo's public flip. This is a *local* pairing, not a same-tracked-commit pairing — the extracted-doc drift gate is honored (both edited together), but the two files land in the public history at different times by the repo's own gitignore policy. **There is no cross-deployment usage or user-count visibility, by design** — each app is independent and GitHub gives the manifest author no telemetry about apps others create from it; this is accepted as the privacy tradeoff. B2's onboarding and the README document the manifest install flow (README back-pointer lands with that B2 onboarding work).
+
+**Referenced from.** `docs/architecture.md` (deployment shape), `specs/2026-07-06-b2-installation-lifecycle.md`, `specs/2026-07-06-b3-privacy-surfaces.md`, `README.md`.
