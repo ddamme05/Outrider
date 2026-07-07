@@ -37,13 +37,20 @@ installation membership, idempotency, etc.).
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from typing import Any
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 __all__ = [
+    "InstallationEventPayload",
+    "InstallationRepositoriesEventPayload",
+    "InstallationRepositoryRef",
     "PullRequestEventPayload",
     "PullRequestRef",
     "RepositoryRef",
+    "WebhookAccount",
     "WebhookInstallation",
+    "WebhookInstallationDetail",
     "WebhookPullRequest",
     "WebhookUser",
 ]
@@ -274,3 +281,114 @@ class PullRequestEventPayload(BaseModel):
     pull_request: WebhookPullRequest
     repository: RepositoryRef
     installation: WebhookInstallation
+
+
+# ---------------------------------------------------------------------------
+# Installation-lifecycle events (Arc B2 install-event dispatch, DECISIONS.md#065)
+#
+# Under #065 the local install tables are a CACHE, not the authorization
+# authority (GitHub is checked live at intake/publish). These events maintain
+# cache / retention / display state via simple upserts — never a security
+# decision. `action` is `str` + a handler-side allowlist (unknown -> 2xx no-op),
+# NOT a Literal: only `created` and `installation_repositories.added` are
+# doc-pinned in the 2026-03-10 github-rest-api mirror; `deleted` / `suspend` /
+# `unsuspend` / `removed` are inferred present-tense (spec round-12) and confirmed
+# only against a real wire fixture. `extra="ignore"` tolerates GitHub's full
+# payload; only the fields the cache upserts are modelled.
+# ---------------------------------------------------------------------------
+
+
+class WebhookAccount(BaseModel):
+    """The `installation.account` object (the user or org the App is installed on).
+
+    Carries the fields the `installations` cache upserts on `installation.created`:
+    `account_id` (`id`), `account_login` (`login`), `account_type` (`type`). `login`
+    reuses the GitHub-username character class (input-boundary defense, same as
+    `WebhookUser.login`); `type` is a bounded string (`User` / `Organization` / `Bot`),
+    persisted as display state only.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    id: int = Field(ge=1)
+    login: str = Field(min_length=1, max_length=39, pattern=r"^[A-Za-z0-9-]+$")
+    type: str = Field(min_length=1, max_length=20)
+
+
+class InstallationRepositoryRef(BaseModel):
+    """A repository entry in an install-event `repositories` / `repositories_added` /
+    `repositories_removed` array.
+
+    GitHub sends a MINIMAL repo shape in these arrays — `{id, node_id, name, full_name,
+    private}`, with NO nested `owner` object — so this is a lighter model than
+    `RepositoryRef` (which requires `owner`). Only `id` (-> `installation_repositories.repo_id`)
+    and `full_name` (-> `repo_full_name`) are consumed by the membership-cache upsert; the
+    `full_name` pattern is the same input-boundary defense as `RepositoryRef.full_name`.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    id: int = Field(ge=1)
+    full_name: str = Field(
+        min_length=3,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+    )
+
+
+class WebhookInstallationDetail(BaseModel):
+    """The full `installation` object on install-lifecycle events (`installation`,
+    `installation_repositories`).
+
+    Distinct from `WebhookInstallation` (id-only, consumed by review-scoped events for the
+    membership lookup): this carries the account / permission / selection fields the
+    `installation.created` upsert writes into the `installations` cache. `suspended_at`
+    mirrors GitHub's field (null = active); `repository_selection` is `all` | `selected`
+    (bounded str, persisted as-is — the cache is not the authority under #065).
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    id: int = Field(ge=1)
+    account: WebhookAccount
+    app_slug: str = Field(min_length=1, max_length=100)
+    repository_selection: str = Field(min_length=1, max_length=20)
+    permissions: dict[str, Any] = Field(default_factory=dict)
+    suspended_at: AwareDatetime | None = None
+
+
+class InstallationEventPayload(BaseModel):
+    """`installation` webhook event — App lifecycle (`created` / `deleted` / `suspend` /
+    `unsuspend`).
+
+    `action` is `str` (allowlisted handler-side, unknown -> 2xx no-op) per the spec's
+    round-12 finding: only `created` is doc-pinned; `deleted` / `suspend` / `unsuspend` are
+    inferred present-tense. `repositories` is present on `created` (the repos the install can
+    access — seeded into `installation_repositories` for a `selected` install); empty for the
+    other actions. `installation` is required (App-only flow).
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    action: str
+    installation: WebhookInstallationDetail
+    repositories: tuple[InstallationRepositoryRef, ...] = ()
+
+
+class InstallationRepositoriesEventPayload(BaseModel):
+    """`installation_repositories` webhook event — repo-set changes (`added` / `removed`).
+
+    Every event re-persists `repository_selection` on the install. `repositories_added` /
+    `repositories_removed` carry the deltas; the handler upserts membership with re-add
+    semantics (`removed_at = NULL` on add, `now()` on remove). Only `added` is doc-pinned;
+    `removed` is inferred present-tense (spec round-12). Under #065 this is cache maintenance
+    only — the authoritative repo-access decision is intake's live GitHub check.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    action: str
+    installation: WebhookInstallationDetail
+    repository_selection: str = Field(min_length=1, max_length=20)
+    repositories_added: tuple[InstallationRepositoryRef, ...] = ()
+    repositories_removed: tuple[InstallationRepositoryRef, ...] = ()

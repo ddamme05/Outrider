@@ -56,11 +56,19 @@ from typing import TYPE_CHECKING, Annotated, Any
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, Response, status
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
-from outrider.api.webhooks.schemas import PullRequestEventPayload
+from outrider.api.webhooks.installation_events import (
+    handle_installation_event,
+    handle_installation_repositories_event,
+)
+from outrider.api.webhooks.schemas import (
+    InstallationEventPayload,
+    InstallationRepositoriesEventPayload,
+    PullRequestEventPayload,
+)
 from outrider.api.webhooks.signature import verify_signature
 from outrider.db.models.audit_events import AuditEvent as AuditEventRow
 from outrider.db.models.installations import (
@@ -244,7 +252,20 @@ async def receive_pull_request_webhook(
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid signature")
 
-    # Step 5: only pull_request events for V1.
+    # Step 5: dispatch by event type. Install-lifecycle events (`installation`,
+    # `installation_repositories`) maintain the local install CACHE via idempotent upserts
+    # and 2xx — under #065 the cache is NEVER the authority (GitHub is checked live at
+    # intake/publish), so these are a cheap early-out, not a security decision. They run only
+    # after signature verification above. `pull_request` proceeds to review seeding below;
+    # anything else 2xx no-ops (signed-but-unsupported, so GitHub doesn't retry).
+    if x_github_event == "installation":
+        return await _dispatch_installation_event(
+            body, request.app.state.session_factory, x_github_delivery
+        )
+    if x_github_event == "installation_repositories":
+        return await _dispatch_installation_repositories_event(
+            body, request.app.state.session_factory, x_github_delivery
+        )
     if x_github_event != "pull_request":
         logger.info(
             "webhook ignored: non-pull_request event (signed, allowed to no-op)",
@@ -252,30 +273,9 @@ async def receive_pull_request_webhook(
         )
         return {"status": "ignored", "reason": "event_type"}
 
-    # Parse the validated JSON.
-    try:
-        payload = PullRequestEventPayload.model_validate_json(body)
-    except ValidationError as exc:
-        # Log a redacted error summary — count + first error path.
-        # `exc.errors()` may include `"input"` values from the failing
-        # payload, AND key names that collide with the LLM-content
-        # logging filter's Tier-1 keys (e.g., `"system"`); both are
-        # silently dropped by `RejectLLMContentFilter`. Reducing to a
-        # count + path keeps the log line useful for operators without
-        # the collision surface.
-        errors = exc.errors()
-        first_loc = ".".join(str(p) for p in errors[0]["loc"]) if errors else "<unknown>"
-        logger.warning(
-            "webhook rejected: payload schema validation failed",
-            extra={
-                "x_github_delivery": x_github_delivery,
-                "error_count": len(errors),
-                "first_error_loc": first_loc,
-            },
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="invalid payload shape"
-        ) from None
+    # Parse the validated JSON via the shared redacted-400 helper (the raw input carries
+    # attacker-controlled strings + LLM-content-filter Tier-1 key collisions — see the helper).
+    payload = _parse_webhook_or_reject(PullRequestEventPayload, body, x_github_delivery)
 
     # Step 6: action allowlist — signed but unsupported actions return 2xx.
     if payload.action not in _PULL_REQUEST_ACTION_ALLOWLIST:
@@ -612,6 +612,73 @@ async def receive_pull_request_webhook(
         raise
 
     return {"status": "running", "review_id": str(review_id)}
+
+
+def _parse_webhook_or_reject[PayloadT: BaseModel](
+    model_cls: type[PayloadT], body: bytes, x_github_delivery: str | None
+) -> PayloadT:
+    """Parse the signature-verified `body` into `model_cls`, or raise `HTTPException(400)` with
+    a REDACTED error summary (count + first error path only — never the raw input, which carries
+    attacker-controlled strings and keys that collide with the LLM-content filter's Tier-1 keys).
+    Shared by the pull_request path + the install-event dispatch."""
+    try:
+        return model_cls.model_validate_json(body)
+    except ValidationError as exc:
+        errors = exc.errors()
+        first_loc = ".".join(str(p) for p in errors[0]["loc"]) if errors else "<unknown>"
+        logger.warning(
+            "webhook rejected: payload schema validation failed",
+            extra={
+                "x_github_delivery": x_github_delivery,
+                "error_count": len(errors),
+                "first_error_loc": first_loc,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="invalid payload shape"
+        ) from None
+
+
+async def _dispatch_installation_event(
+    body: bytes, session_factory: Any, x_github_delivery: str | None
+) -> dict[str, str]:
+    """Parse + handle an `installation` event in one transaction (#065 cache-hint upsert). A
+    cheap early-out, never a security decision; returns a 2xx status dict."""
+    payload = _parse_webhook_or_reject(InstallationEventPayload, body, x_github_delivery)
+    async with session_factory() as session, session.begin():
+        result = await handle_installation_event(payload, session)
+    logger.info(
+        "installation event handled",
+        extra={
+            "action": payload.action,
+            "installation_id": payload.installation.id,
+            "x_github_delivery": x_github_delivery,
+            "result": result.get("status"),
+        },
+    )
+    return result
+
+
+async def _dispatch_installation_repositories_event(
+    body: bytes, session_factory: Any, x_github_delivery: str | None
+) -> dict[str, str]:
+    """Parse + handle an `installation_repositories` event in one transaction (#065 cache-hint
+    membership upsert); returns a 2xx status dict."""
+    payload = _parse_webhook_or_reject(
+        InstallationRepositoriesEventPayload, body, x_github_delivery
+    )
+    async with session_factory() as session, session.begin():
+        result = await handle_installation_repositories_event(payload, session)
+    logger.info(
+        "installation_repositories event handled",
+        extra={
+            "action": payload.action,
+            "installation_id": payload.installation.id,
+            "x_github_delivery": x_github_delivery,
+            "result": result.get("status"),
+        },
+    )
+    return result
 
 
 def _build_seed_pr_context(payload: PullRequestEventPayload) -> Any:
