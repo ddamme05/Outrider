@@ -126,10 +126,11 @@ _BODY_MARKER_TEMPLATE = "<!-- outrider-review-id:{review_id} -->"
 _AGENT_MARKER_TEMPLATE = "<!-- outrider:{key} {value} -->"
 
 # GitHub statuses that mean "authorization revoked at GitHub's gate" (DECISIONS.md#065):
-# the App was uninstalled / suspended / lost repo access. A publish POST rejected with one
-# of these is NOT a FAILED error — it is authorized-away, recorded as
-# NOT_PUBLISHED_AUTH_REVOKED (review retained + marked completed), not re-raised. Any other
-# status (422 validation, 5xx, network) stays FAILED and propagates.
+# the App was uninstalled / suspended / lost repo access. A publish GitHub call (the
+# external-record GET or the review POST) rejected with one of these is NOT a FAILED error —
+# it is authorized-away, recorded as NOT_PUBLISHED_AUTH_REVOKED (review retained + marked
+# completed), not re-raised. Any other status (422 validation, 5xx, network) stays FAILED
+# and propagates.
 _AUTH_REVOKED_STATUS_CODES: frozenset[int] = frozenset({401, 403, 404})
 
 

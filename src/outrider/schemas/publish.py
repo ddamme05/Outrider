@@ -156,10 +156,10 @@ class PublishResult(BaseModel):
     - `skipped` — prior PublishEvent for this review_id; no GitHub call.
     - `skipped_external` — body-marker query found existing review on
       head_sha (crash-after-success recovery path).
-    - `not_published_auth_revoked` — GitHub rejected the POST with 401/403/404;
-      authorization revoked at GitHub's gate (DECISIONS.md#065). No review created;
-      review retained + marked `completed`. Distinct from `FAILED` (authorized-away,
-      not an error, so it produces a result rather than raising).
+    - `not_published_auth_revoked` — GitHub rejected a publish call (the external-record
+      GET or the review POST) with 401/403/404; authorization revoked at GitHub's gate
+      (DECISIONS.md#065). No review created; review retained + marked `completed`. Distinct
+      from `FAILED` (authorized-away, not an error, so it produces a result rather than raising).
 
     The publish node returns `{"publish_result": result}` from its body;
     LangGraph merges into `ReviewState.publish_result` via the default
@@ -284,10 +284,10 @@ class PublishResult(BaseModel):
 
     @classmethod
     def not_published_auth_revoked(cls) -> Self:
-        """GitHub rejected the publish POST with 401/403/404 — authorization was
-        revoked at GitHub's gate (DECISIONS.md#065). No review was created, so
-        `github_review_id=None` and all three post/surface counts are 0 (like `empty`):
-        nothing landed. The attempted counts live on the paired `PublishAttemptEvent`
+        """GitHub rejected a publish call (the external-record GET or the review POST) with
+        401/403/404 — authorization was revoked at GitHub's gate (DECISIONS.md#065). No review
+        was created, so `github_review_id=None` and all three post/surface counts are 0 (like
+        `empty`): nothing landed. The attempted counts live on the paired `PublishAttemptEvent`
         (`comments_attempted`); the review is retained + marked `completed`, and the
         dashboard surfaces "reviewed but not posted (access revoked)" by reading this
         outcome value (no new review status — spec §Output boundary). No `reason` field
