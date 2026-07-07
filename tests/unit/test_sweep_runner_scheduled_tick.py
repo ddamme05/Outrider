@@ -4,7 +4,8 @@ The production tick MUST reconcile the install cache BEFORE running the sweep fa
 the #012 install hard-delete (`run_all_sweeps(include_install_purge=...)`) on that reconcile having
 CONFIRMED liveness this tick. A reconcile that fails, is lock-contended, or is skipped (no App
 settings) leaves the hard-delete OFF for the tick — but the unrelated sweeps still run. These unit
-tests pin that contract against monkeypatched reconcile + run_all_sweeps stand-ins; the real
+tests pin that contract against monkeypatched reconcile + run_all_sweeps stand-ins, plus the
+FAIL-SAFE default of `run_all_sweeps` itself (a bare call must NOT hard-delete installs); the real
 end-to-end survival guarantee is in tests/integration/test_scheduled_tick_ordering.py.
 """
 
@@ -14,7 +15,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import outrider.sweep.runner as runner_mod
-from outrider.sweep.runner import run_scheduled_tick
+from outrider.sweep.runner import run_all_sweeps, run_scheduled_tick
 
 if TYPE_CHECKING:
     import pytest
@@ -45,6 +46,13 @@ class _FakeEngine:
 
     def connect(self) -> _FakeConn:
         return _FakeConn()
+
+
+class _FakeTxnConn:
+    """A connection stand-in that reports it IS in a transaction (run_all_sweeps' precondition)."""
+
+    def in_transaction(self) -> bool:
+        return True
 
 
 def _tick_kwargs(**overrides: Any) -> dict[str, Any]:
@@ -165,3 +173,40 @@ async def test_no_app_settings_skips_reconcile_and_purge(monkeypatch: pytest.Mon
     assert reconcile_calls == []  # no App → reconcile never called
     assert seen["include_install_purge"] is False  # no liveness authority → skip hard-delete
     assert result["reconcile"] == {"ran": False, "reason": "no_app_settings"}
+
+
+async def test_run_all_sweeps_default_is_fail_safe_no_install_purge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FAIL-SAFE default: a bare `run_all_sweeps` (no `include_install_purge`) must NOT run the
+    #012 install hard-delete. Only a caller that reconciled FIRST (`run_scheduled_tick`) opts in by
+    passing True. Revert the default to True → this fails, re-exposing the tick-ordering data-loss
+    path for any direct/legacy caller that omits the argument."""
+    install_purge_calls: list[int] = []
+
+    async def _noop(**_kwargs: Any) -> dict[str, Any]:
+        return {}
+
+    async def _track_install_purge(**_kwargs: Any) -> dict[str, Any]:
+        install_purge_calls.append(1)
+        return {}
+
+    monkeypatch.setattr("outrider.sweep.hitl_expiry.run_once", _noop)
+    monkeypatch.setattr("outrider.sweep.purge_expired.purge_expired", _noop)
+    monkeypatch.setattr(
+        "outrider.sweep.purge_expired.purge_expired_installations", _track_install_purge
+    )
+    monkeypatch.setattr("outrider.sweep.replay_verdict.project_replay_verdicts", _noop)
+
+    result = await run_all_sweeps(
+        conn=_FakeTxnConn(),  # type: ignore[arg-type]
+        session_factory=None,  # type: ignore[arg-type]
+        anomaly_sink=None,  # type: ignore[arg-type]
+        review_status_sink=None,  # type: ignore[arg-type]
+        audit_persister=None,  # type: ignore[arg-type]
+        checkpointer=None,  # type: ignore[arg-type]
+        compiled_graph=None,  # type: ignore[arg-type]
+    )
+
+    assert install_purge_calls == []  # hard-delete OFF by default (fail-safe)
+    assert result["install_purge"] == {"skipped": "reconcile_unconfirmed"}

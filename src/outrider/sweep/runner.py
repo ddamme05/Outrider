@@ -97,16 +97,20 @@ async def run_all_sweeps(
     compiled_graph: CompiledStateGraph[Any, Any, Any, Any],
     grace_period: timedelta | None = None,
     purge_role: str = "sweep",
-    include_install_purge: bool = True,
+    include_install_purge: bool = False,
 ) -> dict[str, Any]:
     """Run hitl-expiry first, then retention purge. One tick.
 
-    `include_install_purge` (default True) gates the `#012` install hard-delete
-    (`purge_expired_installations`). `run_scheduled_tick` passes `False` when the reconcile
-    janitor did NOT confirm install liveness this tick (it failed / was lock-contended) — the
-    hard-delete MUST be skipped then, or a reinstall-during-grace whose tombstone the janitor has
-    not yet cleared could be deleted (`#012` / `#065`). Direct callers that don't run the janitor
-    first should pass `include_install_purge=False` and let `run_scheduled_tick` own the ordering.
+    `include_install_purge` gates the `#012` install hard-delete (`purge_expired_installations`)
+    and defaults to `False` — FAIL-SAFE: the hard-delete may run ONLY when a caller has already
+    confirmed install liveness this tick by reconciling first, so a bare `run_all_sweeps` (an
+    operator one-shot, a test, any future direct caller that forgets the arg) never takes the
+    unsafe purge path. `run_scheduled_tick` is that caller: it reconciles FIRST and passes
+    `include_install_purge=True` ONLY when the janitor confirmed liveness (else `False` — a
+    reconcile that failed / was lock-contended must skip the hard-delete, or a reinstall-during-
+    grace whose tombstone the janitor has not yet cleared could be deleted; `#012` / `#065`).
+    Direct callers that don't run the janitor first should leave this `False` and let
+    `run_scheduled_tick` own the reconcile-before-hard-delete ordering.
 
     Returns a single telemetry dict combining both sub-runs:
       {
