@@ -963,7 +963,7 @@ def build_lifespan(
             # timeout window on a 5-minute cadence. Without this
             # task, HITL timeout enforcement + window-(c)/(f) crash
             # recovery is inert until an external scheduler invokes
-            # `outrider.sweep.runner.run_all_sweeps` manually.
+            # `outrider.sweep.runner.run_scheduled_tick` manually.
             #
             # APScheduler integration is intentionally out of scope
             # for V1 — a minimal asyncio-based scheduler keeps the
@@ -971,7 +971,10 @@ def build_lifespan(
             # ownership model. Operators wanting a heavier scheduler
             # (cron, k8s CronJob, APScheduler) can disable this loop
             # via OUTRIDER_SWEEP_DISABLED=1 and run
-            # `run_all_sweeps` externally.
+            # `run_scheduled_tick` externally — NOT `run_all_sweeps`
+            # directly, which would exclude the reconcile janitor and
+            # its liveness-gating of the #012 install hard-delete
+            # (#065/#012/#067).
             app.state.anomaly_sink = anomaly_persister
             app.state.audit_persister = persister
 

@@ -1,6 +1,6 @@
 # Lifespan-scoped periodic sweep loop. See specs/2026-05-26-hitl-node.md
 # Group 8 scheduler-wiring bullet + docs/spec.md §4.1.6.
-"""Background-task scheduler for `sweep.runner.run_all_sweeps`.
+"""Background-task scheduler for `sweep.runner.run_scheduled_tick`.
 
 Per `docs/spec.md` §4.1.6, the HITL-expiry sweep enforces the timeout
 window on a 5-minute cadence. Without a periodic invoker, the timeout
@@ -11,7 +11,10 @@ V1 uses a minimal asyncio-based loop bound to the FastAPI lifespan:
   - Started inside the lifespan body via `start_periodic_sweep(...)`.
   - Pushed onto `AsyncExitStack` via `_cancel_task` so the task is
     cancelled cleanly at shutdown.
-  - One sweep tick per `_SWEEP_INTERVAL_SECONDS` (default 300 = 5 min).
+  - One `run_scheduled_tick` per `_SWEEP_INTERVAL_SECONDS`
+    (default 300 = 5 min) — reconcile-first, then the sweep family with
+    the `#012` install hard-delete gated on reconcile confirming
+    liveness this tick (see `sweep.runner.run_scheduled_tick`).
   - Wide `except Exception` inside the loop so a single tick failure
     doesn't kill the loop — logged + skipped + retried next interval.
 
@@ -19,8 +22,10 @@ Operators wanting a heavier scheduler (cron, k8s CronJob, APScheduler)
 can disable this loop via `OUTRIDER_SWEEP_DISABLED=1` (read in
 `api/lifespan.py`; when set to `"1"`, the lifespan body does NOT call
 `start_periodic_sweep(...)`) and invoke
-`outrider.sweep.runner.run_all_sweeps` externally on their own
-cadence. The env-var disable is distinct from
+`outrider.sweep.runner.run_scheduled_tick` externally on their own
+cadence — NOT `run_all_sweeps` directly, which would exclude the
+reconcile janitor and its liveness-gating of the `#012` hard-delete.
+The env-var disable is distinct from
 `_SWEEP_INTERVAL_SECONDS` below, which still has intentionally no
 env-var override — disable is a runtime operational decision; cadence
 override is a code-side opt-in.
@@ -39,8 +44,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Final
 
-from outrider.sweep.reconcile_installations import reconcile_installations
-from outrider.sweep.runner import run_all_sweeps
+from outrider.sweep.runner import run_scheduled_tick
 
 if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -81,51 +85,38 @@ async def _sweep_loop(
     github_app_settings: GitHubAppSettings | None,
     interval_seconds: float,
 ) -> None:
-    """Run `run_all_sweeps` every `interval_seconds`.
+    """Run `run_scheduled_tick` every `interval_seconds`.
+
+    Each tick is one production-tick orchestration
+    (`sweep.runner.run_scheduled_tick`): reconcile the install cache
+    FIRST (the `#065`/`#012`/`#067` janitor, under its own session-scoped
+    advisory lock across the `GET /app/installations` call), THEN run the
+    sweep family with the `#012` install hard-delete gated on that
+    reconcile having confirmed liveness this tick. The reconcile + sweep
+    halves have independent failure handling INSIDE the orchestrator; the
+    loop adds the OUTER per-tick guard so a whole-tick failure (either
+    half) is logged + skipped + retried next interval.
 
     The loop catches `asyncio.CancelledError` at the OUTER level so
-    lifespan teardown cancels cleanly. Inside each tick, a wide
-    `except Exception` shields the loop from a single failure
-    (network blip, transient DB error, etc.) — logged + skipped +
-    retried next interval.
-
-    Per-tick connection lifecycle: open ONE `engine.connect()` for
-    the tick's work (sweep code expects an `AsyncConnection`),
-    transaction-scope the SWEEP_LOCK_ID advisory lock via the
-    sweep functions' internal `session.begin()` calls.
+    lifespan teardown cancels cleanly. `run_scheduled_tick` owns the
+    per-tick connection lifecycle (the reconcile lock connection + the
+    sweep-family transaction), so the loop opens no connection itself.
     """
     logger.info("sweep_loop_started", extra={"interval_seconds": interval_seconds})
     try:
         while True:
             try:
-                async with engine.connect() as conn, conn.begin():
-                    result = await run_all_sweeps(
-                        conn=conn,
-                        session_factory=session_factory,
-                        anomaly_sink=anomaly_sink,
-                        review_status_sink=review_status_sink,
-                        audit_persister=audit_persister,
-                        checkpointer=checkpointer,
-                        compiled_graph=compiled_graph,
-                    )
+                result = await run_scheduled_tick(
+                    engine=engine,
+                    session_factory=session_factory,
+                    anomaly_sink=anomaly_sink,
+                    review_status_sink=review_status_sink,
+                    audit_persister=audit_persister,
+                    checkpointer=checkpointer,
+                    compiled_graph=compiled_graph,
+                    github_app_settings=github_app_settings,
+                )
                 logger.info("sweep_tick_completed", extra={"result": result})
-
-                # Reconcile janitor (#065/#012/#067) — run OUTSIDE the run_all_sweeps transaction
-                # above: it holds its OWN session-scoped advisory lock across the
-                # GET /app/installations network call, which the txn-scoped SWEEP_LOCK_ID form
-                # cannot span (#067). Its own try/except so a GitHub-unreachable tick
-                # (list_installation_ids raises) is logged + skipped without masking the sweep
-                # result. Skipped when the App isn't configured (github_app_settings is None).
-                if github_app_settings is not None:
-                    try:
-                        reconcile_result = await reconcile_installations(
-                            engine, github_app_settings
-                        )
-                        logger.info(
-                            "reconcile_tick_completed", extra={"result": str(reconcile_result)}
-                        )
-                    except Exception:
-                        logger.exception("reconcile_tick_failed")
             except asyncio.CancelledError:
                 # Bubble up to the outer try so the loop exits.
                 raise
