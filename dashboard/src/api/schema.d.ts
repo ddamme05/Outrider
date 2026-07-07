@@ -243,9 +243,9 @@ export interface paths {
         };
         /**
          * Privacy Page
-         * @description PUBLIC, unauthenticated privacy disclosure (the App-listing privacy URL +
-         *     the dashboard footer target). Renders the mandated #013/#015/#016 statement,
-         *     host-qualified for a non-Anthropic configured host.
+         * @description PUBLIC, unauthenticated privacy disclosure (the App-listing privacy URL + the
+         *     dashboard footer target). Renders the mandated #013/#015/#016 statement, config-aware
+         *     per `OUTRIDER_LLM_HOST` + `ANTHROPIC_ZDR_ENABLED`.
          */
         get: operations["privacy_page_privacy_get"];
         put?: never;
