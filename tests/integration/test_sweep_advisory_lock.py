@@ -284,10 +284,12 @@ async def test_compose_sweeps_purge_real_data_in_one_transaction(
 
 
 async def test_install_purge_candidate_select_row_locks_for_update(migrated_db: str) -> None:
-    """Regression for the reinstall TOCTOU (code-review 2026-07-07): the install-purge
-    candidate SELECT row-locks each due install ``FOR UPDATE``, so a concurrent
-    tombstone-clear blocks until the purge commits (then no-ops) rather than slipping in
-    mid-purge and stranding a live install's content for deletion.
+    """Regression for the reinstall-TOCTOU fix: the install-purge candidate SELECT holds a
+    ``FOR UPDATE`` row lock on each due install, so a concurrent tombstone-clear cannot
+    modify the row while the purge transaction is open. That lock is what prevents the
+    TOCTOU (a mid-purge tombstone-clear stranding live content). This test exercises ONLY
+    the lock — NOT the full purge-commit → reinstall-no-op → content-survives outcome
+    (there is no tombstone-clearing writer to drive it end-to-end today).
 
     Deterministic via ``lock_timeout``: while one connection holds the production
     ``FOR UPDATE`` lock (open txn), a second connection's tombstone-clear must block and
