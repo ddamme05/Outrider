@@ -39,6 +39,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Final
 
+from outrider.sweep.reconcile_installations import reconcile_installations
 from outrider.sweep.runner import run_all_sweeps
 
 if TYPE_CHECKING:
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
     from outrider.anomaly.sinks import AnomalySink
     from outrider.audit.persister import AuditPersister
     from outrider.db.sinks import ReviewStatusSink
+    from outrider.github.config import GitHubAppSettings
 
 
 logger = logging.getLogger("outrider.api.lifespan_sweep_loop")
@@ -76,6 +78,7 @@ async def _sweep_loop(
     audit_persister: AuditPersister,
     checkpointer: BaseCheckpointSaver[Any],
     compiled_graph: CompiledStateGraph[Any, Any, Any, Any],
+    github_app_settings: GitHubAppSettings | None,
     interval_seconds: float,
 ) -> None:
     """Run `run_all_sweeps` every `interval_seconds`.
@@ -106,6 +109,23 @@ async def _sweep_loop(
                         compiled_graph=compiled_graph,
                     )
                 logger.info("sweep_tick_completed", extra={"result": result})
+
+                # Reconcile janitor (#065/#012/#067) — run OUTSIDE the run_all_sweeps transaction
+                # above: it holds its OWN session-scoped advisory lock across the
+                # GET /app/installations network call, which the txn-scoped SWEEP_LOCK_ID form
+                # cannot span (#067). Its own try/except so a GitHub-unreachable tick
+                # (list_installation_ids raises) is logged + skipped without masking the sweep
+                # result. Skipped when the App isn't configured (github_app_settings is None).
+                if github_app_settings is not None:
+                    try:
+                        reconcile_result = await reconcile_installations(
+                            engine, github_app_settings
+                        )
+                        logger.info(
+                            "reconcile_tick_completed", extra={"result": str(reconcile_result)}
+                        )
+                    except Exception:
+                        logger.exception("reconcile_tick_failed")
             except asyncio.CancelledError:
                 # Bubble up to the outer try so the loop exits.
                 raise
@@ -128,6 +148,7 @@ def start_periodic_sweep(
     audit_persister: AuditPersister,
     checkpointer: BaseCheckpointSaver[Any],
     compiled_graph: CompiledStateGraph[Any, Any, Any, Any],
+    github_app_settings: GitHubAppSettings | None = None,
     interval_seconds: float | None = None,
 ) -> asyncio.Task[None]:
     """Schedule the periodic sweep as an asyncio Task.
@@ -165,6 +186,7 @@ def start_periodic_sweep(
             audit_persister=audit_persister,
             checkpointer=checkpointer,
             compiled_graph=compiled_graph,
+            github_app_settings=github_app_settings,
             interval_seconds=actual_interval,
         ),
         name="outrider-sweep-loop",
