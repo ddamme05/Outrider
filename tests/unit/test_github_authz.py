@@ -1,9 +1,10 @@
 """Unit tests for the #065 live-authorization check (`github/authz.py`).
 
 Every case is driven through a fake `arequest` client — no real GitHub. Confirms the two
-ordered checks (GET installation → POST repo-scoped token), the exact request shapes #065
-prescribes, and the fail-closed collapse: only active-install + repo-accessible returns
-`authorized`; suspended / uninstalled / repo-removed / network-error all fail closed.
+ordered checks (GET installation → POST repo-scoped token by IMMUTABLE repo_id), the exact
+request shapes #065 prescribes, and the fail-closed classification: only active-install +
+repo-accessible returns `authorized`; suspended / uninstalled / repo-removed all fail closed,
+and 401 / 429 / 5xx / network / missing-field are UNCERTAIN (fail closed but not mislabelled).
 """
 
 from __future__ import annotations
@@ -21,8 +22,7 @@ from outrider.github.authz import (
 )
 
 _INSTALLATION_ID = 12345
-_OWNER = "acme"
-_REPO = "widgets"
+_REPO_ID = 999
 
 
 def _resp(text: str) -> types.SimpleNamespace:
@@ -66,12 +66,12 @@ class _FakeAppClient:
 
 async def _check(client: _FakeAppClient):
     return await check_installation_authorization(
-        client, installation_id=_INSTALLATION_ID, owner=_OWNER, repo=_REPO
+        client, installation_id=_INSTALLATION_ID, repo_id=_REPO_ID
     )
 
 
 # ---------------------------------------------------------------------------
-# Happy path + request shapes.
+# Happy path + request shapes (immutable repo_id scoping).
 # ---------------------------------------------------------------------------
 async def test_active_install_accessible_repo_is_authorized() -> None:
     client = _FakeAppClient(
@@ -80,12 +80,12 @@ async def test_active_install_accessible_repo_is_authorized() -> None:
     result = await _check(client)
     assert result.outcome is LiveAuthOutcome.AUTHORIZED
     assert result.authorized is True
-    # #065's two ordered calls, exact shapes.
+    # #065's two ordered calls; the token mint scopes by IMMUTABLE repository_ids.
     assert client.calls[0] == ("GET", f"/app/installations/{_INSTALLATION_ID}", None)
     assert client.calls[1] == (
         "POST",
         f"/app/installations/{_INSTALLATION_ID}/access_tokens",
-        {"repositories": [_REPO]},
+        {"repository_ids": [_REPO_ID]},
     )
 
 
@@ -101,14 +101,24 @@ async def test_minted_token_never_appears_in_result_detail() -> None:
 # Install-check (GET) failures — all fail closed, POST never fires.
 # ---------------------------------------------------------------------------
 async def test_suspended_via_body_is_denied_without_minting() -> None:
-    client = _FakeAppClient(
-        get_result=_resp(json.dumps({"suspended_at": "2026-07-07T00:00:00Z"})),
-    )
+    client = _FakeAppClient(get_result=_resp(json.dumps({"suspended_at": "2026-07-07T00:00:00Z"})))
     result = await _check(client)
     assert result.outcome is LiveAuthOutcome.SUSPENDED
     assert result.authorized is False
-    # Check 2 must NOT run once suspended is known.
+    assert [c[0] for c in client.calls] == ["GET"]  # check 2 must NOT run
+
+
+async def test_missing_suspended_at_field_is_uncertain() -> None:
+    # The affirmative signal (an explicit suspended_at) is absent → cannot conclude active.
+    client = _FakeAppClient(get_result=_resp(json.dumps({"id": _INSTALLATION_ID})))
+    result = await _check(client)
+    assert result.outcome is LiveAuthOutcome.UNCERTAIN
     assert [c[0] for c in client.calls] == ["GET"]
+
+
+async def test_non_object_install_body_is_uncertain() -> None:
+    client = _FakeAppClient(get_result=_resp("[]"))  # valid JSON, wrong shape
+    assert (await _check(client)).outcome is LiveAuthOutcome.UNCERTAIN
 
 
 async def test_uninstalled_via_get_404() -> None:
@@ -119,25 +129,26 @@ async def test_uninstalled_via_get_404() -> None:
 
 
 async def test_get_5xx_is_uncertain() -> None:
-    client = _FakeAppClient(get_result=_http_error(503))
-    result = await _check(client)
-    assert result.outcome is LiveAuthOutcome.UNCERTAIN
+    assert (await _check(_FakeAppClient(get_result=_http_error(503)))).outcome is (
+        LiveAuthOutcome.UNCERTAIN
+    )
 
 
 async def test_get_network_error_no_response_is_uncertain() -> None:
-    client = _FakeAppClient(get_result=_http_error(None))
-    result = await _check(client)
-    assert result.outcome is LiveAuthOutcome.UNCERTAIN
+    assert (await _check(_FakeAppClient(get_result=_http_error(None)))).outcome is (
+        LiveAuthOutcome.UNCERTAIN
+    )
 
 
 async def test_unparseable_install_body_is_uncertain() -> None:
-    client = _FakeAppClient(get_result=_resp("not json{"))
-    result = await _check(client)
-    assert result.outcome is LiveAuthOutcome.UNCERTAIN
+    assert (await _check(_FakeAppClient(get_result=_resp("not json{")))).outcome is (
+        LiveAuthOutcome.UNCERTAIN
+    )
 
 
 # ---------------------------------------------------------------------------
 # Token-mint (POST) failures — install active, repo probe fails → fail closed.
+# Only 422 is genuine repo-inaccessible; 401/429/5xx/network are UNCERTAIN (F4).
 # ---------------------------------------------------------------------------
 async def test_repo_removed_422_is_repo_inaccessible() -> None:
     client = _FakeAppClient(get_result=_active_installation(), post_result=_http_error(422))
@@ -157,16 +168,14 @@ async def test_mint_404_is_uninstalled() -> None:
     assert (await _check(client)).outcome is LiveAuthOutcome.UNINSTALLED
 
 
-async def test_mint_network_error_is_uncertain() -> None:
-    client = _FakeAppClient(get_result=_active_installation(), post_result=_http_error(None))
-    assert (await _check(client)).outcome is LiveAuthOutcome.UNCERTAIN
-
-
-async def test_mint_401_expired_jwt_fails_closed() -> None:
-    # 401 = our own JWT problem, not the install's fault — but #065 fails closed on ANY
-    # non-affirmative, so it must not authorize.
-    client = _FakeAppClient(get_result=_active_installation(), post_result=_http_error(401))
-    assert (await _check(client)).authorized is False
+@pytest.mark.parametrize("status", [401, 429, 500, 503, None])
+async def test_mint_401_429_5xx_network_are_uncertain(status: int | None) -> None:
+    # These are NOT "repo inaccessible" — they are uncertainty. Still fail closed, but the
+    # telemetry must not claim the repo was denied (F4).
+    client = _FakeAppClient(get_result=_active_installation(), post_result=_http_error(status))
+    result = await _check(client)
+    assert result.outcome is LiveAuthOutcome.UNCERTAIN
+    assert result.authorized is False
 
 
 # ---------------------------------------------------------------------------
@@ -175,9 +184,9 @@ async def test_mint_401_expired_jwt_fails_closed() -> None:
 async def test_make_installation_authorizer_binds_client() -> None:
     client = _FakeAppClient(get_result=_active_installation(), post_result=_resp("{}"))
     authorize = make_installation_authorizer(client)
-    result = await authorize(_INSTALLATION_ID, _OWNER, _REPO)
+    result = await authorize(_INSTALLATION_ID, _REPO_ID)
     assert result.authorized is True
-    assert client.calls[0][1] == f"/app/installations/{_INSTALLATION_ID}"
+    assert client.calls[1][2] == {"repository_ids": [_REPO_ID]}
 
 
 @pytest.mark.parametrize(
