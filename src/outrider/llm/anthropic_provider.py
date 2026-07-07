@@ -150,10 +150,16 @@ _ANTHROPIC_PROFILE_ID: Final[str] = ANTHROPIC_PROFILE_ID
 _ANTHROPIC_CONTRACT_DIGEST: Final[str] = ANTHROPIC_CONTRACT_DIGEST
 
 
-def _resolve_zdr_attestation(zdr_enabled: bool | None) -> bool:
+def resolve_zdr_attestation(zdr_enabled: bool | None) -> bool:
     """Read ZDR attestation per DECISIONS#015 — operator-attestation only,
     NEVER a per-request header. Constructor kwarg wins; falls back to
     `ANTHROPIC_ZDR_ENABLED` env var.
+
+    Public (was `_resolve_zdr_attestation`) so the `/privacy` disclosure page
+    (`api/privacy.py`) reads ZDR through THIS logic — the same truthy/falsy/
+    warn-once path the provider uses — so the rendered statement can't drift
+    from runtime attestation. Call `resolve_zdr_attestation(None)` for the
+    env-only resolution.
 
     Truthy values (case-insensitive): `"1"`, `"true"`, `"yes"`.
     Falsy values (case-insensitive): `""`, `"0"`, `"false"`, `"no"`.
@@ -263,7 +269,7 @@ class AnthropicProvider:
         self._api_key = api_key
         self._model_config = model_config
         self._persister = persister
-        self._zdr_enabled = _resolve_zdr_attestation(zdr_enabled)
+        self._zdr_enabled = resolve_zdr_attestation(zdr_enabled)
         # Always False on the native path (the fail-loud guard above rejects a True request);
         # stamped on every LLMResponse + LLMCallEvent as the triad's reasoning_enabled.
         self._reasoning_enabled = False

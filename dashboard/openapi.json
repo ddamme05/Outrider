@@ -497,7 +497,7 @@
     "/privacy": {
       "get": {
         "summary": "Privacy Page",
-        "description": "PUBLIC, unauthenticated privacy disclosure (the App-listing privacy URL +\nthe dashboard footer target). Renders the mandated #013/#015/#016 statement,\nhost-qualified for a non-Anthropic configured host.",
+        "description": "PUBLIC, unauthenticated privacy disclosure (the App-listing privacy URL + the\ndashboard footer target). Renders the mandated #013/#015/#016 statement, config-aware\nper `OUTRIDER_LLM_HOST` + `ANTHROPIC_ZDR_ENABLED`.",
         "operationId": "privacy_page_privacy_get",
         "responses": {
           "200": {
