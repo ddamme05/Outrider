@@ -261,7 +261,7 @@ async def purge_installation(
 async def purge_expired_installations(
     conn: AsyncConnection,
     *,
-    purge_role: str = "sweep",
+    purge_role: str = "install-purge",
 ) -> dict[str, dict[str, int]]:
     """Hard-delete installations whose #012 grace window has expired.
 
@@ -273,11 +273,22 @@ async def purge_expired_installations(
     `purge_after_at` on a live/reinstalled install from deleting live data) and calls
     `purge_installation` for each.
 
-    Shares `SWEEP_LOCK_ID` via `conn` (reentrant within the tick's transaction, per
-    `purge_installation`'s note), so it slots into `run_all_sweeps` after the
-    time-based `purge_expired`. Returns `{installation_id: rows_per_table}` for each
-    purged install (empty if none are due).
+    `purge_role` defaults to ``"install-purge"`` — DISTINCT from the time-based sweep's
+    ``"sweep"`` — so #012 lifecycle hard-deletes are separable from routine TTL purges
+    in the `purge_audit` forensic trail (the exact question #012 auditing asks).
+
+    Acquires the sweep advisory lock FIRST, like its siblings (`purge_expired`,
+    `purge_installation`): if another sweep holds it, returns `{}` WITHOUT scanning —
+    rather than running the SELECT and returning `{install_id: {}}` per due install,
+    which would be indistinguishable from "purged, zero content rows." In the
+    `run_all_sweeps` path the lock is already held by this tick's transaction, so the
+    acquire is a reentrant no-op success. Returns `{installation_id: rows_per_table}`
+    for each purged install (empty if none are due OR the lock was held elsewhere).
     """
+    if not await _try_acquire_lock(conn):
+        logger.info("install_purge_skipped: advisory lock held by another sweep")
+        return {}
+
     due = await conn.execute(
         text(
             "SELECT installation_id FROM installations "
