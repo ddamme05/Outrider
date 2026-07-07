@@ -35,8 +35,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
+from outrider.github.auth import make_app_client
+
 if TYPE_CHECKING:
     from outrider.github.auth import AppGitHubClient
+    from outrider.github.config import GitHubAppSettings
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +98,78 @@ async def check_installation_authorization(
     repo_id: int,
 ) -> LiveAuthResult:
     """Live App-JWT authorization check for `(installation_id, repo_id)`. Fail-closed on any
-    non-affirmative result (#065). Never consults the local cache."""
+    non-affirmative result (#065). Never consults the local cache.
+
+    ENTERS `app_client` as an async context manager so the GET + POST for this one
+    authorization share ONE underlying httpx client that closes on exit. githubkit's
+    `reusing-client` guidance (0.15.3) warns that the un-entered path creates a new client
+    per request and that "repeatedly creating new HTTP clients may lead to memory leaks".
+    `make_installation_authorizer` passes a FRESH, un-entered client per invocation (a
+    githubkit context manager cannot be entered twice), so this single enter is safe.
+
+    Error model — precedence, HIGHEST first:
+      1. `CancelledError` from ANY stage (enter / probe body / exit) always PROPAGATES — a task
+         being cancelled must never be turned into a result. (Exit cancellation wins even over a
+         pending body defect: the outer handler is `except Exception`, not `BaseException`, so a
+         `__aexit__` cancellation propagates before the body defect is re-raised.)
+      2. Otherwise, an UNEXPECTED probe-body exception (a defect) PROPAGATES → intake's
+         `failed`/fail-loud path, beating an ordinary `__aexit__` (close) failure. The probe
+         converts every EXPECTED network/parse failure into a result, so a raise is a bug.
+      3. Otherwise, a lifecycle failure (`__aenter__` / `__aexit__`; constructor handled in
+         `make_installation_authorizer`) is live-check uncertainty → `UNCERTAIN` (→ `skipped`).
+    """
+    # Enter the client under `async with` (creates the shared httpx client, closes on exit).
+    # The probe body's exception (defect or cancellation) is captured INSIDE the block, so the
+    # `async with` exits CLEANLY and an ORDINARY `__aexit__` (close) `Exception` cannot replace
+    # the load-bearing body exception — it is re-raised preferentially below. (An exit
+    # `CancelledError` intentionally DOES win, per precedence rule 1: it is a `BaseException`, so
+    # it bypasses the `except Exception` handler and propagates before the re-raise.)
+    body_result: LiveAuthResult | None = None
+    body_error: BaseException | None = None
+    try:
+        async with app_client:
+            try:
+                body_result = await _probe_installation(
+                    app_client, installation_id=installation_id, repo_id=repo_id
+                )
+            except BaseException as exc:  # noqa: BLE001 — captured to re-raise preferentially
+                body_error = exc
+    except Exception as ctx_exc:
+        # `__aenter__` (before the probe ran → both vars still None) or `__aexit__` (close)
+        # failed — lifecycle uncertainty. But a captured body exception is LOAD-BEARING
+        # (re-raised below) and takes precedence over a close failure, so report lifecycle
+        # uncertainty ONLY when none is pending. `except Exception`, NOT `BaseException`: a
+        # `CancelledError` (graph cancellation / shutdown) MUST propagate.
+        if body_error is None:
+            return _denied(
+                LiveAuthOutcome.UNCERTAIN,
+                installation_id,
+                repo_id,
+                f"live-auth client lifecycle error: {type(ctx_exc).__name__}",
+            )
+
+    # A captured body defect / cancellation beats an ORDINARY close failure (an exit
+    # `CancelledError` already propagated above via the `except Exception` bypass — precedence
+    # rule 1). Re-raise it: an unexpected probe defect → intake's `failed`/fail-loud path; a
+    # body `CancelledError` → propagates.
+    if body_error is not None:
+        raise body_error
+    if body_result is None:  # defensive: body succeeded ⇒ result was set; fail closed if not
+        return _denied(
+            LiveAuthOutcome.UNCERTAIN, installation_id, repo_id, "live-auth produced no result"
+        )
+    return body_result
+
+
+async def _probe_installation(
+    app_client: AppGitHubClient,
+    *,
+    installation_id: int,
+    repo_id: int,
+) -> LiveAuthResult:
+    """The two ordered App-JWT probes, run against an ALREADY-ENTERED `app_client` (its
+    httpx client is live for the block). Split from the context-manager wrapper so the GET
+    and POST reuse one client rather than creating one per request."""
     # Check 1 — installation exists AND is not suspended. GET returns 200 for an existing
     # install and 404 when uninstalled; suspension is signalled by the body's `suspended_at`
     # field (non-null), NOT a status code, so the field's PRESENCE is required — a response
@@ -196,13 +270,33 @@ def _denied(
     return LiveAuthResult(outcome, detail)
 
 
-def make_installation_authorizer(app_client: AppGitHubClient) -> InstallationAuthorizer:
-    """Bind an `AppGitHubClient` into an `InstallationAuthorizer` closure for injection
-    into `build_graph` → intake. `lifespan` constructs the app client once
-    (`make_app_client`, entered into lifespan's `AsyncExitStack` for cleanup) and calls
-    this; intake calls the returned closure and stays githubkit-free."""
+def make_installation_authorizer(settings: GitHubAppSettings) -> InstallationAuthorizer:
+    """Bind `GitHubAppSettings` into an `InstallationAuthorizer` closure for injection into
+    `build_graph` → intake.
+
+    Each invocation constructs a FRESH App-JWT client (`make_app_client`) that
+    `check_installation_authorization` async-with-scopes for its GET + POST pair — per
+    githubkit's reusing-client guidance, ONE context-managed client per authorization,
+    closed on exit (the un-entered path creates a client per request and may leak). A single
+    shared long-lived client is deliberately NOT used: githubkit keeps its httpx client in a
+    task-local ContextVar, and intake runs in a per-review task, so a lifespan-entered client
+    would be invisible here. `lifespan` passes the validated settings once; intake calls the
+    returned closure and stays githubkit-free. The PEM is read per authorization (once per
+    review), matching the per-installation client's brief-PEM-window pattern."""
 
     async def authorize(installation_id: int, repo_id: int) -> LiveAuthResult:
+        try:
+            app_client = make_app_client(settings)
+        except Exception as exc:
+            # App-JWT client CONSTRUCTION failed (e.g. malformed settings / PEM). Live-check
+            # uncertainty → fail closed (UNCERTAIN → intake `skipped`), not intake's `failed`
+            # path. `except Exception`, NOT `BaseException`: cancellation must propagate.
+            return _denied(
+                LiveAuthOutcome.UNCERTAIN,
+                installation_id,
+                repo_id,
+                f"App-JWT client construction failed: {type(exc).__name__}",
+            )
         return await check_installation_authorization(
             app_client, installation_id=installation_id, repo_id=repo_id
         )
