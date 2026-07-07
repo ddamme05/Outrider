@@ -1797,9 +1797,11 @@ class PublishAttemptOutcome(StrEnum):
     # Atomic GitHub POST returned 2xx.
     SUCCESS = "success"
 
-    # GitHub call failed (HTTP error, app uninstalled, permission denied,
-    # transient 5xx that retry middleware gave up on). `failure_class`
-    # field carries the exception class name.
+    # GitHub call failed with a genuine error (validation 422, transient 5xx
+    # that retry middleware gave up on, network error). `failure_class` field
+    # carries the exception class name. NOT for authorization revocation — a
+    # 401/403/404 at the publish POST is `NOT_PUBLISHED_AUTH_REVOKED` below
+    # (authorized-away, not an error), per DECISIONS.md#065.
     FAILED = "failed"
 
     # Pre-flight check found a prior `PublishEvent` for this review_id;
@@ -1815,6 +1817,17 @@ class PublishAttemptOutcome(StrEnum):
     # Zero eligible/surfaced findings across all three publish tiers (inline /
     # review-body / dashboard-only); no GitHub call (DECISIONS.md#050).
     NO_OP_EMPTY = "no_op_empty"
+
+    # GitHub rejected the publish POST with 401/403/404 — the App's authorization
+    # was revoked (uninstalled / suspended / repo removed) at GitHub's gate, which
+    # is the authority (DECISIONS.md#065). Distinct from FAILED: revocation is
+    # authorized-away, not an error, so `failure_class` is None (the validator
+    # requires failure_class present iff outcome=FAILED). The review is RETAINED and
+    # marked `completed` (it finished its work); the non-post is recorded here + on
+    # `PublishResult.outcome`, not as a failed review. B2 does NOT promise "no post
+    # after revocation" — an already-minted token may remain valid to its ≤1h expiry;
+    # the POST is best-effort, GitHub-is-the-final-gate.
+    NOT_PUBLISHED_AUTH_REVOKED = "not_published_auth_revoked"
 
 
 def compute_publish_routing_decision_hash(

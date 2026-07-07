@@ -221,6 +221,36 @@ def test_attempt_hash_recipe_pinned_external_record_recovery() -> None:
     )
 
 
+def test_attempt_hash_recipe_pinned_not_published_auth_revoked() -> None:
+    """NOT_PUBLISHED_AUTH_REVOKED outcome (DECISIONS.md#065) with two sorted
+    finding IDs + `status_code=403`. New golden 2026-07-07 — pins the new
+    outcome into the append-only attempt-hash recipe (per #023's "new members
+    may be added" + hash-recipe discipline: a new outcome must not silently
+    break historical replay). `failure_class=None` (authorized-away, not an
+    error) and `recovered_github_review_id=None` (no review created); the
+    outcome value + status_code alone distinguish this attempt. Renaming the
+    outcome or dropping status_code from the recipe would break this golden."""
+    expected = "8a8556f1663f27096af930770541ba7063fed558f60a743223127851c20d9b67"
+    actual = compute_publish_attempt_content_hash(
+        review_id=_FIXED_REVIEW_ID,
+        attempt_index=1,
+        sorted_finding_ids=(_FIXED_FINDING_A, _FIXED_FINDING_B),
+        outcome=PublishAttemptOutcome.NOT_PUBLISHED_AUTH_REVOKED,
+        status_code=403,
+        failure_class=None,
+        comments_attempted=2,
+        recovered_github_review_id=None,
+    )
+    assert actual == expected, (
+        f"compute_publish_attempt_content_hash recipe drift detected.\n"
+        f"  Inputs: NOT_PUBLISHED_AUTH_REVOKED + attempt_index=1 + 2 sorted "
+        f"finding IDs + status_code=403 + failure_class=None + "
+        f"comments_attempted=2 + recovered_github_review_id=None.\n"
+        f"  Expected: {expected}\n  Actual:   {actual}\n"
+        f"  See this file's module docstring before updating the golden."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Enum-value pins — append-only contract guard. Renaming `reviewable_diff_line`
 # → `inline_eligible` or removing `idempotently_skipped_external_record` would
@@ -273,7 +303,8 @@ def test_publish_attempt_outcome_value_strings_pinned() -> None:
         == "idempotently_skipped_external_record"
     )
     assert PublishAttemptOutcome.NO_OP_EMPTY.value == "no_op_empty"
-    assert len(PublishAttemptOutcome) == 5
+    assert PublishAttemptOutcome.NOT_PUBLISHED_AUTH_REVOKED.value == "not_published_auth_revoked"
+    assert len(PublishAttemptOutcome) == 6
 
 
 def test_coordinate_error_kind_value_strings_pinned() -> None:
