@@ -99,10 +99,14 @@ async def _seed_installation_and_membership(
     repo_id: int = _REPO_ID,
     repo_full_name: str = "acme/widgets",
     installation_tombstoned: bool = False,
+    installation_suspended: bool = False,
+    repository_selection: str = "selected",
+    seed_membership: bool = True,
     membership_removed: bool = False,
 ) -> None:
-    """Seed an Installation + InstallationRepository row for the test."""
+    """Seed an Installation (+ optional InstallationRepository) row for the test."""
     tombstone_clause = "NOW()" if installation_tombstoned else "NULL"
+    suspended_clause = "NOW()" if installation_suspended else "NULL"
     removed_clause = "NOW()" if membership_removed else "NULL"
 
     async with engine.begin() as conn:
@@ -110,20 +114,22 @@ async def _seed_installation_and_membership(
             text(
                 "INSERT INTO installations "  # noqa: S608 — interpolated values are test-fixture literals (NOW()/NULL), not user input
                 "(installation_id, app_slug, account_id, account_login, "
-                " account_type, permissions_at_install, tombstoned_at) "
+                " account_type, permissions_at_install, tombstoned_at, "
+                " suspended_at, repository_selection) "
                 f"VALUES (:iid, 'test-app', 1, 'acme', 'Organization', "
-                f" '{{}}'::jsonb, {tombstone_clause})"
+                f" '{{}}'::jsonb, {tombstone_clause}, {suspended_clause}, :sel)"
             ),
-            {"iid": installation_id},
+            {"iid": installation_id, "sel": repository_selection},
         )
-        await conn.execute(
-            text(
-                "INSERT INTO installation_repositories "  # noqa: S608 — interpolated values are test-fixture literals (NOW()/NULL), not user input
-                "(installation_id, repo_id, repo_full_name, added_at, removed_at) "
-                f"VALUES (:iid, :rid, :name, NOW(), {removed_clause})"
-            ),
-            {"iid": installation_id, "rid": repo_id, "name": repo_full_name},
-        )
+        if seed_membership:
+            await conn.execute(
+                text(
+                    "INSERT INTO installation_repositories "  # noqa: S608 — interpolated values are test-fixture literals (NOW()/NULL), not user input
+                    "(installation_id, repo_id, repo_full_name, added_at, removed_at) "
+                    f"VALUES (:iid, :rid, :name, NOW(), {removed_clause})"
+                ),
+                {"iid": installation_id, "rid": repo_id, "name": repo_full_name},
+            )
 
 
 @pytest_asyncio.fixture
@@ -267,6 +273,61 @@ async def test_webhook_tombstoned_installation_returns_4xx(
     assert n_reviews == 0
     assert n_audit == 0
     assert app.state._dispatched == []  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_webhook_suspended_installation_returns_4xx(
+    webhook_app: tuple[FastAPI, AsyncEngine],
+) -> None:
+    """Arc B2: `installations.suspended_at` non-NULL → 4xx (fail-closed) even
+    with an otherwise-active membership row. Suspension is a reversible pause."""
+    app, engine = webhook_app
+    await _seed_installation_and_membership(engine, installation_suspended=True)
+
+    client = TestClient(app)
+    body = json.dumps(_valid_payload()).encode()
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": _sign(_SECRET, body),
+            "X-GitHub-Event": "pull_request",
+        },
+    )
+    assert response.status_code == 404
+    async with engine.connect() as conn:
+        n_reviews = await conn.scalar(text("SELECT COUNT(*) FROM reviews"))
+    assert n_reviews == 0
+    assert app.state._dispatched == []  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_webhook_all_selection_authorizes_without_repo_row(
+    webhook_app: tuple[FastAPI, AsyncEngine],
+) -> None:
+    """Arc B2: an `repository_selection='all'` install authorizes at the install
+    level — a PR is accepted even with NO per-repo `installation_repositories` row."""
+    app, engine = webhook_app
+    await _seed_installation_and_membership(
+        engine, repository_selection="all", seed_membership=False
+    )
+
+    client = TestClient(app)
+    body = json.dumps(_valid_payload()).encode()
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": _sign(_SECRET, body),
+            "X-GitHub-Event": "pull_request",
+        },
+    )
+    # Accepted: review created + dispatched (no per-repo row needed for `all`).
+    assert response.status_code == 202
+    async with engine.connect() as conn:
+        n_reviews = await conn.scalar(text("SELECT COUNT(*) FROM reviews"))
+    assert n_reviews == 1
+    assert len(app.state._dispatched) == 1  # noqa: SLF001
 
 
 @pytest.mark.asyncio
