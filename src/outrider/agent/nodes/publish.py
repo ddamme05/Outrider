@@ -1,4 +1,5 @@
 # Publish node per specs/2026-05-21-publish-node.md §V + DECISIONS.md #023.
+# See DECISIONS.md#065-authorization-is-a-live-github-check-the-local-install-db-is-a-cache
 """Publish node: post inline-review comments to GitHub via githubkit.
 
 Per DECISIONS.md #023 (publish routing and eligibility are separate
