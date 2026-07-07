@@ -13,6 +13,9 @@ import pytest
 from pydantic import ValidationError
 
 from outrider.api.webhooks.schemas import (
+    InstallationEventPayload,
+    InstallationRepositoriesEventPayload,
+    InstallationRepositoryRef,
     PullRequestEventPayload,
 )
 
@@ -520,3 +523,83 @@ def test_models_are_frozen() -> None:
         # `validate_assignment=False` is the implicit default. Pydantic v2
         # raises ValidationError for frozen models on field assignment.
         payload.action = "closed"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Install-lifecycle event schemas (Arc B2, DECISIONS.md#065)
+# ---------------------------------------------------------------------------
+
+
+def _installation_obj() -> dict[str, Any]:
+    return {
+        "id": 12345,
+        "account": {"id": 1, "login": "octocat", "type": "User"},
+        "app_slug": "test-app",
+        "repository_selection": "selected",
+        "permissions": {"contents": "read", "pull_requests": "write"},
+        "suspended_at": None,
+    }
+
+
+def test_installation_created_event_parses() -> None:
+    """`installation.created` parses: account, app_slug, selection, and the granted repos —
+    which use the MINIMAL repo shape (no `owner` sub-object)."""
+    payload = InstallationEventPayload.model_validate(
+        {
+            "action": "created",
+            "installation": _installation_obj(),
+            "repositories": [{"id": 100, "full_name": "octocat/repo-a"}],
+            "sender": {"login": "octocat", "id": 1},  # extra top-level -> ignored
+        }
+    )
+    assert payload.action == "created"
+    assert payload.installation.account.type == "User"
+    assert payload.installation.repository_selection == "selected"
+    assert len(payload.repositories) == 1
+    assert payload.repositories[0].id == 100
+
+
+def test_installation_repositories_added_event_parses() -> None:
+    """`installation_repositories.added` parses the added/removed delta arrays + selection."""
+    payload = InstallationRepositoriesEventPayload.model_validate(
+        {
+            "action": "added",
+            "installation": _installation_obj(),
+            "repository_selection": "selected",
+            "repositories_added": [{"id": 200, "full_name": "octocat/repo-b"}],
+            "repositories_removed": [],
+        }
+    )
+    assert payload.action == "added"
+    assert payload.repositories_added[0].full_name == "octocat/repo-b"
+    assert payload.repositories_removed == ()
+
+
+def test_installation_repository_ref_needs_no_owner() -> None:
+    """The install-event repo shape has NO nested `owner` (unlike `RepositoryRef`)."""
+    ref = InstallationRepositoryRef.model_validate({"id": 100, "full_name": "octocat/repo-a"})
+    assert ref.id == 100
+
+
+def test_installation_bad_account_login_rejected() -> None:
+    """Input boundary: a slashed account login (path-injection shape) is rejected at parse."""
+    bad = _installation_obj()
+    bad["account"] = {"id": 1, "login": "octo/cat", "type": "User"}
+    with pytest.raises(ValidationError):
+        InstallationEventPayload.model_validate({"action": "created", "installation": bad})
+
+
+def test_installation_bad_repo_full_name_rejected() -> None:
+    """Input boundary: a repo `full_name` without the `owner/repo` shape is rejected."""
+    with pytest.raises(ValidationError):
+        InstallationRepositoryRef.model_validate({"id": 1, "full_name": "no-slash-here"})
+
+
+def test_installation_action_is_open_string_not_literal() -> None:
+    """`action` is `str` (not a closed Literal): an undocumented action parses cleanly and
+    reaches the handler-side allowlist (which 2xx no-ops it) — no 400 that would cause retries."""
+    payload = InstallationEventPayload.model_validate(
+        {"action": "some_future_action", "installation": _installation_obj()}
+    )
+    assert payload.action == "some_future_action"
+    assert payload.repositories == ()

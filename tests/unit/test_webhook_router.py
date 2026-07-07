@@ -521,3 +521,88 @@ def test_x_github_delivery_logged_not_persisted(
 # IntegrityError-race tests (natural-key conflict slow-path,
 # audit-side IntegrityError re-raise) remain skipped in the integration
 # file pending a monkey-patch fixture; tracked there, not duplicated here.
+
+
+# ---------------------------------------------------------------------------
+# Install-event dispatch routing (Arc B2, DECISIONS.md#065)
+# ---------------------------------------------------------------------------
+
+
+def test_installation_event_routes_to_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A signed `installation` event routes to the install-event dispatch (NOT the
+    pull_request path) and returns 2xx with the handler's status dict."""
+    import outrider.api.webhooks.router as router_mod
+
+    calls: list[bytes] = []
+
+    async def _stub(body: bytes, session_factory: Any, delivery: str | None) -> dict[str, str]:
+        calls.append(body)
+        return {"status": "ok", "action": "created"}
+
+    monkeypatch.setattr(router_mod, "_dispatch_installation_event", _stub)
+
+    body = json.dumps({"action": "created", "installation": {"id": 12345}}).encode()
+    client = TestClient(_make_app())
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": _sign(_SECRET, body),
+            "X-GitHub-Event": "installation",
+            "X-GitHub-Delivery": "d1",
+        },
+    )
+    assert response.status_code == 202
+    assert response.json() == {"status": "ok", "action": "created"}
+    assert len(calls) == 1
+
+
+def test_installation_repositories_event_routes_to_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A signed `installation_repositories` event routes to its dispatch + returns 2xx."""
+    import outrider.api.webhooks.router as router_mod
+
+    calls: list[bytes] = []
+
+    async def _stub(body: bytes, session_factory: Any, delivery: str | None) -> dict[str, str]:
+        calls.append(body)
+        return {"status": "ok", "action": "added"}
+
+    monkeypatch.setattr(router_mod, "_dispatch_installation_repositories_event", _stub)
+
+    body = json.dumps(
+        {"action": "added", "installation": {"id": 12345}, "repository_selection": "selected"}
+    ).encode()
+    client = TestClient(_make_app())
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": _sign(_SECRET, body),
+            "X-GitHub-Event": "installation_repositories",
+            "X-GitHub-Delivery": "d2",
+        },
+    )
+    assert response.status_code == 202
+    assert response.json() == {"status": "ok", "action": "added"}
+    assert len(calls) == 1
+
+
+def test_installation_event_with_bad_signature_is_401_before_dispatch() -> None:
+    """An install event with a BAD signature is 401 — dispatch runs ONLY after signature
+    verification, so the install path never bypasses the security gate. The
+    never-call `session_factory` stub would also fire if dispatch were reached."""
+    client = TestClient(_make_app())
+    body = json.dumps({"action": "created", "installation": {"id": 12345}}).encode()
+    response = client.post(
+        "/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": "sha256=deadbeef",
+            "X-GitHub-Event": "installation",
+            "X-GitHub-Delivery": "d3",
+        },
+    )
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid signature"}
