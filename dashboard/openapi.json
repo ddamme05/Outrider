@@ -3483,7 +3483,8 @@
           "failed",
           "idempotently_skipped",
           "idempotently_skipped_external_record",
-          "no_op_empty"
+          "no_op_empty",
+          "not_published_auth_revoked"
         ],
         "title": "PublishAttemptOutcome",
         "description": "Terminal outcome of one `publisher.create_review` attempt.\n\nSingle emission per attempt, AFTER the GitHub call resolves. No\n`in_flight` outcome \u2014 an in-flight pre-call emission would be\nincompatible with `audit-events-append-only` because\nsame-event_id-different-payload raises\n`AuditPersisterIdempotencyConflict` rather than acting as an update.\nCrash-after-success defense via `find_existing_review_on_head_sha`."

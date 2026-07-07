@@ -1903,7 +1903,7 @@ export interface components {
          *     Crash-after-success defense via `find_existing_review_on_head_sha`.
          * @enum {string}
          */
-        PublishAttemptOutcome: "success" | "failed" | "idempotently_skipped" | "idempotently_skipped_external_record" | "no_op_empty";
+        PublishAttemptOutcome: "success" | "failed" | "idempotently_skipped" | "idempotently_skipped_external_record" | "no_op_empty" | "not_published_auth_revoked";
         /**
          * PublishDestination
          * @description Where a finding lands when published, per spec §4.1.7.

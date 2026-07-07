@@ -918,6 +918,93 @@ async def test_publish_failure_path_does_not_mark_review_completed() -> None:
     )
 
 
+class _StatusCodeError(Exception):
+    """Publish-path exception carrying an HTTP status directly on `.status_code` —
+    the shape `_extract_status_code` checks first (the wrapper-exception contract)."""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"github returned {status_code}")
+        self.status_code = status_code
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [401, 403, 404])
+async def test_publish_post_auth_revoked_retains_review_not_failed(status_code: int) -> None:
+    """#065: a publish POST rejected with 401/403/404 is authorization revoked, NOT a
+    FAILED error. The node RETAINS the review — records PublishAttemptEvent(
+    not_published_auth_revoked, status_code=<code>, failure_class=None), marks the review
+    `completed`, emits phase-end, and returns PublishResult.not_published_auth_revoked()
+    WITHOUT re-raising. No canonical PublishEvent (nothing was created on GitHub)."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+    phase_sink = _RecordingPhaseEventSink()
+    publish_sink = _RecordingPublishEventSink()
+    publisher = _StubPublisher(should_raise=_StatusCodeError(status_code))
+    review_status_sink = _RecordingReviewStatusSink()
+
+    # No exception propagates — the auth-revoked branch returns a result.
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=publish_sink,
+        phase_event_sink=phase_sink,
+        review_status_sink=review_status_sink,
+        github_factory=_stub_github_factory,
+    )
+
+    assert result["publish_result"].outcome == "not_published_auth_revoked"
+    assert result["publish_result"].github_review_id is None
+    # Exactly one attempt event, distinct from FAILED, carrying the status + None failure_class.
+    assert len(publish_sink.attempts) == 1
+    attempt = publish_sink.attempts[0]
+    assert attempt.outcome is PublishAttemptOutcome.NOT_PUBLISHED_AUTH_REVOKED
+    assert attempt.status_code == status_code
+    assert attempt.failure_class is None
+    assert attempt.recovered_github_review_id is None
+    # No canonical PublishEvent — nothing was created on GitHub.
+    assert publish_sink.results == []
+    # The review is RETAINED → marked completed (it finished its work; the non-post is
+    # recorded on the attempt event + PublishResult, not as a failed review).
+    assert review_status_sink.completed_calls == [state.review_id]
+    # Phase bracket closed (the retained path emits phase-end, unlike the FAILED path).
+    assert len(phase_sink.events) == 2
+    assert phase_sink.events[0].marker == "start"
+    assert phase_sink.events[1].marker == "end"
+
+
+@pytest.mark.asyncio
+async def test_publish_post_non_auth_error_stays_failed_and_raises() -> None:
+    """A publish POST error that is NOT 401/403/404 (here a 422 validation rejection)
+    stays FAILED: the node emits PublishAttemptEvent(failed, failure_class=...) and
+    re-raises, and the review is NOT marked completed (retry surface preserved). Guards
+    against the auth-revoked branch over-broadening to swallow genuine POST failures."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+    phase_sink = _RecordingPhaseEventSink()
+    publish_sink = _RecordingPublishEventSink()
+    publisher = _StubPublisher(should_raise=_StatusCodeError(422))
+    review_status_sink = _RecordingReviewStatusSink()
+
+    with pytest.raises(_StatusCodeError):
+        await publish(
+            state,
+            publisher=publisher,
+            publish_event_sink=publish_sink,
+            phase_event_sink=phase_sink,
+            review_status_sink=review_status_sink,
+            github_factory=_stub_github_factory,
+        )
+
+    assert len(publish_sink.attempts) == 1
+    attempt = publish_sink.attempts[0]
+    assert attempt.outcome is PublishAttemptOutcome.FAILED
+    assert attempt.failure_class == "_StatusCodeError"
+    assert attempt.status_code == 422
+    assert review_status_sink.completed_calls == []
+
+
 # ---------------------------------------------------------------------------
 # S1: agent-readable HTML-comment markers (ROADMAP.md section 3)
 # ---------------------------------------------------------------------------

@@ -147,7 +147,7 @@ class GitHubReviewCreated(BaseModel):
 class PublishResult(BaseModel):
     """Publish node's terminal state field; rolled up into ReviewState.
 
-    Four outcome shapes correspond 1:1 to `PublishAttemptOutcome` minus
+    Five outcome shapes correspond 1:1 to `PublishAttemptOutcome` minus
     `FAILED` (failed attempts raise rather than producing a result):
 
     - `success` — review posted; `github_review_id` populated.
@@ -156,6 +156,10 @@ class PublishResult(BaseModel):
     - `skipped` — prior PublishEvent for this review_id; no GitHub call.
     - `skipped_external` — body-marker query found existing review on
       head_sha (crash-after-success recovery path).
+    - `not_published_auth_revoked` — GitHub rejected the POST with 401/403/404;
+      authorization revoked at GitHub's gate (DECISIONS.md#065). No review created;
+      review retained + marked `completed`. Distinct from `FAILED` (authorized-away,
+      not an error, so it produces a result rather than raising).
 
     The publish node returns `{"publish_result": result}` from its body;
     LangGraph merges into `ReviewState.publish_result` via the default
@@ -171,7 +175,10 @@ class PublishResult(BaseModel):
     outcome: Annotated[
         str,
         Field(
-            pattern=r"^(success|empty|idempotently_skipped|idempotently_skipped_external_record)$"
+            pattern=(
+                r"^(success|empty|idempotently_skipped|"
+                r"idempotently_skipped_external_record|not_published_auth_revoked)$"
+            )
         ),
     ]
 
@@ -274,3 +281,17 @@ class PublishResult(BaseModel):
             review_body_findings_posted=review_body_findings_posted,
             dashboard_only_findings_surfaced=dashboard_only_findings_surfaced,
         )
+
+    @classmethod
+    def not_published_auth_revoked(cls) -> Self:
+        """GitHub rejected the publish POST with 401/403/404 — authorization was
+        revoked at GitHub's gate (DECISIONS.md#065). No review was created, so
+        `github_review_id=None` and all three post/surface counts are 0 (like `empty`):
+        nothing landed. The attempted counts live on the paired `PublishAttemptEvent`
+        (`comments_attempted`); the review is retained + marked `completed`, and the
+        dashboard surfaces "reviewed but not posted (access revoked)" by reading this
+        outcome value (no new review status — spec §Output boundary). No `reason` field
+        anywhere: the outcome string is self-describing and #023 forbids widening the
+        publish-attempt hash-recipe input shape.
+        """
+        return cls(outcome="not_published_auth_revoked", github_review_id=None, comments_posted=0)
