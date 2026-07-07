@@ -169,6 +169,14 @@ def test_unrecognized_host_never_falls_back_to_anthropic(
     for fact in _NEUTRAL_FACTS:
         assert fact in page
 
+    # A present-but-blank host is likewise unrecognized (mirrors runtime), never Anthropic.
+    monkeypatch.setenv("OUTRIDER_LLM_HOST", "   ")
+    blank_page = render_privacy_html(resolve_privacy_context())
+    assert "does not recognize" in blank_page
+    assert "(blank)" in blank_page
+    for marker in _ANTHROPIC_MARKERS:
+        assert marker not in blank_page, f"blank host fell back to Anthropic ({marker!r})"
+
 
 # ---------------------------------------------------------------------------
 # Resolver context matrix.
@@ -180,8 +188,11 @@ def test_resolve_privacy_context_matrix(monkeypatch: pytest.MonkeyPatch) -> None
     unset = resolve_privacy_context()
     assert unset.is_anthropic and unset.host_privacy is None
 
-    monkeypatch.setenv("OUTRIDER_LLM_HOST", "  ")  # whitespace collapses to Anthropic default
-    assert resolve_privacy_context().is_anthropic
+    # Present-but-blank is NOT Anthropic — it mirrors runtime, which passes "" through and
+    # rejects it as unknown (lifespan.py:621). Only an UNSET var defaults to Anthropic.
+    monkeypatch.setenv("OUTRIDER_LLM_HOST", "  ")
+    blank = resolve_privacy_context()
+    assert not blank.is_anthropic and blank.host_privacy is None
 
     monkeypatch.setenv("OUTRIDER_LLM_HOST", "anthropic")
     assert resolve_privacy_context().is_anthropic
