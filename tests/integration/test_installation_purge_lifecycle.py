@@ -164,7 +164,13 @@ async def test_purge_installation_full_lifecycle(migrated_db: str) -> None:
                 )
             )
             rows = list(purge_rows)
-            assert len(rows) == 4
+            # 4 content tables + 1 `installations` evidence row (the install-row delete is
+            # always audited, so even a zero-content install leaves a forensic record).
+            assert len(rows) == 5
+            target_tables = {table for _iid, table, _n, _role in rows}
+            assert "installations" in target_tables, (
+                "the install-row hard-delete must itself leave a purge_audit evidence row"
+            )
             for installation_id, _table, rows_affected, purge_role in rows:
                 assert installation_id == _INSTALLATION_ID, (
                     "purge_audit row should record the scoped installation_id, "
