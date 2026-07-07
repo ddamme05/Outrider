@@ -162,11 +162,13 @@ class _StubPublisher:
         *,
         existing_review_id: int | None = None,
         should_raise: Exception | None = None,
+        find_should_raise: Exception | None = None,
     ) -> None:
         self.create_calls: list[dict[str, Any]] = []
         self.find_calls: list[dict[str, Any]] = []
         self._existing_review_id = existing_review_id
         self._should_raise = should_raise
+        self._find_should_raise = find_should_raise
 
     async def create_review(self, **kwargs: Any) -> GitHubReviewCreated:
         self.create_calls.append(kwargs)
@@ -179,6 +181,8 @@ class _StubPublisher:
 
     async def find_existing_review_on_head_sha(self, **kwargs: Any) -> int | None:
         self.find_calls.append(kwargs)
+        if self._find_should_raise is not None:
+            raise self._find_should_raise
         return self._existing_review_id
 
 
@@ -1002,6 +1006,80 @@ async def test_publish_post_non_auth_error_stays_failed_and_raises() -> None:
     assert attempt.outcome is PublishAttemptOutcome.FAILED
     assert attempt.failure_class == "_StatusCodeError"
     assert attempt.status_code == 422
+    assert review_status_sink.completed_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [401, 403, 404])
+async def test_publish_external_record_get_auth_revoked_retains_review(status_code: int) -> None:
+    """#065: a 401/403/404 at the FIRST publish GitHub call — the external-record GET
+    (`find_existing_review_on_head_sha`) — is authorization revoked, NOT a FAILED error. A
+    revocation between review and publish surfaces HERE, before the `create_review` POST; the
+    node must retain the review identically to the POST path (not mark it FAILED). Guards the
+    gap where the auth-revoked handling was scoped to the POST only and the first GitHub call
+    could still become FAILED."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+    phase_sink = _RecordingPhaseEventSink()
+    publish_sink = _RecordingPublishEventSink()
+    publisher = _StubPublisher(find_should_raise=_StatusCodeError(status_code))
+    review_status_sink = _RecordingReviewStatusSink()
+
+    result = await publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=publish_sink,
+        phase_event_sink=phase_sink,
+        review_status_sink=review_status_sink,
+        github_factory=_stub_github_factory,
+    )
+
+    assert result["publish_result"].outcome == "not_published_auth_revoked"
+    assert result["publish_result"].github_review_id is None
+    # The POST was NEVER reached — the GET raised first (short-circuit at the first call).
+    assert publisher.create_calls == []
+    assert len(publish_sink.attempts) == 1
+    attempt = publish_sink.attempts[0]
+    assert attempt.outcome is PublishAttemptOutcome.NOT_PUBLISHED_AUTH_REVOKED
+    assert attempt.status_code == status_code
+    assert attempt.failure_class is None
+    assert publish_sink.results == []
+    assert review_status_sink.completed_calls == [state.review_id]
+    assert len(phase_sink.events) == 2
+    assert phase_sink.events[0].marker == "start"
+    assert phase_sink.events[1].marker == "end"
+
+
+@pytest.mark.asyncio
+async def test_publish_external_record_get_non_auth_error_stays_failed_and_raises() -> None:
+    """A non-401/403/404 error at the external-record GET (here 500) stays FAILED + re-raises,
+    and the review is NOT marked completed — the auth-revoked branch at the GET must not
+    over-broaden to swallow genuine GET failures (symmetric with the POST-path guard)."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    changed_file = _make_changed_file(path=finding.file_path)
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+    phase_sink = _RecordingPhaseEventSink()
+    publish_sink = _RecordingPublishEventSink()
+    publisher = _StubPublisher(find_should_raise=_StatusCodeError(500))
+    review_status_sink = _RecordingReviewStatusSink()
+
+    with pytest.raises(_StatusCodeError):
+        await publish(
+            state,
+            publisher=publisher,
+            publish_event_sink=publish_sink,
+            phase_event_sink=phase_sink,
+            review_status_sink=review_status_sink,
+            github_factory=_stub_github_factory,
+        )
+
+    assert publisher.create_calls == []
+    assert len(publish_sink.attempts) == 1
+    attempt = publish_sink.attempts[0]
+    assert attempt.outcome is PublishAttemptOutcome.FAILED
+    assert attempt.failure_class == "_StatusCodeError"
+    assert attempt.status_code == 500
     assert review_status_sink.completed_calls == []
 
 
