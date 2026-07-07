@@ -218,3 +218,51 @@ async def test_purge_expired_installations_selects_only_due_tombstones(migrated_
             )
     finally:
         await engine.dispose()
+
+
+async def test_purge_expired_installations_labels_role_install_purge(migrated_db: str) -> None:
+    """Arc B2 code-review #3: lifecycle hard-deletes audit as the DISTINCT default role
+    'install-purge', separable from the time-based sweep's 'sweep' role in purge_audit —
+    the exact question #012 auditing asks ('did uninstall-retention complete for X').
+
+    Revert-the-fold: call WITHOUT `purge_role` (exercise the default). Revert the distinct
+    default (back to 'sweep'), or restore the runner passing its generic `purge_role`, and
+    this fails — the row would be labeled 'sweep', indistinguishable from a TTL purge.
+    """
+    from outrider.sweep.purge_expired import purge_expired_installations
+
+    engine = create_async_engine(migrated_db)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO installations (installation_id, app_slug, account_id, "
+                    " account_login, account_type, permissions_at_install, tombstoned_at, "
+                    " purge_after_at) VALUES "
+                    "(111, 'a', 1, 'x', 'User', '{}'::jsonb, NOW() - INTERVAL '40 days', "
+                    "   NOW() - INTERVAL '10 days')"
+                )
+            )
+            # One content row so purge_installation writes a purge_audit row to label.
+            await conn.execute(
+                text(
+                    "INSERT INTO reviews (installation_id, repo_id, pr_number, head_sha, "
+                    " status, retention_expires_at) VALUES "
+                    "(111, 100, 1, 'sha1', 'completed', NOW() + INTERVAL '180 days')"
+                )
+            )
+
+        async with engine.begin() as conn:
+            purged = await purge_expired_installations(conn)  # no purge_role → default
+
+        assert set(purged) == {"111"}
+
+        async with engine.connect() as conn:
+            roles = await conn.execute(
+                text("SELECT DISTINCT purge_role FROM purge_audit WHERE installation_id = 111")
+            )
+            assert [r[0] for r in roles] == ["install-purge"], (
+                "install hard-delete must audit as 'install-purge', not the TTL 'sweep' role"
+            )
+    finally:
+        await engine.dispose()

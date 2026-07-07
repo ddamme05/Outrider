@@ -91,6 +91,7 @@ async def run_all_sweeps(
         "hitl": {"reclaim_recovered": N, "reclaim_failed": M,
                  "transitioned": K},
         "purge": {<target_table>: <rows_affected>, ...},
+        "install_purge": {<installation_id>: {<target_table>: <rows>, ...}, ...},
         "replay_verdict": {"projected": N, "failed": M},
       }
 
@@ -162,10 +163,11 @@ async def run_all_sweeps(
     # Arc B2: the uninstall grace→hard-delete step. `purge_installation` existed but
     # had no scheduled caller, so tombstoned installs never actually purged (#012
     # never completed on uninstall). Runs after the time-based purge, sharing the
-    # tick's SWEEP_LOCK_ID transaction (the lock is reentrant within it).
-    install_purge_result = await purge_expired.purge_expired_installations(
-        conn=conn, purge_role=purge_role
-    )
+    # tick's SWEEP_LOCK_ID transaction (the lock is reentrant within it). Deliberately
+    # NOT passed `purge_role`: install hard-deletes carry the distinct default
+    # "install-purge" role so #012 lifecycle deletions stay separable from routine TTL
+    # purges (which carry this runner's `purge_role`) in the purge_audit trail.
+    install_purge_result = await purge_expired.purge_expired_installations(conn=conn)
     # Replay-verdict projection runs LAST by ordering convention. It flips no status
     # and is natural-key idempotent, so it needs no advisory lock — it opens its own
     # sessions via `session_factory`, OUTSIDE `conn`'s lock transaction, and so cannot
