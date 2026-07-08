@@ -16,6 +16,10 @@ export default defineConfig({
       // starting with ^ as a regex) so it matches ONLY POST /reviews/{id}/decide
       // and never swallows the SPA's own /reviews + /reviews/:id client routes.
       "^/reviews/[^/]+/decide$": { target: BACKEND, changeOrigin: true },
+      // The public privacy page is backend-served HTML (FastAPI GET /privacy), NOT an SPA
+      // route. Without this, the Sidebar footer link resolves against the Vite dev server
+      // and React Router 404s. An exact ^…$ regex so it can't shadow a future SPA route.
+      "^/privacy$": { target: BACKEND, changeOrigin: true },
     },
   },
   test: {
