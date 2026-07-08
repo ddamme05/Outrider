@@ -111,3 +111,11 @@ spikes/glm/
 
 # --- Local dashboard feature write-ups (not a project artifact) ---
 stuff/
+
+# local .env backups (never commit — may resolve to credentials)
+.env.bak*
+.env.*.bak
+BUG_FIX_SESSION_HANDOFF.md
+
+# local progress reports (working artifacts, never commit)
+*PROGRESS_REPORT.md
