@@ -12,6 +12,7 @@ import {
   tierPhrase,
   typeLabel,
 } from "../lib/findingSections";
+import { renderInlineCode } from "../lib/renderInlineCode";
 
 type FindingView = components["schemas"]["FindingView"];
 
@@ -150,8 +151,12 @@ export function FindingCard({
           <>
             {/* Lead with the title (the one-line summary), description below — matching
                 the GitHub/Slack renderers, which both lead with the title. */}
-            {finding.title ? <div className="f-title">{finding.title}</div> : null}
-            {finding.description ? <div className="f-desc">{finding.description}</div> : null}
+            {finding.title ? (
+              <div className="f-title">{renderInlineCode(finding.title)}</div>
+            ) : null}
+            {finding.description ? (
+              <div className="f-desc">{renderInlineCode(finding.description)}</div>
+            ) : null}
             {!finding.title && !finding.description ? <div className="f-desc">—</div> : null}
           </>
         )}
