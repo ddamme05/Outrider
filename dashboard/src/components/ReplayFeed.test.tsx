@@ -149,6 +149,18 @@ test("equivalent verdict renders phase cards + the per-operation rows", () => {
   expect(screen.getByText("llm_call")).toBeInTheDocument();
 });
 
+test("flat-feed body prettifies the model slug (GLM-5.2, never the raw Fireworks slug)", () => {
+  // The flat `.ae` feed's flatBody rendered e.model RAW — Fireworks showed as
+  // "accounts/fireworks/models/glm-5p2". This must exercise flatBody SPECIFICALLY (summarizeEvent
+  // is a separate, already-prettified path), so render with `flat` and assert INSIDE `.ae-body`.
+  // Revert flatBody's prettyModel and this fails — the raw slug reappears in `.ae-body`.
+  const ev = { ...llmEvent("e1", "analyze", 0.02), model: "accounts/fireworks/models/glm-5p2" };
+  render(<ReplayFeed data={data({ events: [ev], phases: [phaseWith([ev])] })} flat />);
+  const body = document.querySelector(".ae-body");
+  expect(body?.textContent).toContain("GLM-5.2");
+  expect(body?.textContent).not.toContain("accounts/fireworks/models/glm-5p2");
+});
+
 test("non-equivalent verdict degrades to the flat feed + banner (FUP-125)", () => {
   const ev = llmEvent("e1", "analyze", 0.27);
   render(

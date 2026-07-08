@@ -1,5 +1,6 @@
 import type { components } from "../api/schema";
 import { formatDurationMs, unionDurationMs } from "../lib/format";
+import { prettyModel } from "../lib/modelLabel";
 
 type TimelineData = components["schemas"]["ReplayTimelineResponse"];
 // One reconstructed phase from the server's replay-VERIFIED grouping. A node can own MANY
@@ -30,13 +31,6 @@ const STATIC_MODEL: Partial<Record<NodeName, string>> = {
   publish: "no LLM",
 };
 
-function prettyModel(model: string): string {
-  const l = model.toLowerCase();
-  if (l.includes("haiku")) return "Haiku";
-  if (l.includes("sonnet")) return "Sonnet";
-  if (l.includes("opus")) return "Opus";
-  return model;
-}
 
 export function PipelineStrip({
   status,

@@ -1,4 +1,5 @@
 import type { components } from "../api/schema";
+import { prettyModel } from "./modelLabel";
 
 // The typed audit-event union, as returned by both /events and /replay-timeline (the
 // same `AuditEvent` schema union). Shared by AuditFeed (flat table) + ReplayFeed.
@@ -10,7 +11,7 @@ export type AuditEvent = components["schemas"]["ReviewEventsResponse"]["events"]
 export function summarizeEvent(e: AuditEvent): string {
   switch (e.event_type) {
     case "llm_call":
-      return `${e.model} · $${e.cost_usd.toFixed(2)} · ${e.input_tokens}+${e.output_tokens} tok`;
+      return `${prettyModel(e.model)} · $${e.cost_usd.toFixed(2)} · ${e.input_tokens}+${e.output_tokens} tok`;
     case "finding":
       return `${e.finding_type} · ${e.severity} · ${e.file_path}`;
     case "review_phase":

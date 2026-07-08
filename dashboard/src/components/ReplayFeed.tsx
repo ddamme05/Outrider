@@ -16,6 +16,7 @@ import {
 } from "../lib/auditEvent";
 import { formatDurationMs, spanMs } from "../lib/format";
 import { hitlOutcomeLabel, severityLabel, typeLabel } from "../lib/findingSections";
+import { prettyModel } from "../lib/modelLabel";
 import { AuditFeed } from "./AuditFeed";
 import { CodeBlock } from "./CodeBlock";
 
@@ -70,7 +71,7 @@ function flatBody(e: AuditEvent): ReactNode {
     case "llm_call":
       return (
         <>
-          <b>{e.model}</b> · ${e.cost_usd.toFixed(2)} ·{" "}
+          <b>{prettyModel(e.model)}</b> · ${e.cost_usd.toFixed(2)} ·{" "}
           <span className="mono">{e.input_tokens}</span> in /{" "}
           <span className="mono">{e.output_tokens}</span> out
         </>

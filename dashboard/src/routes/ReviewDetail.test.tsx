@@ -364,8 +364,9 @@ test("the always-shown audit feed renders the reconstructed stream as a flat pha
   expect(await screen.findByText(/Append-only by database policy/)).toBeInTheDocument();
   expect(document.querySelector(".ae-phase .pname")).toHaveTextContent("analyze");
   expect(screen.getByText("llm_call")).toBeInTheDocument();
-  // The flat body bolds the model; the relative-timestamp column is present.
-  expect(screen.getByText("claude-sonnet-4-5")).toBeInTheDocument();
+  // The flat body bolds the model (prettified via prettyModel, like every model label); scope to
+  // the .ae feed since the pipeline strip shows the same "Sonnet". The relative-timestamp is present.
+  expect(document.querySelector(".ae")?.textContent).toContain("Sonnet");
   expect(document.querySelector(".ae .ae-time")).toBeInTheDocument();
 });
 
@@ -418,10 +419,11 @@ test("pipeline node cards derive per-node model and cost from the verified phase
   const pnStats = Array.from(document.querySelectorAll(".pn-stat")).map((e) => e.textContent ?? "");
   expect(pnStats.some((s) => /\$0\.27/.test(s))).toBe(true);
   expect(pnStats.some((s) => /\$0\.01/.test(s))).toBe(true);
-  // model prettified from claude-sonnet-4-5 → Sonnet (analyze + triage nodes). The audit
-  // feed shows the raw "claude-sonnet-4-5", so an exact-text "Sonnet" match stays unique
-  // to the pipeline's two pn-model cards.
-  expect(screen.getAllByText("Sonnet").length).toBe(2);
+  // model prettified from claude-sonnet-4-5 → Sonnet on the two active pipeline node cards
+  // (triage + analyze). Scope to `.pn-model`: the audit feed now prettifies too (both surfaces
+  // share prettyModel), so an unscoped "Sonnet" text count would also match the feed rows.
+  const pnModels = Array.from(document.querySelectorAll(".pn-model")).map((e) => e.textContent ?? "");
+  expect(pnModels.filter((m) => m === "Sonnet").length).toBe(2);
 });
 
 test("completed review fails CLOSED when the verified phases are unavailable — no fabricated audit facts", async () => {
