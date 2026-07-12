@@ -24,6 +24,7 @@ hitl_resume eval + integration path exercised under `LANGGRAPH_STRICT_MSGPACK=tr
 from __future__ import annotations
 
 import ast
+import contextlib
 import enum
 import importlib
 import logging
@@ -34,11 +35,13 @@ from uuid import uuid4
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from pydantic import BaseModel
 
 from outrider.agent.checkpoint_serde import (
     OUTRIDER_MSGPACK_ALLOWLIST,
     build_checkpoint_serde,
+    is_outrider_checkpoint_serde,
 )
 from outrider.audit.events import compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingType
@@ -469,3 +472,30 @@ def test_runtime_guard_rejects_default_serde_checkpointer() -> None:
     with pytest.raises(RuntimeError, match="build_checkpoint_serde"):
         InMemorySaver()
     InMemorySaver(serde=build_checkpoint_serde())
+
+
+def test_is_outrider_checkpoint_serde_identifies_our_serde_only() -> None:
+    """The identity check is True only for a serde from build_checkpoint_serde()."""
+    assert is_outrider_checkpoint_serde(build_checkpoint_serde()) is True
+    # A plain JsonPlusSerializer with the SAME allowlist is still not "ours" — the
+    # invariant is "went through build_checkpoint_serde()", the single source of truth.
+    assert is_outrider_checkpoint_serde(JsonPlusSerializer()) is False
+    assert is_outrider_checkpoint_serde(object()) is False
+
+
+def test_guard_identity_is_decoupled_from_langgraph_private_attr() -> None:
+    """A langgraph bump that renames the private allowlist attr must not break the guard.
+
+    Regression pin for the "guard couples test stability to a private attribute name"
+    review finding: identity goes through our marker subclass, not
+    `serde._allowed_msgpack_modules`. Simulate langgraph dropping/renaming that
+    private attr and assert both the helper AND the autouse construction guard still
+    accept a correctly-wired checkpointer. (Under the old private-attr read, the
+    deleted attr would read as None and the guard would raise for every wired saver.)
+    """
+    serde = build_checkpoint_serde()
+    with contextlib.suppress(AttributeError):
+        delattr(serde, "_allowed_msgpack_modules")
+    assert is_outrider_checkpoint_serde(serde) is True
+    # The autouse guard runs on this construction and must NOT raise.
+    InMemorySaver(serde=serde)
