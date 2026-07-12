@@ -591,6 +591,7 @@ def _build_kwargs(
 ) -> dict[str, Any]:
     from langgraph.checkpoint.memory import InMemorySaver
 
+    from outrider.agent.checkpoint_serde import build_checkpoint_serde
     from outrider.agent.nodes.hitl_config import HITLConfig
     from outrider.agent.nodes.patch_config import PatchConfig
 
@@ -623,7 +624,7 @@ def _build_kwargs(
         # Checkpointer is required for any compiled graph that uses
         # `interrupt(...)` per langgraph-1.1.6/narrative/persistence.md.
         # InMemorySaver is the canonical test-only checkpointer.
-        "checkpointer": InMemorySaver(),
+        "checkpointer": InMemorySaver(serde=build_checkpoint_serde()),
         "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
     }

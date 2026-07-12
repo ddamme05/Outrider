@@ -62,6 +62,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from outrider.agent.checkpoint_serde import build_checkpoint_serde
 from outrider.agent.graph import build_graph
 from outrider.agent.nodes.hitl_config import HITLConfig
 from outrider.agent.nodes.patch_config import PatchConfig
@@ -499,7 +500,7 @@ async def test_full_review_reaches_publish_and_replays_equivalent(engine: AsyncE
         anomaly_sink=anomaly_sink,
         hitl_config=HITLConfig(),
         patch_config=PatchConfig(patches_enabled=False),
-        checkpointer=InMemorySaver(),
+        checkpointer=InMemorySaver(serde=build_checkpoint_serde()),
         publisher=publisher,
         import_path_resolver=_StubImportPathResolver(),
     )

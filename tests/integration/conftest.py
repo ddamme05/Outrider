@@ -130,9 +130,11 @@ def _in_memory_checkpointer_factory() -> Any:
 
     from langgraph.checkpoint.memory import InMemorySaver  # noqa: PLC0415
 
+    from outrider.agent.checkpoint_serde import build_checkpoint_serde  # noqa: PLC0415
+
     @asynccontextmanager
     async def _cm() -> AsyncIterator[InMemorySaver]:
-        yield InMemorySaver()
+        yield InMemorySaver(serde=build_checkpoint_serde())
 
     return _cm()
 
