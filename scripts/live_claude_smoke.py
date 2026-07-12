@@ -106,6 +106,7 @@ from tests.integration.test_e2e_smoke import (  # noqa: E402
     _StubImportPathResolver,
 )
 
+from outrider.agent.checkpoint_serde import build_checkpoint_serde  # noqa: E402
 from outrider.agent.graph import build_graph  # noqa: E402
 from outrider.agent.nodes.analyze_config import AnalyzeConfig  # noqa: E402
 from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: E402
@@ -521,7 +522,7 @@ async def _drive(
         # Required since the suggested-patches arc; OFF here to keep the live
         # spend bounded to the review calls themselves.
         patch_config=PatchConfig(patches_enabled=False),
-        checkpointer=InMemorySaver(),
+        checkpointer=InMemorySaver(serde=build_checkpoint_serde()),
         publisher=publisher,
         import_path_resolver=_StubImportPathResolver(),
         # Production-parity shadow wiring (mirrors api/lifespan.py). Writes go
