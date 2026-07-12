@@ -234,6 +234,7 @@ def compiled_graph() -> Any:
     # ignores because static-shape compatibility is stricter.
     from langgraph.checkpoint.memory import InMemorySaver
 
+    from outrider.agent.checkpoint_serde import build_checkpoint_serde
     from outrider.agent.nodes.hitl_config import HITLConfig
     from outrider.agent.nodes.patch_config import PatchConfig
 
@@ -252,7 +253,7 @@ def compiled_graph() -> Any:
         anomaly_sink=_StubAnomalySink(),
         hitl_config=HITLConfig(),
         patch_config=PatchConfig(),
-        checkpointer=InMemorySaver(),
+        checkpointer=InMemorySaver(serde=build_checkpoint_serde()),
         publisher=_StubGitHubPublisher(),
         file_examination_sink=_StubFileSink(),
         analyze_event_sink=_StubAnalyzeEventSink(),

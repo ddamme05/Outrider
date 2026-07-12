@@ -46,6 +46,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
+from outrider.agent.checkpoint_serde import build_checkpoint_serde
 from outrider.agent.nodes.hitl import hitl
 from outrider.agent.nodes.hitl_config import HITLConfig, HITLTimeoutAction
 from outrider.audit.events import (  # noqa: TC001  (runtime: recording-sink list element types)
@@ -216,7 +217,7 @@ async def _run_mock_smoke() -> int:
         timeout_minutes=30,
         timeout_action=HITLTimeoutAction.EXPIRE_ONLY,
     )
-    checkpointer = InMemorySaver()
+    checkpointer = InMemorySaver(serde=build_checkpoint_serde())
 
     # Build a tiny graph: START -> hitl -> END.
     hitl_callable = functools.partial(

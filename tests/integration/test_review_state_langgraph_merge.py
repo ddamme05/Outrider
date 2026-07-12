@@ -537,6 +537,7 @@ def _graph_kwargs(
     """
     from langgraph.checkpoint.memory import InMemorySaver
 
+    from outrider.agent.checkpoint_serde import build_checkpoint_serde
     from outrider.agent.nodes.hitl_config import HITLConfig
     from outrider.agent.nodes.patch_config import PatchConfig
 
@@ -557,7 +558,7 @@ def _graph_kwargs(
         "anomaly_sink": _StubAnomalySink(),
         "hitl_config": HITLConfig(),
         "patch_config": PatchConfig(patches_enabled=False),
-        "checkpointer": InMemorySaver(),
+        "checkpointer": InMemorySaver(serde=build_checkpoint_serde()),
         "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
     }

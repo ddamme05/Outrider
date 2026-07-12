@@ -11,9 +11,11 @@ from unittest.mock import AsyncMock
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 import outrider.policy.dimensions as _policy_dimensions
 import outrider.policy.severity as _policy_severity
+from outrider.agent.checkpoint_serde import OUTRIDER_MSGPACK_ALLOWLIST
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -42,6 +44,54 @@ if TYPE_CHECKING:
 # can swap without tripping the severity-module check).
 _ORIGINAL_SEVERITY_POLICY = _policy_severity.SEVERITY_POLICY
 _ORIGINAL_FINDING_TYPE_TO_DIMENSION = _policy_dimensions.FINDING_TYPE_TO_DIMENSION
+
+# FUP-220: every LangGraph checkpointer must carry the Outrider serde allowlist,
+# or HITL resume + replay-equivalence break under LANGGRAPH_STRICT_MSGPACK=true.
+_REQUIRED_MSGPACK_TYPES = frozenset(OUTRIDER_MSGPACK_ALLOWLIST)
+
+
+@pytest.fixture(autouse=True)
+def _checkpointer_serde_guard() -> Iterator[None]:
+    """Fail any test that constructs a checkpointer without the Outrider serde.
+
+    Patches `BaseCheckpointSaver.__init__` — which every `InMemorySaver` /
+    `AsyncPostgresSaver` (and any subclass that calls `super().__init__`) routes
+    through — so ANY checkpointer built during a test is checked regardless of
+    class name, import alias, module-qualification, or factory. Fires on every
+    run (not only under strict), so a saver constructed with the default
+    (permissive) serde surfaces immediately rather than at a future
+    langgraph-checkpoint bump. Complements the static whole-repo AST scan in
+    `tests/unit/test_checkpoint_serde.py`, which covers code paths NOT exercised
+    by tests (e.g. `scripts/`). `MagicMock()` checkpointers don't subclass
+    `BaseCheckpointSaver`, so they don't trip this guard.
+
+    Deliberately patches/restores `__init__` directly rather than via the
+    `monkeypatch` fixture: requesting `monkeypatch` here would pull its setup
+    forward and reorder its teardown after `_no_severity_policy_patching`'s
+    check, spuriously tripping that guard.
+    """
+    original_init = BaseCheckpointSaver.__init__
+
+    @functools.wraps(original_init)
+    def _guarded_init(self: BaseCheckpointSaver, *args: object, **kwargs: object) -> None:
+        original_init(self, *args, **kwargs)  # type: ignore[arg-type]
+        allowed = getattr(self.serde, "_allowed_msgpack_modules", None)
+        # An explicit allowlist normalizes to a set; the permissive default is
+        # `True` and strict-without-our-types is `None` — both fail the check.
+        if not isinstance(allowed, (set, frozenset)) or not allowed >= _REQUIRED_MSGPACK_TYPES:
+            raise RuntimeError(
+                f"{type(self).__name__} was constructed without "
+                f"serde=build_checkpoint_serde() (serde allowlist={allowed!r}). Under "
+                "LANGGRAPH_STRICT_MSGPACK=true this checkpointer refuses Outrider state "
+                "types on deserialize, breaking HITL resume + replay. Pass "
+                "serde=build_checkpoint_serde() from outrider.agent.checkpoint_serde."
+            )
+
+    BaseCheckpointSaver.__init__ = _guarded_init  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        BaseCheckpointSaver.__init__ = original_init  # type: ignore[method-assign]
 
 
 @pytest.fixture(autouse=True)

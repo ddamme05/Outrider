@@ -288,6 +288,7 @@ def _valid_args() -> dict[str, Any]:
     """Build a complete, valid set of kwargs. Tests perturb one at a time."""
     from langgraph.checkpoint.memory import InMemorySaver  # noqa: PLC0415
 
+    from outrider.agent.checkpoint_serde import build_checkpoint_serde  # noqa: PLC0415
     from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: PLC0415
     from outrider.agent.nodes.patch_config import PatchConfig  # noqa: PLC0415
 
@@ -305,7 +306,7 @@ def _valid_args() -> dict[str, Any]:
         "anomaly_sink": _StubAnomalySink(),
         "hitl_config": HITLConfig(),
         "patch_config": PatchConfig(),
-        "checkpointer": InMemorySaver(),
+        "checkpointer": InMemorySaver(serde=build_checkpoint_serde()),
         "publisher": _StubGitHubPublisher(),
         "import_path_resolver": _StubImportPathResolver(),
         "db_factory": _stub_db_factory(),
