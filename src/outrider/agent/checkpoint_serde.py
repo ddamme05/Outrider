@@ -78,6 +78,20 @@ _ENUM_TYPES: tuple[tuple[str, str], ...] = (
 OUTRIDER_MSGPACK_ALLOWLIST: tuple[tuple[str, str], ...] = _MODEL_TYPES + _ENUM_TYPES
 
 
+class _OutriderCheckpointSerde(JsonPlusSerializer):
+    """Marker subclass identifying a serde produced by ``build_checkpoint_serde()``.
+
+    Behaviourally identical to its base (the allowlist is passed to the inherited
+    constructor). It exists so the runtime checkpointer guard (``tests/conftest.py``)
+    can recognise a correctly-wired serde via ``isinstance`` on THIS project's
+    class, instead of reading a langgraph-private attribute (e.g.
+    ``_allowed_msgpack_modules``). A routine dependency bump could rename that
+    private attribute, which would make the guard raise for every correctly-wired
+    checkpointer — the exact upgrade fragility this module exists to avoid. The
+    guard depends only on our own public surface (``is_outrider_checkpoint_serde``).
+    """
+
+
 def build_checkpoint_serde() -> JsonPlusSerializer:
     """Return a checkpoint serializer that permits Outrider's state types.
 
@@ -88,10 +102,21 @@ def build_checkpoint_serde() -> JsonPlusSerializer:
     ``LANGGRAPH_STRICT_MSGPACK`` is set: an explicit allowlist always permits
     the listed types + the serializer's built-in safe types and blocks the rest.
     """
-    return JsonPlusSerializer(allowed_msgpack_modules=OUTRIDER_MSGPACK_ALLOWLIST)
+    return _OutriderCheckpointSerde(allowed_msgpack_modules=OUTRIDER_MSGPACK_ALLOWLIST)
+
+
+def is_outrider_checkpoint_serde(serde: object) -> bool:
+    """True iff ``serde`` was produced by ``build_checkpoint_serde()``.
+
+    Public identity check used by the runtime checkpointer guard so its
+    enforcement does not couple to langgraph-private internals (see
+    ``_OutriderCheckpointSerde``).
+    """
+    return isinstance(serde, _OutriderCheckpointSerde)
 
 
 __all__ = [
     "OUTRIDER_MSGPACK_ALLOWLIST",
     "build_checkpoint_serde",
+    "is_outrider_checkpoint_serde",
 ]
