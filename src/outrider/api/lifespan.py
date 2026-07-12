@@ -353,8 +353,11 @@ def _default_checkpointer_factory() -> AbstractAsyncContextManager[Any]:
     """
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # noqa: PLC0415
 
+    from outrider.agent.checkpoint_serde import build_checkpoint_serde  # noqa: PLC0415
+
     checkpoint_url = os.environ["DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://", 1)
-    return AsyncPostgresSaver.from_conn_string(checkpoint_url)
+    # FUP-220: register Outrider's state types so resume/replay survive strict-msgpack.
+    return AsyncPostgresSaver.from_conn_string(checkpoint_url, serde=build_checkpoint_serde())
 
 
 def _default_provider_factory(

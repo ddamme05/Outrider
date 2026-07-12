@@ -81,6 +81,7 @@ if str(_SRC) not in sys.path:
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # noqa: E402
 
+from outrider.agent.checkpoint_serde import build_checkpoint_serde  # noqa: E402
 from outrider.agent.graph import build_graph  # noqa: E402
 from outrider.agent.nodes.analyze_config import AnalyzeConfig  # noqa: E402
 from outrider.agent.nodes.cache_config import CacheConfig  # noqa: E402
@@ -522,7 +523,9 @@ async def _run(args: argparse.Namespace) -> int:
     # identical to a production (webhook-driven) review. `from_conn_string` wants a bare
     # psycopg URL, so strip SQLAlchemy's `+psycopg` suffix (same as the lifespan factory).
     checkpoint_url = os.environ["DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://", 1)
-    async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as checkpointer:
+    async with AsyncPostgresSaver.from_conn_string(
+        checkpoint_url, serde=build_checkpoint_serde()
+    ) as checkpointer:
         await checkpointer.setup()  # idempotent; the checkpoint tables already exist
 
         # One AnalyzeConfig instance feeds BOTH the budget and the fan-out width, mirroring

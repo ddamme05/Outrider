@@ -59,6 +59,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from outrider.agent.checkpoint_serde import build_checkpoint_serde
 from outrider.agent.graph import build_graph
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS
 from outrider.agent.nodes.cache_config import CacheMode
@@ -1069,7 +1070,7 @@ async def _drive(
             persister=persister,
             provider=provider,
             publisher=publisher,
-            checkpointer=InMemorySaver(),
+            checkpointer=InMemorySaver(serde=build_checkpoint_serde()),
             analyze_max_concurrency=analyze_max_concurrency,
             analyze_cache_store=analyze_cache_store,
             cache_mode=cache_mode,
@@ -1393,7 +1394,9 @@ async def run_review_with_resume(
         )
 
         # Phase A (process 1): drive to the interrupt on saver A, then CLOSE it.
-        async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as saver_a:
+        async with AsyncPostgresSaver.from_conn_string(
+            checkpoint_url, serde=build_checkpoint_serde()
+        ) as saver_a:
             await saver_a.setup()
             graph_a = _build_eval_graph(
                 fixture=fixture,
@@ -1421,7 +1424,9 @@ async def run_review_with_resume(
         # Phase B (process 2): a FRESH saver on the SAME DB + SAME thread_id resumes
         # the suspended run from Postgres (nothing in-memory carries over) and runs
         # hitl -> publish -> end.
-        async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as saver_b:
+        async with AsyncPostgresSaver.from_conn_string(
+            checkpoint_url, serde=build_checkpoint_serde()
+        ) as saver_b:
             graph_b = _build_eval_graph(
                 fixture=fixture,
                 session_factory=session_factory,
