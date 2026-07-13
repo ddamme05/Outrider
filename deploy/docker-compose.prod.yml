@@ -4,8 +4,9 @@
 #
 #   Existing-ingress mode (default):
 #     docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml up -d --build
-#     → app on 127.0.0.1:${OUTRIDER_HTTP_PORT:-8000} (LOOPBACK ONLY, never 0.0.0.0). Front it
-#       with YOUR reverse proxy / cloud LB / tunnel terminating HTTPS.
+#     → app on 127.0.0.1:${OUTRIDER_HTTP_PORT:-8000} (LOOPBACK ONLY, never 0.0.0.0 — reachable
+#       only from THIS host). Front it with a host-local HTTPS reverse proxy or a colocated
+#       tunnel agent. A remote cloud LB / k8s ingress can't reach loopback — use --profile tls.
 #   Bundled-Caddy mode (auto-HTTPS):
 #     docker compose --env-file deploy/.env --profile tls -f deploy/docker-compose.prod.yml up -d --build
 #     → Caddy publishes 80/443 and reverse-proxies app:8000 over the internal network.
@@ -84,6 +85,11 @@ services:
       # (which resolves to the app container itself). Leaving it unset falls back to the
       # DATABASE_URL below, which is correct for the single-DB default.
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # Pin the CONTAINER port to 8000 (overriding any stray PORT in .env). The port mapping
+      # below and Caddyfile.prod both target :8000; if .env set PORT=9000, uvicorn + its
+      # healthcheck would move to 9000 (container reports "healthy") while both ingress paths
+      # still hit :8000 → unreachable. OUTRIDER_HTTP_PORT controls only the HOST-side port.
+      PORT: "8000"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -103,7 +109,11 @@ services:
     profiles: [tls]
     security_opt: ["no-new-privileges:true"]
     environment:
-      OUTRIDER_DOMAIN: ${OUTRIDER_DOMAIN:?set OUTRIDER_DOMAIN (your domain) to use the tls profile}
+      # `:-` (empty default), NOT `:?` — Compose interpolates EVERY service at file-load time,
+      # before profile filtering, so a `:?` here breaks the default `up` even without `--profile
+      # tls`. When the tls profile IS active and this is empty, Caddy fails loud at config-adapt
+      # (`unrecognized global option`) — so set OUTRIDER_DOMAIN in deploy/.env for the tls profile.
+      OUTRIDER_DOMAIN: ${OUTRIDER_DOMAIN:-}
     ports:
       - "80:80"
       - "443:443"
