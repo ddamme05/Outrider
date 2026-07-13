@@ -6,8 +6,13 @@
 # Distinct from deploy/Dockerfile (the keyless read-only DEMO app, which bakes NO dashboard
 # and is fronted by deploy/Dockerfile.web's Caddy). This file is the production reference.
 
+# Base images + the uv installer are pinned to EXACT versions (not :latest) for reproducible
+# builds. Version tags, not @sha256 digests, on purpose: operators build this image themselves
+# on varied hardware, and a single digest would lock one arch (amd64 vs arm64) and break
+# cross-arch builds. Bump these deliberately.
+#
 # ── Stage 1: build the dashboard SPA ────────────────────────────────────────
-FROM node:24-slim AS dashboard-build
+FROM node:24.18.0-slim AS dashboard-build
 WORKDIR /dashboard
 COPY dashboard/package.json dashboard/package-lock.json ./
 RUN npm ci
@@ -18,9 +23,9 @@ COPY dashboard/ ./
 RUN VITE_API_BASE_URL="" npm run build
 
 # ── Stage 2: the FastAPI application image ───────────────────────────────────
-FROM python:3.13-slim AS runtime
+FROM python:3.13.14-slim AS runtime
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
 
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PROJECT_ENVIRONMENT=/app/.venv

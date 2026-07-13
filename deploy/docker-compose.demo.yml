@@ -5,7 +5,7 @@ name: outrider-demo
 
 services:
   postgres:
-    image: postgres:18-bookworm
+    image: postgres:18.3-bookworm
     environment:
       POSTGRES_USER: outrider
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}

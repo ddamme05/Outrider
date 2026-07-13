@@ -39,7 +39,7 @@ services:
   # External-to-the-image PostgreSQL. For a MANAGED database, delete this service and point
   # DATABASE_URL / the migrate+app env at your managed host instead.
   postgres:
-    image: postgres:18-bookworm
+    image: postgres:18.3-bookworm
     security_opt: ["no-new-privileges:true"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
@@ -105,7 +105,7 @@ services:
   # 80/443 and reverse-proxies to the app over the internal network (the app keeps no public
   # port of its own). Set OUTRIDER_DOMAIN to your domain for automatic Let's Encrypt certs.
   caddy:
-    image: caddy:2
+    image: caddy:2.11.4
     profiles: [tls]
     security_opt: ["no-new-privileges:true"]
     environment:
