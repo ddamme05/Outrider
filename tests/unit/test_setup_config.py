@@ -27,9 +27,26 @@ def test_trailing_slash_stripped(monkeypatch: pytest.MonkeyPatch) -> None:
     assert SetupSettings().base_url == "https://ci.acme.com"
 
 
-def test_http_permitted_for_local(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(_PUBLIC_URL_ENV, "http://localhost:8000")
-    assert SetupSettings().base_url == "http://localhost:8000"
+@pytest.mark.parametrize(
+    "url",
+    ["http://localhost:8000", "http://127.0.0.1:8000", "http://localhost", "http://[::1]:8000"],
+)
+def test_http_permitted_only_for_loopback(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+    """http:// is the narrow dev exception — allowed ONLY for loopback (GitHub can't reach it,
+    so it's simulated-callback local testing)."""
+    monkeypatch.setenv(_PUBLIC_URL_ENV, url)
+    assert SetupSettings().base_url == url.rstrip("/")
+
+
+@pytest.mark.parametrize(
+    "url", ["http://ci.acme.com", "http://192.168.1.10:8000", "http://example"]
+)
+def test_http_public_host_rejected(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+    """A plaintext http:// to a non-loopback host would leak the setup code/state (App private key +
+    webhook secret) in transit — rejected (spec §Bootstrap security; #069 TLS)."""
+    monkeypatch.setenv(_PUBLIC_URL_ENV, url)
+    with pytest.raises(ValidationError, match="must be HTTPS"):
+        SetupSettings()
 
 
 @pytest.mark.parametrize(

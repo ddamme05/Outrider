@@ -35,15 +35,20 @@ __all__ = [
 
 # Env var NAME (not a secret value) — the HMAC key for the setup state.
 SETUP_STATE_SECRET_ENV = "OUTRIDER_SETUP_STATE_SECRET"  # noqa: S105
-# Sibling secret roots the setup-state secret must be DISTINCT from (DECISIONS.md#070): reusing one
-# key across roles means a leak of one compromises the others. Checked in the validator below —
-# mirrors credential_crypto's Slack-key separation, widened to the signing/auth roots.
+# Every sibling secret root the setup-state secret must be DISTINCT from (DECISIONS.md#070): reusing
+# one value across roles means a leak of one compromises the others. Checked in the validator —
+# mirrors credential_crypto's key separation, widened to ALL signing / auth / encryption roots in
+# the codebase (the enc keys are comma-separated MultiFernet sets, compared componentwise).
 _SIBLING_SECRET_ENVS: tuple[str, ...] = (
-    "OUTRIDER_SLACK_STATE_SECRET",
     "OUTRIDER_ADMIN_API_KEY",
-    "OUTRIDER_GITHUB_WEBHOOK_SECRET",
+    "OUTRIDER_AGENT_API_KEY",
+    "OUTRIDER_GITHUB_APP_PRIVATE_KEY",
     "OUTRIDER_GITHUB_CREDENTIAL_ENC_KEY",
+    "OUTRIDER_GITHUB_WEBHOOK_SECRET",
+    "OUTRIDER_SLACK_CLIENT_SECRET",
+    "OUTRIDER_SLACK_STATE_SECRET",
     "OUTRIDER_TOKEN_ENC_KEY",
+    "OUTRIDER_TRUNCATION_HMAC_SECRET",
 )
 # Known placeholders shipped in .env.example (+ usual suspects); reject a verbatim copy. Mirrors
 # github/config.py / notify/oauth_state.py — keep in sync.
@@ -148,6 +153,13 @@ def verify_state(state: str) -> SetupStateToken:
     return SetupStateToken(nonce=nonce, exp=exp)
 
 
+def _comma_key_set(raw: str) -> frozenset[str]:
+    """The set of individual key strings in a (possibly comma-separated) secret env value — so a
+    single HMAC secret and a MultiFernet key set are both reduced to their components for reuse
+    checks. Mirrors `credential_crypto._key_values`."""
+    return frozenset(p.strip() for p in raw.split(",") if p.strip())
+
+
 def validate_setup_state_secret() -> None:
     """Eager boot validation for `database` mode: assert `OUTRIDER_SETUP_STATE_SECRET` is present,
     non-placeholder, long enough, AND distinct from every sibling secret root (`DECISIONS.md#070`) —
@@ -155,12 +167,13 @@ def validate_setup_state_secret() -> None:
     `SetupStateError` on any failure; returns None. Mirrors `validate_credential_enc_key`.
     """
     _state_secret()  # present + non-placeholder + length
-    ours = os.environ.get(SETUP_STATE_SECRET_ENV, "").strip()
+    ours = _comma_key_set(os.environ.get(SETUP_STATE_SECRET_ENV, ""))
     for sibling in _SIBLING_SECRET_ENVS:
-        other = os.environ.get(sibling, "").strip()
-        if other and hmac.compare_digest(ours, other):
+        # Componentwise: split each on comma so a match against ONE key in a comma-separated
+        # MultiFernet key set (the enc keys) is caught, not just whole-string equality.
+        if ours & _comma_key_set(os.environ.get(sibling, "")):
             raise SetupStateError(
-                f"{SETUP_STATE_SECRET_ENV} reuses the value of {sibling}; #070 requires "
+                f"{SETUP_STATE_SECRET_ENV} reuses a value from {sibling}; #070 requires "
                 "a dedicated secret distinct from every sibling signing/auth/encryption root — "
                 "generate a separate one."
             )

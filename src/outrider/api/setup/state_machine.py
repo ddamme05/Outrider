@@ -127,12 +127,13 @@ class SetupStateMachine:
             .values(status="ORPHANED", updated_at=func.now())
         )
 
-    async def _repair(self, session: AsyncSession) -> None:
-        # Lazy recovery, run inside begin_setup's transaction BEFORE the start CAS (no periodic
-        # sweep). Order matters: delete expired nonces first, so the AWAITING_CALLBACK reset can
-        # test "no live nonce remains" as a plain NOT EXISTS.
+    async def _reset_expired_awaiting(self, session: AsyncSession) -> None:
+        # Runs INSIDE the Start transaction (spec §expiry: "atomically deletes the expired nonce,
+        # resets AWAITING_CALLBACK → UNCONFIGURED, and starts the replacement attempt — one
+        # transaction"). Delete expired nonces first so the reset's "no live nonce remains" is a
+        # plain NOT EXISTS. The stale-CONVERTING orphan is NOT here — it runs in its own committed
+        # transaction (see begin_setup) so it persists even when the Start is then rejected.
         await session.execute(delete(SetupNonce).where(SetupNonce.expires_at <= func.now()))
-        await session.execute(self._orphan_stale_converting_stmt())
         no_live_nonce = ~select(SetupNonce.id).where(SetupNonce.expires_at > func.now()).exists()
         await session.execute(
             update(SetupState)
@@ -164,6 +165,16 @@ class SetupStateMachine:
             raise SetupIntegrityError("setup_state singleton (id=1) is missing")
         raise SetupConflictError(expected=expected, actual=actual)
 
+    async def _transitioned_or_integrity(self, session: AsyncSession, result: object) -> bool:
+        # A CAS on the singleton where 0 rows is a legitimate no-op (wrong state) rather than
+        # a conflict: 1 row → transitioned; 0 rows with singleton PRESENT → False (no-op); 0 rows
+        # with the singleton MISSING → corruption, raise (never a silent no-op over a lost row).
+        if _rowcount(result) == 1:
+            return True
+        if await self._status_or_none(session) is None:
+            raise SetupIntegrityError("setup_state singleton (id=1) is missing")
+        return False
+
     async def current_status(self) -> str:
         """The authoritative onboarding status (raises `SetupIntegrityError` if the singleton is
         missing). The source of truth for `/setup/status` gating and setup-only routing."""
@@ -182,18 +193,23 @@ class SetupStateMachine:
         manifest_contract_digest: str,
         nonce_hash: str,
     ) -> None:
-        """Start: lazy repair (its OWN committed transaction), then an atomic CAS `UNCONFIGURED →
-        AWAITING_CALLBACK` recording the attempt binding + nonce insert (a second transaction, F3).
-        Raises `SetupConflictError` if the machine is not `UNCONFIGURED` after repair (a concurrent
-        init, or a CONFIGURED / CONVERTING / ORPHANED instance — the caller maps these to 409).
+        """Start, in two transactions with distinct purposes:
 
-        The repair is a SEPARATE committed transaction on purpose: a stale `CONVERTING → ORPHANED`
-        (or expired `AWAITING_CALLBACK → UNCONFIGURED`) must PERSIST even when the Start below is
-        then rejected — if the repair shared the Start's transaction, the raised conflict would roll
-        it back and the stale state would never clear via the lazy path."""
+        1. **Stale `CONVERTING → ORPHANED`** in its OWN committed transaction — it must PERSIST even
+           when the Start below is then rejected (a stale `CONVERTING` makes the Start CAS fail; a
+           shared transaction would roll the orphan back and the stale state would never clear via
+           the lazy path). This is the ONLY repair that must survive a rejected Start.
+        2. **The atomic Start** (spec §expiry — "atomically deletes the expired nonce, resets
+           `AWAITING_CALLBACK → UNCONFIGURED`, and starts the replacement attempt — one
+           transaction"): the expired-`AWAITING` reset, the `UNCONFIGURED → AWAITING_CALLBACK` CAS
+           recording the attempt binding, and the nonce insert are ONE transaction (F3).
+
+        Raises `SetupConflictError` if the machine is not `UNCONFIGURED` at the Start (a concurrent
+        init, or a CONFIGURED / CONVERTING / ORPHANED instance — the caller maps these to 409)."""
         async with self.session_factory() as session, session.begin():
-            await self._repair(session)
+            await session.execute(self._orphan_stale_converting_stmt())
         async with self.session_factory() as session, session.begin():
+            await self._reset_expired_awaiting(session)
             result = await session.execute(
                 update(SetupState)
                 .where(SetupState.id == 1, SetupState.status == "UNCONFIGURED")
@@ -310,15 +326,16 @@ class SetupStateMachine:
 
     async def orphan(self) -> bool:
         """CAS `CONVERTING → ORPHANED` on any conversion failure (4xx/timeout/malformed/persist
-        crash — the App likely already exists on GitHub). Returns whether it transitioned; tolerant
-        of a state that already moved (returns False, no raise)."""
+        crash — the App likely already exists on GitHub). Returns whether it transitioned; a
+        legitimate already-moved state returns False, but a MISSING singleton raises
+        `SetupIntegrityError` (corruption, never a silent no-op)."""
         async with self.session_factory() as session, session.begin():
             result = await session.execute(
                 update(SetupState)
                 .where(SetupState.id == 1, SetupState.status == "CONVERTING")
                 .values(status="ORPHANED", updated_at=func.now())
             )
-            return _rowcount(result) == 1
+            return await self._transitioned_or_integrity(session, result)
 
     async def reset(self) -> None:
         """Admin `ORPHANED → UNCONFIGURED` (after the operator confirms the orphaned App was deleted
@@ -344,8 +361,9 @@ class SetupStateMachine:
 
     async def recover_stale_converting(self) -> bool:
         """Standalone stale-`CONVERTING → ORPHANED` for the startup check (the no-restart outage
-        case is covered by the lazy repair in `begin_setup`). Returns if it fired. Timeout-gated
-        so a genuinely in-flight conversion under the threshold is never false-ORPHANED."""
+        case is covered by the lazy `begin_setup` repair). Returns if it fired; timeout-gated so a
+        genuinely in-flight conversion under the threshold is never false-ORPHANED. A MISSING
+        singleton raises `SetupIntegrityError` (corruption, never a silent no-op)."""
         async with self.session_factory() as session, session.begin():
             result = await session.execute(self._orphan_stale_converting_stmt())
-            return _rowcount(result) == 1
+            return await self._transitioned_or_integrity(session, result)
