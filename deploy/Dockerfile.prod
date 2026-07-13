@@ -1,0 +1,62 @@
+# See DECISIONS.md#069 — the V1 production self-host artifact: ONE Outrider application
+# image. Stage 1 compiles the dashboard SPA with Vite; stage 2 is the FastAPI app with the
+# built dist/ baked in, served by the app itself (OUTRIDER_SERVE_SPA=1). PostgreSQL is
+# external (a compose service or a managed instance), never baked into this image.
+#
+# Distinct from deploy/Dockerfile (the keyless read-only DEMO app, which bakes NO dashboard
+# and is fronted by deploy/Dockerfile.web's Caddy). This file is the production reference.
+
+# ── Stage 1: build the dashboard SPA ────────────────────────────────────────
+FROM node:24-slim AS dashboard-build
+WORKDIR /dashboard
+COPY dashboard/package.json dashboard/package-lock.json ./
+RUN npm ci
+COPY dashboard/ ./
+# Same-origin deployment: the SPA and API share the app's origin, so the built SPA issues
+# relative /api/* + /reviews/{id}/decide requests. (src/api/client.ts reads VITE_API_BASE_URL,
+# default "".) `npm run build` runs `tsc --noEmit && vite build` → /dashboard/dist.
+RUN VITE_API_BASE_URL="" npm run build
+
+# ── Stage 2: the FastAPI application image ───────────────────────────────────
+FROM python:3.13-slim AS runtime
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /app
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PROJECT_ENVIRONMENT=/app/.venv
+
+# Dependency layer (cached on lockfile changes only).
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+# App sources only — deliberately NOT the repo root, so no .env / secrets get copied.
+# hatchling builds the wheel from src/outrider; alembic (a runtime dep) + db/ + alembic.ini
+# let the one-shot migration service (deploy/docker-compose.prod.yml) run `alembic upgrade head`.
+COPY src/ ./src/
+COPY db/ ./db/
+COPY alembic.ini ./
+RUN uv sync --frozen --no-dev
+
+# Bake the built SPA and turn on the fail-loud SPA contract (DECISIONS.md#069). A missing
+# dist here would fail app startup — a broken production build never boots UI-less.
+COPY --from=dashboard-build /dashboard/dist /app/dashboard_dist
+ENV OUTRIDER_SERVE_SPA=1 \
+    OUTRIDER_SPA_DIST_DIR=/app/dashboard_dist \
+    PORT=8000
+
+# Non-root runtime user. Fixed uid/gid 10001 (k8s runAsUser-friendly, avoids host-user
+# collisions); a plain user, not --system, so the fixed high uid raises no SYS_UID_MAX warning.
+RUN groupadd --gid 10001 outrider \
+    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /app outrider \
+    && chown -R outrider:outrider /app
+USER outrider
+
+EXPOSE 8000
+
+# Liveness probe against the app's own /health (DECISIONS.md#069: plain HTTP on ${PORT};
+# TLS is terminated by the operator's ingress / the optional Caddy profile, not in-process).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import os,urllib.request; urllib.request.urlopen(f\"http://127.0.0.1:{os.environ.get('PORT','8000')}/health\").read()" || exit 1
+
+# `exec` via sh so ${PORT} expands AND uvicorn replaces the shell (clean SIGTERM/shutdown).
+CMD ["sh", "-c", "exec /app/.venv/bin/uvicorn outrider.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
