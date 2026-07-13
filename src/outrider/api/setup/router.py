@@ -30,11 +30,12 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from outrider.api.dashboard.auth import require_admin_api_key
-from outrider.api.setup.binding import verify_conversion_binding
+from outrider.api.setup.binding import BindingMismatchError, verify_conversion_binding
 from outrider.api.setup.manifest import EXPECTED_EVENTS, EXPECTED_PERMISSIONS, build_manifest
 from outrider.api.setup.nonce import new_nonce
 from outrider.api.setup.state_machine import (
     NONCE_TTL_SECONDS,
+    SetupBinding,
     SetupConflictError,
     SetupIntegrityError,
     SetupNonceError,
@@ -57,6 +58,29 @@ _log = logging.getLogger(__name__)
 # trailing hyphen. A shape gate before the login is placed in the GitHub target URL (GitHub is the
 # real authority; this stops a malformed value from breaking / injecting into the URL).
 _ORG_LOGIN_RE = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\Z")
+
+
+def _default_app_name(org: str) -> str:
+    """The default (operator-editable) App name for an org — deterministic so the callback can
+    re-derive the exact manifest THIS attempt submitted and verify its digest."""
+    return f"Outrider {org}"
+
+
+def _verify_attempt_digest(settings: SetupSettings, binding: SetupBinding) -> None:
+    """Bind the callback to the attempt across a restart/redeploy (`#070`): re-derive the
+    manifest from the stored org + CURRENT config and confirm its digest matches the one recorded at
+    Start. A changed `OUTRIDER_PUBLIC_BASE_URL` (or app-name policy) yields a different digest — the
+    App was created with URLs that no longer point here — reject. Raises `BindingMismatchError` on
+    drift (routed to `orphan()` by the saga)."""
+    if binding.expected_org_login is None:
+        raise BindingMismatchError("setup attempt has no bound org")
+    _, current_digest = build_manifest(
+        base_url=settings.base_url, name=_default_app_name(binding.expected_org_login)
+    )
+    if binding.manifest_contract_digest != current_digest:
+        raise BindingMismatchError(
+            "manifest digest mismatch — OUTRIDER_PUBLIC_BASE_URL changed since setup started"
+        )
 
 
 class SetupStartRequest(BaseModel):
@@ -113,7 +137,9 @@ def build_setup_router(
     async def start_setup(body: SetupStartRequest) -> SetupStartResponse:
         raw_nonce, nonce_hash = new_nonce()
         state = sign_state(nonce=raw_nonce, ttl_seconds=NONCE_TTL_SECONDS)
-        manifest, digest = build_manifest(base_url=settings.base_url, name=f"Outrider {body.org}")
+        manifest, digest = build_manifest(
+            base_url=settings.base_url, name=_default_app_name(body.org)
+        )
         try:
             await machine.begin_setup(
                 expected_org_login=body.org,
@@ -172,6 +198,7 @@ def build_setup_router(
         # CONFIGURED or ORPHANED, and it correctly orphans a stuck CONVERTING. Never persisted; the
         # operator lands on the status page to clean up on GitHub + reset.
         try:
+            _verify_attempt_digest(settings, binding)
             conversion = await convert(code)
             verify_conversion_binding(
                 owner_login=conversion.owner_login,

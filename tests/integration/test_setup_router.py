@@ -222,6 +222,26 @@ async def test_binding_mismatch_orphans(engine: AsyncEngine) -> None:
 
 
 @pytest.mark.asyncio
+async def test_base_url_drift_orphans(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Digest binding: if OUTRIDER_PUBLIC_BASE_URL changes between Start and callback (a redeploy at
+    a different base), the callback's re-derived manifest digest no longer matches the one recorded
+    at Start → orphan, never persisted (the App was created with URLs that no longer point here)."""
+    client_a = _mount(engine, convert=_good_conversion())  # base = _BASE
+    state = _state_from_target(
+        client_a.post("/setup", json={"org": "acme"}, headers=_AUTH).json()["target_url"]
+    )
+    monkeypatch.setenv("OUTRIDER_PUBLIC_BASE_URL", "https://moved.example")  # redeploy elsewhere
+    client_b = _mount(engine, convert=_good_conversion())
+    cb = client_b.get(
+        "/setup/callback", params={"code": "CODE", "state": state}, follow_redirects=False
+    )
+    assert cb.status_code == 302
+    assert cb.headers["location"] == "https://moved.example/setup/status"
+    assert client_b.get("/setup/status").json()["status"] == "ORPHANED"
+    assert await _active_credential_count(engine) == 0  # never persisted
+
+
+@pytest.mark.asyncio
 async def test_conversion_error_orphans(engine: AsyncEngine) -> None:
     async def _boom(code: str) -> ManifestConversion:  # noqa: ARG001
         raise ManifestConversionError("conversion 422")
