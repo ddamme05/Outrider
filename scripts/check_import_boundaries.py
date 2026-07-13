@@ -112,16 +112,20 @@ VENDOR_RULES: tuple[_VendorRule, ...] = (
         allowed_prefixes=("src/outrider/notify/",),
     ),
     _VendorRule(
-        # Slack bot-token encryption at rest (DECISIONS.md#051): all `cryptography`
-        # (Fernet) use is confined to the one boundary module so the crypto surface —
-        # and the decryption path for a long-lived bearer credential — stays auditable
-        # in a single file. pyjwt[crypto]'s internal cryptography use is githubkit's,
-        # not ours; this scans only our src/ direct imports.
-        name="Token-encryption boundary",
-        doc_ref="DECISIONS.md#051 (vendor-sdks-only-in-wrappers)",
+        # At-rest credential encryption: all `cryptography` (Fernet) use is confined to a small
+        # set of dedicated boundary modules so the crypto surface — and each decryption path —
+        # stays auditable per credential class. `token_crypto.py` = Slack bot tokens (#051);
+        # `github/credential_crypto.py` = manifest-onboarded GitHub App creds (#070), a separate
+        # key. pyjwt[crypto]'s internal cryptography use is githubkit's, not ours; this
+        # scans only our src/ direct imports.
+        name="Credential-encryption boundary",
+        doc_ref="DECISIONS.md#051 + #070 (vendor-sdks-only-in-wrappers)",
         modules=("cryptography",),
         scan_globs=("src/outrider/**/*.py",),
-        allowed_prefixes=("src/outrider/notify/token_crypto.py",),
+        allowed_prefixes=(
+            "src/outrider/notify/token_crypto.py",
+            "src/outrider/github/credential_crypto.py",
+        ),
     ),
 )
 

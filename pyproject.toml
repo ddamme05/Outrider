@@ -96,6 +96,13 @@ extend-exclude = [
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "N", "TCH", "S"]
 
+[tool.ruff.lint.flake8-type-checking]
+# SQLAlchemy resolves `Mapped[...]` annotations at runtime (mapper configuration), so imports
+# used only in ORM-model annotations (e.g. datetime, uuid.UUID) must stay runtime imports — moving
+# them into a TYPE_CHECKING block breaks mapper setup. Tell the TC rules that Base subclasses are
+# runtime-evaluated so they aren't flagged (TC003).
+runtime-evaluated-base-classes = ["outrider.db.models._base.Base"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101"]       # assert is fine in tests
 "tests/fixtures/python_canonical.py" = ["I", "F"]  # test data fixture; not imported/run
