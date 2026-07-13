@@ -18,7 +18,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from outrider.api.lifespan import _default_engine_factory, _resolve_checkpoint_database_url
+from outrider.api.lifespan import (
+    _default_checkpointer_factory,
+    _default_engine_factory,
+    _resolve_checkpoint_database_url,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -159,3 +163,37 @@ def test_resolve_checkpoint_url_malformed_scheme_fails(clean_checkpoint_env: Non
     os.environ["CHECKPOINT_DATABASE_URL"] = "postgresql://user:pw@ckpt-db:5432/ckpt"
     with pytest.raises(RuntimeError, match="canonical async driver"):
         _resolve_checkpoint_database_url()
+
+
+def test_default_checkpointer_factory_passes_transformed_url_and_serde(
+    monkeypatch: pytest.MonkeyPatch, clean_checkpoint_env: None
+) -> None:
+    """#068 'reaches the saver': `_default_checkpointer_factory` strips the `+psycopg`
+    driver suffix from the resolved URL and passes it — plus the FUP-220 serde — to
+    `AsyncPostgresSaver.from_conn_string`, for BOTH the explicit-checkpoint-URL and the
+    `DATABASE_URL`-fallback sources. The four resolver tests above stop at
+    `_resolve_checkpoint_database_url`; this pins the factory→saver boundary."""
+    import langgraph.checkpoint.postgres.aio as pg_aio
+
+    from outrider.agent.checkpoint_serde import is_outrider_checkpoint_serde
+
+    calls: list[dict[str, object]] = []
+
+    def _capture(conn_string: str, *, serde: object = None, **_kw: object) -> object:
+        calls.append({"url": conn_string, "serde": serde})
+        return object()  # stand-in for the unentered async context manager
+
+    monkeypatch.setattr(pg_aio.AsyncPostgresSaver, "from_conn_string", _capture)
+
+    # (a) explicit checkpoint URL → +psycopg stripped, reaches saver, FUP-220 serde supplied
+    os.environ["DATABASE_URL"] = _APP_URL
+    os.environ["CHECKPOINT_DATABASE_URL"] = _CKPT_URL
+    _default_checkpointer_factory()
+    assert calls[0]["url"] == "postgresql://user:pw@ckpt-db:5432/ckpt"
+    assert is_outrider_checkpoint_serde(calls[0]["serde"])
+
+    # (b) absent → DATABASE_URL fallback, +psycopg stripped, reaches saver, serde supplied
+    os.environ.pop("CHECKPOINT_DATABASE_URL", None)
+    _default_checkpointer_factory()
+    assert calls[1]["url"] == "postgresql://user:pw@app-db:5432/app"
+    assert is_outrider_checkpoint_serde(calls[1]["serde"])
