@@ -2,15 +2,21 @@
 # the built SPA) + PostgreSQL + a one-shot migration runner. Distinct from the keyless
 # docker-compose.demo.yml (three containers, no credentials).
 #
-#   Existing-ingress mode (default):   docker compose -f deploy/docker-compose.prod.yml up -d --build
+#   Existing-ingress mode (default):
+#     docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml up -d --build
 #     → app on 127.0.0.1:${OUTRIDER_HTTP_PORT:-8000} (LOOPBACK ONLY, never 0.0.0.0). Front it
 #       with YOUR reverse proxy / cloud LB / tunnel terminating HTTPS.
-#   Bundled-Caddy mode (auto-HTTPS):   docker compose -f deploy/docker-compose.prod.yml --profile tls up -d --build
+#   Bundled-Caddy mode (auto-HTTPS):
+#     docker compose --env-file deploy/.env --profile tls -f deploy/docker-compose.prod.yml up -d --build
 #     → Caddy publishes 80/443 and reverse-proxies app:8000 over the internal network.
+#
+# `--env-file deploy/.env` is REQUIRED, not optional: the `${...}` values below are interpolated
+# from it (Compose otherwise reads `.env` in your CWD, so a bare `up` from the repo root fails
+# the `:?` guards with a misleading "set POSTGRES_USER" error). Config lives in deploy/.env —
+# `cp .env.example deploy/.env` and fill it (see .env.example for the full var list).
 #
 # Either way the app serves plain HTTP and never publishes on a public interface; an HTTPS
 # terminator in front is required (Outrider production-security policy, DECISIONS.md#069).
-# Config comes from a .env in this directory — see .env.example (root) for the full var list.
 name: outrider
 
 x-app-image: &app-image
@@ -106,7 +112,10 @@ services:
       - caddy-data:/data
       - caddy-config:/config
     depends_on:
-      - app
+      # Gate on the app's Docker HEALTHCHECK (not just "started"), so Caddy doesn't 502
+      # the first requests while the app's lifespan is still constructing.
+      app:
+        condition: service_healthy
     restart: unless-stopped
     networks: [outrider-net]
 
