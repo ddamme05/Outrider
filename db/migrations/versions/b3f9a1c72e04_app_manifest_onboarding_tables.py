@@ -19,6 +19,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "b3f9a1c72e04"
@@ -60,8 +61,8 @@ def upgrade() -> None:
         sa.Column("id", sa.SmallInteger(), autoincrement=False, nullable=False),
         sa.Column("status", sa.Text(), server_default=sa.text("'UNCONFIGURED'"), nullable=False),
         sa.Column("expected_org_login", sa.Text(), nullable=True),
-        sa.Column("expected_permissions", sa.dialects.postgresql.JSONB(), nullable=True),
-        sa.Column("expected_events", sa.dialects.postgresql.JSONB(), nullable=True),
+        sa.Column("expected_permissions", postgresql.JSONB(), nullable=True),
+        sa.Column("expected_events", postgresql.JSONB(), nullable=True),
         sa.Column("manifest_contract_digest", sa.Text(), nullable=True),
         sa.Column("conversion_started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(

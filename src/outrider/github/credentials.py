@@ -107,26 +107,34 @@ class DatabaseCredentialProvider:
     session_factory: async_sessionmaker[AsyncSession]
 
     async def _active(self, session: AsyncSession) -> GitHubAppCredential | None:
+        # `.first()` after ordering (not `scalar_one_or_none`): the unique partial index
+        # guarantees ≤1 active row, but if that invariant is ever violated we take the latest and
+        # keep serving rather than making every credential read an unhandled MultipleResultsFound.
         result = await session.execute(
-            select(GitHubAppCredential).where(GitHubAppCredential.is_active)
+            select(GitHubAppCredential)
+            .where(GitHubAppCredential.is_active)
+            .order_by(GitHubAppCredential.created_at.desc())
+            .limit(1)
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def current(self) -> GitHubAppCredentials:
+        # Build the snapshot INSIDE the session context — decrypt while the row is still attached,
+        # so no detached-instance access can arise from a future expire-on-commit / deferred column.
         async with self.session_factory() as session:
             row = await self._active(session)
-        if row is None:
-            raise GitHubUnconfiguredError(
-                "no active GitHub App credentials — the instance has not been onboarded "
-                "(POST /setup). database credential mode never falls back to env."
+            if row is None:
+                raise GitHubUnconfiguredError(
+                    "no active GitHub App credentials — the instance has not been onboarded "
+                    "(POST /setup). database credential mode never falls back to env."
+                )
+            return GitHubAppCredentials(
+                app_id=row.app_id,
+                app_private_key=decrypt_credential(row.pem_ciphertext),
+                webhook_secret=decrypt_credential(row.webhook_secret_ciphertext),
+                slug=row.slug,
+                client_id=row.client_id,
             )
-        return GitHubAppCredentials(
-            app_id=row.app_id,
-            app_private_key=decrypt_credential(row.pem_ciphertext),
-            webhook_secret=decrypt_credential(row.webhook_secret_ciphertext),
-            slug=row.slug,
-            client_id=row.client_id,
-        )
 
     async def is_configured(self) -> bool:
         async with self.session_factory() as session:

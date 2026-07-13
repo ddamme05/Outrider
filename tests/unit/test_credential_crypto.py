@@ -53,9 +53,10 @@ def test_malformed_key_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
         validate_credential_enc_key()
 
 
-def test_empty_secret_refused(_key: str) -> None:
-    with pytest.raises(CredentialCryptoError, match="empty"):
-        encrypt_credential(SecretStr(""))
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
+def test_empty_or_blank_secret_refused(_key: str, blank: str) -> None:
+    with pytest.raises(CredentialCryptoError, match="empty/blank"):
+        encrypt_credential(SecretStr(blank))
 
 
 def test_tampered_ciphertext_rejected(_key: str) -> None:

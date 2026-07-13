@@ -97,8 +97,8 @@ def encrypt_credential(secret: SecretStr) -> bytes:
     (authenticated; self-describing version + timestamp). Fails closed (raises
     `CredentialCryptoError`) on a missing/malformed key or an empty secret."""
     plaintext = secret.get_secret_value()
-    if not plaintext:
-        raise CredentialCryptoError("refusing to encrypt an empty credential")
+    if not plaintext.strip():
+        raise CredentialCryptoError("refusing to encrypt an empty/blank credential")
     return _multifernet().encrypt(plaintext.encode("utf-8"))
 
 

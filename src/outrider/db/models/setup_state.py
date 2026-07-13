@@ -37,16 +37,17 @@ SETUP_STATUSES: tuple[str, ...] = (
     "ORPHANED",
 )
 
+# The status CHECK, DERIVED from SETUP_STATUSES so the model can't drift from the vocabulary. The
+# migration's CHECK is a frozen snapshot of this at authoring time; a test pins the two together.
+_STATUS_CHECK = "status IN (" + ", ".join(f"'{s}'" for s in SETUP_STATUSES) + ")"
+
 
 class SetupState(Base):
     __tablename__ = "setup_state"
     __table_args__ = (
         # Singleton: exactly one row, id pinned to 1.
         CheckConstraint("id = 1", name="ck_setup_state_singleton"),
-        CheckConstraint(
-            "status IN ('UNCONFIGURED','AWAITING_CALLBACK','CONVERTING','CONFIGURED','ORPHANED')",
-            name="ck_setup_state_status",
-        ),
+        CheckConstraint(_STATUS_CHECK, name="ck_setup_state_status"),
     )
 
     id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, autoincrement=False)
