@@ -39,7 +39,7 @@ def _set_truncation_hmac_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     deliberately mutate the env in-test can still use their own
     `monkeypatch` to override this fixture's setting.
     """
-    monkeypatch.setenv(TRUNCATION_HMAC_SECRET_ENV, "test-secret-for-unit-tests")
+    monkeypatch.setenv(TRUNCATION_HMAC_SECRET_ENV, "test-secret-for-unit-tests-012345")
 
 
 # ---------------------------------------------------------------------------

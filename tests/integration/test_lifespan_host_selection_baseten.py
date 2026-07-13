@@ -37,7 +37,7 @@ def _mock_engine() -> MagicMock:
 def _baseten_production_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """The minimal production-boot env with the Baseten host selected. `github_app_env`
     supplies OUTRIDER_GITHUB_* + OUTRIDER_ADMIN_API_KEY; this adds the rest."""
-    monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret")
+    monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret-truncation-hmac-key32")
     monkeypatch.setenv("OUTRIDER_SWEEP_DISABLED", "1")  # don't spawn the real sweep loop
     monkeypatch.setenv("OUTRIDER_LLM_HOST", "baseten")
 

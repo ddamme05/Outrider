@@ -70,7 +70,7 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _set_truncation_hmac_secret(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret-for-unit-tests")
+    monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret-for-unit-tests-012345")
 
 
 # ---------------------------------------------------------------------------

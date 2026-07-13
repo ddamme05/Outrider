@@ -103,6 +103,29 @@ TRUNCATION_HMAC_SECRET_ENV: Final[str] = "OUTRIDER_TRUNCATION_HMAC_SECRET"  # no
 # threat model — the secret never leaves the deploy environment).
 _TRUNCATION_HMAC_LEN: Final[int] = 8
 
+# Known non-secret placeholders rejected at read time so a verbatim `.env.example`
+# copy (which ships `replace-me-with-a-long-random-secret`) cannot become the live
+# marker-signing key. The published placeholder is ~36 chars — ABOVE the length
+# floor below — so an explicit set is required in addition to the floor. Mirrors
+# `github/config._PLACEHOLDER_SECRETS` / `notify/oauth_state._PLACEHOLDER_SECRETS`;
+# kept as a local copy per the same "keep in sync" convention those carry.
+_PLACEHOLDER_TRUNCATION_SECRETS: Final[frozenset[str]] = frozenset(
+    {
+        "replace-me",
+        "replace-me-with-a-long-random-secret",
+        "change-me",
+        "changeme",
+        "secret",
+        "password",
+        "your-secret-here",
+    }
+)
+# Minimum length (chars). A short, non-placeholder value (e.g. "x") slips past the
+# set above but has too little entropy to be a credible marker-unforgeability root.
+# 32 is the floor a `secrets.token_urlsafe(32)` value (≈43 chars) clears comfortably
+# — mirrors the `notify/oauth_state._MIN_STATE_SECRET_LEN` HMAC-key discipline.
+_MIN_TRUNCATION_SECRET_LEN: Final[int] = 32
+
 # Truncation marker text. The leading `\n\n` ensures the marker
 # appears on its own line in markdown rendering even when the prior
 # content didn't end with a newline. `original N bytes` wording pairs
@@ -588,10 +611,25 @@ def _get_truncation_secret() -> bytes:
     is microsecond-cheap; no performance concern.
     """
     secret = os.environ.get(TRUNCATION_HMAC_SECRET_ENV, "")
-    if not secret:
+    stripped = secret.strip()
+    if not stripped:
         raise RuntimeError(
             f"{TRUNCATION_HMAC_SECRET_ENV} must be set (non-empty) to compute "
             f"HMAC-tagged truncation markers. The sanitizer fails loudly here "
             f"rather than producing forgeable markers."
         )
+    if stripped.lower() in _PLACEHOLDER_TRUNCATION_SECRETS:
+        raise RuntimeError(
+            f"{TRUNCATION_HMAC_SECRET_ENV} is a known placeholder ({stripped!r}); a verbatim "
+            ".env.example copy would sign truncation markers with a public value. Set a real "
+            'random secret: python -c "import secrets; print(secrets.token_urlsafe(32))".'
+        )
+    if len(stripped) < _MIN_TRUNCATION_SECRET_LEN:
+        raise RuntimeError(
+            f"{TRUNCATION_HMAC_SECRET_ENV} is too short ({len(stripped)} chars); it is the "
+            f"marker-unforgeability root, so use at least {_MIN_TRUNCATION_SECRET_LEN} chars — "
+            'e.g. python -c "import secrets; print(secrets.token_urlsafe(32))".'
+        )
+    # Validate on the stripped value but return the ORIGINAL bytes unchanged, so an
+    # already-valid secret's HMAC key is byte-identical to before this hardening.
     return secret.encode("utf-8")

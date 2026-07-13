@@ -164,7 +164,7 @@ async def test_demo_and_production_wire_identical_app_state_keys(
     the key SETS are identical. It is deliberately a comparison test, not a shared
     wiring helper: a helper would couple the two blocks and fight the easy-retire goal.
     """
-    monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret")
+    monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret-truncation-hmac-key32")
     # Don't spawn a real background sweep loop; sweep_task is still keyed (as None).
     monkeypatch.setenv("OUTRIDER_SWEEP_DISABLED", "1")
 

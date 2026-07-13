@@ -55,7 +55,7 @@ def _set_truncation_hmac_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     # apply_size_cap HMAC-signs its truncation marker; test_body_marker_survives_size_cap
     # forces truncation (>64KB body), which reads the secret. The under-cap tests don't
     # (apply_size_cap returns early before the HMAC) — autouse just beats per-test setup.
-    monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret-for-unit-tests")
+    monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret-for-unit-tests-012345")
 
 
 def _make_finding(

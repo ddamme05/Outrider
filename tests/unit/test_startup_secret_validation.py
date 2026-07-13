@@ -28,8 +28,39 @@ def test_require_truncation_secret_raises_when_unset(monkeypatch: pytest.MonkeyP
 
 
 def test_require_truncation_secret_passes_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(TRUNCATION_HMAC_SECRET_ENV, "a-real-deploy-secret")
+    monkeypatch.setenv(TRUNCATION_HMAC_SECRET_ENV, "a-real-deploy-secret-0123456789ab")
     require_truncation_secret()  # no raise
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    ["replace-me-with-a-long-random-secret", "REPLACE-ME", "change-me", "secret"],
+)
+def test_require_truncation_secret_rejects_placeholder(
+    monkeypatch: pytest.MonkeyPatch, placeholder: str
+) -> None:
+    """A present-but-placeholder truncation secret fails at eager startup. The
+    published placeholder (`replace-me-with-a-long-random-secret`, ~36 chars) is
+    ABOVE the 32-char floor, so it must be caught by the explicit set — a verbatim
+    `.env.example` copy cannot become the live marker-signing key."""
+    monkeypatch.setenv(TRUNCATION_HMAC_SECRET_ENV, placeholder)
+    with pytest.raises(RuntimeError, match="placeholder"):
+        require_truncation_secret()
+
+
+def test_require_truncation_secret_rejects_31_chars(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 31-char non-placeholder secret is below the marker-unforgeability floor (32)."""
+    monkeypatch.setenv(TRUNCATION_HMAC_SECRET_ENV, "x" * 31)
+    with pytest.raises(RuntimeError, match="too short"):
+        require_truncation_secret()
+
+
+def test_require_truncation_secret_accepts_exactly_32_chars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """32 chars is the floor — accepted (no raise)."""
+    monkeypatch.setenv(TRUNCATION_HMAC_SECRET_ENV, "x" * 32)
+    require_truncation_secret()
 
 
 def test_validate_token_enc_key_raises_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
