@@ -40,7 +40,7 @@ async def test_lifespan_wires_review_budget_into_build_graph(
     # Lifespan now hard-requires the truncation HMAC secret at startup
     # (require_truncation_secret, landed 2026-06-19); set it so this test is
     # self-contained and does not depend on a sourced .env.
-    monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret-for-integration")
+    monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret-for-integration-01234")
     monkeypatch.setenv("OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS", "123456")
 
     mock_engine = MagicMock()
