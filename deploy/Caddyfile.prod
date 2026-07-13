@@ -1,0 +1,10 @@
+# Optional production TLS front (DECISIONS.md#069, `--profile tls`). Unlike the demo's
+# Caddyfile — where Caddy served the SPA and proxied only /api — the production app image
+# serves the SPA AND the API itself, so Caddy just terminates HTTPS and reverse-proxies
+# everything to the app over the internal network.
+#
+# {$OUTRIDER_DOMAIN}: your domain (e.g. outrider.example.com) → automatic Let's Encrypt HTTPS.
+{$OUTRIDER_DOMAIN} {
+	encode gzip
+	reverse_proxy app:8000
+}
