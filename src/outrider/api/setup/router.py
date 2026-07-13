@@ -67,11 +67,11 @@ def _default_app_name(org: str) -> str:
 
 
 def _verify_attempt_digest(settings: SetupSettings, binding: SetupBinding) -> None:
-    """Bind the callback to the attempt across a restart/redeploy (`#070`): re-derive the
-    manifest from the stored org + CURRENT config and confirm its digest matches the one recorded at
-    Start. A changed `OUTRIDER_PUBLIC_BASE_URL` (or app-name policy) yields a different digest — the
-    App was created with URLs that no longer point here — reject. Raises `BindingMismatchError` on
-    drift (routed to `orphan()` by the saga)."""
+    """Deployment-continuity guard (`#070`) — the single-use nonce is the PRIMARY binding of the
+    callback to the attempt; this re-derives the manifest from the stored org + CURRENT config and
+    confirms its digest matches the one recorded at Start. A changed `OUTRIDER_PUBLIC_BASE_URL` (or
+    app-name policy) yields a different digest — the App was created with URLs that no longer point
+    here — so reject. Raises `BindingMismatchError` on drift (routed to `orphan()` by the saga)."""
     if binding.expected_org_login is None:
         raise BindingMismatchError("setup attempt has no bound org")
     _, current_digest = build_manifest(
