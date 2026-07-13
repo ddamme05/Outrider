@@ -133,6 +133,7 @@ def test_validate_passes_on_good_secret(_secret: str) -> None:
         "OUTRIDER_GITHUB_APP_PRIVATE_KEY",
         "OUTRIDER_GITHUB_CREDENTIAL_ENC_KEY",
         "OUTRIDER_GITHUB_WEBHOOK_SECRET",
+        "OUTRIDER_SLACK_BOT_TOKEN",
         "OUTRIDER_SLACK_CLIENT_SECRET",
         "OUTRIDER_SLACK_STATE_SECRET",
         "OUTRIDER_TOKEN_ENC_KEY",

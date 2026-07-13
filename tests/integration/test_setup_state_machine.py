@@ -80,6 +80,28 @@ async def _begin(machine: SetupStateMachine, nonce_hash: str) -> None:
     )
 
 
+async def _await_lock_waiter(sf: async_sessionmaker[AsyncSession], *, tries: int = 200) -> None:
+    """Poll `pg_stat_activity` until a backend in THIS database is blocked on a Lock — a DIRECT
+    observation that a task reached the contested statement and is genuinely waiting on the held
+    lock/index, rather than inferring the wait from a timer. Raises if none appears (the task never
+    contended). A held row/index lock surfaces as `wait_event_type='Lock'` (row lock or the unique
+    index's transactionid wait)."""
+    for _ in range(tries):
+        async with sf() as session:
+            waiters = (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE wait_event_type = 'Lock' AND datname = current_database()"
+                    )
+                )
+            ).scalar_one()
+        if waiters >= 1:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("no backend blocked on a lock — the contested statement was never reached")
+
+
 # ── Start ────────────────────────────────────────────────────────────────────
 
 
@@ -329,10 +351,8 @@ async def test_begin_setup_cas_serializes_under_held_lock(
         await sess_a.begin()
         await sess_a.execute(text("SELECT 1 FROM setup_state WHERE id = 1 FOR UPDATE"))
         task = asyncio.create_task(_begin(machine, h))
-        await asyncio.sleep(0.25)
-        assert not task.done(), (
-            "begin_setup must BLOCK on the held singleton lock (real contention)"
-        )
+        await _await_lock_waiter(session_factory)  # observe B's lock-wait directly, not via a timer
+        assert not task.done()
         await sess_a.execute(text("UPDATE setup_state SET status='AWAITING_CALLBACK' WHERE id=1"))
         await sess_a.execute(
             text(
@@ -375,8 +395,10 @@ async def test_mark_configured_serializes_on_held_active_index(
                 webhook_secret_ciphertext=b"wh",
             )
         )
-        await asyncio.sleep(0.25)
-        assert not task.done(), "mark_configured must BLOCK on the held single-active index"
+        await _await_lock_waiter(
+            session_factory
+        )  # observe B's index-wait directly, not via a timer
+        assert not task.done()
         await sess_a.commit()  # A's active row lands
     with pytest.raises(SetupConflictError):
         await task
