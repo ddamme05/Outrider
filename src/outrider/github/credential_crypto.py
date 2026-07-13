@@ -35,6 +35,10 @@ __all__ = [
 
 # Env var NAME (not a secret value) — the at-rest encryption key(s) for App credentials.
 CREDENTIAL_ENC_KEY_ENV = "OUTRIDER_GITHUB_CREDENTIAL_ENC_KEY"  # noqa: S105
+# Slack's at-rest key (notify/token_crypto.TOKEN_ENC_KEY_ENV). DECISIONS.md#070 requires the GitHub
+# credential key be DISTINCT from it — enforced in validate_credential_enc_key so a compromise of
+# one credential class's key doesn't compromise the other.
+_SLACK_ENC_KEY_ENV = "OUTRIDER_TOKEN_ENC_KEY"  # noqa: S105
 
 # Known placeholders shipped in .env.example (+ the usual suspects); reject a verbatim copy so a
 # deploy can't treat a non-key as its at-rest encryption key. Mirrors github/config.py /
@@ -115,9 +119,23 @@ def decrypt_credential(ciphertext: bytes) -> SecretStr:
     return SecretStr(plaintext.decode("utf-8"))
 
 
+def _key_values(raw: str) -> frozenset[str]:
+    """The set of individual key strings in a comma-separated key env value."""
+    return frozenset(p.strip() for p in raw.split(",") if p.strip())
+
+
 def validate_credential_enc_key() -> None:
-    """Assert `OUTRIDER_GITHUB_CREDENTIAL_ENC_KEY` is present AND well-formed — for eager startup
-    validation in `database` mode, so a missing/placeholder/malformed key surfaces at boot rather
-    than lazily at the first onboarding persist or the first decrypt. Raises `CredentialCryptoError`
-    on any failure; returns None when the key set is present and well-formed."""
-    _multifernet()
+    """Assert `OUTRIDER_GITHUB_CREDENTIAL_ENC_KEY` is present, well-formed, AND distinct from
+    Slack's key — eager startup validation for `database` mode, so a missing/placeholder/malformed/
+    reused key surfaces at boot, not lazily at the first onboarding persist or first decrypt.
+    Raises `CredentialCryptoError` on any failure; returns None when the key set is valid."""
+    _multifernet()  # structural: present, non-placeholder, valid Fernet key set
+    # DECISIONS.md#070 dedicated-key requirement: reject any key shared with OUTRIDER_TOKEN_ENC_KEY.
+    slack_raw = os.environ.get(_SLACK_ENC_KEY_ENV, "").strip()
+    if slack_raw and _key_values(os.environ.get(CREDENTIAL_ENC_KEY_ENV, "")) & _key_values(
+        slack_raw
+    ):
+        raise CredentialCryptoError(
+            f"{CREDENTIAL_ENC_KEY_ENV} reuses a key from {_SLACK_ENC_KEY_ENV}; DECISIONS.md#070 "
+            "requires a dedicated key distinct from Slack's — generate a separate Fernet key."
+        )
