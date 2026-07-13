@@ -56,9 +56,11 @@ class GitHubUnconfiguredError(RuntimeError):
 
 
 class GitHubCredentialIntegrityError(RuntimeError):
-    """The one-active-row invariant is violated (more than one active credential row) — a bad
-    migration or tampering. Distinct from `GitHubUnconfiguredError` (which is the normal setup-only
-    state): this is abnormal + alert-worthy. Consumers must fail closed, never pick a row."""
+    """A credential-store integrity invariant is violated — the setup-state singleton is missing,
+    or (while CONFIGURED) the active credential row count is not exactly one: zero = a vanished
+    record, more than one = an injected/extra row. A bad migration or tampering. Distinct from
+    `GitHubUnconfiguredError` (the normal setup-only state): this is abnormal + alert-worthy.
+    Consumers must fail closed — never pick a row, never silently drop back to onboarding."""
 
 
 @dataclass(frozen=True)
@@ -115,17 +117,21 @@ class DatabaseCredentialProvider:
     session_factory: async_sessionmaker[AsyncSession]
 
     async def _active_row(self, session: AsyncSession) -> GitHubAppCredential:
-        # Fail CLOSED on ambiguity at a root credential boundary: fetch up to 2 active rows and
-        # RAISE if more than one exists, rather than silently choosing one — an injected/extra
-        # active row must not substitute the App identity + webhook trust. 0 rows → unconfigured.
+        # Called ONLY after current() has confirmed status == CONFIGURED, so the invariant is
+        # EXACTLY one active row: BOTH 0 and >1 are integrity violations (fail closed at a root
+        # credential boundary), never the setup-only state. Per spec §Credential model, a CONFIGURED
+        # instance with a missing/vanished record is an alertable fail-closed error, not a silent
+        # drop back to bootstrap (which could re-onboard over an intended config). Fetch up to 2 and
+        # refuse on ambiguity — an injected/extra active row must not substitute App identity.
         result = await session.execute(
             select(GitHubAppCredential).where(GitHubAppCredential.is_active).limit(2)
         )
         rows = list(result.scalars().all())
         if not rows:
-            raise GitHubUnconfiguredError(
-                "no active GitHub App credentials — the instance has not been onboarded "
-                "(POST /setup). database credential mode never falls back to env."
+            raise GitHubCredentialIntegrityError(
+                "status is CONFIGURED but no active GitHub App credential row exists — the "
+                "record vanished under a configured instance. CONFIGURED requires exactly one "
+                "complete record; the invariant is violated — fail closed (alert)."
             )
         if len(rows) > 1:
             raise GitHubCredentialIntegrityError(
