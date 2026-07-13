@@ -12,8 +12,10 @@ one-org model), `default_permissions {contents: read, pull_requests: write}`, an
 [pull_request]`. (`installation` + `installation_repositories` are auto-delivered to every App and
 cannot be subscribed to, so they are NOT declared — the App still receives them.) `build_manifest`
 also returns the `manifest_contract_digest` — a hash of the exact manifest THIS attempt sent,
-RECORDED on `setup_state` as an audit artifact of what was submitted. (The conversion response omits
-the URLs, so V1 does not re-verify against the digest; the single-use nonce binds the callback.)
+recorded on `setup_state`. The callback re-derives it from the stored org + current config and
+rejects on mismatch (`router._verify_attempt_digest`), binding the callback to the attempt across a
+redeploy (a changed `OUTRIDER_PUBLIC_BASE_URL` would create an App whose URLs no longer point
+here).
 
 The **response-verifiable** expectations (`EXPECTED_PERMISSIONS` / `EXPECTED_EVENTS`) are what the
 response must match (`binding.verify_conversion_binding`): permissions is the declared map PLUS

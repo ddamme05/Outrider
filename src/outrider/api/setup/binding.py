@@ -12,10 +12,10 @@ callback verifies the returned App matches the contract bound to THIS setup atte
 - the `events` **set equals** `expected_events` (order-independent).
 
 `public` and the manifest URLs are submission-only (the conversion response omits them, so they
-cannot be response-verified); the single-use nonce in the signed `state` is what binds the callback
-to this attempt, and `manifest_contract_digest` is a recorded audit artifact of what was submitted
-(V1 does not re-verify against it). A mismatch on the three checked fields raises
-`BindingMismatchError`; the caller rejects — never persists — and routes to `ORPHANED`.
+cannot be response-verified). The single-use nonce binds the callback to the attempt, and the
+`manifest_contract_digest` is re-verified at the callback (`router._verify_attempt_digest`)
+to catch `OUTRIDER_PUBLIC_BASE_URL` drift across a restart/redeploy. A mismatch on the three fields
+checked HERE raises `BindingMismatchError`; the caller rejects — never persists → `ORPHANED`.
 """
 
 from __future__ import annotations
