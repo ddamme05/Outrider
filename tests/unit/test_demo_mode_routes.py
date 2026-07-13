@@ -72,3 +72,30 @@ def test_demo_mode_has_no_mutating_or_side_effecting_method() -> None:
 
 def test_production_surface_is_allowlist_plus_mutation_routes() -> None:
     assert _surface(create_app(demo_mode=False)) == _DEMO_ALLOWLIST | _PRODUCTION_EXTRA
+
+
+# ── FUP-229: interactive API docs are OFF by default (production-safe), dev opt-in ──
+
+
+def _route_paths(app: FastAPI) -> set[str | None]:
+    return {getattr(r, "path", None) for r in app.routes}
+
+
+def test_docs_disabled_by_default() -> None:
+    """`/docs`, `/redoc`, `/openapi.json` are NOT served by default — the production image
+    must not expose Swagger UI or the full OpenAPI schema to anonymous callers (FUP-229)."""
+    paths = _route_paths(create_app(demo_mode=False))
+    leaked = _FASTAPI_BUILTINS & paths
+    assert not leaked, f"docs leaked by default: {leaked}"
+
+
+def test_docs_enabled_via_opt_in() -> None:
+    """The explicit developer opt-in (`enable_docs=True`, from `OUTRIDER_ENABLE_DOCS=1`)
+    restores the schema + docs endpoints."""
+    paths = _route_paths(create_app(demo_mode=False, enable_docs=True))
+    assert {"/openapi.json", "/docs", "/redoc"} <= paths
+
+
+def test_docs_disabled_in_demo_mode_too() -> None:
+    """Demo mode also stays docs-free by default (the keyless box exposes no schema)."""
+    assert _FASTAPI_BUILTINS.isdisjoint(_route_paths(create_app(demo_mode=True)))

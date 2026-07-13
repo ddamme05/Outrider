@@ -280,7 +280,10 @@ def test_reserved_prefixes_match_backend_namespaces(monkeypatch: pytest.MonkeyPa
     # no-op here (a `=1` in the runner's env would else fail create_app with no baked dist).
     monkeypatch.delenv("OUTRIDER_SERVE_SPA", raising=False)
     monkeypatch.delenv("OUTRIDER_SPA_DIST_DIR", raising=False)
-    app = create_app(demo_mode=False)
+    # enable_docs=True so /docs, /redoc, /openapi.json are registered: they stay in
+    # RESERVED_PREFIXES even when the prod default (FUP-229) disables them, because a GET to a
+    # disabled /docs must still 404 (reserved), not fall through to the SPA shell.
+    app = create_app(demo_mode=False, enable_docs=True)
     segments: set[str] = set()
     for route in app.routes:
         path = getattr(route, "path", "")

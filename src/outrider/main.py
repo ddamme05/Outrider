@@ -73,6 +73,14 @@ def _demo_mode_from_env() -> bool:
     return os.environ.get("OUTRIDER_DEMO_MODE", "") == "1"
 
 
+def _docs_enabled_from_env() -> bool:
+    """Interactive API docs opt-in (`OUTRIDER_ENABLE_DOCS=1`). OFF by default so the
+    production image never serves Swagger UI / ReDoc / the full OpenAPI schema to
+    anonymous callers (FUP-229); developers opt in locally. A plain env read (same
+    reason as `_demo_mode_from_env`): it gates FastAPI construction, before settings load."""
+    return os.environ.get("OUTRIDER_ENABLE_DOCS", "") == "1"
+
+
 def _include_routers(app: FastAPI, *, demo_mode: bool) -> None:
     """Mount the route allowlist.
 
@@ -107,12 +115,19 @@ def _include_routers(app: FastAPI, *, demo_mode: bool) -> None:
     app.include_router(slack_oauth_router)
 
 
-def create_app(*, demo_mode: bool) -> FastAPI:
+def create_app(*, demo_mode: bool, enable_docs: bool = False) -> FastAPI:
     """Build the production FastAPI app for the given mode.
 
     `demo_mode` selects the route allowlist (see `_include_routers`). Factored out
     of module scope so the route-mount surface is testable EXACTLY per mode against
     the real app (not a helper-built one) — `app` below uses the env flag.
+
+    `enable_docs` gates the interactive API docs + schema endpoints (`/docs`, `/redoc`,
+    `/openapi.json`). Default OFF (FUP-229): the production image must not expose Swagger
+    UI or the full OpenAPI schema to anonymous callers. Developers opt in with
+    `OUTRIDER_ENABLE_DOCS=1`; `scripts/gen_openapi.py` passes `enable_docs=True` to build
+    the canonical schema. When off, those paths stay in `spa.RESERVED_PREFIXES`, so a GET
+    to `/docs` returns 404 rather than the SPA shell.
     """
     app = FastAPI(
         title="Outrider",
@@ -120,6 +135,10 @@ def create_app(*, demo_mode: bool) -> FastAPI:
             "Agentic PR review (intake → triage → analyze ⇄ trace → synthesize → hitl → publish)."
         ),
         lifespan=lifespan,
+        # FUP-229: OFF by default (production-safe); the developer opt-in restores all three.
+        docs_url="/docs" if enable_docs else None,
+        redoc_url="/redoc" if enable_docs else None,
+        openapi_url="/openapi.json" if enable_docs else None,
     )
     _include_routers(app, demo_mode=demo_mode)
     # Read by the lifespan to select the keyless boot (no provider/github/graph/
@@ -152,4 +171,4 @@ def create_app(*, demo_mode: bool) -> FastAPI:
     return app
 
 
-app = create_app(demo_mode=_demo_mode_from_env())
+app = create_app(demo_mode=_demo_mode_from_env(), enable_docs=_docs_enabled_from_env())

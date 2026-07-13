@@ -23,7 +23,7 @@ _OPENAPI = _DASHBOARD / "openapi.json"
 
 
 def test_dashboard_openapi_json_is_fresh() -> None:
-    expected = json.dumps(create_app(demo_mode=False).openapi(), indent=2) + "\n"
+    expected = json.dumps(create_app(demo_mode=False, enable_docs=True).openapi(), indent=2) + "\n"
     actual = _OPENAPI.read_text(encoding="utf-8")
     assert actual == expected, (
         "dashboard/openapi.json is stale vs create_app(demo_mode=False).openapi(); "

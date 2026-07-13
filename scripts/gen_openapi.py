@@ -41,7 +41,7 @@ def _restore(path: Path, backup: bytes | None) -> None:
 
 
 def main() -> int:
-    spec = create_app(demo_mode=False).openapi()
+    spec = create_app(demo_mode=False, enable_docs=True).openapi()
     new_bytes = (json.dumps(spec, indent=2) + "\n").encode("utf-8")
     n_paths = len(spec.get("paths", {}))
     n_schemas = len(spec.get("components", {}).get("schemas", {}))
