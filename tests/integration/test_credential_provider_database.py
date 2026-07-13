@@ -181,6 +181,22 @@ async def test_missing_singleton_with_active_row_fails_closed(
         await provider.is_configured()
 
 
+async def test_configured_zero_rows_is_integrity_error(
+    session_factory: async_sessionmaker[AsyncSession], _enc_key: str
+) -> None:
+    """CONFIGURED status but ZERO active credential rows (the record was deactivated/deleted under a
+    configured instance) is integrity corruption, NOT the setup-only state — per spec §Credential
+    model, CONFIGURED requires one complete record; its absence is an alertable fail-closed error,
+    never a silent drop back to bootstrap. current() raises GitHubCredentialIntegrityError (pages
+    like the missing-singleton / >1-row corruptions), not GitHubUnconfiguredError. is_configured()
+    stays True (status-authoritative) — the same True/raise divergence as the broken-key case."""
+    await _set_status(session_factory, "CONFIGURED")  # CONFIGURED, but no active credential row
+    provider = DatabaseCredentialProvider(session_factory)
+    assert await provider.is_configured() is True
+    with pytest.raises(GitHubCredentialIntegrityError):
+        await provider.current()
+
+
 async def test_multiple_active_fails_closed(
     session_factory: async_sessionmaker[AsyncSession], _enc_key: str
 ) -> None:
