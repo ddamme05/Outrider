@@ -12,10 +12,10 @@ one-org model), `default_permissions {contents: read, pull_requests: write}`, an
 [pull_request]`. (`installation` + `installation_repositories` are auto-delivered to every App and
 cannot be subscribed to, so they are NOT declared — the App still receives them.) `build_manifest`
 also returns the `manifest_contract_digest` — a hash of the exact manifest THIS attempt sent,
-recorded on `setup_state`. The callback re-derives it from the stored org + current config and
-rejects on mismatch (`router._verify_attempt_digest`), binding the callback to the attempt across a
-redeploy (a changed `OUTRIDER_PUBLIC_BASE_URL` would create an App whose URLs no longer point
-here).
+recorded on `setup_state`. The single-use **nonce** binds the callback to the attempt; the digest is
+a **deployment-continuity guard** — the callback re-derives it from the stored org + current config
+and rejects on mismatch (`router._verify_attempt_digest`), catching an `OUTRIDER_PUBLIC_BASE_URL`
+change between Start and callback that would leave the App with URLs no longer pointing here.
 
 The **response-verifiable** expectations (`EXPECTED_PERMISSIONS` / `EXPECTED_EVENTS`) are what the
 response must match (`binding.verify_conversion_binding`): permissions is the declared map PLUS
@@ -64,8 +64,9 @@ def build_manifest(*, base_url: str, name: str) -> tuple[dict[str, object], str]
 
     `base_url` is the canonical `OUTRIDER_PUBLIC_BASE_URL` (already validated + trailing-slash
     stripped); every URL derives from it. `name` is the operator-editable default App name. Returns
-    `(manifest, digest)` where `digest = sha256(canonical-json)` — stored on `setup_state` so the
-    callback verifies against what this attempt actually submitted.
+    `(manifest, digest)` where `digest = sha256(canonical-json)` — stored on `setup_state` for the
+    callback's deployment-continuity check (`router._verify_attempt_digest`), NOT the callback-to-
+    attempt binding (the single-use nonce is that).
     """
     manifest: dict[str, object] = {
         "name": name,
