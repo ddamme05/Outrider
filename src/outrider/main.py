@@ -62,6 +62,7 @@ from outrider.api.dashboard import (
 )
 from outrider.api.privacy import router as privacy_router
 from outrider.api.slack import slack_oauth_router
+from outrider.api.spa import mount_spa_if_configured
 from outrider.api.webhooks.router import router as webhook_router
 
 
@@ -141,6 +142,12 @@ def create_app(*, demo_mode: bool) -> FastAPI:
         probe; layer that on top if you need it.
         """
         return {"status": "ok"}
+
+    # See DECISIONS.md#069 — serve the built dashboard SPA (production image) AFTER all
+    # API routers so specific API routes always win; the catch-all is registration-last.
+    # No-op unless OUTRIDER_SERVE_SPA=1 (demo / API-only image leaves it unset); an invalid
+    # flag value or an OUTRIDER_SERVE_SPA=1 image with no baked dist/ fails startup here.
+    mount_spa_if_configured(app)
 
     return app
 
