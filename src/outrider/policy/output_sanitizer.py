@@ -91,10 +91,13 @@ GITHUB_COMMENT_BODY_MAX: Final[int] = 65_536
 GITHUB_REVIEW_BODY_MAX: Final[int] = 65_536
 
 # Env var name for the truncation-marker HMAC secret. Deploy-time
-# configuration; the sanitizer reads it on first use and caches the
-# secret bytes per-process. A missing or empty env var fails loudly at
-# first truncation rather than silently producing forgeable markers
-# (the OWASP-style "fail securely" pattern).
+# configuration, read FRESH on every call (see `_get_truncation_secret`) — NOT
+# cached — so an in-process env change (e.g. a test monkeypatch) takes effect
+# immediately. Rotating a real deployment secret still requires restarting /
+# replacing the process, since `os.environ` is populated at process start. A
+# missing, empty, placeholder, or too-short (<32 char) value fails loudly (at
+# startup via `require_truncation_secret`, or at first truncation) rather than
+# silently producing forgeable markers (the OWASP-style "fail securely" pattern).
 TRUNCATION_HMAC_SECRET_ENV: Final[str] = "OUTRIDER_TRUNCATION_HMAC_SECRET"  # noqa: S105  (env var NAME, not a secret value)
 
 # Length of the HMAC tag in hex characters embedded in the truncation
