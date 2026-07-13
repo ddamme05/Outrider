@@ -1,9 +1,9 @@
 # Keyless demo image — runs `outrider.main:app` in DEMO_MODE. No live LLM/GitHub/
 # Slack credentials are baked in or needed; the app early-returns after the read-side
 # wiring (see src/outrider/api/lifespan.py `if demo_mode:`).
-FROM python:3.13-slim
+FROM python:3.13.14-slim
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
 
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
