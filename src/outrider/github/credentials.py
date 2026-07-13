@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 from sqlalchemy import select
 
 from outrider.db.models.github_app_credentials import GitHubAppCredential
+from outrider.db.models.setup_state import SetupState
 from outrider.github.config import GitHubAppSettings
 from outrider.github.credential_crypto import decrypt_credential, validate_credential_enc_key
 
@@ -38,6 +39,7 @@ __all__ = [
     "DatabaseCredentialProvider",
     "EnvCredentialProvider",
     "GitHubAppCredentials",
+    "GitHubCredentialIntegrityError",
     "GitHubCredentialProvider",
     "GitHubUnconfiguredError",
     "build_credential_provider",
@@ -51,6 +53,12 @@ class GitHubUnconfiguredError(RuntimeError):
     """No active GitHub App credentials — `database` mode with no onboarded record (the setup-only
     bootstrap state). Consumers translate this into a fail-closed refusal (webhook 503, dispatch
     denied, authorization denied), never a fall-through to `env`."""
+
+
+class GitHubCredentialIntegrityError(RuntimeError):
+    """The one-active-row invariant is violated (more than one active credential row) — a bad
+    migration or tampering. Distinct from `GitHubUnconfiguredError` (which is the normal setup-only
+    state): this is abnormal + alert-worthy. Consumers must fail closed, never pick a row."""
 
 
 @dataclass(frozen=True)
@@ -106,28 +114,31 @@ class DatabaseCredentialProvider:
 
     session_factory: async_sessionmaker[AsyncSession]
 
-    async def _active(self, session: AsyncSession) -> GitHubAppCredential | None:
-        # `.first()` after ordering (not `scalar_one_or_none`): the unique partial index
-        # guarantees ≤1 active row, but if that invariant is ever violated we take the latest and
-        # keep serving rather than making every credential read an unhandled MultipleResultsFound.
+    async def _active_row(self, session: AsyncSession) -> GitHubAppCredential:
+        # Fail CLOSED on ambiguity at a root credential boundary: fetch up to 2 active rows and
+        # RAISE if more than one exists, rather than silently choosing one — an injected/extra
+        # active row must not substitute the App identity + webhook trust. 0 rows → unconfigured.
         result = await session.execute(
-            select(GitHubAppCredential)
-            .where(GitHubAppCredential.is_active)
-            .order_by(GitHubAppCredential.created_at.desc())
-            .limit(1)
+            select(GitHubAppCredential).where(GitHubAppCredential.is_active).limit(2)
         )
-        return result.scalars().first()
+        rows = list(result.scalars().all())
+        if not rows:
+            raise GitHubUnconfiguredError(
+                "no active GitHub App credentials — the instance has not been onboarded "
+                "(POST /setup). database credential mode never falls back to env."
+            )
+        if len(rows) > 1:
+            raise GitHubCredentialIntegrityError(
+                "more than one active GitHub App credential row — refusing to choose. The "
+                "one-active invariant is violated (a bad migration or tampering); fail closed."
+            )
+        return rows[0]
 
     async def current(self) -> GitHubAppCredentials:
         # Build the snapshot INSIDE the session context — decrypt while the row is still attached,
         # so no detached-instance access can arise from a future expire-on-commit / deferred column.
         async with self.session_factory() as session:
-            row = await self._active(session)
-            if row is None:
-                raise GitHubUnconfiguredError(
-                    "no active GitHub App credentials — the instance has not been onboarded "
-                    "(POST /setup). database credential mode never falls back to env."
-                )
+            row = await self._active_row(session)
             return GitHubAppCredentials(
                 app_id=row.app_id,
                 app_private_key=decrypt_credential(row.pem_ciphertext),
@@ -137,8 +148,13 @@ class DatabaseCredentialProvider:
             )
 
     async def is_configured(self) -> bool:
+        # Authoritative source is the state machine (DECISIONS.md#070): the row-present shortcut
+        # cannot distinguish never-configured from configured-then-broken. `CONFIGURED` is set only
+        # by activation (atomically with the credential row); a broken row in CONFIGURED still reads
+        # True here and fails closed at `current()` (decrypt raises), never a silent unconfigured.
         async with self.session_factory() as session:
-            return await self._active(session) is not None
+            result = await session.execute(select(SetupState.status).where(SetupState.id == 1))
+            return result.scalar_one_or_none() == "CONFIGURED"
 
 
 def resolve_credential_source(env: Mapping[str, str] | None = None) -> Literal["env", "database"]:

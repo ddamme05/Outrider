@@ -86,3 +86,36 @@ def test_key_rotation_decrypts_old(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_validate_passes_on_good_key(_key: str) -> None:
     validate_credential_enc_key()  # no raise
+
+
+# ── #070 dedicated-key: the GitHub key must be DISTINCT from Slack's ──────────
+
+
+def test_reused_slack_key_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    key = Fernet.generate_key().decode("ascii")
+    monkeypatch.setenv(CREDENTIAL_ENC_KEY_ENV, key)
+    monkeypatch.setenv("OUTRIDER_TOKEN_ENC_KEY", key)  # SAME key — #070 requires distinct
+    with pytest.raises(CredentialCryptoError, match="reuses a key"):
+        validate_credential_enc_key()
+
+
+def test_overlapping_multifernet_key_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reuse detection is per-key across the comma-separated sets, not whole-string equality."""
+    shared = Fernet.generate_key().decode("ascii")
+    other = Fernet.generate_key().decode("ascii")
+    monkeypatch.setenv(CREDENTIAL_ENC_KEY_ENV, f"{other},{shared}")
+    monkeypatch.setenv("OUTRIDER_TOKEN_ENC_KEY", shared)
+    with pytest.raises(CredentialCryptoError, match="reuses a key"):
+        validate_credential_enc_key()
+
+
+def test_distinct_slack_key_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(CREDENTIAL_ENC_KEY_ENV, Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("OUTRIDER_TOKEN_ENC_KEY", Fernet.generate_key().decode("ascii"))
+    validate_credential_enc_key()  # distinct keys → no raise
+
+
+def test_slack_key_absent_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(CREDENTIAL_ENC_KEY_ENV, Fernet.generate_key().decode("ascii"))
+    monkeypatch.delenv("OUTRIDER_TOKEN_ENC_KEY", raising=False)
+    validate_credential_enc_key()  # no Slack key configured → nothing to conflict with
