@@ -18,10 +18,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from outrider.api.lifespan import _default_engine_factory
+from outrider.api.lifespan import _default_engine_factory, _resolve_checkpoint_database_url
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+_APP_URL = "postgresql+psycopg://user:pw@app-db:5432/app"
+_CKPT_URL = "postgresql+psycopg://user:pw@ckpt-db:5432/ckpt"
 
 
 @pytest.fixture
@@ -103,3 +106,56 @@ def test_default_engine_factory_rejects_completely_unrelated_scheme(
     os.environ["DATABASE_URL"] = "sqlite:///tmp/foo.db"
     with pytest.raises(RuntimeError, match="async driver"):
         _default_engine_factory()
+
+
+# ---------------------------------------------------------------------------
+# DECISIONS.md#068 — CHECKPOINT_DATABASE_URL is optional with a DATABASE_URL
+# fallback; the runtime consumes it. Four behaviors, per the decision.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def clean_checkpoint_env() -> Iterator[None]:
+    """Save/restore CHECKPOINT_DATABASE_URL + DATABASE_URL around each test."""
+    originals = {k: os.environ.get(k) for k in ("CHECKPOINT_DATABASE_URL", "DATABASE_URL")}
+    try:
+        yield
+    finally:
+        for k, v in originals.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_resolve_checkpoint_url_uses_explicit_value(clean_checkpoint_env: None) -> None:
+    """(1) An explicit valid CHECKPOINT_DATABASE_URL is used verbatim."""
+    os.environ["DATABASE_URL"] = _APP_URL
+    os.environ["CHECKPOINT_DATABASE_URL"] = _CKPT_URL
+    assert _resolve_checkpoint_database_url() == _CKPT_URL
+
+
+def test_resolve_checkpoint_url_absent_falls_back_to_database_url(
+    clean_checkpoint_env: None,
+) -> None:
+    """(2) Absent CHECKPOINT_DATABASE_URL falls back to DATABASE_URL."""
+    os.environ.pop("CHECKPOINT_DATABASE_URL", None)
+    os.environ["DATABASE_URL"] = _APP_URL
+    assert _resolve_checkpoint_database_url() == _APP_URL
+
+
+def test_resolve_checkpoint_url_explicitly_empty_fails(clean_checkpoint_env: None) -> None:
+    """(3) An explicitly-set-but-empty value fails loud (no silent fallback)."""
+    os.environ["DATABASE_URL"] = _APP_URL
+    os.environ["CHECKPOINT_DATABASE_URL"] = "   "
+    with pytest.raises(RuntimeError, match="set but empty"):
+        _resolve_checkpoint_database_url()
+
+
+def test_resolve_checkpoint_url_malformed_scheme_fails(clean_checkpoint_env: None) -> None:
+    """(4) A wrong-scheme value fails loud, validated independently of DATABASE_URL."""
+    os.environ["DATABASE_URL"] = _APP_URL
+    # bare postgresql:// resolves to sync psycopg2 — wrong scheme for the checkpointer.
+    os.environ["CHECKPOINT_DATABASE_URL"] = "postgresql://user:pw@ckpt-db:5432/ckpt"
+    with pytest.raises(RuntimeError, match="canonical async driver"):
+        _resolve_checkpoint_database_url()
