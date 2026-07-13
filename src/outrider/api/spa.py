@@ -74,10 +74,18 @@ def resolve_spa_dist_dir(env: Mapping[str, str] | None = None) -> Path | None:
             f"leave it unset for an API-only image. Any other value is a configuration error."
         )
     dist = Path(env.get(_DIST_DIR_ENV, _DEFAULT_DIST_DIR))
-    if not (dist / "index.html").is_file():
+    index = dist / "index.html"
+    if not index.is_file():
         raise RuntimeError(
-            f"{_SERVE_SPA_ENV}=1 but no built dashboard at {dist / 'index.html'}. The "
-            f"production image must bake the Vite build; a missing dist is a broken build."
+            f"{_SERVE_SPA_ENV}=1 but no built dashboard at {index}. The production image must "
+            f"bake the Vite build; a missing dist is a broken build."
+        )
+    # Defense-in-depth: index.html is served on EVERY HTML route (the history fallback serves it
+    # directly, not via _safe_static_file), so verify it resolves INSIDE dist here — a symlinked
+    # index.html escaping dist would otherwise leak a host file on every navigation. Fail startup.
+    if _safe_static_file(dist, "index.html") is None:
+        raise RuntimeError(
+            f"{_SERVE_SPA_ENV}=1 but {index} resolves outside {dist} (symlink escape); refusing."
         )
     return dist
 

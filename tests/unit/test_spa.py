@@ -67,6 +67,18 @@ def test_serve_spa_one_without_build_fails(tmp_path: Path) -> None:
         resolve_spa_dist_dir(env=_env(tmp_path))
 
 
+def test_serve_spa_rejects_index_symlink_escape(tmp_path: Path) -> None:
+    """A symlinked index.html escaping dist fails startup — the app shell is served on EVERY
+    HTML route (bypassing _safe_static_file), so a symlink escape would leak a host file."""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    secret = tmp_path / "outside_index.html"
+    secret.write_text("<html>SECRET OUTSIDE DIST</html>")
+    (dist / "index.html").symlink_to(secret)
+    with pytest.raises(RuntimeError, match="symlink escape"):
+        resolve_spa_dist_dir(env=_env(dist))
+
+
 @pytest.mark.parametrize("bad", ["0", "", "true", "yes", "1 ", " 1"])
 def test_serve_spa_invalid_value_fails(bad: str, tmp_path: Path) -> None:
     """Any present-but-not-`1` value is a configuration error — fail startup, never
