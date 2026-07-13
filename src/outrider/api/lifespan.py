@@ -340,12 +340,43 @@ async def _cancel_task(task: asyncio.Task[None] | None) -> None:
         await task
 
 
-def _default_checkpointer_factory() -> AbstractAsyncContextManager[Any]:
-    """Production checkpointer: AsyncPostgresSaver bound to DATABASE_URL.
+def _resolve_checkpoint_database_url() -> str:
+    """Resolve the LangGraph checkpoint connection URL. See DECISIONS.md#068.
 
-    `AsyncPostgresSaver.from_conn_string` expects a bare psycopg URL.
-    SQLAlchemy's `postgresql+psycopg://` driver-suffix is rejected by
-    psycopg's URL parser, so the suffix is stripped.
+    `CHECKPOINT_DATABASE_URL` is OPTIONAL: when present and non-empty it is used;
+    when absent it falls back to `DATABASE_URL`. An explicitly-set but empty or
+    wrong-scheme value FAILS LOUD at startup — a set-but-broken value is operator
+    error, not intent to use the default. Its `postgresql+psycopg://` scheme is
+    validated independently, the same check `DATABASE_URL` gets in the engine factory.
+    """
+    raw = os.environ.get("CHECKPOINT_DATABASE_URL")
+    if raw is None:
+        # Absent → fall back to DATABASE_URL (its scheme is validated by the engine
+        # factory, which runs before this at startup).
+        return os.environ["DATABASE_URL"]
+    stripped = raw.strip()
+    if not stripped:
+        raise RuntimeError(
+            "CHECKPOINT_DATABASE_URL is set but empty. Unset it to fall back to "
+            "DATABASE_URL, or set a valid 'postgresql+psycopg://' URL. Per DECISIONS.md#068 "
+            "an explicitly-set-but-broken value fails loud rather than silently falling back."
+        )
+    if not stripped.startswith("postgresql+psycopg://"):
+        raise RuntimeError(
+            "CHECKPOINT_DATABASE_URL must use the canonical async driver scheme "
+            "'postgresql+psycopg://' (psycopg3 async), matching DATABASE_URL. Unset it to "
+            "fall back to DATABASE_URL. See DECISIONS.md#068 / #001."
+        )
+    return stripped
+
+
+def _default_checkpointer_factory() -> AbstractAsyncContextManager[Any]:
+    """Production checkpointer: AsyncPostgresSaver on the checkpoint DB.
+
+    The connection URL is `CHECKPOINT_DATABASE_URL` when set, else `DATABASE_URL`
+    (per DECISIONS.md#068; resolved by `_resolve_checkpoint_database_url`).
+    `AsyncPostgresSaver.from_conn_string` expects a bare psycopg URL, so
+    SQLAlchemy's `postgresql+psycopg://` driver-suffix is stripped.
 
     Returns the async context manager unentered — the lifespan body
     pushes it onto its `AsyncExitStack` and calls `.setup()` after
@@ -355,7 +386,10 @@ def _default_checkpointer_factory() -> AbstractAsyncContextManager[Any]:
 
     from outrider.agent.checkpoint_serde import build_checkpoint_serde  # noqa: PLC0415
 
-    checkpoint_url = os.environ["DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://", 1)
+    # See DECISIONS.md#068: CHECKPOINT_DATABASE_URL when present, else DATABASE_URL.
+    checkpoint_url = _resolve_checkpoint_database_url().replace(
+        "postgresql+psycopg://", "postgresql://", 1
+    )
     # FUP-220: register Outrider's state types so resume/replay survive strict-msgpack.
     return AsyncPostgresSaver.from_conn_string(checkpoint_url, serde=build_checkpoint_serde())
 
