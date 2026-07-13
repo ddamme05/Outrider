@@ -104,12 +104,30 @@ async def test_round_trip_decrypts(
 async def test_is_configured_is_status_not_row(
     session_factory: async_sessionmaker[AsyncSession], _enc_key: str
 ) -> None:
-    """An active row present but status NOT yet CONFIGURED → is_configured() is False (the state
-    machine is authoritative; a row without an activation transition is not 'configured')."""
+    """An active row present but status NOT yet CONFIGURED → is_configured() is False AND current()
+    FAILS CLOSED (the state machine is authoritative; a row inserted-but-not-activated is not usable
+    — credential exposure is gated on CONFIGURED, not on row presence)."""
     await _insert_active(session_factory)
     # status left at the seeded UNCONFIGURED
     provider = DatabaseCredentialProvider(session_factory)
     assert await provider.is_configured() is False
+    with pytest.raises(GitHubUnconfiguredError):
+        await provider.current()
+
+
+async def test_missing_singleton_fails_loud(
+    session_factory: async_sessionmaker[AsyncSession], _enc_key: str
+) -> None:
+    """The migration always seeds setup_state (id=1); if it's absent that is integrity corruption,
+    NOT 'unconfigured' — both methods raise (fail loud) rather than silently reopen onboarding over
+    an intended configuration."""
+    async with session_factory() as session, session.begin():
+        await session.execute(text("DELETE FROM setup_state WHERE id = 1"))
+    provider = DatabaseCredentialProvider(session_factory)
+    with pytest.raises(GitHubCredentialIntegrityError):
+        await provider.is_configured()
+    with pytest.raises(GitHubCredentialIntegrityError):
+        await provider.current()
 
 
 async def test_wrong_key_fails_closed(
@@ -126,6 +144,41 @@ async def test_wrong_key_fails_closed(
     assert await provider.is_configured() is True
     with pytest.raises(CredentialCryptoError):
         await provider.current()
+
+
+@pytest.mark.parametrize("status", ["AWAITING_CALLBACK", "CONVERTING", "ORPHANED"])
+async def test_non_configured_status_with_active_row_fails_closed(
+    session_factory: async_sessionmaker[AsyncSession], _enc_key: str, status: str
+) -> None:
+    """The gate is an ALLOWLIST (`status == CONFIGURED`), not a denylist (`!= UNCONFIGURED`): a
+    present, decryptable active row never exposes credentials while status is ANY non-CONFIGURED
+    value — the transient onboarding states (AWAITING_CALLBACK, CONVERTING) and the terminal error
+    state (ORPHANED). Without this, a `!= "UNCONFIGURED"` inversion of the gate leaks the App key +
+    webhook secret over a mid-onboarding or orphaned instance and the rest of the suite stays green
+    (every other current() test uses CONFIGURED or UNCONFIGURED)."""
+    await _insert_active(session_factory)
+    await _set_status(session_factory, status)
+    provider = DatabaseCredentialProvider(session_factory)
+    assert await provider.is_configured() is False
+    with pytest.raises(GitHubUnconfiguredError):
+        await provider.current()
+
+
+async def test_missing_singleton_with_active_row_fails_closed(
+    session_factory: async_sessionmaker[AsyncSession], _enc_key: str
+) -> None:
+    """MISSING singleton WITH a decryptable active row present: the integrity check runs BEFORE the
+    row read + decrypt, so current() raises the integrity error and NEVER exposes the credentials.
+    The 0-row variant (test_missing_singleton_fails_loud) can't prove this ordering — it raises
+    regardless of order; this cell locks singleton-check-before-decrypt against a future reorder."""
+    await _insert_active(session_factory)
+    async with session_factory() as session, session.begin():
+        await session.execute(text("DELETE FROM setup_state WHERE id = 1"))
+    provider = DatabaseCredentialProvider(session_factory)
+    with pytest.raises(GitHubCredentialIntegrityError):
+        await provider.current()
+    with pytest.raises(GitHubCredentialIntegrityError):
+        await provider.is_configured()
 
 
 async def test_multiple_active_fails_closed(
@@ -148,6 +201,9 @@ async def test_multiple_active_fails_closed(
                 ),
                 {"v": app_id, "a": app_id, "s": f"app-{app_id}", "p": ct_pem, "w": ct_wh},
             )
+    # CONFIGURED so current() passes the status gate and reaches the multiple-active integrity guard
+    # (the realistic scenario: an onboarded instance whose credential rows were then tampered).
+    await _set_status(session_factory, "CONFIGURED")
     provider = DatabaseCredentialProvider(session_factory)
     with pytest.raises(GitHubCredentialIntegrityError):
         await provider.current()

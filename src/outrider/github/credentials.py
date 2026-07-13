@@ -134,10 +134,31 @@ class DatabaseCredentialProvider:
             )
         return rows[0]
 
+    async def _setup_status(self, session: AsyncSession) -> str:
+        # The single AUTHORITATIVE state read used by BOTH current() and is_configured(). The
+        # migration always seeds the singleton (id=1), so a MISSING row is integrity corruption —
+        # raise (fail loud) rather than treat it as UNCONFIGURED, which could reopen onboarding over
+        # an intended configuration.
+        result = await session.execute(select(SetupState.status).where(SetupState.id == 1))
+        status = result.scalar_one_or_none()
+        if status is None:
+            raise GitHubCredentialIntegrityError(
+                "setup_state singleton (id=1) is missing — the migration seeds it, so its absence "
+                "is integrity corruption; refusing to treat it as unconfigured."
+            )
+        return status
+
     async def current(self) -> GitHubAppCredentials:
-        # Build the snapshot INSIDE the session context — decrypt while the row is still attached,
-        # so no detached-instance access can arise from a future expire-on-commit / deferred column.
+        # Gate credential exposure on the authoritative state (DECISIONS.md#070): a consumer must
+        # fail closed while not CONFIGURED even if an active row exists (e.g. inserted but not yet
+        # activated). Then read the single active row and decrypt INSIDE the session context (so no
+        # detached-instance access can arise from a future expire-on-commit / deferred column).
         async with self.session_factory() as session:
+            if await self._setup_status(session) != "CONFIGURED":
+                raise GitHubUnconfiguredError(
+                    "GitHub App is not in CONFIGURED state — the instance is not onboarded "
+                    "(POST /setup). database credential mode never falls back to env."
+                )
             row = await self._active_row(session)
             return GitHubAppCredentials(
                 app_id=row.app_id,
@@ -148,13 +169,11 @@ class DatabaseCredentialProvider:
             )
 
     async def is_configured(self) -> bool:
-        # Authoritative source is the state machine (DECISIONS.md#070): the row-present shortcut
-        # cannot distinguish never-configured from configured-then-broken. `CONFIGURED` is set only
-        # by activation (atomically with the credential row); a broken row in CONFIGURED still reads
-        # True here and fails closed at `current()` (decrypt raises), never a silent unconfigured.
+        # Authoritative: the state machine owns "configured" (DECISIONS.md#070). A broken row in
+        # CONFIGURED still reads True here and fails closed at current() (decrypt raises); a missing
+        # singleton raises (via _setup_status), never a silent False.
         async with self.session_factory() as session:
-            result = await session.execute(select(SetupState.status).where(SetupState.id == 1))
-            return result.scalar_one_or_none() == "CONFIGURED"
+            return await self._setup_status(session) == "CONFIGURED"
 
 
 def resolve_credential_source(env: Mapping[str, str] | None = None) -> Literal["env", "database"]:
