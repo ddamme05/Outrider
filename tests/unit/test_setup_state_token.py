@@ -128,19 +128,34 @@ def test_validate_passes_on_good_secret(_secret: str) -> None:
 @pytest.mark.parametrize(
     "sibling",
     [
-        "OUTRIDER_SLACK_STATE_SECRET",
         "OUTRIDER_ADMIN_API_KEY",
-        "OUTRIDER_GITHUB_WEBHOOK_SECRET",
+        "OUTRIDER_AGENT_API_KEY",
+        "OUTRIDER_GITHUB_APP_PRIVATE_KEY",
         "OUTRIDER_GITHUB_CREDENTIAL_ENC_KEY",
+        "OUTRIDER_GITHUB_WEBHOOK_SECRET",
+        "OUTRIDER_SLACK_CLIENT_SECRET",
+        "OUTRIDER_SLACK_STATE_SECRET",
         "OUTRIDER_TOKEN_ENC_KEY",
+        "OUTRIDER_TRUNCATION_HMAC_SECRET",
     ],
 )
 def test_reused_sibling_secret_rejected(monkeypatch: pytest.MonkeyPatch, sibling: str) -> None:
-    """#070 dedicated-secret: the setup state secret must be DISTINCT from every sibling root."""
+    """#070 dedicated-secret: the setup state secret must be DISTINCT from EVERY sibling root."""
     shared = secrets.token_urlsafe(32)
     monkeypatch.setenv(SETUP_STATE_SECRET_ENV, shared)
     monkeypatch.setenv(sibling, shared)
-    with pytest.raises(SetupStateError, match="reuses the value"):
+    with pytest.raises(SetupStateError, match="reuses a value"):
+        validate_setup_state_secret()
+
+
+def test_reused_multifernet_component_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The enc keys are comma-separated MultiFernet sets — reuse of the setup secret as ONE key
+    inside such a set must be caught componentwise, not just by whole-string equality."""
+    shared = secrets.token_urlsafe(32)
+    other = secrets.token_urlsafe(32)
+    monkeypatch.setenv(SETUP_STATE_SECRET_ENV, shared)
+    monkeypatch.setenv("OUTRIDER_GITHUB_CREDENTIAL_ENC_KEY", f"{other},{shared}")
+    with pytest.raises(SetupStateError, match="reuses a value"):
         validate_setup_state_secret()
 
 

@@ -8,6 +8,7 @@ onboarding spine, so its DB-level concurrency + recovery behavior is the load-be
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -301,3 +302,55 @@ async def test_missing_singleton_fails_loud(machine: SetupStateMachine, session_
     _, h = new_nonce()
     with pytest.raises(SetupIntegrityError):
         await _begin(machine, h)  # CAS matches no row → singleton missing → integrity, not conflict
+    # orphan() / recover_stale_converting() must ALSO fail loud, not silently return False (a lost
+    # singleton is corruption, not an ordinary no-op).
+    with pytest.raises(SetupIntegrityError):
+        await machine.orphan()
+    with pytest.raises(SetupIntegrityError):
+        await machine.recover_stale_converting()
+
+
+# ── Genuine CAS/index races (overlapping transactions, one winner) ────────────
+
+
+async def test_begin_setup_race_one_winner(machine: SetupStateMachine, session_factory) -> None:
+    """Two genuinely concurrent Starts (asyncio.gather, overlapping transactions) race on the
+    UNCONFIGURED → AWAITING_CALLBACK CAS. Postgres row-locking must elect EXACTLY one winner; the
+    other raises SetupConflictError; exactly one nonce survives (not a sequential wrong-state)."""
+    _, h1 = new_nonce()
+    _, h2 = new_nonce()
+    results = await asyncio.gather(_begin(machine, h1), _begin(machine, h2), return_exceptions=True)
+    errors = [r for r in results if isinstance(r, BaseException)]
+    assert len(errors) == 1, f"expected exactly one loser, got {results}"
+    assert isinstance(errors[0], SetupConflictError)
+    assert await _status(session_factory) == "AWAITING_CALLBACK"
+    assert await _nonce_count(session_factory) == 1
+
+
+async def test_mark_configured_race_one_winner(machine: SetupStateMachine, session_factory) -> None:
+    """Two concurrent activates from CONVERTING race on the single-active unique index + the
+    CONVERTING → CONFIGURED CAS. Exactly one wins; the other raises SetupConflictError; exactly one
+    active credential row exists."""
+    await _set_converting(session_factory, started_at=datetime.now(UTC))
+
+    async def _activate(app_id: int) -> None:
+        await machine.mark_configured(
+            app_id=app_id,
+            slug=f"app-{app_id}",
+            client_id=None,
+            pem_ciphertext=b"pem",
+            webhook_secret_ciphertext=b"wh",
+        )
+
+    results = await asyncio.gather(_activate(1), _activate(2), return_exceptions=True)
+    errors = [r for r in results if isinstance(r, BaseException)]
+    assert len(errors) == 1, f"expected exactly one loser, got {results}"
+    assert isinstance(errors[0], SetupConflictError)
+    assert await _status(session_factory) == "CONFIGURED"
+    async with session_factory() as session:
+        active = (
+            await session.execute(
+                text("SELECT count(*) FROM github_app_credentials WHERE is_active")
+            )
+        ).scalar_one()
+    assert active == 1

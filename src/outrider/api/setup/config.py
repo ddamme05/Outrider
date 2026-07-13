@@ -44,10 +44,15 @@ class SetupSettings(BaseSettings):
     @field_validator("base_url", mode="after")
     @classmethod
     def _validate_base_url(cls, v: str) -> str:
-        """A well-formed http(s) base URL with a host and no path/query/fragment — every manifest
-        URL is derived from it. Returns the canonical form (trailing slash stripped). Production is
-        HTTPS (DECISIONS.md#070 bootstrap security); http is permitted for local/tunnel testing, the
-        same shape gate `notify` uses for its redirect URI."""
+        """A well-formed **HTTPS** base URL with a host and no path/query/fragment — every manifest
+        URL (callback, redirect, webhook) derives from it, and GitHub appends the `?code=&state=`
+        that converts into the App private key + webhook secret, so a plaintext *public* callback
+        would leak credentials (DECISIONS.md#070 bootstrap security; #069 production TLS).
+
+        Narrow, explicit dev exception: `http://` is allowed ONLY for a loopback host (`localhost` /
+        `127.0.0.1` / `::1`). GitHub can't reach loopback, so this is local testing with a simulated
+        callback; a real install uses an HTTPS tunnel/domain. Returns the canonical form (trailing
+        slash stripped)."""
         stripped = v.strip()
         if not stripped:
             raise ValueError("OUTRIDER_PUBLIC_BASE_URL is empty or whitespace-only.")
@@ -55,6 +60,13 @@ class SetupSettings(BaseSettings):
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ValueError(
                 f"OUTRIDER_PUBLIC_BASE_URL must be an http(s) URL with a host; got {v!r}."
+            )
+        is_loopback = parsed.hostname in ("localhost", "127.0.0.1", "::1")
+        if parsed.scheme == "http" and not is_loopback:
+            raise ValueError(
+                "OUTRIDER_PUBLIC_BASE_URL must be HTTPS — GitHub appends the code/state to it "
+                "and converts it into the App private key + webhook secret, so a plaintext public "
+                f"callback leaks credentials. http:// is allowed only for loopback; got {v!r}."
             )
         if parsed.path not in ("", "/") or parsed.query or parsed.params or parsed.fragment:
             raise ValueError(
