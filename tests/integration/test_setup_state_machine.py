@@ -310,47 +310,81 @@ async def test_missing_singleton_fails_loud(machine: SetupStateMachine, session_
         await machine.recover_stale_converting()
 
 
-# ── Genuine CAS/index races (overlapping transactions, one winner) ────────────
+# ── Deterministic CAS/index contention (a held lock forces the overlap, proving serialization) ──
+# asyncio.gather alone does NOT prove the two txns overlapped AT the contested operation (one task
+# can commit before the other reaches it). Here session A holds the contested lock across an open
+# transaction — a barrier that GUARANTEES the machine's op blocks on it — so the "winner"
+# outcome is a proof of Postgres serialization, not a lucky interleaving.
 
 
-async def test_begin_setup_race_one_winner(machine: SetupStateMachine, session_factory) -> None:
-    """Two genuinely concurrent Starts (asyncio.gather, overlapping transactions) race on the
-    UNCONFIGURED → AWAITING_CALLBACK CAS. Postgres row-locking must elect EXACTLY one winner; the
-    other raises SetupConflictError; exactly one nonce survives (not a sequential wrong-state)."""
-    _, h1 = new_nonce()
-    _, h2 = new_nonce()
-    results = await asyncio.gather(_begin(machine, h1), _begin(machine, h2), return_exceptions=True)
-    errors = [r for r in results if isinstance(r, BaseException)]
-    assert len(errors) == 1, f"expected exactly one loser, got {results}"
-    assert isinstance(errors[0], SetupConflictError)
-    assert await _status(session_factory) == "AWAITING_CALLBACK"
-    assert await _nonce_count(session_factory) == 1
-
-
-async def test_mark_configured_race_one_winner(machine: SetupStateMachine, session_factory) -> None:
-    """Two concurrent activates from CONVERTING race on the single-active unique index + the
-    CONVERTING → CONFIGURED CAS. Exactly one wins; the other raises SetupConflictError; exactly one
-    active credential row exists."""
-    await _set_converting(session_factory, started_at=datetime.now(UTC))
-
-    async def _activate(app_id: int) -> None:
-        await machine.mark_configured(
-            app_id=app_id,
-            slug=f"app-{app_id}",
-            client_id=None,
-            pem_ciphertext=b"pem",
-            webhook_secret_ciphertext=b"wh",
+async def test_begin_setup_cas_serializes_under_held_lock(
+    machine: SetupStateMachine, session_factory
+) -> None:
+    """Session A holds a `FOR UPDATE` lock on the singleton (a concurrent Start that reached its CAS
+    but hasn't committed), so `begin_setup` (task B) provably BLOCKS at its CAS. A then commits a
+    complete winning Start (AWAITING_CALLBACK + a live nonce, so B's expired-AWAITING repair can't
+    reset it); B unblocks, its CAS re-evaluates `WHERE status='UNCONFIGURED'`, matches nothing."""
+    _, h = new_nonce()
+    async with session_factory() as sess_a:
+        await sess_a.begin()
+        await sess_a.execute(text("SELECT 1 FROM setup_state WHERE id = 1 FOR UPDATE"))
+        task = asyncio.create_task(_begin(machine, h))
+        await asyncio.sleep(0.25)
+        assert not task.done(), (
+            "begin_setup must BLOCK on the held singleton lock (real contention)"
         )
+        await sess_a.execute(text("UPDATE setup_state SET status='AWAITING_CALLBACK' WHERE id=1"))
+        await sess_a.execute(
+            text(
+                "INSERT INTO setup_nonce (nonce_hash, expires_at) "
+                "VALUES (:h, NOW() + INTERVAL '30 min')"
+            ),
+            {"h": "winner-nonce"},
+        )
+        await sess_a.commit()  # A wins + releases the lock
+    with pytest.raises(SetupConflictError):
+        await task
+    assert await _status(session_factory) == "AWAITING_CALLBACK"
+    assert await _nonce_count(session_factory) == 1  # A's winner nonce; B (loser) inserted none
 
-    results = await asyncio.gather(_activate(1), _activate(2), return_exceptions=True)
-    errors = [r for r in results if isinstance(r, BaseException)]
-    assert len(errors) == 1, f"expected exactly one loser, got {results}"
-    assert isinstance(errors[0], SetupConflictError)
-    assert await _status(session_factory) == "CONFIGURED"
+
+async def test_mark_configured_serializes_on_held_active_index(
+    machine: SetupStateMachine, session_factory
+) -> None:
+    """Session A inserts an is_active credential and holds it uncommitted, so `mark_configured`
+    (task B) provably BLOCKS on the single-active unique index. A commits; B unblocks, its insert
+    hits the unique violation and loses — exactly one active row, and B's whole transaction (incl.
+    its CONVERTING → CONFIGURED CAS) rolls back."""
+    await _set_converting(session_factory, started_at=datetime.now(UTC))
+    async with session_factory() as sess_a:
+        await sess_a.begin()
+        await sess_a.execute(
+            text(
+                "INSERT INTO github_app_credentials "
+                "(version, app_id, slug, pem_ciphertext, webhook_secret_ciphertext, is_active) "
+                "VALUES (1, 111, 'winner', :p, :w, true)"
+            ),
+            {"p": b"x", "w": b"y"},
+        )
+        task = asyncio.create_task(
+            machine.mark_configured(
+                app_id=222,
+                slug="loser",
+                client_id=None,
+                pem_ciphertext=b"pem",
+                webhook_secret_ciphertext=b"wh",
+            )
+        )
+        await asyncio.sleep(0.25)
+        assert not task.done(), "mark_configured must BLOCK on the held single-active index"
+        await sess_a.commit()  # A's active row lands
+    with pytest.raises(SetupConflictError):
+        await task
     async with session_factory() as session:
         active = (
             await session.execute(
                 text("SELECT count(*) FROM github_app_credentials WHERE is_active")
             )
         ).scalar_one()
-    assert active == 1
+    assert active == 1  # only A's row
+    assert await _status(session_factory) == "CONVERTING"  # B lost before its CONFIGURED CAS
