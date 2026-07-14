@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 
 import {
   SetupError,
+  SetupProtocolError,
   fetchSetupStatus,
   resetSetup,
   startSetup,
@@ -27,22 +28,41 @@ import {
 //     App holding root credentials; resetting without deleting it accumulates orphaned Apps.
 //   - CONFIGURED → distinguish credentials-obtained from App-installed via the install-known flag.
 
-type Phase = "loading" | "unavailable" | "error";
+// `topology` is distinct from `error` on purpose: it means the reply did not come from the Outrider
+// API at all (an HTML shell / wrong shape), which is a deployment-topology fault, not a backend one.
+// Collapsing it into `error` produced the misleading "you can still try below" — Start fails
+// identically, so the page must say WHY rather than offer an action that cannot work.
+type Phase = "loading" | "unavailable" | "error" | "topology";
 type StatusState = SetupStatus | Phase;
+
+/**
+ * Terminate a sentence exactly once. Neither assumption holds on its own: a backend `detail` is
+ * usually unpunctuated ("setup incomplete") while our own messages sometimes end in their own
+ * punctuation ("...Is the backend running?"), so blindly appending "." yields "running?." and
+ * blindly omitting it yields "incomplete You can still try below."
+ */
+function sentence(text: string): string {
+  return /[.?!]$/.test(text) ? text : `${text}.`;
+}
 
 export function SetupGitHubApp() {
   const [state, setState] = useState<StatusState>("loading");
   const [org, setOrg] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [confirmDeleted, setConfirmDeleted] = useState(false);
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
       const s = await fetchSetupStatus();
       setState(s ?? "unavailable");
-    } catch {
-      setState("error");
+      setStatusError(null);
+    } catch (err) {
+      // Bind the error and route on TYPE. A protocol error is never a backend fault, so it must not
+      // render as one; only `SetupError` messages are surfaced (they are ours), never a raw body.
+      setState(err instanceof SetupProtocolError ? "topology" : "error");
+      setStatusError(err instanceof SetupError ? err.message : null);
     }
   }, []);
 
@@ -94,7 +114,14 @@ export function SetupGitHubApp() {
   const installed = typeof state === "object" && state.install_known;
   const inFlight = status === "AWAITING_CALLBACK" || status === "CONVERTING";
   // The Start/Retry form: a fresh instance, an in-flight one (retry re-POSTs /setup = the repair
-  // path), or a transient status-read error. NOT for ORPHANED (Start 409s until reset) or CONFIGURED.
+  // path), or a transient status-read error. NOT for ORPHANED (Start 409s until reset), CONFIGURED,
+  // or `topology` — there POST /setup would hit the same non-API peer, so offering Start would be a
+  // convincing but nonfunctional control.
+  //
+  // `error` DOES keep Start, and the distinction from `topology` is deliberate: an unreachable or
+  // erroring backend can recover between the status fetch and the click (it was starting up, the
+  // network blipped), so retrying is a real action. A peer that answered as not-the-API cannot
+  // recover by being clicked at — that needs a config change. Recoverable ⇒ offer; misconfigured ⇒ explain.
   const showStart = status === "UNCONFIGURED" || inFlight || state === "error";
   const startLabel = inFlight ? "Retry setup" : "Set up GitHub App";
 
@@ -116,8 +143,26 @@ export function SetupGitHubApp() {
             available here.
           </p>
         )}
+        {state === "topology" && (
+          <p className="error">
+            This page isn&rsquo;t reaching the Outrider API &mdash; something else answered. The
+            onboarding flow is supported only when FastAPI serves the built dashboard (
+            <code>OUTRIDER_SERVE_SPA=1</code>); the Vite dev server deliberately does not proxy{" "}
+            <code>/setup</code>, so <code>npm run dev</code> cannot run it. Starting here would fail
+            the same way.
+          </p>
+        )}
+        {/* Start STAYS available here, unlike `topology` — see `showStart`. The message may end in
+            its own punctuation, so it is rendered as its own sentence rather than spliced into one. */}
         {state === "error" && (
-          <p className="error">Couldn&rsquo;t read setup status; you can still try below.</p>
+          <p className="error">
+            {sentence(
+              statusError
+                ? `Couldn’t read setup status: ${statusError}`
+                : "Couldn’t read setup status",
+            )}{" "}
+            You can still try below.
+          </p>
         )}
         {status && (
           <p>

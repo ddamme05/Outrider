@@ -22,9 +22,28 @@ export interface SetupStartResponse {
   manifest: Record<string, unknown>;
 }
 
+/**
+ * The setup state machine's CLOSED vocabulary — mirrors `SETUP_STATUSES` in
+ * `src/outrider/db/models/setup_state.py`, which a DB CHECK constraint enforces. `router.py`
+ * annotates the field `str`, but the wire value is one of exactly these five: the UI's affordances
+ * (Start / Retry / Reset / installed) are defined only over them. A status outside this set means
+ * the client is talking to something it does not understand, so it fails loudly rather than render
+ * a blank, actionless page — and a future backend state must be taught here before the client can
+ * drive it.
+ */
+export const SETUP_STATUSES = [
+  "UNCONFIGURED",
+  "AWAITING_CALLBACK",
+  "CONVERTING",
+  "CONFIGURED",
+  "ORPHANED",
+] as const;
+
+export type SetupStatusValue = (typeof SETUP_STATUSES)[number];
+
 /** Response of `GET /setup/status` — the state-machine status + configured/install-known flags. */
 export interface SetupStatus {
-  status: string;
+  status: SetupStatusValue;
   /** Credentials obtained (`status === "CONFIGURED"`). */
   configured: boolean;
   /** Outrider has seen the App installed (an active installation) — distinct from `configured`. */
@@ -33,6 +52,71 @@ export interface SetupStatus {
 
 /** Typed error for the onboarding flow so callers can distinguish it from generic failures. */
 export class SetupError extends Error {}
+
+/**
+ * The peer answered, but not as the Outrider API: unparseable body or the wrong shape. In practice
+ * this is a TOPOLOGY error, not a backend fault — the SPA dev server (or a proxy with no `/setup`
+ * rule) answered with its own HTML shell. `/setup*` mounts only in `database` credential mode and is
+ * deliberately NOT proxied by the Vite dev server, so the full onboarding flow is supported ONLY
+ * when FastAPI serves the built SPA (`OUTRIDER_SERVE_SPA=1`). See `dashboard/vite.config.ts`.
+ */
+export class SetupProtocolError extends SetupError {}
+
+/** The request never reached a server at all (connection refused, DNS, offline). */
+export class SetupUnreachableError extends SetupError {}
+
+/** Runtime shape guard — `as` casts are erased at compile time and cannot validate a wire payload. */
+function isSetupStatus(v: unknown): v is SetupStatus {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.status === "string" &&
+    (SETUP_STATUSES as readonly string[]).includes(o.status) &&
+    typeof o.configured === "boolean" &&
+    typeof o.install_known === "boolean"
+  );
+}
+
+function isSetupStartResponse(v: unknown): v is SetupStartResponse {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.target_url === "string" &&
+    typeof o.manifest === "object" &&
+    o.manifest !== null &&
+    !Array.isArray(o.manifest)
+  );
+}
+
+/**
+ * Parse a success body as JSON, or raise `SetupProtocolError`. NEVER surfaces peer-supplied content
+ * — not the body, and not headers either: both are peer-controlled and unbounded, and neither is
+ * signal for the operator. The `content-type` is read ONLY to pick between two fixed messages.
+ */
+async function _json(resp: Response, what: string): Promise<unknown> {
+  try {
+    return await resp.json();
+  } catch {
+    const isHtml = (resp.headers.get("content-type") ?? "").includes("text/html");
+    throw new SetupProtocolError(
+      isHtml
+        ? `${what} returned an HTML page instead of JSON. The request reached a static/dev server ` +
+          `rather than the Outrider API — onboarding requires FastAPI serving the built SPA.`
+        : `${what} returned a body that is not valid JSON, so the peer is not the Outrider API.`,
+    );
+  }
+}
+
+/** Run `fetch`, converting a transport-level rejection into a typed `SetupUnreachableError`. */
+async function _fetch(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch {
+    throw new SetupUnreachableError(
+      "couldn't reach the Outrider API (no response). Is the backend running?",
+    );
+  }
+}
 
 /** Build request headers with the admin bearer token attached (same-origin, per authMiddleware). */
 function authHeaders(extra?: Record<string, string>): Headers {
@@ -60,10 +144,16 @@ async function _detail(resp: Response): Promise<string> {
  * this instance uses `env` credentials and App-Manifest onboarding does not apply.
  */
 export async function fetchSetupStatus(): Promise<SetupStatus | null> {
-  const resp = await fetch(`${baseUrl}/setup/status`);
+  const resp = await _fetch(`${baseUrl}/setup/status`);
+  // 404 is the ACCEPTED production contract: the router is absent => `env` credential mode. Kept
+  // ahead of every other branch, and never conflated with the protocol errors below.
   if (resp.status === 404) return null;
   if (!resp.ok) throw new SetupError(await _detail(resp));
-  return (await resp.json()) as SetupStatus;
+  const body = await _json(resp, "GET /setup/status");
+  if (!isSetupStatus(body)) {
+    throw new SetupProtocolError("GET /setup/status returned JSON of an unexpected shape.");
+  }
+  return body;
 }
 
 /**
@@ -72,14 +162,18 @@ export async function fetchSetupStatus(): Promise<SetupStatus | null> {
  * in the GitHub-bound form.
  */
 export async function startSetup(org: string): Promise<SetupStartResponse> {
-  const resp = await fetch(`${baseUrl}/setup`, {
+  const resp = await _fetch(`${baseUrl}/setup`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ org }),
   });
   if (resp.status === 401) clearToken(); // mirror authMiddleware: stale key → the token-gate re-prompts
   if (!resp.ok) throw new SetupError(await _detail(resp));
-  return (await resp.json()) as SetupStartResponse;
+  const body = await _json(resp, "POST /setup");
+  if (!isSetupStartResponse(body)) {
+    throw new SetupProtocolError("POST /setup returned JSON of an unexpected shape.");
+  }
+  return body;
 }
 
 /**
@@ -87,10 +181,14 @@ export async function startSetup(org: string): Promise<SetupStartResponse> {
  * retried. Returns the new status. 409 if the instance is not in a resettable (ORPHANED) state.
  */
 export async function resetSetup(): Promise<SetupStatus> {
-  const resp = await fetch(`${baseUrl}/setup/reset`, { method: "POST", headers: authHeaders() });
+  const resp = await _fetch(`${baseUrl}/setup/reset`, { method: "POST", headers: authHeaders() });
   if (resp.status === 401) clearToken();
   if (!resp.ok) throw new SetupError(await _detail(resp));
-  return (await resp.json()) as SetupStatus;
+  const body = await _json(resp, "POST /setup/reset");
+  if (!isSetupStatus(body)) {
+    throw new SetupProtocolError("POST /setup/reset returned JSON of an unexpected shape.");
+  }
+  return body;
 }
 
 /**

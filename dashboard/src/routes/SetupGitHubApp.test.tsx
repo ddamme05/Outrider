@@ -174,3 +174,103 @@ test("expired AWAITING_CALLBACK → Retry is repaired by the backend and proceed
 
   await waitFor(() => expect(submitSpy).toHaveBeenCalledTimes(1));
 });
+
+// ── Non-API responses (FUP-230) ──────────────────────────────────────────────────────────────────
+// The /setup* routes mount only in `database` mode and are deliberately NOT proxied by the Vite dev
+// server, so the onboarding flow runs ONLY under FastAPI-serves-the-built-SPA. Every way that
+// contract can be violated must fail LOUDLY and must not offer Start (which would fail identically).
+// Regression origin: the dev server answered GET /setup/status with its own index.html; the client
+// took `resp.ok` → `resp.json()` → SyntaxError → a bare `catch {}` → "you can still try below".
+
+test("HTML instead of JSON (wrong topology) reports topology, not a backend error", async () => {
+  server.use(
+    http.get(STATUS, () =>
+      new HttpResponse("<!doctype html><html><body>app shell</body></html>", {
+        headers: { "content-type": "text/html" },
+      }),
+    ),
+  );
+
+  render(<SetupGitHubApp />);
+
+  expect(await screen.findByText(/isn.t reaching the Outrider API/i)).toBeInTheDocument();
+  // The decisive assertion: Start must NOT be offered — POST /setup would hit the same non-API peer.
+  expect(screen.queryByRole("button", { name: /set up github app/i })).toBeNull();
+  // The HTML body must never be rendered back to the operator.
+  expect(screen.queryByText(/app shell/)).toBeNull();
+});
+
+test("200 with unparseable JSON reports topology rather than crashing", async () => {
+  server.use(
+    http.get(STATUS, () =>
+      new HttpResponse("{ not: valid json", { headers: { "content-type": "application/json" } }),
+    ),
+  );
+
+  render(<SetupGitHubApp />);
+
+  expect(await screen.findByText(/isn.t reaching the Outrider API/i)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /set up github app/i })).toBeNull();
+});
+
+test("200 with valid JSON of the WRONG SHAPE is rejected (the `as` cast cannot catch this)", async () => {
+  // `return (await resp.json()) as SetupStatus` is erased at compile time, so without a runtime
+  // guard this payload reaches the UI and renders `undefined` state. NOTE: no Start-button
+  // assertion here — an undefined status already hides Start, so that assertion would survive
+  // reverting the guard and prove nothing. The rejection itself is pinned at the API boundary in
+  // `api/setup.test.ts`; this test's job is only that the operator sees the protocol-error copy.
+  server.use(http.get(STATUS, () => HttpResponse.json({ unexpected: "payload" })));
+
+  render(<SetupGitHubApp />);
+
+  expect(await screen.findByText(/isn.t reaching the Outrider API/i)).toBeInTheDocument();
+});
+
+test("an unreachable backend KEEPS Start — it can recover; a non-API peer cannot", async () => {
+  // The deliberate asymmetry with `topology`: an absent backend may come up between the status
+  // fetch and the click, so retrying is a real action worth offering. Pinned so a future tidy-up
+  // doesn't "consistently" hide Start here too.
+  server.use(http.get(STATUS, () => HttpResponse.error()));
+
+  render(<SetupGitHubApp />);
+
+  expect(await screen.findByText(/couldn.t reach the Outrider API/i)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /set up github app/i })).toBeInTheDocument();
+});
+
+test("transport failure reports a backend error, distinct from the topology error", async () => {
+  server.use(http.get(STATUS, () => HttpResponse.error()));
+
+  render(<SetupGitHubApp />);
+
+  // Unreachable is NOT a topology fault — the peer never answered, so the copy must differ.
+  expect(await screen.findByText(/couldn.t reach the Outrider API/i)).toBeInTheDocument();
+  expect(screen.queryByText(/isn.t reaching the Outrider API/i)).toBeNull();
+});
+
+test("non-404 HTTP failure surfaces the backend detail, not the raw body", async () => {
+  server.use(http.get(STATUS, () => HttpResponse.json({ detail: "setup incomplete" }, { status: 503 })));
+
+  render(<SetupGitHubApp />);
+
+  expect(await screen.findByText(/setup incomplete/i)).toBeInTheDocument();
+  expect(screen.queryByText(/isn.t reaching the Outrider API/i)).toBeNull();
+});
+
+test.each([
+  // Our own message ends in "?" → must NOT become "running?. You can"
+  ["unreachable (message ends in punctuation)", HttpResponse.error(), /running\? You can still try below\./],
+  // A backend detail ends unpunctuated → must NOT become "incomplete You can"
+  [
+    "backend detail (unpunctuated)",
+    HttpResponse.json({ detail: "setup incomplete" }, { status: 503 }),
+    /setup incomplete\. You can still try below\./,
+  ],
+])("error copy terminates exactly once — %s", async (_label, response, expected) => {
+  server.use(http.get(STATUS, () => response));
+
+  render(<SetupGitHubApp />);
+
+  const p = await screen.findByText(expected);
+  expect(p.textContent).not.toMatch(/[.?!]\./); // no doubled terminator
+});
