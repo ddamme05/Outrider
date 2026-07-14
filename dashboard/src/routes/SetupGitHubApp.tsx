@@ -16,9 +16,16 @@ import {
 // refuses any target that is not exactly the https://github.com origin and sets field values via the
 // DOM `.value` (never innerHTML). The whole page sits behind the dashboard's admin TokenGate.
 //
-// The UI is state-machine-aware (#070 recovery states): only UNCONFIGURED shows the Start form;
-// ORPHANED offers Reset; in-flight states offer Refresh (a fresh Start would 409); and CONFIGURED
-// distinguishes credentials-obtained from App-installed via the install-known flag.
+// The UI is state-machine-aware (#070 recovery states):
+//   - UNCONFIGURED → Start.
+//   - AWAITING_CALLBACK / CONVERTING → RETRY, which re-POSTs /setup — that is the actual repair
+//     path (begin_setup resets an expired AWAITING_CALLBACK and orphans a stale CONVERTING; a plain
+//     status refresh would NOT, so it would be a dead end). A genuinely in-flight attempt returns a
+//     409 with a clear message.
+//   - ORPHANED → Reset, GATED on the operator confirming they deleted the partial App on GitHub
+//     first (spec F4): GitHub creates the App before redirecting, so a failed attempt leaves a real
+//     App holding root credentials; resetting without deleting it accumulates orphaned Apps.
+//   - CONFIGURED → distinguish credentials-obtained from App-installed via the install-known flag.
 
 type Phase = "loading" | "unavailable" | "error";
 type StatusState = SetupStatus | Phase;
@@ -28,6 +35,7 @@ export function SetupGitHubApp() {
   const [org, setOrg] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDeleted, setConfirmDeleted] = useState(false);
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
@@ -67,6 +75,7 @@ export function SetupGitHubApp() {
     setBusy(true);
     try {
       await resetSetup();
+      setConfirmDeleted(false);
       await refresh();
     } catch (err) {
       setError(err instanceof SetupError ? err.message : "Reset failed.");
@@ -78,8 +87,11 @@ export function SetupGitHubApp() {
   const status = typeof state === "object" ? state.status : null;
   const configured = typeof state === "object" && state.configured;
   const installed = typeof state === "object" && state.install_known;
-  // The Start form: fresh instance (UNCONFIGURED) or a transient status-read error (let them retry).
-  const showStart = status === "UNCONFIGURED" || state === "error";
+  const inFlight = status === "AWAITING_CALLBACK" || status === "CONVERTING";
+  // The Start/Retry form: a fresh instance, an in-flight one (retry re-POSTs /setup = the repair
+  // path), or a transient status-read error. NOT for ORPHANED (Start 409s until reset) or CONFIGURED.
+  const showStart = status === "UNCONFIGURED" || inFlight || state === "error";
+  const startLabel = inFlight ? "Retry setup" : "Set up GitHub App";
 
   return (
     <div className="content">
@@ -121,27 +133,46 @@ export function SetupGitHubApp() {
             </p>
           ))}
 
-        {/* ORPHANED: a failed attempt. A fresh Start would 409 until the state is reset. */}
-        {status === "ORPHANED" && (
-          <>
-            <p>The last onboarding attempt failed. Reset to start over.</p>
-            <button className="btn" type="button" onClick={() => void onReset()} disabled={busy}>
-              {busy ? "Resetting…" : "Reset and start over"}
-            </button>
-          </>
+        {/* In-flight: an attempt was started but not completed. Retry re-POSTs /setup, which is the
+            repair path (an expired AWAITING_CALLBACK is reset and a stale CONVERTING is orphaned);
+            a genuinely in-progress attempt returns a clear 409 below. */}
+        {inFlight && (
+          <p>
+            An onboarding attempt is already in progress. If you didn&rsquo;t finish it on GitHub,
+            retry below to start over — an abandoned attempt is cleared automatically. If it&rsquo;s
+            genuinely mid-flight, you&rsquo;ll be told it&rsquo;s already running.
+          </p>
         )}
 
-        {/* In-flight: a fresh Start would 409; offer a refresh once the attempt completes/expires. */}
-        {(status === "AWAITING_CALLBACK" || status === "CONVERTING") && (
-          <>
-            <p>
-              An onboarding attempt is in progress. Finish creating the App on GitHub, or wait for it
-              to time out, then refresh.
+        {/* ORPHANED: a failed attempt. GitHub already created the App, so it must be deleted before
+            resetting (spec F4) — otherwise repeated resets accumulate orphaned root-credential Apps.
+            The reset is gated on an explicit deletion confirmation. */}
+        {status === "ORPHANED" && (
+          <div>
+            <p className="error">
+              The last onboarding attempt failed. GitHub had already created the App before the
+              failure, so it still exists and holds credentials. Delete it first: open your
+              organization&rsquo;s GitHub App settings, remove the partial App, then confirm and
+              reset below.
             </p>
-            <button className="btn" type="button" onClick={() => void refresh()} disabled={busy}>
-              Refresh status
+            <label style={{ display: "block", margin: "0.5rem 0" }}>
+              <input
+                type="checkbox"
+                checked={confirmDeleted}
+                onChange={(e) => setConfirmDeleted(e.target.checked)}
+                disabled={busy}
+              />{" "}
+              I have deleted the orphaned App on GitHub.
+            </label>
+            <button
+              className="btn"
+              type="button"
+              onClick={() => void onReset()}
+              disabled={busy || !confirmDeleted}
+            >
+              {busy ? "Resetting…" : "Reset and start over"}
             </button>
-          </>
+          </div>
         )}
 
         {showStart && (
@@ -159,7 +190,7 @@ export function SetupGitHubApp() {
               />
             </label>
             <button className="btn" type="submit" disabled={busy}>
-              {busy ? "Opening GitHub…" : "Set up GitHub App"}
+              {busy ? "Opening GitHub…" : startLabel}
             </button>
           </form>
         )}
