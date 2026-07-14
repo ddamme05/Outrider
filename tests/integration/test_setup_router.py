@@ -294,6 +294,35 @@ async def test_conversion_error_orphans(engine: AsyncEngine) -> None:
     assert await _active_credential_count(engine) == 0
 
 
+@pytest.mark.asyncio
+async def test_orphan_failure_still_redirects_not_500(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """orphan() ITSELF raising while handling a failed callback (e.g. a DB blip) must still yield
+    the 302 recovery redirect, NOT a 500. It runs inside the saga's except block, so a
+    non-SetupIntegrityError there would otherwise propagate past the outer handler. Stale-CONVERTING
+    recovery (startup + lazy repair) clears the state later."""
+
+    async def _boom(code: str) -> ManifestConversion:  # noqa: ARG001 — force the saga into orphan()
+        raise ManifestConversionError("conversion 422")
+
+    async def _orphan_boom(self: SetupStateMachine) -> None:  # noqa: ARG001 — a non-integrity DB error
+        raise RuntimeError("db connection dropped")
+
+    monkeypatch.setattr(SetupStateMachine, "orphan", _orphan_boom)
+    client = _mount(engine, convert=_boom)
+    state = _state_from_target(
+        client.post("/setup", json={"org": "acme"}, headers=_AUTH).json()["target_url"]
+    )
+    cb = client.get(
+        "/setup/callback", params={"code": "CODE", "state": state}, follow_redirects=False
+    )
+    assert (
+        cb.status_code == 302
+    )  # NOT 500 — the failing orphan() must not block the recovery redirect
+    assert cb.headers["location"] == f"{_BASE}/setup"
+
+
 # ── reset ─────────────────────────────────────────────────────────────────────
 
 
