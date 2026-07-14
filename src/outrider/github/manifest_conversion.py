@@ -5,7 +5,11 @@ GitHub redirects the operator to `redirect_url?code=&state=` after they create t
 our manifest. This wrapper exchanges that temporary `code` for the App's `id`, `pem`, and
 `webhook_secret` (plus non-secret `slug`/`client_id` and the response-verifiable `owner`/
 `permissions`/`events`). The endpoint is **unauthenticated** — the `code` IS the credential; GitHub
-rejects tokens on it — so we use a bare `GitHub()` client.
+rejects tokens on it — so we use an unauthenticated `GitHub()` client, but NOT a default one:
+`auto_retry=False` (the `code` is single-use — a retried POST would re-send a spent credential; a
+failed conversion must orphan, never retry) and a bounded `timeout` (githubkit defaults to no
+timeout; the state machine orphans a stale `CONVERTING` after 5 min ASSUMING the request is bounded
+well below that — see `_CONVERSION_TIMEOUT_SECONDS`).
 
 Boundary duties (githubkit confined here, `vendor-sdks-only-in-wrappers`):
 - The `code` is external input → percent-encoded into the path segment (no path injection).
@@ -32,6 +36,13 @@ if TYPE_CHECKING:
 __all__ = ["ManifestConversion", "ManifestConversionError", "convert_manifest_code"]
 
 _API_VERSION_HEADER: Final[dict[str, str]] = {"X-GitHub-Api-Version": "2026-03-10"}
+
+# Bounded conversion request timeout (seconds). githubkit defaults to no timeout, but the setup
+# state machine orphans a stale `CONVERTING` after `state_machine._STALE_CONVERTING_AFTER` (5 min)
+# on the assumption that a real conversion request resolves well below that — an unbounded request
+# would let a genuinely in-flight conversion be false-orphaned. Kept far below 5 min; a hung request
+# raises (→ the callback orphans) rather than lingering. auto_retry is off, so this is one attempt.
+_CONVERSION_TIMEOUT_SECONDS: Final[float] = 30.0
 
 
 class ManifestConversionError(RuntimeError):
@@ -79,7 +90,11 @@ async def convert_manifest_code(
 ) -> ManifestConversion:
     """Exchange a manifest `code` for `ManifestConversion`. Unauthenticated (`GitHub()`; an
     explicit client may be injected for tests). Raises `ManifestConversionError` on any failure."""
-    gh = github if github is not None else GitHub()
+    gh = (
+        github
+        if github is not None
+        else GitHub(auto_retry=False, timeout=_CONVERSION_TIMEOUT_SECONDS)
+    )
     path = f"/app-manifests/{quote(code, safe='')}/conversions"
     try:
         response = await gh.arequest("POST", path, headers=_API_VERSION_HEADER)
