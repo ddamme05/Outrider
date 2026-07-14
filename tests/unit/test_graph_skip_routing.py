@@ -215,7 +215,7 @@ def _stub_db_factory() -> Any:
     raise NotImplementedError(msg)
 
 
-def _stub_github_factory(installation_id: int) -> Any:  # noqa: ARG001
+async def _stub_github_factory(installation_id: int) -> Any:  # noqa: ARG001
     msg = "introspection test never builds a GitHub client"
     raise NotImplementedError(msg)
 

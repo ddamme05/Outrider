@@ -147,17 +147,28 @@ async def webhook_app(migrated_db: str) -> AsyncGenerator[tuple[FastAPI, AsyncEn
     app = FastAPI()
     app.include_router(router)
 
-    # Settings stub — webhook secret matches `_SECRET` so signed test
-    # bodies verify cleanly. `app_id` deliberately distinct from
-    # `_INSTALLATION_ID` so an app-id-vs-installation-id mixup in the
-    # webhook wiring fails loudly: a regression that read `app_id` where
-    # the router should read `installation.id` from the payload would
-    # surface as the wrong-row lookup or a Pydantic validation error.
-    app.state.github_app_settings = SimpleNamespace(
+    # Credential-provider stub (`DECISIONS.md#070`): the router `await`s
+    # `credential_provider.current()` per request for the webhook secret. The
+    # snapshot's secret matches `_SECRET` so signed test bodies verify cleanly.
+    # `app_id` deliberately distinct from `_INSTALLATION_ID` so an
+    # app-id-vs-installation-id mixup in the webhook wiring fails loudly: a
+    # regression that read `app_id` where the router should read
+    # `installation.id` from the payload would surface as the wrong-row lookup
+    # or a Pydantic validation error.
+    _creds_stub = SimpleNamespace(
         app_id=98765,
         app_private_key=SecretStr("test-private-key"),  # noqa: S106
         webhook_secret=SecretStr(_SECRET),
     )
+
+    class _StubProvider:
+        async def current(self) -> Any:
+            return _creds_stub
+
+        async def is_configured(self) -> bool:
+            return True
+
+    app.state.credential_provider = _StubProvider()
     app.state.session_factory = session_factory
     app.state.retention_settings = RetentionSettings()
 

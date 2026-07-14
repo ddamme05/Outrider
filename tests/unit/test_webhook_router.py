@@ -61,13 +61,24 @@ def _make_app(*, valid_membership: bool = True) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
 
-    # Stub GitHubAppSettings
-    settings_stub = SimpleNamespace(
+    # Stub the credential provider (`DECISIONS.md#070`): the router reads
+    # `app.state.credential_provider` and `await`s `current()` PER REQUEST for the
+    # webhook-secret snapshot (env-mode shape here; a `database`-mode provider would
+    # raise GitHubUnconfiguredError → 503 while onboarding).
+    creds_stub = SimpleNamespace(
         app_id=12345,
         app_private_key=SecretStr("test-private-key"),  # noqa: S106 — fixture
         webhook_secret=SecretStr(_SECRET),
     )
-    app.state.github_app_settings = settings_stub
+
+    class _StubProvider:
+        async def current(self) -> Any:
+            return creds_stub
+
+        async def is_configured(self) -> bool:
+            return True
+
+    app.state.credential_provider = _StubProvider()
 
     # Stub session_factory (returns a session that errors if hit —
     # ensures these unit tests never reach the DB-touching paths).

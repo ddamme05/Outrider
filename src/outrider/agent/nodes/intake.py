@@ -62,7 +62,7 @@ from outrider.policy.canonical import compute_phase_id
 from outrider.schemas.pr_context import ChangedFile, PRContext
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Awaitable, Callable, Coroutine
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -100,7 +100,7 @@ _TOTAL_DECODED_BYTES_CAP = 10_000_000
 async def intake(
     state: ReviewState,
     *,
-    github_factory: Callable[[int], InstallationGitHubClient],
+    github_factory: Callable[[int], Awaitable[InstallationGitHubClient]],
     installation_authorizer: InstallationAuthorizer,
     db_factory: async_sessionmaker[AsyncSession],
     phase_event_sink: PhaseEventSink,
@@ -203,7 +203,7 @@ async def intake(
             await _emit_phase_end(phase_event_sink, state, phase_id)
             return Command(goto=END)  # type: ignore[arg-type]  # END is a runtime sentinel not in the named-dest Literal
 
-        gh = github_factory(pr_context.installation_id)
+        gh = await github_factory(pr_context.installation_id)
 
         # Phase 1 (sequential): file list with status / counts / patch.
         files_metadata = await list_pr_files(

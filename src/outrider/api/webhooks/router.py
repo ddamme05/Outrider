@@ -77,10 +77,11 @@ from outrider.db.models.installations import (
     active_repo_membership,
 )
 from outrider.db.models.reviews import Review
+from outrider.github.credentials import GitHubUnconfiguredError
 
 if TYPE_CHECKING:
     from outrider.dispatcher import ReviewDispatcher
-    from outrider.github.config import GitHubAppSettings
+    from outrider.github.credentials import GitHubCredentialProvider
 
 
 __all__ = ["router"]
@@ -242,8 +243,17 @@ async def receive_pull_request_webhook(
     # (programming bug, dependency regression) is a server-side fault
     # that should surface as 5xx, not collapse into a "401 invalid
     # signature" response that hides the actual failure class.
-    settings: GitHubAppSettings = request.app.state.github_app_settings
-    secret = settings.webhook_secret.get_secret_value()
+    credential_provider: GitHubCredentialProvider = request.app.state.credential_provider
+    try:
+        creds = await credential_provider.current()
+    except GitHubUnconfiguredError:
+        # `database` mode, not yet CONFIGURED → fail closed with 503 (GitHub retries). The
+        # setup-only route gating also returns 503 here; this is the defense-in-depth read at the
+        # secret source.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="setup incomplete"
+        ) from None
+    secret = creds.webhook_secret.get_secret_value()
     signature_ok = verify_signature(secret, body, x_hub_signature_256)
     if not signature_ok:
         logger.warning(

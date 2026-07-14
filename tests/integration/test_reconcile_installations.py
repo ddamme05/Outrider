@@ -23,18 +23,18 @@ if TYPE_CHECKING:
 
 _ID_A = 111
 _ID_B = 222
-_SETTINGS = SimpleNamespace()  # ignored — list_installation_ids is monkeypatched
+_PROVIDER = SimpleNamespace()  # ignored — list_installation_ids is monkeypatched
 
 
 def _fake_list(ids: set[int]) -> Callable[..., Coroutine[object, object, set[int]]]:
-    async def _list(_settings: object) -> set[int]:
+    async def _list(_provider: object) -> set[int]:
         return ids
 
     return _list
 
 
 def _raising_list() -> Callable[..., Coroutine[object, object, set[int]]]:
-    async def _list(_settings: object) -> set[int]:
+    async def _list(_provider: object) -> set[int]:
         msg = "simulated GET /app/installations failure"
         raise RuntimeError(msg)
 
@@ -80,7 +80,7 @@ async def test_reconcile_tombstones_missing_install(
         await _seed_install(engine, _ID_A, tombstoned=False)
         # GitHub lists a DIFFERENT install, not _ID_A.
         monkeypatch.setattr(reconcile_mod, "list_installation_ids", _fake_list({_ID_B}))
-        result = await reconcile_installations(engine, _SETTINGS)  # type: ignore[arg-type]
+        result = await reconcile_installations(engine, _PROVIDER)  # type: ignore[arg-type]
         assert result.tombstoned == 1
         assert result.restored == 0
         row = await _tombstone_state(engine, _ID_A)
@@ -99,7 +99,7 @@ async def test_reconcile_restores_confirmed_live_install(
     try:
         await _seed_install(engine, _ID_A, tombstoned=True)
         monkeypatch.setattr(reconcile_mod, "list_installation_ids", _fake_list({_ID_A}))
-        result = await reconcile_installations(engine, _SETTINGS)  # type: ignore[arg-type]
+        result = await reconcile_installations(engine, _PROVIDER)  # type: ignore[arg-type]
         assert result.restored == 1
         assert result.tombstoned == 0
         row = await _tombstone_state(engine, _ID_A)
@@ -117,7 +117,7 @@ async def test_reconcile_skips_when_lock_held(
     engine = create_async_engine(migrated_db)
     called = {"list": False}
 
-    async def _tracking_list(_settings: object) -> set[int]:
+    async def _tracking_list(_provider: object) -> set[int]:
         called["list"] = True
         return set()
 
@@ -133,7 +133,7 @@ async def test_reconcile_skips_when_lock_held(
                 )
             ).scalar_one()
             assert got is True  # holder acquired it
-            result = await reconcile_installations(engine, _SETTINGS)  # type: ignore[arg-type]
+            result = await reconcile_installations(engine, _PROVIDER)  # type: ignore[arg-type]
             assert result.skipped_lock_held is True
             assert called["list"] is False  # never reached the GitHub call
             row = await _tombstone_state(engine, _ID_A)
@@ -157,7 +157,7 @@ async def test_reconcile_list_failure_aborts_without_writes(
         await _seed_install(engine, _ID_A, tombstoned=False)
         monkeypatch.setattr(reconcile_mod, "list_installation_ids", _raising_list())
         with pytest.raises(RuntimeError, match="simulated GET"):
-            await reconcile_installations(engine, _SETTINGS)  # type: ignore[arg-type]
+            await reconcile_installations(engine, _PROVIDER)  # type: ignore[arg-type]
         row = await _tombstone_state(engine, _ID_A)
         assert row.tombstoned_at is None  # NOT tombstoned — no reconcile against a failed list
         # Lock was released (finally): a subsequent tick can acquire it.
@@ -185,7 +185,7 @@ async def test_reconcile_empty_github_list_tombstones_all(
         await _seed_install(engine, _ID_A, tombstoned=False)
         await _seed_install(engine, _ID_B, tombstoned=False)
         monkeypatch.setattr(reconcile_mod, "list_installation_ids", _fake_list(set()))
-        result = await reconcile_installations(engine, _SETTINGS)  # type: ignore[arg-type]
+        result = await reconcile_installations(engine, _PROVIDER)  # type: ignore[arg-type]
         assert result.tombstoned == 2
         for iid in (_ID_A, _ID_B):
             row = await _tombstone_state(engine, iid)
@@ -203,10 +203,10 @@ async def test_reconcile_idempotent_preserves_grace_deadline(
     try:
         await _seed_install(engine, _ID_A, tombstoned=False)
         monkeypatch.setattr(reconcile_mod, "list_installation_ids", _fake_list(set()))
-        first = await reconcile_installations(engine, _SETTINGS)  # type: ignore[arg-type]
+        first = await reconcile_installations(engine, _PROVIDER)  # type: ignore[arg-type]
         assert first.tombstoned == 1
         deadline_1 = (await _tombstone_state(engine, _ID_A)).purge_after_at
-        second = await reconcile_installations(engine, _SETTINGS)  # type: ignore[arg-type]
+        second = await reconcile_installations(engine, _PROVIDER)  # type: ignore[arg-type]
         assert second.tombstoned == 0  # already tombstoned — no re-tombstone
         deadline_2 = (await _tombstone_state(engine, _ID_A)).purge_after_at
         assert deadline_2 == deadline_1  # deadline unchanged

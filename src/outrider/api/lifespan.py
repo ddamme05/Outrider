@@ -17,13 +17,17 @@ Constructs at startup, in dependency order:
   4. `AuditPersister(session_factory=..., retention_settings=...)`.
   5. `AnthropicProvider(api_key=..., model_config=..., persister=...)`
      (model_config built once, shared with the compiled graph below).
-  6. `GitHubAppSettings()` — reads `OUTRIDER_GITHUB_APP_*` env vars.
-     Validating the App credentials at startup means missing / malformed
-     env surfaces as a friendly RuntimeError at boot, not a deep-stack
-     `ValidationError` inside the first intake invocation.
-  7. `github_factory = make_installation_client_factory(github_app_settings)`
-     — per-installation `GitHub` client factory closing over the
-     lifespan-validated settings. Per `DECISIONS.md#020` + the
+  6. `build_credential_provider(session_factory=..., env=...)` (DECISIONS.md#070)
+     — `env` mode wraps a boot-validated `GitHubAppSettings()` (reads
+     `OUTRIDER_GITHUB_APP_*` env vars); `database` mode reads the
+     manifest-onboarded row and fails closed until CONFIGURED. `env`-mode
+     validation still surfaces missing / malformed env as a friendly
+     RuntimeError at boot, not a deep-stack `ValidationError` inside the
+     first intake invocation.
+  7. `github_factory = make_installation_client_factory(credential_provider)`
+     — async per-installation `GitHub` client factory over the provider;
+     each `await github_factory(iid)` resolves credentials lazily via
+     `await provider.current()`. Per `DECISIONS.md#020` + the
      `nodes-receive-deps-via-closure` invariant, installation-token
      minting happens at intake call-site, not at webhook receipt.
   8. `compiled_graph = build_graph(...)` — the V1 seven-logical-node intake →
@@ -55,9 +59,9 @@ FUP-011 (provider aclose).
 
 The webhook router (`api/webhooks/router.py`) reads `app.state` bindings
 to resolve per-request dependencies: `session_factory`, `retention_settings`,
-`github_app_settings` (webhook signature secret), `github_factory`,
-`run_graph`. `compiled_graph`, `persister`, `provider`, `engine` are also
-stashed for diagnostics / future routes.
+`credential_provider` (webhook signature secret, resolved per request via
+`await current()`), `github_factory`, `run_graph`. `compiled_graph`,
+`persister`, `provider`, `engine` are also stashed for diagnostics / future routes.
 
 `build_lifespan(...)` is the test seam: production callers use the
 module-level `lifespan` (which calls `build_lifespan()` with defaults);
@@ -93,7 +97,7 @@ from outrider.audit.persister import AuditPersister
 from outrider.coordinates import COORDINATES_IMPORT_PATH_RESOLVER
 from outrider.github.auth import make_installation_client_factory
 from outrider.github.authz import make_installation_authorizer
-from outrider.github.config import GitHubAppSettings
+from outrider.github.credentials import build_credential_provider
 from outrider.github.publisher import GitHubKitPublisher
 from outrider.llm.anthropic_provider import AnthropicProvider
 from outrider.llm.base import LLMProvider
@@ -632,7 +636,7 @@ def build_lifespan(
                 # that defensively reads one gets None, not AttributeError; no read
                 # route in the demo allowlist consumes any of these.
                 app.state.provider = None
-                app.state.github_app_settings = None
+                app.state.credential_provider = None
                 app.state.github_factory = None
                 app.state.compiled_graph = None
                 app.state.run_graph = None
@@ -681,35 +685,35 @@ def build_lifespan(
                 llm_host, reasoning=llm_reasoning
             )
 
-            # Step 6: GitHub App settings (env-driven). Reads
-            # OUTRIDER_GITHUB_APP_ID + _APP_PRIVATE_KEY + _WEBHOOK_SECRET.
-            # The webhook router reads `webhook_secret.get_secret_value()`
-            # at the verify_signature call site (not here at construction).
-            github_app_settings = GitHubAppSettings()
+            # Step 6: the GitHub App CREDENTIAL PROVIDER (DECISIONS.md#070). `env` mode wraps the
+            # boot-validated GitHubAppSettings triad (OUTRIDER_GITHUB_APP_ID + _APP_PRIVATE_KEY +
+            # _WEBHOOK_SECRET); `database` mode reads the manifest-onboarded row and fails closed
+            # (raises GitHubUnconfiguredError) until CONFIGURED — so this boots even before
+            # onboarding. Built ONCE here; the four consumers resolve credentials LAZILY
+            # per-operation via `await provider.current()`, so a `database`-mode activation takes
+            # effect with NO restart.
+            credential_provider = build_credential_provider(
+                session_factory=session_factory, env=os.environ
+            )
 
-            # Step 7: github_factory — per-installation `GitHub` client
-            # factory bound to the lifespan-validated `github_app_settings`.
-            # Per `DECISIONS.md#020` + `nodes-receive-deps-via-closure`,
-            # minting happens at intake call-site, not at webhook receipt.
-            # The settings object is closed over once here; each call to
-            # `github_factory(iid)` reads `.app_private_key.get_secret_value()`
-            # at the call site so the PEM is in plain memory only briefly.
-            # The settings-bound factory pattern routes any env-var change
-            # through the next lifespan restart — a bare-function binding
-            # would re-instantiate `GitHubAppSettings()` per call and
-            # defeat the env-validation gate at startup.
-            github_factory = make_installation_client_factory(github_app_settings)
+            # Step 7: github_factory — per-installation `GitHub` client factory over the provider.
+            # Per `DECISIONS.md#020` + `nodes-receive-deps-via-closure`, minting happens at intake
+            # call-site. Each `await github_factory(iid)` fetches a fresh credential snapshot and
+            # reads `.app_private_key.get_secret_value()` at the call site so the PEM is in plain
+            # memory only briefly. The webhook route is 503-gated while not CONFIGURED, so
+            # github_factory is never called before credentials exist.
+            github_factory = make_installation_client_factory(credential_provider)
 
-            # Step 7b: live-authorization closure for the #065 intake gate, bound to the
-            # validated settings. Per githubkit's reusing-client guidance (0.15.3), each
-            # authorization constructs and `async with`-scopes a FRESH App-JWT client for its
-            # GET+POST pair (one shared client, closed on exit) rather than leaking a new
-            # per-request client. There is NO long-lived shared client to enter into the
-            # AsyncExitStack: githubkit keeps its httpx client in a task-local ContextVar, so a
-            # client entered in this lifespan task would be invisible to intake's per-review
-            # task anyway. `make_installation_authorizer` yields the githubkit-free
+            # Step 7b: live-authorization closure for the #065 intake gate, over the provider. Per
+            # githubkit's reusing-client guidance (0.15.3), each authorization constructs and `async
+            # with`-scopes a FRESH App-JWT client for its GET+POST pair (one shared client, closed
+            # on exit) rather than leaking a new per-request client. There is NO long-lived shared
+            # client
+            # to enter into the AsyncExitStack: githubkit keeps its httpx client in a task-local
+            # ContextVar, so a client entered in this lifespan task would be invisible to intake's
+            # per-review task anyway. `make_installation_authorizer` yields the githubkit-free
             # `(installation_id, repo_id) -> LiveAuthResult` closure intake calls first.
-            installation_authorizer = make_installation_authorizer(github_app_settings)
+            installation_authorizer = make_installation_authorizer(credential_provider)
 
             # Step 8: build the compiled graph with all deps injected
             # at construction time. `db_factory` is the canonical first
@@ -939,7 +943,7 @@ def build_lifespan(
             app.state.retention_settings = retention_settings
             app.state.persister = persister
             app.state.provider = provider
-            app.state.github_app_settings = github_app_settings
+            app.state.credential_provider = credential_provider
             app.state.github_factory = github_factory
             app.state.compiled_graph = compiled_graph
             # The dispatcher invokes the semaphore-bounded wrapper, not the bare
@@ -1037,10 +1041,11 @@ def build_lifespan(
                     audit_persister=persister,
                     checkpointer=checkpointer,
                     compiled_graph=compiled_graph,
-                    # Reconcile janitor (#065/#012/#067) rides the same loop, gated on the App being
-                    # configured. `app.state.github_app_settings` is set in BOTH the demo (None) and
-                    # non-demo branches above; demo mode → None → the janitor self-skips.
-                    github_app_settings=app.state.github_app_settings,
+                    # Reconcile janitor (#065/#012/#067) rides the same loop, gated on the
+                    # credential provider being CONFIGURED (#070). `app.state.credential_provider`
+                    # is set in BOTH the demo (None) and non-demo branches; demo → None and
+                    # `database`-unconfigured → the janitor self-skips.
+                    provider=app.state.credential_provider,
                 )
                 stack.push_async_callback(_cancel_task, sweep_task)
             app.state.sweep_task = sweep_task

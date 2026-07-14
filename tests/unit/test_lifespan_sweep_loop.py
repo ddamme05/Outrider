@@ -3,7 +3,7 @@ DECISIONS.md#065/#012/#067).
 
 `run_scheduled_tick` owns the reconcile-first-then-sweep ordering + the #012 install-hard-delete
 liveness gating; these loop-level tests pin only that the loop (a) invokes it each tick, (b)
-forwards `github_app_settings` verbatim, and (c) survives a tick failure and keeps ticking. The
+forwards the credential `provider` verbatim, and (c) survives a tick failure and keeps ticking. The
 ordering / gating guarantee itself is pinned in tests/unit/test_sweep_runner_scheduled_tick.py and
 the tests/integration/test_scheduled_tick_ordering.py end-to-end survival test.
 """
@@ -29,7 +29,7 @@ def _dummy_loop_kwargs(**overrides: Any) -> dict[str, Any]:
         "audit_persister": None,
         "checkpointer": None,
         "compiled_graph": None,
-        "github_app_settings": SimpleNamespace(),
+        "provider": SimpleNamespace(),  # opaque — run_scheduled_tick is mocked
         "interval_seconds": 60.0,  # long sleep — the test cancels after the first tick
     }
     kwargs.update(overrides)
@@ -51,8 +51,8 @@ async def _run_one_tick_then_cancel(task: asyncio.Task[None], *, until: list[Any
 
 
 async def test_sweep_loop_invokes_run_scheduled_tick(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Each tick runs `run_scheduled_tick`, forwarding the engine + App settings — proving the
-    production-tick orchestrator (reconcile-first + install-purge gating) has a caller."""
+    """Each tick runs `run_scheduled_tick`, forwarding the engine + credential provider — proving
+    the production-tick orchestrator (reconcile-first + install-purge gating) has a caller."""
     tick_calls: list[dict[str, Any]] = []
 
     async def _fake_tick(**kwargs: Any) -> dict[str, Any]:
@@ -61,20 +61,18 @@ async def test_sweep_loop_invokes_run_scheduled_tick(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(loop_mod, "run_scheduled_tick", _fake_tick)
 
-    settings = SimpleNamespace()
+    provider = SimpleNamespace()
     engine = SimpleNamespace()
-    task = asyncio.create_task(
-        _sweep_loop(**_dummy_loop_kwargs(engine=engine, github_app_settings=settings))
-    )
+    task = asyncio.create_task(_sweep_loop(**_dummy_loop_kwargs(engine=engine, provider=provider)))
     await _run_one_tick_then_cancel(task, until=tick_calls)
 
     assert len(tick_calls) >= 1
     assert tick_calls[0]["engine"] is engine
-    assert tick_calls[0]["github_app_settings"] is settings  # the tick received the App settings
+    assert tick_calls[0]["provider"] is provider  # the tick received the credential provider
 
 
-async def test_sweep_loop_forwards_none_app_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`github_app_settings=None` (demo / App not configured) is forwarded verbatim — the tick
+async def test_sweep_loop_forwards_none_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`provider=None` (demo / App not configured) is forwarded verbatim — the tick
     orchestrator (not the loop) decides to skip reconcile + the install hard-delete."""
     tick_calls: list[dict[str, Any]] = []
 
@@ -84,11 +82,11 @@ async def test_sweep_loop_forwards_none_app_settings(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(loop_mod, "run_scheduled_tick", _fake_tick)
 
-    task = asyncio.create_task(_sweep_loop(**_dummy_loop_kwargs(github_app_settings=None)))
+    task = asyncio.create_task(_sweep_loop(**_dummy_loop_kwargs(provider=None)))
     await _run_one_tick_then_cancel(task, until=tick_calls)
 
     assert len(tick_calls) >= 1
-    assert tick_calls[0]["github_app_settings"] is None
+    assert tick_calls[0]["provider"] is None
 
 
 async def test_sweep_loop_tick_failure_does_not_kill_loop(monkeypatch: pytest.MonkeyPatch) -> None:

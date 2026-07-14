@@ -104,7 +104,7 @@ async def test_demo_mode_boots_keyless_and_constructs_no_review_half(
         assert app.state.agent_api_key is None
         # Review/write half: absent (None, not missing).
         assert app.state.provider is None
-        assert app.state.github_app_settings is None
+        assert app.state.credential_provider is None
         assert app.state.github_factory is None
         assert app.state.compiled_graph is None
         assert app.state.run_graph is None

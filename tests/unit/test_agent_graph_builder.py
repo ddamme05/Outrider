@@ -274,7 +274,7 @@ def _stub_db_factory() -> async_sessionmaker[AsyncSession]:
     return _factory  # type: ignore[return-value]
 
 
-def _stub_github_factory(installation_id: int) -> InstallationGitHubClient:
+async def _stub_github_factory(installation_id: int) -> InstallationGitHubClient:
     """A callable that satisfies the type at the call site; never invoked
     in these unit tests."""
     raise NotImplementedError("test stub")

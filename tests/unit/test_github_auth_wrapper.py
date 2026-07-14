@@ -16,9 +16,10 @@ import pytest
 
 from outrider.github.auth import make_installation_client_factory
 from outrider.github.config import GitHubAppSettings
+from outrider.github.credentials import EnvCredentialProvider
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from outrider.github import InstallationGitHubClient
 
@@ -38,19 +39,18 @@ def _activate_github_app_env(github_app_env: None) -> None:  # noqa: ARG001 — 
     """
 
 
-def _bound_factory() -> Callable[[int], InstallationGitHubClient]:
-    """Helper: load settings once + build the bound factory.
+def _bound_factory() -> Callable[[int], Awaitable[InstallationGitHubClient]]:
+    """Helper: build the async factory over the ENV-mode credential provider.
 
-    Mirrors the lifespan composition shape (settings constructed at
-    startup; factory bound to those settings; per-installation calls
-    happen later). Return type uses the wrapper alias
-    `InstallationGitHubClient` so this test file complies with
-    `vendor-sdks-only-in-wrappers` (no direct `from githubkit import`).
+    Mirrors the lifespan composition shape (provider constructed at startup; the async factory
+    resolves credentials per call). `EnvCredentialProvider` wraps `GitHubAppSettings` — the exact
+    `env`-mode path production uses (`DECISIONS.md#070`). Return type uses the wrapper alias
+    `InstallationGitHubClient` so this test complies with `vendor-sdks-only-in-wrappers`.
     """
-    return make_installation_client_factory(GitHubAppSettings())
+    return make_installation_client_factory(EnvCredentialProvider(GitHubAppSettings()))
 
 
-def test_returns_github_client() -> None:
+async def test_returns_github_client() -> None:
     """The bound factory returns a per-installation client whose runtime
     class is the `githubkit.GitHub` shape (duck-typed via the `rest` +
     `auth` attributes — see `outrider.github.auth.InstallationGitHubClient`).
@@ -62,12 +62,12 @@ def test_returns_github_client() -> None:
     from a buggy lexical-capture factory) lacks both attributes.
     """
     factory = _bound_factory()
-    client = factory(42)
+    client = await factory(42)
     assert hasattr(client, "rest"), "factory should return a GitHub-shaped client"
     assert hasattr(client, "auth"), "factory should return a GitHub-shaped client"
 
 
-def test_distinct_installation_ids_yield_distinct_auth_contexts() -> None:
+async def test_distinct_installation_ids_yield_distinct_auth_contexts() -> None:
     """Calling the factory with two installation IDs yields clients
     whose underlying auth strategies are bound to distinct installations.
 
@@ -78,8 +78,8 @@ def test_distinct_installation_ids_yield_distinct_auth_contexts() -> None:
     binding actually happened.
     """
     factory = _bound_factory()
-    client_a = factory(42)
-    client_b = factory(43)
+    client_a = await factory(42)
+    client_b = await factory(43)
 
     # Different installation IDs on the auth strategies. Accessing the
     # private attribute is acceptable in a test that exists specifically

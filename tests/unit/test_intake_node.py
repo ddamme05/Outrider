@@ -204,7 +204,7 @@ def _never_called_github_factory() -> Any:
     """A `github_factory` that fails the test if invoked — pins that a denied/re-entry
     gate path never mints an installation client (`github_factory` is never called)."""
 
-    def factory(installation_id: int) -> Any:
+    async def factory(installation_id: int) -> Any:
         msg = (
             f"github_factory must NOT be called on a gate-denied / re-entry path "
             f"(received installation_id={installation_id})"
@@ -228,7 +228,7 @@ def _stub_github_factory(gh: Any) -> Any:
     every test because the wrapper returned the stub for any input.
     """
 
-    def factory(installation_id: int) -> Any:
+    async def factory(installation_id: int) -> Any:
         assert installation_id == _EXPECTED_INSTALLATION_ID, (
             f"github_factory received installation_id={installation_id}, "
             f"expected {_EXPECTED_INSTALLATION_ID} from seed state. "

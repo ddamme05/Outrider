@@ -4,9 +4,9 @@
 
 Only file in the codebase that imports `githubkit.AppInstallationAuthStrategy`
 per `vendor-sdks-only-in-wrappers`. `api/lifespan.py` calls
-`make_installation_client_factory(settings)` once at startup and binds
+`make_installation_client_factory(provider)` once at startup and binds
 the returned per-installation callable as `github_factory`, which
-`build_graph(...)` injects into intake. Intake calls
+`build_graph(...)` injects into intake. Intake `await`s
 `github_factory(state.pr_context.installation_id)` at the moment a fresh
 client is needed.
 
@@ -20,22 +20,26 @@ Why a fresh client per call (the inner factory):
     production silently uses one installation's token for cross-tenant PRs.
     Test `test_github_factory_distinct_clients.py` exercises this.
 
-Why settings-bound at lifespan (the outer factory):
-  - Lifespan startup constructs `GitHubAppSettings()` once where a
-    missing/typo'd env var fails loud with the project's friendly
-    RuntimeError shape. A nested `GitHubAppSettings()` call on every
-    `make_installation_client(...)` would defeat that gate — env-var
-    disappearance on a running pod would surface as `ValidationError`
-    deep inside intake (a graph node), not at boot.
+Why provider-bound at lifespan (outer factory), credentials resolved lazily (`DECISIONS.md#070`):
+  - The `GitHubCredentialProvider` is constructed once at boot; the inner factory `await`s
+    `provider.current()` per call so activation of a `database`-mode instance takes effect with no
+    restart, and the PEM is read at the last moment. In `env` mode the provider wraps the
+    boot-validated `GitHubAppSettings` (behavior unchanged); in `database` mode it fails closed
+    (raises `GitHubUnconfiguredError`) while not `CONFIGURED`, surfaced by the setup-only route
+    gating before any review runs.
 """
 
-from collections.abc import Callable
-from typing import Final
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Final
 
 import httpx
 from githubkit import AppAuthStrategy, AppInstallationAuthStrategy, GitHub
 
-from outrider.github.config import GitHubAppSettings
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from outrider.github.credentials import GitHubAppCredentials, GitHubCredentialProvider
 
 __all__ = [
     "AppGitHubClient",
@@ -79,48 +83,41 @@ AppGitHubClient = GitHub[AppAuthStrategy]
 
 
 def make_installation_client_factory(
-    settings: GitHubAppSettings,
-) -> Callable[[int], InstallationGitHubClient]:
-    """Build a per-installation `GitHub` client factory closed over the
-    given `GitHubAppSettings`.
+    provider: GitHubCredentialProvider,
+) -> Callable[[int], Awaitable[InstallationGitHubClient]]:
+    """Build a per-installation `GitHub` client factory over the credential `provider`
+    (`DECISIONS.md#070`).
 
-    Reads `settings.app_id` once at factory-build time; reads
-    `settings.app_private_key.get_secret_value()` inside the returned
-    closure at every call site so the PEM is in plain memory for as
-    short a window as possible.
-
-    Args:
-        settings: The lifespan-validated `GitHubAppSettings` instance.
-            Caller is responsible for constructing this once at startup
-            (where missing env vars fail loud against the project's
-            friendly RuntimeError shape).
+    The returned callable is **async**: it fetches a fresh `GitHubAppCredentials` snapshot from
+    the provider PER CALL (`await provider.current()`), then reads `app_id` + `app_private_key`
+    from it — so the PEM is in plain memory for as short a window as possible, AND the credentials
+    come from the live source. In `env` mode the provider wraps `GitHubAppSettings` (behavior
+    unchanged); in `database` mode it reads the onboarded row and raises `GitHubUnconfiguredError`
+    while not `CONFIGURED` (fail-closed) — so activation takes effect with no restart (the factory
+    was built once at boot, but resolves credentials lazily).
 
     Returns:
-        A callable `(installation_id: int) -> InstallationGitHubClient`
-        that returns a fresh authenticated client per call. Token
-        minting + refresh is handled internally by githubkit on first
-        API call. The return type uses the `InstallationGitHubClient`
-        alias (= `GitHub[AppInstallationAuthStrategy]`) for one-name-
-        one-concept symmetry with consumer-side annotations in
-        `agent/nodes/intake.py` and the build_graph signature.
+        `async (installation_id: int) -> InstallationGitHubClient` — a fresh authenticated client
+        per call. Token minting + refresh is handled internally by githubkit. The async return
+        type makes every consumer's missed `await github_factory(...)` a static-type error, not a
+        silent bug.
     """
 
-    def make_installation_client(
+    async def make_installation_client(
         installation_id: int,
     ) -> InstallationGitHubClient:
-        """Return a fresh `GitHub` client authenticated as a specific
-        installation.
+        """Return a fresh `GitHub` client authenticated as a specific installation.
 
         Args:
-            installation_id: The numeric installation id from the webhook
-                payload, validated upstream by the webhook handler
-                against the `installations` + `installation_repositories`
-                tables.
+            installation_id: The numeric installation id from the webhook payload, validated
+                upstream by the webhook handler against the `installations` +
+                `installation_repositories` tables.
         """
+        creds = await provider.current()
         return GitHub(
             AppInstallationAuthStrategy(
-                settings.app_id,
-                settings.app_private_key.get_secret_value(),
+                creds.app_id,
+                creds.app_private_key.get_secret_value(),
                 installation_id,
             ),
             timeout=_GITHUB_CLIENT_TIMEOUT,
@@ -129,9 +126,13 @@ def make_installation_client_factory(
     return make_installation_client
 
 
-def make_app_client(settings: GitHubAppSettings) -> AppGitHubClient:
+def make_app_client(credentials: GitHubAppCredentials) -> AppGitHubClient:
     """Build a GitHub client authenticated AS THE APP (App-JWT) for the #065
     live-authorization check.
+
+    Takes a `GitHubAppCredentials` snapshot (`DECISIONS.md#070`) — the #065 authorizer resolves it
+    from the credential provider per authorization. Reads `app_id` + `app_private_key` (same field
+    names the env-mode `GitHubAppSettings` carried).
 
     Unlike `make_installation_client_factory` (a fresh per-installation client so
     short-lived installation tokens stay tenant-isolated), the App-JWT client carries
@@ -142,7 +143,7 @@ def make_app_client(settings: GitHubAppSettings) -> AppGitHubClient:
     client PER AUTHORIZATION — NOT once at startup — and `async with`-scopes it; see
     LIFECYCLE below for why a shared long-lived client is not usable here.
 
-    Reads `settings.app_private_key.get_secret_value()` once per construction; because the
+    Reads `credentials.app_private_key.get_secret_value()` once per construction; because the
     client is fresh per authorization, that is a brief per-review PEM window — the same
     pattern as the per-installation client factory, not a long-lived exposure. Same explicit
     `_GITHUB_CLIENT_TIMEOUT` as the installation client so both SDK surfaces behave
@@ -160,8 +161,8 @@ def make_app_client(settings: GitHubAppSettings) -> AppGitHubClient:
     """
     return GitHub(
         AppAuthStrategy(
-            settings.app_id,
-            settings.app_private_key.get_secret_value(),
+            credentials.app_id,
+            credentials.app_private_key.get_secret_value(),
         ),
         timeout=_GITHUB_CLIENT_TIMEOUT,
     )

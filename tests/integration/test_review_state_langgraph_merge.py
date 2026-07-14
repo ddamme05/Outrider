@@ -256,7 +256,7 @@ class _StubGitHub:
         self.rest = _StubRestAPI()
 
 
-def _stub_github_factory(installation_id: int) -> Any:
+async def _stub_github_factory(installation_id: int) -> Any:
     # Validate the seed installation_id flows from PRContext through
     # build_graph's github_factory closure.
     assert installation_id == _SEED_INSTALLATION_ID, f"unexpected installation_id {installation_id}"

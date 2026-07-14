@@ -33,6 +33,19 @@ if TYPE_CHECKING:
 _INSTALL_ID = 111
 
 
+class _ConfiguredProvider:
+    """A credential provider reporting `is_configured() is True` so the tick proceeds to reconcile
+    (`DECISIONS.md#070`). `reconcile_mod.list_installation_ids` is monkeypatched below, so the
+    provider's `current()` is never reached — `is_configured()` is the only method the tick
+    calls."""
+
+    async def is_configured(self) -> bool:
+        return True
+
+    async def current(self) -> Any:  # pragma: no cover — list_installation_ids is monkeypatched
+        return SimpleNamespace()
+
+
 async def _seed_expired_tombstone(engine: Any) -> None:
     """An install tombstoned 40 days ago, grace deadline 10 days PAST — due for hard-delete."""
     async with engine.begin() as conn:
@@ -79,7 +92,7 @@ async def test_github_listed_expired_tombstone_survives_full_tick(
             audit_persister=None,
             checkpointer=None,
             compiled_graph=None,
-            github_app_settings=SimpleNamespace(),
+            provider=_ConfiguredProvider(),
         )
 
         async with engine.connect() as conn:

@@ -91,7 +91,7 @@ from outrider.schemas import (
 from outrider.schemas.hitl import PerFindingOutcome
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Awaitable, Callable, Sequence
 
     from outrider.audit.sinks import PhaseEventSink, PublishEventSink
     from outrider.db.sinks import ReviewStatusSink
@@ -146,7 +146,7 @@ async def publish(
     # the runtime free of the githubkit wrapper-module dependency (the
     # node never references the type at runtime — it just calls the
     # factory and passes the result to the publisher).
-    github_factory: Callable[[int], InstallationGitHubClient],
+    github_factory: Callable[[int], Awaitable[InstallationGitHubClient]],
     dashboard_base_url: str | None = None,
     resolve_slack_target: SlackTargetResolver | None = None,
 ) -> dict[str, object]:
@@ -473,7 +473,7 @@ async def publish(
             # JWT clock skew, GitHub identity-API outage) — its failure
             # must land in the audit chain as `PublishAttemptEvent(FAILED)`,
             # not as a dangling phase-start.
-            gh = github_factory(state.pr_context.installation_id)
+            gh = await github_factory(state.pr_context.installation_id)
             existing_review_id = await publisher.find_existing_review_on_head_sha(
                 gh=gh,
                 owner=state.pr_context.owner,

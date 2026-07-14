@@ -44,7 +44,7 @@ from outrider.prompts import trace as trace_prompt
 from outrider.schemas import TraceDecision, TraceFetchedFile
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Awaitable, Callable, Sequence
     from uuid import UUID
 
     from outrider.audit.sinks import PhaseEventSink, TraceEventSink
@@ -164,7 +164,7 @@ async def trace(
     trace_model: str,
     phase_event_sink: PhaseEventSink,
     trace_sink: TraceEventSink,
-    github_factory: Callable[[int], InstallationGitHubClient],
+    github_factory: Callable[[int], Awaitable[InstallationGitHubClient]],
 ) -> dict[str, object]:
     """Run one trace pass.
 
@@ -329,7 +329,7 @@ async def trace(
             continue
         ranked_by_finding.setdefault(finding_id, []).append(candidate)
 
-    gh_client = github_factory(state.pr_context.installation_id)
+    gh_client = await github_factory(state.pr_context.installation_id)
     head_sha = state.pr_context.head_sha
     pr_file_paths: frozenset[str] = frozenset(cf.path for cf in state.pr_context.changed_files)
     # Seed the within-pass fetch-dedup set with paths already in state

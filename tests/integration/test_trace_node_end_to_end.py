@@ -199,7 +199,7 @@ def _build_state(
     )
 
 
-def _stub_github_factory(_installation_id: int) -> object:
+async def _stub_github_factory(_installation_id: int) -> object:
     """Returns a sentinel — trace.py passes this opaquely to
     fetch_file_content_at, which we monkeypatch per-test."""
     return object()

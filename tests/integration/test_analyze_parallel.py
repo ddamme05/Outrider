@@ -226,7 +226,7 @@ class _MultiFileGitHub:
         self.rest = SimpleNamespace(repos=self._Repos(), pulls=self._Pulls())
 
 
-def _multi_file_github_factory(installation_id: int) -> Any:
+async def _multi_file_github_factory(installation_id: int) -> Any:
     assert installation_id == _SEED_INSTALLATION_ID
     return _MultiFileGitHub()
 
@@ -490,7 +490,7 @@ class _MixedGitHub:
         self.rest = SimpleNamespace(repos=self._Repos(), pulls=self._Pulls())
 
 
-def _mixed_github_factory(installation_id: int) -> Any:
+async def _mixed_github_factory(installation_id: int) -> Any:
     assert installation_id == _SEED_INSTALLATION_ID
     return _MixedGitHub()
 
