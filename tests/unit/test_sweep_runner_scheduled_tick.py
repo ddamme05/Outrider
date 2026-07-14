@@ -62,10 +62,16 @@ class _FakeProvider:
     still onboarding). `reconcile_installations` is monkeypatched, so `current()` is never
     reached."""
 
-    def __init__(self, *, configured: bool = True) -> None:
+    def __init__(self, *, configured: bool = True, raises: bool = False) -> None:
         self._configured = configured
+        self._raises = raises
 
     async def is_configured(self) -> bool:
+        if self._raises:
+            # A `database`-mode `is_configured()` is a DB read: a missing singleton or a transient
+            # connection error raises rather than returning False.
+            msg = "simulated setup_state read failure"
+            raise RuntimeError(msg)
         return self._configured
 
     async def current(self) -> Any:  # pragma: no cover — reconcile is monkeypatched
@@ -219,6 +225,39 @@ async def test_unconfigured_provider_skips_reconcile_and_purge(
     assert reconcile_calls == []  # unconfigured → reconcile never called
     assert seen["include_install_purge"] is False  # no liveness authority → skip hard-delete
     assert result["reconcile"] == {"ran": False, "reason": "no_credentials_configured"}
+
+
+async def test_config_check_error_skips_purge_but_unrelated_sweeps_still_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A RAISE from `provider.is_configured()` (a `database`-mode DB read — missing singleton or a
+    transient connection error) must degrade to skip-reconcile, NOT abort the whole tick: the
+    unrelated sweeps (hitl-expiry, TTL purge, replay-verdict) still run. Regression guard — the
+    config check must live INSIDE the reconcile try/except, not the if-condition. Move it back to
+    the if-condition → is_configured()'s raise escapes `run_scheduled_tick` and this fails (no
+    sweeps)."""
+    reconcile_calls: list[int] = []
+    ran_sweeps: list[bool] = []
+    seen: dict[str, Any] = {}
+
+    async def _fake_reconcile(_engine: Any, _provider: Any) -> Any:
+        reconcile_calls.append(1)
+        return SimpleNamespace(skipped_lock_held=False, tombstoned=0, restored=0)
+
+    async def _fake_sweeps(**kwargs: Any) -> dict[str, Any]:
+        ran_sweeps.append(True)
+        seen["include_install_purge"] = kwargs["include_install_purge"]
+        return {}
+
+    monkeypatch.setattr(runner_mod, "reconcile_installations", _fake_reconcile)
+    monkeypatch.setattr(runner_mod, "run_all_sweeps", _fake_sweeps)
+
+    result = await run_scheduled_tick(**_tick_kwargs(provider=_FakeProvider(raises=True)))
+
+    assert reconcile_calls == []  # is_configured() raised BEFORE reconcile could run
+    assert ran_sweeps == [True]  # the unrelated sweeps run REGARDLESS of the config-check failure
+    assert seen["include_install_purge"] is False  # unconfirmed → hard-delete skipped
+    assert result["reconcile"] == {"ran": True, "failed": True}
 
 
 async def test_run_all_sweeps_default_is_fail_safe_no_install_purge(
