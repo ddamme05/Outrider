@@ -12,7 +12,7 @@ Sequence per the intake-and-webhook spec:
      `installation_authorizer(installation_id, repo_id)` — a non-authorized
      live result → `reviews.status='skipped'` + phase-end + `Command(goto=END)`,
      WITHOUT calling `github_factory`.
-  2. `gh = github_factory(state.pr_context.installation_id)`.
+  2. `gh = await github_factory(state.pr_context.installation_id)` (async per `DECISIONS.md#070`).
   3. Phase 1 (sequential): `gh.rest.pulls.async_list_files(...)` via
      `github.fetch.list_pr_files`. Returns the per-file metadata list.
   4. Whole-PR pre-flight size gate (per `docs/spec.md §6.10`: > 1000 lines
