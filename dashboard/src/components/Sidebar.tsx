@@ -52,6 +52,13 @@ export function Sidebar() {
         </svg>
         Reviews
       </NavLink>
+      <NavLink to="/setup" className={navClass} onClick={closeNav}>
+        <svg className="ico" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 1.5l1.6 1.1 1.9-.3.7 1.8 1.8.7-.3 1.9L16 8l-1.6 1.6.3 1.9-1.8.7-.7 1.8-1.9-.3L8 14.5l-1.6-1.1-1.9.3-.7-1.8-1.8-.7.3-1.9L0 8l1.6-1.6-.3-1.9 1.8-.7.7-1.8 1.9.3L8 1.5z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
+          <circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.3" />
+        </svg>
+        Set up GitHub App
+      </NavLink>
 
       <div className="sb-spacer" />
 
