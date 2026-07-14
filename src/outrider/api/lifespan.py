@@ -944,6 +944,14 @@ def build_lifespan(
             app.state.persister = persister
             app.state.provider = provider
             app.state.credential_provider = credential_provider
+            # Setup state-machine startup repair (DECISIONS.md#070, spec F6): time out any stale
+            # `CONVERTING` attempt a crash left mid-conversion → ORPHANED, so onboarding can be
+            # retried. The machine was built + stashed at create_app (`api/setup/mount.py`) in
+            # `database` mode ONLY; it resolves `app.state.session_factory` (set just above) lazily.
+            # `env` mode / demo have no machine → skip.
+            setup_machine = getattr(app.state, "setup_state_machine", None)
+            if setup_machine is not None:
+                await setup_machine.recover_stale_converting()
             app.state.github_factory = github_factory
             app.state.compiled_graph = compiled_graph
             # The dispatcher invokes the semaphore-bounded wrapper, not the bare

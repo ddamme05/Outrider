@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import os
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from outrider.api import lifespan
 from outrider.api.dashboard import (
@@ -61,9 +61,12 @@ from outrider.api.dashboard import (
     reviews_router,
 )
 from outrider.api.privacy import router as privacy_router
+from outrider.api.setup.gating import require_credentials_configured
+from outrider.api.setup.mount import mount_setup_router
 from outrider.api.slack import slack_oauth_router
 from outrider.api.spa import mount_spa_if_configured
 from outrider.api.webhooks.router import router as webhook_router
+from outrider.github.credentials import resolve_credential_source
 
 
 def _demo_mode_from_env() -> bool:
@@ -105,14 +108,25 @@ def _include_routers(app: FastAPI, *, demo_mode: bool) -> None:
     app.include_router(privacy_router)
     if demo_mode:
         return
-    # Production-only: mutation + side-effecting routers.
-    app.include_router(webhook_router)
-    app.include_router(hitl_router)  # POST /reviews/{id}/decide
+    # Production-only: mutation + side-effecting routers. Each is credential-dependent and fails
+    # closed with 503 while the credential provider is not CONFIGURED (spec F6 / DECISIONS.md#070) —
+    # `require_credentials_configured` is a no-op in `env` mode (always configured) and structurally
+    # absent in demo mode (these routers are not mounted). Mounted BEFORE the setup router + SPA
+    # catch-all so route ordering is: specific API → /setup → SPA history-fallback.
+    setup_gate = [Depends(require_credentials_configured)]
+    app.include_router(webhook_router, dependencies=setup_gate)
+    app.include_router(hitl_router, dependencies=setup_gate)  # POST /reviews/{id}/decide
     # Slack OAuth install flow (commit 6.3e): admin-authed GET /slack/install +
     # public GET /slack/oauth/callback (both side-effecting). Disabled (uniform
     # 503) unless OUTRIDER_SLACK_CLIENT_ID is set — but in demo mode it's not
     # mounted at all, so the GET-with-side-effects surface is structurally absent.
-    app.include_router(slack_oauth_router)
+    app.include_router(slack_oauth_router, dependencies=setup_gate)
+    # `/setup` onboarding router — `database` credential mode ONLY (env mode has no onboarding).
+    # Mounted at create_app time, BEFORE the SPA catch-all (registration-last, #069), so `/setup/*`
+    # routes win over the SPA history-fallback. The state machine reads `app.state.session_factory`
+    # lazily (built by the lifespan at startup); see `api/setup/mount.py`.
+    if resolve_credential_source(os.environ) == "database":
+        mount_setup_router(app)
 
 
 def create_app(*, demo_mode: bool, enable_docs: bool = False) -> FastAPI:
