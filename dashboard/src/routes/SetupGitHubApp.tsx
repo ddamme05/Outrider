@@ -66,6 +66,11 @@ export function SetupGitHubApp() {
       submitManifestToGitHub(target_url, manifest);
     } catch (err) {
       setError(err instanceof SetupError ? err.message : "Setup failed — check the server logs.");
+      // A rejected Start may have TRANSITIONED the machine: begin_setup commits a stale
+      // CONVERTING → ORPHANED in its own transaction BEFORE the 409 (see state_machine.begin_setup).
+      // Re-sync so the UI shows the real state (ORPHANED → the reset/cleanup flow) instead of the
+      // pre-click one with its now-wrong "Retry will proceed" affordance.
+      await refresh();
       setBusy(false);
     }
   }
