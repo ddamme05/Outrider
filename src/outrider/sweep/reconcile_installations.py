@@ -36,7 +36,7 @@ from outrider.github.authz import list_installation_ids
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-    from outrider.github.config import GitHubAppSettings
+    from outrider.github.credentials import GitHubCredentialProvider
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class ReconcileResult:
 
 async def reconcile_installations(
     engine: AsyncEngine,
-    settings: GitHubAppSettings,
+    provider: GitHubCredentialProvider,
 ) -> ReconcileResult:
     """Run one reconcile tick under the `#067` session-scoped advisory lock.
 
@@ -94,7 +94,7 @@ async def reconcile_installations(
             logger.info("reconcile janitor: advisory lock held by another runner; skipping tick")
             return ReconcileResult(skipped_lock_held=True)
         try:
-            github_ids = await list_installation_ids(settings)
+            github_ids = await list_installation_ids(provider)
             return await _apply_reconcile(sessionmaker, github_ids)
         finally:
             # Release the session-scoped lock explicitly (connection close is the crash backstop).

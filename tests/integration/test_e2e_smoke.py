@@ -244,7 +244,7 @@ class _StubGitHub:
         self.rest = _StubRestAPI()
 
 
-def _stub_github_factory(installation_id: int) -> Any:
+async def _stub_github_factory(installation_id: int) -> Any:
     assert installation_id == _INSTALLATION_ID, f"unexpected installation_id {installation_id}"
     return _StubGitHub()
 

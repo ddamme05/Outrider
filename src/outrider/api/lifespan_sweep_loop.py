@@ -58,7 +58,7 @@ if TYPE_CHECKING:
     from outrider.anomaly.sinks import AnomalySink
     from outrider.audit.persister import AuditPersister
     from outrider.db.sinks import ReviewStatusSink
-    from outrider.github.config import GitHubAppSettings
+    from outrider.github.credentials import GitHubCredentialProvider
 
 
 logger = logging.getLogger("outrider.api.lifespan_sweep_loop")
@@ -82,7 +82,7 @@ async def _sweep_loop(
     audit_persister: AuditPersister,
     checkpointer: BaseCheckpointSaver[Any],
     compiled_graph: CompiledStateGraph[Any, Any, Any, Any],
-    github_app_settings: GitHubAppSettings | None,
+    provider: GitHubCredentialProvider | None,
     interval_seconds: float,
 ) -> None:
     """Run `run_scheduled_tick` every `interval_seconds`.
@@ -114,7 +114,7 @@ async def _sweep_loop(
                     audit_persister=audit_persister,
                     checkpointer=checkpointer,
                     compiled_graph=compiled_graph,
-                    github_app_settings=github_app_settings,
+                    provider=provider,
                 )
                 logger.info("sweep_tick_completed", extra={"result": result})
             except asyncio.CancelledError:
@@ -139,7 +139,7 @@ def start_periodic_sweep(
     audit_persister: AuditPersister,
     checkpointer: BaseCheckpointSaver[Any],
     compiled_graph: CompiledStateGraph[Any, Any, Any, Any],
-    github_app_settings: GitHubAppSettings | None = None,
+    provider: GitHubCredentialProvider | None = None,
     interval_seconds: float | None = None,
 ) -> asyncio.Task[None]:
     """Schedule the periodic sweep as an asyncio Task.
@@ -177,7 +177,7 @@ def start_periodic_sweep(
             audit_persister=audit_persister,
             checkpointer=checkpointer,
             compiled_graph=compiled_graph,
-            github_app_settings=github_app_settings,
+            provider=provider,
             interval_seconds=actual_interval,
         ),
         name="outrider-sweep-loop",

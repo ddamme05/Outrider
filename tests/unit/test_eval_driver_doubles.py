@@ -331,11 +331,11 @@ async def test_probe_cache_model_concurrent_first_wave_all_write() -> None:
 async def test_github_factory_rejects_wrong_installation_id() -> None:
     factory = _github_factory_for(_fixture())
     with pytest.raises(EvalDriverError, match="unexpected installation_id"):
-        factory(_INSTALLATION_ID + 1)
+        await factory(_INSTALLATION_ID + 1)
 
 
 async def test_github_double_serves_file_list() -> None:
-    client = _github_factory_for(_fixture())(_INSTALLATION_ID)
+    client = await _github_factory_for(_fixture())(_INSTALLATION_ID)
     resp = await client.rest.pulls.async_list_files("acme", "widget", 7)
     metas = resp.parsed_data
     assert len(metas) == 1
@@ -345,7 +345,7 @@ async def test_github_double_serves_file_list() -> None:
 
 
 async def test_github_content_base64_wrapped_survives_intake_decode() -> None:
-    repos = _github_factory_for(_fixture())(_INSTALLATION_ID).rest.repos
+    repos = (await _github_factory_for(_fixture())(_INSTALLATION_ID)).rest.repos
     resp = await repos.async_get_content("acme", "widget", "app/views.py", ref=_HEAD_SHA)
     data = resp.parsed_data
     assert data.encoding == "base64"
@@ -358,7 +358,7 @@ async def test_github_content_base64_wrapped_survives_intake_decode() -> None:
 
 
 async def test_github_double_serves_base_vs_head_by_ref() -> None:
-    repos = _github_factory_for(_fixture())(_INSTALLATION_ID).rest.repos
+    repos = (await _github_factory_for(_fixture())(_INSTALLATION_ID)).rest.repos
     base = await repos.async_get_content("acme", "widget", "app/views.py", ref=_BASE_SHA)
     head = await repos.async_get_content("acme", "widget", "app/views.py", ref=_HEAD_SHA)
     assert base64.b64decode(base.parsed_data.content.replace("\n", "")).decode() == _BASE_CONTENT
@@ -368,7 +368,7 @@ async def test_github_double_serves_base_vs_head_by_ref() -> None:
 async def test_github_double_mimics_404_on_missing_content() -> None:
     # An absent path mimics GitHub's 404 (not a hard error) so trace's candidate
     # probe can read `.response.status_code == 404` to resolve which path exists.
-    repos = _github_factory_for(_fixture())(_INSTALLATION_ID).rest.repos
+    repos = (await _github_factory_for(_fixture())(_INSTALLATION_ID)).rest.repos
     with pytest.raises(_FixtureContentNotFoundError) as exc_info:
         await repos.async_get_content("acme", "widget", "app/views.py", ref="c" * 40)
     assert exc_info.value.response.status_code == 404
@@ -388,7 +388,7 @@ async def test_github_double_renamed_file_keys_base_content_at_previous_path() -
             }
         ]
     )
-    repos = _github_factory_for(fixture)(_INSTALLATION_ID).rest.repos
+    repos = (await _github_factory_for(fixture)(_INSTALLATION_ID)).rest.repos
     # base content is read at the OLD path; head at the NEW path (intake's rename shape).
     base = await repos.async_get_content("acme", "widget", "app/old_name.py", ref=_BASE_SHA)
     head = await repos.async_get_content("acme", "widget", "app/new_name.py", ref=_HEAD_SHA)

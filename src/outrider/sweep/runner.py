@@ -80,7 +80,7 @@ if TYPE_CHECKING:
     from outrider.anomaly.sinks import AnomalySink
     from outrider.audit.persister import AuditPersister
     from outrider.db.sinks import ReviewStatusSink
-    from outrider.github.config import GitHubAppSettings
+    from outrider.github.credentials import GitHubCredentialProvider
 
 
 logger = logging.getLogger(__name__)
@@ -228,7 +228,7 @@ async def run_scheduled_tick(
     audit_persister: AuditPersister,
     checkpointer: BaseCheckpointSaver[Any],
     compiled_graph: CompiledStateGraph[Any, Any, Any, Any],
-    github_app_settings: GitHubAppSettings | None,
+    provider: GitHubCredentialProvider | None,
     grace_period: timedelta | None = None,
     purge_role: str = "sweep",
 ) -> dict[str, Any]:
@@ -252,17 +252,18 @@ async def run_scheduled_tick(
     cannot prevent the sweeps (only the install hard-delete, which is the correct thing to skip).
     Returns the `run_all_sweeps` telemetry dict with an added `"reconcile"` entry.
 
-    `github_app_settings=None` (App not configured / demo) → no reconcile authority → the `#012`
-    install hard-delete is skipped for the tick (nothing to confirm liveness against).
+    `provider=None` (demo) OR a `database`-mode provider that is not yet `CONFIGURED` → no reconcile
+    authority → the `#012` install hard-delete is skipped for the tick (nothing to confirm liveness
+    against). This is the reconciliation janitor's self-skip while not `CONFIGURED` (`#070`).
     """
     # Step 1 — reconcile FIRST, behind its own try/except.
     reconcile_confirmed = False
     reconcile_telemetry: dict[str, Any]
-    if github_app_settings is None:
-        reconcile_telemetry = {"ran": False, "reason": "no_app_settings"}
+    if provider is None or not await provider.is_configured():
+        reconcile_telemetry = {"ran": False, "reason": "no_credentials_configured"}
     else:
         try:
-            reconcile_result = await reconcile_installations(engine, github_app_settings)
+            reconcile_result = await reconcile_installations(engine, provider)
             # Confirmed only when THIS tick acquired the lock and completed. A lock-contended tick
             # (another runner reconciling) is NOT this tick's confirmation, so skip the hard-delete.
             reconcile_confirmed = not reconcile_result.skipped_lock_held

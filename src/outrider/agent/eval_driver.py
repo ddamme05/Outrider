@@ -840,7 +840,7 @@ def _github_factory_for(fixture: EvalFixture) -> Any:
         _FixtureRestAPI(_FixtureReposAPI(content), _FixturePullsAPI(metas))
     )
 
-    def factory(installation_id: int) -> Any:
+    async def factory(installation_id: int) -> Any:
         if installation_id != fixture.installation_id:
             raise EvalDriverError(
                 f"unexpected installation_id {installation_id} "

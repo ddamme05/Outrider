@@ -223,7 +223,7 @@ class _StubGitHub:
         self.rest = _StubRestAPI()
 
 
-def _stub_github_factory(installation_id: int) -> Any:
+async def _stub_github_factory(installation_id: int) -> Any:
     # Pin the seed flows through build_graph's closure to the factory call;
     # a wiring regression that dropped installation_id would silently
     # produce a client for the wrong installation without this assert.

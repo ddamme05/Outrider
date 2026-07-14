@@ -14,7 +14,7 @@ at startup (Anthropic provider, audit persister, GitHub client factory,
 compiled graph) and LIFO teardown at shutdown via AsyncExitStack. The
 webhook router (`outrider.api.webhooks.router`) reads its dependencies
 from `app.state` bindings the lifespan installs (engine, session_factory,
-retention_settings, persister, provider, github_app_settings,
+retention_settings, persister, provider, credential_provider,
 github_factory, compiled_graph, run_graph).
 
 **DEMO_MODE.** Under `create_app(demo_mode=True)` (env `OUTRIDER_DEMO_MODE`,

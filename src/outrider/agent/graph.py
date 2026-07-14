@@ -129,7 +129,7 @@ Required keyword arguments per `nodes-receive-deps-via-closure`:
   - `db_factory: async_sessionmaker[AsyncSession]` — required for intake's
     `reviews.status='skipped'` / `'failed'` writes. Per `docs/spec.md
     §9.3`, `db_factory` is the canonical first parameter.
-  - `github_factory: Callable[[int], GitHub]` — required for intake to
+  - `github_factory: Callable[[int], Awaitable[GitHub]]` — required for intake to
     construct a per-installation `GitHub` client on-demand. Per
     `DECISIONS.md#020`, minting happens at intake call-site, not at
     webhook receipt.
@@ -189,7 +189,7 @@ from outrider.github.publisher import GitHubPublisher
 from outrider.llm.base import LLMProvider
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -221,7 +221,7 @@ class BuildGraphError(ValueError):
 def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg per node-injected resource
     *,
     db_factory: async_sessionmaker[AsyncSession],
-    github_factory: Callable[[int], InstallationGitHubClient],
+    github_factory: Callable[[int], Awaitable[InstallationGitHubClient]],
     installation_authorizer: InstallationAuthorizer,
     provider: LLMProvider,
     model_config: ModelConfig,

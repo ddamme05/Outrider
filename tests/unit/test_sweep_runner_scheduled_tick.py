@@ -2,8 +2,9 @@
 
 The production tick MUST reconcile the install cache BEFORE running the sweep family, and MUST gate
 the #012 install hard-delete (`run_all_sweeps(include_install_purge=...)`) on that reconcile having
-CONFIRMED liveness this tick. A reconcile that fails, is lock-contended, or is skipped (no App
-settings) leaves the hard-delete OFF for the tick — but the unrelated sweeps still run. These unit
+CONFIRMED liveness this tick. A reconcile that fails, is lock-contended, or is skipped (no
+configured credentials) leaves the hard-delete OFF for the tick — but the unrelated sweeps still
+run. These unit
 tests pin that contract against monkeypatched reconcile + run_all_sweeps stand-ins, plus the
 FAIL-SAFE default of `run_all_sweeps` itself (a bare call must NOT hard-delete installs); the real
 end-to-end survival guarantee is in tests/integration/test_scheduled_tick_ordering.py.
@@ -55,6 +56,22 @@ class _FakeTxnConn:
         return True
 
 
+class _FakeProvider:
+    """A credential provider (`DECISIONS.md#070`): `run_scheduled_tick` skips reconcile when the
+    provider is absent (`None`) OR reports `is_configured() is False` (a `database`-mode instance
+    still onboarding). `reconcile_installations` is monkeypatched, so `current()` is never
+    reached."""
+
+    def __init__(self, *, configured: bool = True) -> None:
+        self._configured = configured
+
+    async def is_configured(self) -> bool:
+        return self._configured
+
+    async def current(self) -> Any:  # pragma: no cover — reconcile is monkeypatched
+        return SimpleNamespace()
+
+
 def _tick_kwargs(**overrides: Any) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "engine": _FakeEngine(),
@@ -64,7 +81,7 @@ def _tick_kwargs(**overrides: Any) -> dict[str, Any]:
         "audit_persister": None,
         "checkpointer": None,
         "compiled_graph": None,
-        "github_app_settings": SimpleNamespace(),
+        "provider": _FakeProvider(configured=True),
     }
     kwargs.update(overrides)
     return kwargs
@@ -77,7 +94,7 @@ async def test_reconcile_runs_before_sweeps_and_permits_purge_when_confirmed(
     order: list[str] = []
     seen: dict[str, Any] = {}
 
-    async def _fake_reconcile(_engine: Any, _settings: Any) -> Any:
+    async def _fake_reconcile(_engine: Any, _provider: Any) -> Any:
         order.append("reconcile")
         return SimpleNamespace(skipped_lock_held=False, tombstoned=1, restored=2)
 
@@ -108,7 +125,7 @@ async def test_lock_contended_reconcile_skips_install_purge(
     #012 hard-delete is skipped, but the unrelated sweeps still run."""
     seen: dict[str, Any] = {}
 
-    async def _fake_reconcile(_engine: Any, _settings: Any) -> Any:
+    async def _fake_reconcile(_engine: Any, _provider: Any) -> Any:
         return SimpleNamespace(skipped_lock_held=True, tombstoned=0, restored=0)
 
     async def _fake_sweeps(**kwargs: Any) -> dict[str, Any]:
@@ -132,7 +149,7 @@ async def test_reconcile_failure_skips_install_purge_but_sweeps_still_run(
     ran_sweeps: list[bool] = []
     seen: dict[str, Any] = {}
 
-    async def _failing_reconcile(_engine: Any, _settings: Any) -> Any:
+    async def _failing_reconcile(_engine: Any, _provider: Any) -> Any:
         msg = "simulated GitHub unreachable"
         raise RuntimeError(msg)
 
@@ -151,13 +168,13 @@ async def test_reconcile_failure_skips_install_purge_but_sweeps_still_run(
     assert result["reconcile"] == {"ran": True, "failed": True}
 
 
-async def test_no_app_settings_skips_reconcile_and_purge(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`github_app_settings=None` (demo / App not configured) → no reconcile authority → the #012
+async def test_no_provider_skips_reconcile_and_purge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`provider=None` (demo / App not configured) → no reconcile authority → the #012
     hard-delete is skipped for the tick."""
     reconcile_calls: list[int] = []
     seen: dict[str, Any] = {}
 
-    async def _fake_reconcile(_engine: Any, _settings: Any) -> Any:
+    async def _fake_reconcile(_engine: Any, _provider: Any) -> Any:
         reconcile_calls.append(1)
         return SimpleNamespace(skipped_lock_held=False, tombstoned=0, restored=0)
 
@@ -168,11 +185,40 @@ async def test_no_app_settings_skips_reconcile_and_purge(monkeypatch: pytest.Mon
     monkeypatch.setattr(runner_mod, "reconcile_installations", _fake_reconcile)
     monkeypatch.setattr(runner_mod, "run_all_sweeps", _fake_sweeps)
 
-    result = await run_scheduled_tick(**_tick_kwargs(github_app_settings=None))
+    result = await run_scheduled_tick(**_tick_kwargs(provider=None))
 
-    assert reconcile_calls == []  # no App → reconcile never called
+    assert reconcile_calls == []  # no provider → reconcile never called
     assert seen["include_install_purge"] is False  # no liveness authority → skip hard-delete
-    assert result["reconcile"] == {"ran": False, "reason": "no_app_settings"}
+    assert result["reconcile"] == {"ran": False, "reason": "no_credentials_configured"}
+
+
+async def test_unconfigured_provider_skips_reconcile_and_purge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `database`-mode provider that is not yet `CONFIGURED` (`is_configured() is False`, mid-
+    onboarding) is treated exactly like `provider=None` (`DECISIONS.md#070`): no reconcile authority
+    → the #012 hard-delete is skipped, reconcile never runs. Distinct from `provider=None`: the
+    provider EXISTS but reports itself unconfigured, so the guard must check `is_configured()`, not
+    only `is None`."""
+    reconcile_calls: list[int] = []
+    seen: dict[str, Any] = {}
+
+    async def _fake_reconcile(_engine: Any, _provider: Any) -> Any:
+        reconcile_calls.append(1)
+        return SimpleNamespace(skipped_lock_held=False, tombstoned=0, restored=0)
+
+    async def _fake_sweeps(**kwargs: Any) -> dict[str, Any]:
+        seen["include_install_purge"] = kwargs["include_install_purge"]
+        return {}
+
+    monkeypatch.setattr(runner_mod, "reconcile_installations", _fake_reconcile)
+    monkeypatch.setattr(runner_mod, "run_all_sweeps", _fake_sweeps)
+
+    result = await run_scheduled_tick(**_tick_kwargs(provider=_FakeProvider(configured=False)))
+
+    assert reconcile_calls == []  # unconfigured → reconcile never called
+    assert seen["include_install_purge"] is False  # no liveness authority → skip hard-delete
+    assert result["reconcile"] == {"ran": False, "reason": "no_credentials_configured"}
 
 
 async def test_run_all_sweeps_default_is_fail_safe_no_install_purge(

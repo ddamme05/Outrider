@@ -166,7 +166,7 @@ class _StubReviewStatusSink:
         return None
 
 
-def _stub_github_factory(installation_id: int) -> Any:  # noqa: ARG001
+async def _stub_github_factory(installation_id: int) -> Any:  # noqa: ARG001
     return object()
 
 

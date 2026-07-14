@@ -39,7 +39,7 @@ from outrider.github.auth import make_app_client
 
 if TYPE_CHECKING:
     from outrider.github.auth import AppGitHubClient
-    from outrider.github.config import GitHubAppSettings
+    from outrider.github.credentials import GitHubCredentialProvider
 
 logger = logging.getLogger(__name__)
 
@@ -270,9 +270,9 @@ def _denied(
     return LiveAuthResult(outcome, detail)
 
 
-def make_installation_authorizer(settings: GitHubAppSettings) -> InstallationAuthorizer:
-    """Bind `GitHubAppSettings` into an `InstallationAuthorizer` closure for injection into
-    `build_graph` → intake.
+def make_installation_authorizer(provider: GitHubCredentialProvider) -> InstallationAuthorizer:
+    """Bind the credential `provider` into an `InstallationAuthorizer` closure for injection into
+    `build_graph` → intake (`DECISIONS.md#070`).
 
     Each invocation constructs a FRESH App-JWT client (`make_app_client`) that
     `check_installation_authorization` async-with-scopes for its GET + POST pair — per
@@ -280,17 +280,19 @@ def make_installation_authorizer(settings: GitHubAppSettings) -> InstallationAut
     closed on exit (the un-entered path creates a client per request and may leak). A single
     shared long-lived client is deliberately NOT used: githubkit keeps its httpx client in a
     task-local ContextVar, and intake runs in a per-review task, so a lifespan-entered client
-    would be invisible here. `lifespan` passes the validated settings once; intake calls the
-    returned closure and stays githubkit-free. The PEM is read per authorization (once per
-    review), matching the per-installation client's brief-PEM-window pattern."""
+    would be invisible here. `lifespan` passes the credential provider once; intake calls the
+    returned closure and stays githubkit-free. The PEM is read per authorization (once per review,
+    from `provider.current()`), matching the per-installation client's brief-PEM-window pattern."""
 
     async def authorize(installation_id: int, repo_id: int) -> LiveAuthResult:
         try:
-            app_client = make_app_client(settings)
+            app_client = make_app_client(await provider.current())
         except Exception as exc:
-            # App-JWT client CONSTRUCTION failed (e.g. malformed settings / PEM). Live-check
-            # uncertainty → fail closed (UNCERTAIN → intake `skipped`), not intake's `failed`
-            # path. `except Exception`, NOT `BaseException`: cancellation must propagate.
+            # The provider is unconfigured (`database` mode, not yet CONFIGURED → raises
+            # `GitHubUnconfiguredError`) OR App-JWT client CONSTRUCTION failed (malformed PEM).
+            # Either way the live check is uncertain → fail closed (UNCERTAIN → intake `skipped`),
+            # not intake's `failed` path. `except Exception`, NOT `BaseException`: cancellation
+            # propagates.
             return _denied(
                 LiveAuthOutcome.UNCERTAIN,
                 installation_id,
@@ -311,19 +313,20 @@ _LIST_PAGE_SIZE: Final[int] = 100
 _MAX_LIST_PAGES: Final[int] = 100
 
 
-async def list_installation_ids(settings: GitHubAppSettings) -> set[int]:
+async def list_installation_ids(provider: GitHubCredentialProvider) -> set[int]:
     """Return the installation ids GitHub currently lists for this App (App-JWT
     `GET /app/installations`, paginated). The reconcile janitor (`#065` / `#012` / `#067`) uses
     this as the AUTHORITY to catch MISSED lifecycle events: a local install absent from this set is
     a missed `installation.deleted` (→ tombstone); a tombstoned local install present here is a
     live-confirmed reinstall (→ clear the tombstone).
 
-    RAISES on any failure (network error, non-2xx, non-list body, missing `id`, page-cap exceeded)
-    — the janitor MUST NOT reconcile against a partial or empty-by-error list, or it would wrongly
-    tombstone live installs. A fresh App-JWT client is `async with`-scoped for the paginated GET
-    (githubkit reusing-client guidance, same shape as `make_installation_authorizer`)."""
+    RAISES on any failure (network error, non-2xx, non-list body, missing `id`, page-cap exceeded,
+    OR the provider being unconfigured in `database` mode) — the janitor MUST NOT reconcile against
+    a partial or empty-by-error list, or it would wrongly tombstone live installs. A fresh App-JWT
+    client is `async with`-scoped for the paginated GET (githubkit reusing-client guidance, same
+    shape as `make_installation_authorizer`)."""
     ids: set[int] = set()
-    async with make_app_client(settings) as app_client:
+    async with make_app_client(await provider.current()) as app_client:
         for page in range(1, _MAX_LIST_PAGES + 1):
             resp = await app_client.arequest(
                 "GET",

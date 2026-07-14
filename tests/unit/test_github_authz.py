@@ -25,7 +25,22 @@ from outrider.github.authz import (
 
 _INSTALLATION_ID = 12345
 _REPO_ID = 999
-_SETTINGS_SENTINEL: Any = object()  # make_app_client is monkeypatched, so settings is opaque
+_SETTINGS_SENTINEL: Any = object()  # make_app_client is monkeypatched, so the snapshot is opaque
+
+
+class _FakeProvider:
+    """A credential provider whose `current()` returns the opaque sentinel — the authorizer /
+    list-ids pass it to the monkeypatched `make_app_client`, preserving the `seen_settings`
+    assertions (`#070`: the consumers now resolve credentials from the provider)."""
+
+    async def current(self) -> Any:
+        return _SETTINGS_SENTINEL
+
+    async def is_configured(self) -> bool:
+        return True
+
+
+_PROVIDER_SENTINEL = _FakeProvider()
 
 
 def _resp(text: str) -> types.SimpleNamespace:
@@ -227,7 +242,7 @@ async def test_authorizer_builds_and_scopes_a_fresh_client_per_authorization(
         return c
 
     monkeypatch.setattr("outrider.github.authz.make_app_client", _fake_make_app_client)
-    authorize = make_installation_authorizer(_SETTINGS_SENTINEL)
+    authorize = make_installation_authorizer(_PROVIDER_SENTINEL)
 
     r1 = await authorize(_INSTALLATION_ID, _REPO_ID)
     r2 = await authorize(_INSTALLATION_ID, _REPO_ID)
@@ -269,7 +284,7 @@ async def test_client_construction_failure_is_uncertain(monkeypatch: pytest.Monk
         raise RuntimeError("malformed App private key")
 
     monkeypatch.setattr("outrider.github.authz.make_app_client", _boom)
-    authorize = make_installation_authorizer(_SETTINGS_SENTINEL)
+    authorize = make_installation_authorizer(_PROVIDER_SENTINEL)
     result = await authorize(_INSTALLATION_ID, _REPO_ID)
     assert result.outcome is LiveAuthOutcome.UNCERTAIN
     assert result.authorized is False
@@ -286,7 +301,7 @@ async def test_cancellation_propagates_from_construction(monkeypatch: pytest.Mon
         raise asyncio.CancelledError
 
     monkeypatch.setattr("outrider.github.authz.make_app_client", _cancel)
-    authorize = make_installation_authorizer(_SETTINGS_SENTINEL)
+    authorize = make_installation_authorizer(_PROVIDER_SENTINEL)
     with pytest.raises(asyncio.CancelledError):
         await authorize(_INSTALLATION_ID, _REPO_ID)
 
@@ -394,7 +409,7 @@ async def test_list_installation_ids_single_short_page(monkeypatch: pytest.Monke
     """One page under the page-size stops after a single fetch and returns the ids."""
     client = _PaginatingAppClient([[{"id": 1}, {"id": 2}, {"id": 3}]])
     monkeypatch.setattr("outrider.github.authz.make_app_client", lambda _s: client)
-    ids = await list_installation_ids(_SETTINGS_SENTINEL)
+    ids = await list_installation_ids(_PROVIDER_SENTINEL)
     assert ids == {1, 2, 3}
     assert len(client.calls) == 1
 
@@ -407,7 +422,7 @@ async def test_list_installation_ids_paginates_until_short_page(
     page2 = [{"id": 100}, {"id": 101}]
     client = _PaginatingAppClient([page1, page2])
     monkeypatch.setattr("outrider.github.authz.make_app_client", lambda _s: client)
-    ids = await list_installation_ids(_SETTINGS_SENTINEL)
+    ids = await list_installation_ids(_PROVIDER_SENTINEL)
     assert len(ids) == 102
     assert {100, 101} <= ids
     assert len(client.calls) == 2
@@ -429,4 +444,4 @@ async def test_list_installation_ids_non_list_body_raises(monkeypatch: pytest.Mo
 
     monkeypatch.setattr("outrider.github.authz.make_app_client", lambda _s: _BadClient())
     with pytest.raises(TypeError, match="expected list"):
-        await list_installation_ids(_SETTINGS_SENTINEL)
+        await list_installation_ids(_PROVIDER_SENTINEL)
