@@ -7,6 +7,7 @@ type / non-201 responses fail closed (never coerce a null into a persisted crede
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -16,6 +17,7 @@ import outrider.github.manifest_conversion as conv_mod
 from outrider.api.setup.state_machine import _STALE_CONVERTING_AFTER
 from outrider.github.manifest_conversion import (
     _CONVERSION_TIMEOUT_SECONDS,
+    _CONVERSION_TOTAL_DEADLINE_SECONDS,
     ManifestConversionError,
     convert_manifest_code,
 )
@@ -137,8 +139,27 @@ async def test_default_client_disables_retry_and_bounds_timeout(
     assert captured["timeout"] == _CONVERSION_TIMEOUT_SECONDS
 
 
-def test_conversion_timeout_is_below_the_stale_converting_threshold() -> None:
-    """The bounded conversion timeout MUST sit well under the state machine's stale-`CONVERTING`
-    orphan threshold — otherwise a genuinely in-flight conversion could be false-orphaned (the
-    load-bearing assumption in `state_machine._STALE_CONVERTING_AFTER`'s comment)."""
-    assert _STALE_CONVERTING_AFTER.total_seconds() > _CONVERSION_TIMEOUT_SECONDS
+def test_conversion_deadlines_are_below_the_stale_converting_threshold() -> None:
+    """Both the per-phase timeout AND the total wall-clock deadline MUST sit well under the state
+    machine's stale-`CONVERTING` orphan threshold — otherwise a genuinely in-flight conversion could
+    be false-orphaned (the load-bearing assumption in `state_machine._STALE_CONVERTING_AFTER`)."""
+    stale = _STALE_CONVERTING_AFTER.total_seconds()
+    assert stale > _CONVERSION_TIMEOUT_SECONDS
+    assert stale > _CONVERSION_TOTAL_DEADLINE_SECONDS
+
+
+async def test_total_deadline_enforced_on_a_never_completing_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ENFORCEMENT (not just a constant comparison): a request that never completes is aborted by
+    the total `asyncio.timeout` deadline + mapped to `ManifestConversionError` (→ callback orphans),
+    so a slow-drip response can't linger past the stale-`CONVERTING` threshold."""
+    monkeypatch.setattr(conv_mod, "_CONVERSION_TOTAL_DEADLINE_SECONDS", 0.01)
+
+    class _HangingGitHub:
+        async def arequest(self, *_a: Any, **_k: Any) -> _Resp:
+            await asyncio.sleep(30)  # never returns within the 0.01s deadline
+            raise AssertionError("unreachable")  # pragma: no cover
+
+    with pytest.raises(ManifestConversionError):
+        await convert_manifest_code("CODE", github=_HangingGitHub())  # type: ignore[arg-type]

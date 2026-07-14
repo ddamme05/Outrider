@@ -7,9 +7,11 @@ our manifest. This wrapper exchanges that temporary `code` for the App's `id`, `
 `permissions`/`events`). The endpoint is **unauthenticated** — the `code` IS the credential; GitHub
 rejects tokens on it — so we use an unauthenticated `GitHub()` client, but NOT a default one:
 `auto_retry=False` (the `code` is single-use — a retried POST would re-send a spent credential; a
-failed conversion must orphan, never retry) and a bounded `timeout` (githubkit defaults to no
-timeout; the state machine orphans a stale `CONVERTING` after 5 min ASSUMING the request is bounded
-well below that — see `_CONVERSION_TIMEOUT_SECONDS`).
+failed conversion must orphan, never retry), plus a bounded request: an httpx per-phase `timeout`
+AND a hard total `asyncio.timeout` deadline (githubkit defaults to no timeout, and the per-phase
+timeout does not bound total wall-clock; the state machine orphans a stale `CONVERTING` after 5 min
+ASSUMING the request is bounded well below that — see `_CONVERSION_TIMEOUT_SECONDS` +
+`_CONVERSION_TOTAL_DEADLINE_SECONDS`).
 
 Boundary duties (githubkit confined here, `vendor-sdks-only-in-wrappers`):
 - The `code` is external input → percent-encoded into the path segment (no path injection).
@@ -22,6 +24,7 @@ Boundary duties (githubkit confined here, `vendor-sdks-only-in-wrappers`):
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
@@ -37,12 +40,16 @@ __all__ = ["ManifestConversion", "ManifestConversionError", "convert_manifest_co
 
 _API_VERSION_HEADER: Final[dict[str, str]] = {"X-GitHub-Api-Version": "2026-03-10"}
 
-# Bounded conversion request timeout (seconds). githubkit defaults to no timeout, but the setup
-# state machine orphans a stale `CONVERTING` after `state_machine._STALE_CONVERTING_AFTER` (5 min)
-# on the assumption that a real conversion request resolves well below that — an unbounded request
-# would let a genuinely in-flight conversion be false-orphaned. Kept far below 5 min; a hung request
-# raises (→ the callback orphans) rather than lingering. auto_retry is off, so this is one attempt.
+# httpx per-phase timeout (seconds): bounds connect / read / write / pool INACTIVITY, not total
+# wall-clock. githubkit defaults to none, so this alone stops a dead connection from hanging.
 _CONVERSION_TIMEOUT_SECONDS: Final[float] = 30.0
+
+# TOTAL wall-clock deadline (seconds) for the whole conversion await, enforced by `asyncio.timeout`.
+# The per-phase httpx timeout above does NOT bound total duration — a slow-drip response (data
+# arriving within each read interval) could run past `state_machine._STALE_CONVERTING_AFTER` (5 min)
+# and be false-orphaned. This hard total keeps the request FAR below that threshold; a breach raises
+# `TimeoutError` → `ManifestConversionError` → the callback orphans. auto_retry off (one attempt).
+_CONVERSION_TOTAL_DEADLINE_SECONDS: Final[float] = 60.0
 
 
 class ManifestConversionError(RuntimeError):
@@ -97,7 +104,10 @@ async def convert_manifest_code(
     )
     path = f"/app-manifests/{quote(code, safe='')}/conversions"
     try:
-        response = await gh.arequest("POST", path, headers=_API_VERSION_HEADER)
+        # Hard TOTAL deadline (`asyncio.timeout`) around the whole await — the httpx per-phase
+        # timeout can't bound total wall-clock. A breach raises TimeoutError, caught below → orphan.
+        async with asyncio.timeout(_CONVERSION_TOTAL_DEADLINE_SECONDS):
+            response = await gh.arequest("POST", path, headers=_API_VERSION_HEADER)
     except Exception as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
         raise ManifestConversionError(
