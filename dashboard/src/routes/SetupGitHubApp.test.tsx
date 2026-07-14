@@ -104,7 +104,7 @@ test("CONFIGURED but NOT installed → finish-installing guidance, no form", asy
   expect(startButton()).toBeNull();
 });
 
-test("ORPHANED → Reset recovers to the UNCONFIGURED Start form", async () => {
+test("ORPHANED → Reset is gated on confirming App deletion, then recovers to the Start form", async () => {
   let statusBody: StatusBody = { status: "ORPHANED", configured: false, install_known: false };
   server.use(http.get(STATUS, () => HttpResponse.json(statusBody)));
   server.use(
@@ -115,19 +115,25 @@ test("ORPHANED → Reset recovers to the UNCONFIGURED Start form", async () => {
   );
 
   render(<SetupGitHubApp />);
-  // ORPHANED shows Reset, not the Start form.
   const reset = await screen.findByRole("button", { name: /reset and start over/i });
   expect(startButton()).toBeNull();
+  // Gated (spec F4): reset stays disabled until the operator confirms they deleted the orphaned App.
+  expect(reset).toBeDisabled();
 
+  await userEvent.click(screen.getByRole("checkbox", { name: /deleted the orphaned app/i }));
+  expect(reset).toBeEnabled();
   await userEvent.click(reset);
 
   // After reset → refresh → UNCONFIGURED → the Start form appears.
   expect(await screen.findByPlaceholderText("acme-inc")).toBeInTheDocument();
 });
 
-test("in-flight (CONVERTING) → Refresh, not a Start form that would 409", async () => {
+test("in-flight (CONVERTING) → Retry re-POSTs /setup (the repair path), not a dead-end refresh", async () => {
   mockStatus({ status: "CONVERTING", configured: false, install_known: false });
   render(<SetupGitHubApp />);
-  expect(await screen.findByRole("button", { name: /refresh status/i })).toBeInTheDocument();
-  expect(startButton()).toBeNull();
+  // A Retry form (POST /setup is the lazy-repair path) — NOT a status-only Refresh, which would
+  // never clear an abandoned attempt.
+  expect(await screen.findByRole("button", { name: /retry setup/i })).toBeInTheDocument();
+  expect(await screen.findByPlaceholderText("acme-inc")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /refresh status/i })).toBeNull();
 });
