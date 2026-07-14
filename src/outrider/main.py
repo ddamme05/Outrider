@@ -10,7 +10,7 @@ Run with uvicorn:
     uv run uvicorn outrider.main:app --host 0.0.0.0 --port 8000
 
 The lifespan (`outrider.api.lifespan`) handles all dependency construction
-at startup (Anthropic provider, audit persister, GitHub client factory,
+at startup (the LLM provider, audit persister, GitHub client factory,
 compiled graph) and LIFO teardown at shutdown via AsyncExitStack. The
 webhook router (`outrider.api.webhooks.router`) reads its dependencies
 from `app.state` bindings the lifespan installs (engine, session_factory,
@@ -21,14 +21,17 @@ github_factory, compiled_graph, run_graph).
 the public read-only demo box) the lifespan takes a keyless early-return
 path: it builds only the read-side deps (engine, session, retention,
 persister) and serves precomputed reviews through the dashboard allowlist.
-The Anthropic provider, GitHub App, graph, checkpointer, Slack, and sweeps
+The LLM provider, GitHub App, graph, checkpointer, Slack, and sweeps
 are NOT constructed, and the review/write half of `app.state` is `None` — so
 the env vars listed below are NOT required in demo mode (only
 `OUTRIDER_ADMIN_API_KEY` + `DATABASE_URL` are). See `api/lifespan.py`'s
 `if demo_mode:` branch.
 
-**Startup failure modes (production mode).** `ANTHROPIC_API_KEY` + `DATABASE_URL` are always
-required. The GitHub App triad (`OUTRIDER_GITHUB_APP_ID`, `OUTRIDER_GITHUB_APP_PRIVATE_KEY`,
+**Startup failure modes (production mode).** `DATABASE_URL` is always required, as is an LLM
+provider API key — WHICH key depends on `OUTRIDER_LLM_HOST` (default `anthropic` →
+`ANTHROPIC_API_KEY`; any other host → that profile's declared key env, e.g. `FIREWORKS_API_KEY`
+/ `BASETEN_API_KEY`, per `DECISIONS.md#056`).
+The GitHub App triad (`OUTRIDER_GITHUB_APP_ID`, `OUTRIDER_GITHUB_APP_PRIVATE_KEY`,
 `OUTRIDER_GITHUB_WEBHOOK_SECRET`) is required only in the DEFAULT `env` credential mode; under
 `OUTRIDER_GITHUB_CREDENTIAL_SOURCE=database` (App-Manifest onboarding, `DECISIONS.md#070`) those
 credentials come from the onboarded record at runtime — the app boots WITHOUT them and stays
@@ -40,7 +43,7 @@ prefix is required — unprefixed `GITHUB_APP_ID` is silently ignored by `pydant
 
 **`/health` is a liveness probe, not a readiness probe.** It returns
 200 as soon as the lifespan reaches its `yield` (i.e., construction
-finished), but it does NOT probe DB connectivity, Anthropic
+finished), but it does NOT probe DB connectivity, LLM-host
 reachability, or GitHub-API health. A proper readiness probe would
 `SELECT 1` against the engine and a no-op vendor call — out of scope
 for V1. Operators who need readiness semantics should layer that on
@@ -166,7 +169,7 @@ def create_app(*, demo_mode: bool, enable_docs: bool = False) -> FastAPI:
 
         Returns 200 once the lifespan reaches its `yield` (i.e., the
         process booted and dependency CONSTRUCTORS ran without raising).
-        It does NOT probe DB connectivity, Anthropic reachability, or
+        It does NOT probe DB connectivity, LLM-host reachability, or
         GitHub-API health — the lifespan's construction may have built an
         engine pointed at an unreachable Postgres host and this endpoint
         would still return 200.
