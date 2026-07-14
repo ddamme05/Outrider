@@ -137,3 +137,40 @@ test("in-flight (CONVERTING) → Retry re-POSTs /setup (the repair path), not a 
   expect(await screen.findByPlaceholderText("acme-inc")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /refresh status/i })).toBeNull();
 });
+
+test("stale CONVERTING Retry is rejected → status re-syncs to ORPHANED's cleanup flow", async () => {
+  // begin_setup commits stale CONVERTING → ORPHANED, THEN 409s the Start. The UI must refresh so the
+  // operator sees the ORPHANED reset/cleanup flow — not a stale in-progress screen implying success.
+  let statusBody: StatusBody = { status: "CONVERTING", configured: false, install_known: false };
+  server.use(http.get(STATUS, () => HttpResponse.json(statusBody)));
+  server.use(
+    http.post(START, () => {
+      statusBody = { status: "ORPHANED", configured: false, install_known: false };
+      return HttpResponse.json({ detail: "the instance is ORPHANED" }, { status: 409 });
+    }),
+  );
+
+  render(<SetupGitHubApp />);
+  await userEvent.type(await screen.findByPlaceholderText("acme-inc"), "acme");
+  await userEvent.click(screen.getByRole("button", { name: /retry setup/i }));
+
+  // Refreshed → ORPHANED → the delete-confirmation + reset flow; the Retry form is gone.
+  expect(
+    await screen.findByRole("checkbox", { name: /deleted the orphaned app/i }),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /retry setup/i })).toBeNull();
+});
+
+test("expired AWAITING_CALLBACK → Retry is repaired by the backend and proceeds to GitHub", async () => {
+  // The success case the fix must NOT regress: begin_setup resets an expired AWAITING_CALLBACK and
+  // returns a fresh target, so Retry submits the manifest to GitHub.
+  mockStatus({ status: "AWAITING_CALLBACK", configured: false, install_known: false });
+  server.use(http.post(START, () => HttpResponse.json({ target_url: GH_TARGET, manifest: MANIFEST })));
+  const submitSpy = vi.spyOn(HTMLFormElement.prototype, "submit").mockImplementation(() => {});
+
+  render(<SetupGitHubApp />);
+  await userEvent.type(await screen.findByPlaceholderText("acme-inc"), "acme");
+  await userEvent.click(screen.getByRole("button", { name: /retry setup/i }));
+
+  await waitFor(() => expect(submitSpy).toHaveBeenCalledTimes(1));
+});
