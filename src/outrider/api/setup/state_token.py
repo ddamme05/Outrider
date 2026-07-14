@@ -133,6 +133,13 @@ def verify_state(state: str) -> SetupStateToken:
     single-use token the caller hashes and atomically consumes."""
     if not state or "." not in state:
         raise SetupStateError("missing or malformed state")
+    # ASCII gate BEFORE the compare: `hmac.compare_digest` raises TypeError on non-ASCII `str`
+    # ("comparing strings with non-ASCII characters is not supported"), and this runs on the PUBLIC
+    # callback, so an unauthenticated `?state=abc.ü` would surface as an uncaught 500 + exception
+    # noise instead of the bounded 400. A real state is base64url + "." + signature — ASCII by
+    # construction — so a non-ASCII byte is malformed input and takes the same path as any other.
+    if not state.isascii():
+        raise SetupStateError("missing or malformed state")
     body, _, sig = state.partition(".")
     if not hmac.compare_digest(sig, _sign(body)):
         raise SetupStateError("state signature mismatch")
