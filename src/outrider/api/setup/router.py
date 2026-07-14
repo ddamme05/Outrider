@@ -229,6 +229,18 @@ def build_setup_router(
                 await machine.orphan()
             except SetupIntegrityError:
                 _log.error("setup_state singleton missing while orphaning a failed setup callback")
+            except Exception as orphan_exc:  # noqa: BLE001
+                # orphan() is a DB CAS write and can raise (e.g. OperationalError). Raised
+                # inside this except, it would otherwise propagate past the outer handler —
+                # a 500 + a stuck CONVERTING, breaking the saga's "always land on recovery"
+                # contract. Swallow to the redirect; stale-CONVERTING recovery (startup +
+                # lazy begin_setup) clears it. TYPE only, like above — a DB error message can
+                # carry the connection string/password, so never log the message here.
+                _log.error(
+                    "orphaning a failed setup callback itself failed (%s); "
+                    "attempt may stay CONVERTING until recovery",
+                    type(orphan_exc).__name__,
+                )
             # Redirect to the dashboard `/setup` SPA route (NOT the `/setup/status` JSON API) — the
             # operator lands here exactly when an ORPHANED App needs cleanup + reset, so send them
             # to the guided recovery UI, not raw JSON. (`/setup` has no API GET route; it falls
