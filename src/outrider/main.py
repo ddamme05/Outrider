@@ -35,11 +35,13 @@ The GitHub App triad (`OUTRIDER_GITHUB_APP_ID`, `OUTRIDER_GITHUB_APP_PRIVATE_KEY
 `OUTRIDER_GITHUB_WEBHOOK_SECRET`) is required only in the DEFAULT `env` credential mode; under
 `OUTRIDER_GITHUB_CREDENTIAL_SOURCE=database` (App-Manifest onboarding, `DECISIONS.md#070`) those
 credentials come from the onboarded record at runtime — the app boots WITHOUT them and stays
-503-gated until `CONFIGURED`. Whatever a mode needs is read by `BaseSettings` subclasses with
-`extra="forbid"` — a missing or typoed name raises `ValidationError` during the lifespan's
-credential-provider construction (env mode) or at step 1 (database engine). Uvicorn fails to
-start; the error surfaces in the logs with the field name that's missing. The `OUTRIDER_GITHUB_*`
-prefix is required — unprefixed `GITHUB_APP_ID` is silently ignored by `pydantic-settings`.
+503-gated until `CONFIGURED`. The failure MECHANISM differs by source: `DATABASE_URL` and the
+selected LLM-host key are read directly from `os.environ` in the engine / provider factories and
+raise `RuntimeError` if absent; only the `env`-mode GitHub triad flows through a `BaseSettings`
+subclass (`GitHubAppSettings`, `extra="forbid"`) and raises `ValidationError` on a missing / typoed
+name. Either way uvicorn fails to start and the error names the missing field. The
+`OUTRIDER_GITHUB_*` prefix is required — unprefixed `GITHUB_APP_ID` is silently ignored by
+`pydantic-settings`.
 
 **`/health` is a liveness probe, not a readiness probe.** It returns
 200 as soon as the lifespan reaches its `yield` (i.e., construction
