@@ -64,4 +64,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python -c "import os,urllib.request; urllib.request.urlopen(f\"http://127.0.0.1:{os.environ.get('PORT','8000')}/health\").read()" || exit 1
 
 # `exec` via sh so ${PORT} expands AND uvicorn replaces the shell (clean SIGTERM/shutdown).
-CMD ["sh", "-c", "exec /app/.venv/bin/uvicorn outrider.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# `--no-access-log` (DECISIONS.md#070, spec F6): the onboarding callback
+# `GET /setup/callback?code=...&state=...` carries the single-use manifest code + signed state in
+# the query string; uvicorn's access log records the full request line, so access logging would
+# persist those secrets to disk. Reverse-proxy operators must disable/redact query logging too.
+CMD ["sh", "-c", "exec /app/.venv/bin/uvicorn outrider.main:app --host 0.0.0.0 --port ${PORT:-8000} --no-access-log"]
