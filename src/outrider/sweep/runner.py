@@ -256,26 +256,35 @@ async def run_scheduled_tick(
     authority → the `#012` install hard-delete is skipped for the tick (nothing to confirm liveness
     against). This is the reconciliation janitor's self-skip while not `CONFIGURED` (`#070`).
     """
-    # Step 1 — reconcile FIRST, behind its own try/except.
+    # Step 1 — reconcile FIRST, behind its own try/except. The provider-None check is pure, but
+    # `is_configured()` is a DB read (database mode) that can RAISE (missing singleton, transient
+    # DB error) — so it lives INSIDE the try/except, NOT the if-condition. A raise there must
+    # degrade to "skip reconcile, still run the unrelated sweeps below", exactly like a reconcile
+    # failure; if it escaped the tick it would also skip hitl-expiry / TTL-purge / replay-verdict,
+    # which have nothing to do with credentials.
     reconcile_confirmed = False
     reconcile_telemetry: dict[str, Any]
-    if provider is None or not await provider.is_configured():
+    if provider is None:
         reconcile_telemetry = {"ran": False, "reason": "no_credentials_configured"}
     else:
         try:
-            reconcile_result = await reconcile_installations(engine, provider)
-            # Confirmed only when THIS tick acquired the lock and completed. A lock-contended tick
-            # (another runner reconciling) is NOT this tick's confirmation, so skip the hard-delete.
-            reconcile_confirmed = not reconcile_result.skipped_lock_held
-            reconcile_telemetry = {
-                "ran": True,
-                "skipped_lock_held": reconcile_result.skipped_lock_held,
-                "tombstoned": reconcile_result.tombstoned,
-                "restored": reconcile_result.restored,
-            }
+            if not await provider.is_configured():
+                reconcile_telemetry = {"ran": False, "reason": "no_credentials_configured"}
+            else:
+                reconcile_result = await reconcile_installations(engine, provider)
+                # Confirmed only when THIS tick acquired the lock and completed. A lock-contended
+                # tick (another runner reconciling) is NOT this tick's confirmation → skip purge.
+                reconcile_confirmed = not reconcile_result.skipped_lock_held
+                reconcile_telemetry = {
+                    "ran": True,
+                    "skipped_lock_held": reconcile_result.skipped_lock_held,
+                    "tombstoned": reconcile_result.tombstoned,
+                    "restored": reconcile_result.restored,
+                }
         except Exception:
-            # GitHub unreachable / list raised — logged + skipped. `reconcile_confirmed` stays False
-            # so the install hard-delete is skipped this tick; the unrelated sweeps still run below.
+            # GitHub unreachable / list raised / config-check raised — logged + skipped.
+            # `reconcile_confirmed` stays False so the install hard-delete is skipped this tick; the
+            # unrelated sweeps still run below.
             logger.exception("reconcile_tick_failed")
             reconcile_telemetry = {"ran": True, "failed": True}
 
