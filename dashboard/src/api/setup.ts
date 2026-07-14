@@ -22,14 +22,25 @@ export interface SetupStartResponse {
   manifest: Record<string, unknown>;
 }
 
-/** Response of `GET /setup/status` — the state-machine status + a configured flag. */
+/** Response of `GET /setup/status` — the state-machine status + configured/install-known flags. */
 export interface SetupStatus {
   status: string;
+  /** Credentials obtained (`status === "CONFIGURED"`). */
   configured: boolean;
+  /** Outrider has seen the App installed (an active installation) — distinct from `configured`. */
+  install_known: boolean;
 }
 
 /** Typed error for the onboarding flow so callers can distinguish it from generic failures. */
 export class SetupError extends Error {}
+
+/** Build request headers with the admin bearer token attached (same-origin, per authMiddleware). */
+function authHeaders(extra?: Record<string, string>): Headers {
+  const headers = new Headers(extra);
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return headers;
+}
 
 async function _detail(resp: Response): Promise<string> {
   try {
@@ -61,17 +72,25 @@ export async function fetchSetupStatus(): Promise<SetupStatus | null> {
  * in the GitHub-bound form.
  */
 export async function startSetup(org: string): Promise<SetupStartResponse> {
-  const token = getToken();
-  const headers = new Headers({ "Content-Type": "application/json" });
-  if (token) headers.set("Authorization", `Bearer ${token}`);
   const resp = await fetch(`${baseUrl}/setup`, {
     method: "POST",
-    headers,
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ org }),
   });
   if (resp.status === 401) clearToken(); // mirror authMiddleware: stale key → the token-gate re-prompts
   if (!resp.ok) throw new SetupError(await _detail(resp));
   return (await resp.json()) as SetupStartResponse;
+}
+
+/**
+ * `POST /setup/reset` (admin) — recover an `ORPHANED` instance to `UNCONFIGURED` so onboarding can be
+ * retried. Returns the new status. 409 if the instance is not in a resettable (ORPHANED) state.
+ */
+export async function resetSetup(): Promise<SetupStatus> {
+  const resp = await fetch(`${baseUrl}/setup/reset`, { method: "POST", headers: authHeaders() });
+  if (resp.status === 401) clearToken();
+  if (!resp.ok) throw new SetupError(await _detail(resp));
+  return (await resp.json()) as SetupStatus;
 }
 
 /**
