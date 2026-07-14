@@ -75,6 +75,26 @@ def test_malformed_rejected(_secret: str) -> None:
         verify_state("no-dot-here")
 
 
+@pytest.mark.parametrize(
+    "state",
+    [
+        "abc.ü",  # non-ascii in the SIGNATURE half — reaches hmac.compare_digest
+        "ü.abc",  # non-ascii in the BODY half
+        "abc.déf",
+    ],
+)
+def test_non_ascii_state_rejected_not_raised(_secret: str, state: str) -> None:
+    """A non-ASCII `state` takes the bounded SetupStateError path, never an uncaught TypeError.
+
+    `hmac.compare_digest` raises TypeError on non-ASCII `str` args, and `verify_state` runs on the
+    PUBLIC `GET /setup/callback`, so without an ASCII gate an unauthenticated `?state=abc.ü` would
+    surface as a 500 rather than the 400 every other malformed state gets. Fails closed either way
+    — this pins the response shape, not a security boundary.
+    """
+    with pytest.raises(SetupStateError, match="missing or malformed"):
+        verify_state(state)
+
+
 def test_null_nonce_rejected(_secret: str) -> None:
     """A validly-signed but null nonce must NOT slip through as the truthy string "None"."""
     state = _forge({"nonce": None, "exp": int(time.time()) + 600}, _secret)
