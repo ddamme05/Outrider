@@ -229,7 +229,11 @@ def build_setup_router(
                 await machine.orphan()
             except SetupIntegrityError:
                 _log.error("setup_state singleton missing while orphaning a failed setup callback")
-            return RedirectResponse(f"{settings.base_url}/setup/status", status_code=302)
+            # Redirect to the dashboard `/setup` SPA route (NOT the `/setup/status` JSON API) — the
+            # operator lands here exactly when an ORPHANED App needs cleanup + reset, so send them
+            # to the guided recovery UI, not raw JSON. (`/setup` has no API GET route; it falls
+            # through to the SPA. The operator's admin token is still in the same-tab session.)
+            return RedirectResponse(f"{settings.base_url}/setup", status_code=302)
 
     @router.get("/status", response_model=SetupStatusResponse)
     async def setup_status() -> SetupStatusResponse:
