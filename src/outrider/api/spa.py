@@ -19,7 +19,8 @@ built file if present (any ``Accept``); else 404 if the path looks like a file (
 segment has an extension) — a missing asset never becomes the app shell; else, for a
 route-shaped path with ``Accept: text/html``, ``index.html`` (the SPA's own ``/reviews``
 client routes land here). Reserved backend namespaces are excluded root-and-descendant
-(404 for unknown sub-paths).
+(404 for unknown sub-paths); a descendant-only namespace (``/setup``) serves the shell at
+the exact path but 404s its sub-paths.
 """
 
 from __future__ import annotations
@@ -56,6 +57,13 @@ RESERVED_PREFIXES: tuple[str, ...] = (
     "/openapi.json",
 )
 
+# Descendant-only reserved (`#070`): the EXACT path is a real SPA route (served), but every sub-path
+# is backend-or-unknown and must 404 — never the shell. `/setup` — `GET /setup` is the F5 dashboard
+# page, while `/setup/callback` + `/setup/status` (backend GETs) win by registration order, and
+# `/setup/reset` (POST-only) or `/setup/<unknown>` must 404, not fall through to the app shell.
+# (Contrast `/reviews`, absent from BOTH tuples: there the SPA owns the descendants too.)
+RESERVED_DESCENDANT_PREFIXES: tuple[str, ...] = ("/setup",)
+
 
 def resolve_spa_dist_dir(env: Mapping[str, str] | None = None) -> Path | None:
     """Tri-state resolution of the SPA dist directory from `OUTRIDER_SERVE_SPA`.
@@ -91,8 +99,12 @@ def resolve_spa_dist_dir(env: Mapping[str, str] | None = None) -> Path | None:
 
 
 def _is_reserved(path: str) -> bool:
-    """True if `path` is a reserved backend namespace root or one of its descendants."""
-    return any(path == prefix or path.startswith(prefix + "/") for prefix in RESERVED_PREFIXES)
+    """True if the SPA fallback must NOT serve the shell for `path`: a reserved-namespace root or
+    descendant (`RESERVED_PREFIXES`), or a DESCENDANT of a descendant-only prefix
+    (`RESERVED_DESCENDANT_PREFIXES` — the exact path is a real SPA route, its sub-paths are not)."""
+    if any(path == prefix or path.startswith(prefix + "/") for prefix in RESERVED_PREFIXES):
+        return True
+    return any(path.startswith(prefix + "/") for prefix in RESERVED_DESCENDANT_PREFIXES)
 
 
 def _safe_static_file(dist: Path, rel: str) -> Path | None:

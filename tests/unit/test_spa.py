@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from outrider.api.spa import (
+    RESERVED_DESCENDANT_PREFIXES,
     RESERVED_PREFIXES,
     _safe_static_file,
     mount_spa_if_configured,
@@ -123,11 +124,13 @@ def spa_client(tmp_path: Path) -> TestClient:
 
 
 @pytest.mark.parametrize(
-    "path", ["/", "/reviews", "/reviews/123", "/reviews/123/replay", "/settings"]
+    "path", ["/", "/reviews", "/reviews/123", "/reviews/123/replay", "/settings", "/setup"]
 )
 def test_spa_serves_shell_for_client_routes(spa_client: TestClient, path: str) -> None:
-    """Browser navigations to SPA client routes (incl. the whole GET `/reviews/*` space)
-    get the app shell — the `/reviews` namespace is NOT reserved for GET."""
+    """Browser navigations to SPA client routes (incl. the whole GET `/reviews/*` space + the exact
+    `/setup` F5 page — the failed-callback redirect target) get the app shell. `/reviews` is NOT
+    reserved for GET; `/setup` is descendant-only reserved, so its EXACT path still serves the
+    shell."""
     resp = spa_client.get(path, headers=_HTML)
     assert resp.status_code == 200
     assert "APP SHELL" in resp.text
@@ -159,11 +162,14 @@ def test_api_route_still_served(spa_client: TestClient) -> None:
         "/docs/x",
         "/redoc/x",
         "/openapi.json/x",  # the one reserved entry with a dot / exact-path shape
+        "/setup/reset",  # descendant-only: POST-only backend route, GET must not be the shell
+        "/setup/unknown",  # descendant-only reserved: unknown sub-path 404s, not the shell
     ],
 )
 def test_reserved_namespace_unknown_subpath_404s(spa_client: TestClient, path: str) -> None:
-    """Unknown sub-paths under reserved backend namespaces 404 — never the app shell,
-    even for a text/html request (root-and-descendant exclusion)."""
+    """Unknown sub-paths under reserved backend namespaces 404 — never the app shell, even for a
+    text/html request. Covers both root-and-descendant prefixes and the descendant-only `/setup`
+    (whose exact path IS the shell, but whose sub-paths are not)."""
     resp = spa_client.get(path, headers=_HTML)
     assert resp.status_code == 404
     assert "APP SHELL" not in resp.text
@@ -273,13 +279,19 @@ def test_mount_spa_raises_when_enabled_without_build(tmp_path: Path) -> None:
 
 
 def test_reserved_prefixes_match_backend_namespaces(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`RESERVED_PREFIXES` must equal the real app's top-level backend namespaces MINUS
-    the deliberate `/reviews` exception. Fails if a new router adds a namespace that the
-    SPA fallback would then wrongly swallow, or if a reserved prefix goes stale."""
+    """`RESERVED_PREFIXES` (root+descendant) plus `RESERVED_DESCENDANT_PREFIXES` (exact path is the
+    SPA, sub-paths reserved) must together cover every backend top-level namespace MINUS the
+    deliberate `/reviews` shared exception. Fails if a new router adds a namespace the SPA fallback
+    would wrongly swallow, or if a reserved prefix goes stale."""
     # Hermetic: neutralize any ambient OUTRIDER_SERVE_SPA so create_app's SPA mount is a
     # no-op here (a `=1` in the runner's env would else fail create_app with no baked dist).
     monkeypatch.delenv("OUTRIDER_SERVE_SPA", raising=False)
     monkeypatch.delenv("OUTRIDER_SPA_DIST_DIR", raising=False)
+    # database credential mode so the /setup onboarding namespace mounts (#070) — its sub-paths are
+    # backend, its exact GET is the SPA page, so it must be covered by RESERVED_DESCENDANT_PREFIXES.
+    monkeypatch.setenv("OUTRIDER_GITHUB_CREDENTIAL_SOURCE", "database")
+    monkeypatch.setenv("OUTRIDER_PUBLIC_BASE_URL", "https://drift.example")
+    monkeypatch.setenv("OUTRIDER_SETUP_STATE_SECRET", "drift-guard-secret-long-enough-abcdef123")
     # enable_docs=True so /docs, /redoc, /openapi.json are registered: they stay in
     # RESERVED_PREFIXES even when the prod default (FUP-229) disables them, because a GET to a
     # disabled /docs must still 404 (reserved), not fall through to the SPA shell.
@@ -293,8 +305,11 @@ def test_reserved_prefixes_match_backend_namespaces(monkeypatch: pytest.MonkeyPa
         if first.startswith("{"):  # a catch-all path param, not a namespace
             continue
         segments.add("/" + first)
-    expected = segments - {"/reviews"}
+    expected = segments - {"/reviews"} - set(RESERVED_DESCENDANT_PREFIXES)
     assert set(RESERVED_PREFIXES) == expected, (
         f"RESERVED_PREFIXES drifted from the router set. "
         f"missing={expected - set(RESERVED_PREFIXES)} stale={set(RESERVED_PREFIXES) - expected}"
     )
+    # The /setup onboarding namespace IS present (database mode) and descendant-only reserved.
+    assert "/setup" in segments
+    assert "/setup" in RESERVED_DESCENDANT_PREFIXES
