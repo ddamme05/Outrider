@@ -367,7 +367,7 @@ export interface paths {
          *
          *     Returns 200 once the lifespan reaches its `yield` (i.e., the
          *     process booted and dependency CONSTRUCTORS ran without raising).
-         *     It does NOT probe DB connectivity, Anthropic reachability, or
+         *     It does NOT probe DB connectivity, LLM-host reachability, or
          *     GitHub-API health — the lifespan's construction may have built an
          *     engine pointed at an unreachable Postgres host and this endpoint
          *     would still return 200.
