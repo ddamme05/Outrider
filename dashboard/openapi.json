@@ -781,7 +781,7 @@
     "/health": {
       "get": {
         "summary": "Health",
-        "description": "**Liveness only**, not readiness.\n\nReturns 200 once the lifespan reaches its `yield` (i.e., the\nprocess booted and dependency CONSTRUCTORS ran without raising).\nIt does NOT probe DB connectivity, Anthropic reachability, or\nGitHub-API health \u2014 the lifespan's construction may have built an\nengine pointed at an unreachable Postgres host and this endpoint\nwould still return 200.\n\nUseful as a \"did uvicorn boot\" smoke test behind smee.io /\ncloudflared / nginx. NOT a substitute for an actual readiness\nprobe; layer that on top if you need it.",
+        "description": "**Liveness only**, not readiness.\n\nReturns 200 once the lifespan reaches its `yield` (i.e., the\nprocess booted and dependency CONSTRUCTORS ran without raising).\nIt does NOT probe DB connectivity, LLM-host reachability, or\nGitHub-API health \u2014 the lifespan's construction may have built an\nengine pointed at an unreachable Postgres host and this endpoint\nwould still return 200.\n\nUseful as a \"did uvicorn boot\" smoke test behind smee.io /\ncloudflared / nginx. NOT a substitute for an actual readiness\nprobe; layer that on top if you need it.",
         "operationId": "health_health_get",
         "responses": {
           "200": {
