@@ -251,7 +251,7 @@ async def test_binding_mismatch_orphans(engine: AsyncEngine) -> None:
         "/setup/callback", params={"code": "CODE", "state": state}, follow_redirects=False
     )
     assert cb.status_code == 302
-    assert cb.headers["location"] == f"{_BASE}/setup/status"
+    assert cb.headers["location"] == f"{_BASE}/setup"  # SPA recovery UI, not the JSON status API
     assert client.get("/setup/status").json()["status"] == "ORPHANED"
     assert await _active_credential_count(engine) == 0  # never persisted
 
@@ -271,7 +271,7 @@ async def test_base_url_drift_orphans(engine: AsyncEngine, monkeypatch: pytest.M
         "/setup/callback", params={"code": "CODE", "state": state}, follow_redirects=False
     )
     assert cb.status_code == 302
-    assert cb.headers["location"] == "https://moved.example/setup/status"
+    assert cb.headers["location"] == "https://moved.example/setup"
     assert client_b.get("/setup/status").json()["status"] == "ORPHANED"
     assert await _active_credential_count(engine) == 0  # never persisted
 
@@ -289,7 +289,7 @@ async def test_conversion_error_orphans(engine: AsyncEngine) -> None:
         "/setup/callback", params={"code": "CODE", "state": state}, follow_redirects=False
     )
     assert cb.status_code == 302
-    assert cb.headers["location"] == f"{_BASE}/setup/status"
+    assert cb.headers["location"] == f"{_BASE}/setup"  # SPA recovery UI, not the JSON status API
     assert client.get("/setup/status").json()["status"] == "ORPHANED"
     assert await _active_credential_count(engine) == 0
 
