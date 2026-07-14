@@ -27,15 +27,16 @@ the env vars listed below are NOT required in demo mode (only
 `OUTRIDER_ADMIN_API_KEY` + `DATABASE_URL` are). See `api/lifespan.py`'s
 `if demo_mode:` branch.
 
-**Startup failure modes (production mode).** Required env vars (`OUTRIDER_GITHUB_APP_ID`,
-`OUTRIDER_GITHUB_APP_PRIVATE_KEY`, `OUTRIDER_GITHUB_WEBHOOK_SECRET`,
-`ANTHROPIC_API_KEY`, `DATABASE_URL`) read by their respective
-`BaseSettings` subclasses with `extra="forbid"` — a missing or typoed
-name raises `ValidationError` at lifespan step 6 (GitHubAppSettings) or
-step 1 (database engine). Uvicorn fails to start; the error surfaces
-in the logs with the field name that's missing. The `OUTRIDER_GITHUB_*`
-prefix is required — unprefixed `GITHUB_APP_ID` is silently ignored
-by `pydantic-settings` and produces "field required" at startup.
+**Startup failure modes (production mode).** `ANTHROPIC_API_KEY` + `DATABASE_URL` are always
+required. The GitHub App triad (`OUTRIDER_GITHUB_APP_ID`, `OUTRIDER_GITHUB_APP_PRIVATE_KEY`,
+`OUTRIDER_GITHUB_WEBHOOK_SECRET`) is required only in the DEFAULT `env` credential mode; under
+`OUTRIDER_GITHUB_CREDENTIAL_SOURCE=database` (App-Manifest onboarding, `DECISIONS.md#070`) those
+credentials come from the onboarded record at runtime — the app boots WITHOUT them and stays
+503-gated until `CONFIGURED`. Whatever a mode needs is read by `BaseSettings` subclasses with
+`extra="forbid"` — a missing or typoed name raises `ValidationError` during the lifespan's
+credential-provider construction (env mode) or at step 1 (database engine). Uvicorn fails to
+start; the error surfaces in the logs with the field name that's missing. The `OUTRIDER_GITHUB_*`
+prefix is required — unprefixed `GITHUB_APP_ID` is silently ignored by `pydantic-settings`.
 
 **`/health` is a liveness probe, not a readiness probe.** It returns
 200 as soon as the lifespan reaches its `yield` (i.e., construction

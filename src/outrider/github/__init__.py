@@ -12,15 +12,17 @@ per `docs/conventions.md` "Imports" and `CLAUDE.md` rule 3 (the
 and elsewhere reach githubkit only through the thin helpers exported
 here:
 
-  - `outrider.github.auth.make_installation_client_factory(settings)` —
-    binds a `GitHubAppSettings` once at lifespan startup; returns a
-    `Callable[[int], GitHub]` that mints per-installation clients
-    wrapping `githubkit.AppInstallationAuthStrategy`.
+  - `outrider.github.auth.make_installation_client_factory(provider)` —
+    binds a `GitHubCredentialProvider` at lifespan startup (`#070`); returns
+    an ASYNC `Callable[[int], Awaitable[GitHub]]` that resolves credentials
+    per call and mints per-installation clients wrapping
+    `githubkit.AppInstallationAuthStrategy`.
   - `outrider.github.webhooks.verify_webhook_signature` — wraps
     `githubkit.webhooks.verify`.
   - `outrider.github.fetch` (later spec) — per-file content fetch helpers.
 
-Settings live in `outrider.github.config.GitHubAppSettings`.
+The credential source + provider live in `outrider.github.credentials`; the
+`env`-mode settings triad lives in `outrider.github.config.GitHubAppSettings`.
 """
 
 # Re-export the type alias from auth.py. The alias's definition
