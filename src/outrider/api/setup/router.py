@@ -112,11 +112,15 @@ class SetupStartResponse(BaseModel):
 
 
 class SetupStatusResponse(BaseModel):
-    """Public, metadata-minimal status — the state-machine state and a configured flag. No
-    credentials, no attempt binding."""
+    """Public, metadata-minimal status — the state-machine state, a configured flag, and an
+    install-known flag (spec §Land). No credentials, no attempt binding. `configured` means
+    credentials were obtained; `install_known` means Outrider has seen the App installed (an active
+    installation row) — the two differ between the credential exchange and the operator finishing
+    GitHub's separate install step."""
 
     status: str
     configured: bool
+    install_known: bool
 
 
 def build_setup_router(
@@ -231,11 +235,16 @@ def build_setup_router(
     async def setup_status() -> SetupStatusResponse:
         try:
             current = await machine.current_status()
+            install_known = await machine.install_known()
         except SetupIntegrityError as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="setup state corrupted"
             ) from exc
-        return SetupStatusResponse(status=current, configured=current == "CONFIGURED")
+        return SetupStatusResponse(
+            status=current,
+            configured=current == "CONFIGURED",
+            install_known=install_known,
+        )
 
     @router.post("/reset", dependencies=[Depends(require_admin_api_key)])
     async def reset_setup() -> SetupStatusResponse:
@@ -251,6 +260,10 @@ def build_setup_router(
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="setup state corrupted"
             ) from exc
-        return SetupStatusResponse(status="UNCONFIGURED", configured=False)
+        return SetupStatusResponse(
+            status="UNCONFIGURED",
+            configured=False,
+            install_known=await machine.install_known(),
+        )
 
     return router

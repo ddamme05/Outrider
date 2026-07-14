@@ -37,6 +37,7 @@ from sqlalchemy import delete, func, select, update
 
 from outrider.api.setup.nonce import hash_nonce
 from outrider.db.models.github_app_credentials import GitHubAppCredential
+from outrider.db.models.installations import Installation
 from outrider.db.models.setup_state import SetupNonce, SetupState
 
 if TYPE_CHECKING:
@@ -183,6 +184,21 @@ class SetupStateMachine:
             if status is None:
                 raise SetupIntegrityError("setup_state singleton (id=1) is missing")
             return status
+
+    async def install_known(self) -> bool:
+        """Whether Outrider knows the App is installed — i.e. an ACTIVE (non-tombstoned)
+        `installations` row exists. `CONFIGURED` means only that credentials were obtained; the
+        operator still completes a SEPARATE GitHub install step (the
+        `/apps/<slug>/installations/new` landing) before any `installation` webhook lands. Sourced
+        for the public `/setup/status` install-known flag (spec §Land) so F5 can distinguish
+        'configured' from 'installed'."""
+        async with self.session_factory() as session:
+            row = (
+                await session.execute(
+                    select(Installation.id).where(Installation.tombstoned_at.is_(None)).limit(1)
+                )
+            ).first()
+            return row is not None
 
     async def begin_setup(
         self,

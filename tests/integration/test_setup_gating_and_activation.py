@@ -181,6 +181,7 @@ async def test_production_app_boots_database_unconfigured_and_gates(
                 assert (await client.get("/setup/status")).json() == {
                     "status": "UNCONFIGURED",
                     "configured": False,
+                    "install_known": False,
                 }
                 assert (await client.post("/setup", json={"org": "acme"})).status_code == 401
                 # /setup/callback + /setup/reset are reachable — a bad state / missing admin is a
@@ -330,7 +331,11 @@ async def test_all_four_consumers_work_after_activation_without_restart(
             follow_redirects=False,
         )
         assert cb.status_code == 302, cb.text
-        assert client.get("/setup/status").json() == {"status": "CONFIGURED", "configured": True}
+        assert client.get("/setup/status").json() == {
+            "status": "CONFIGURED",
+            "configured": True,
+            "install_known": False,
+        }
 
         # After — the SAME instances resolve the activated credentials.
         assert await provider.is_configured() is True

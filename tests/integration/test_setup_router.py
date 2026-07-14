@@ -9,6 +9,7 @@ failures (binding mismatch / conversion error → ORPHANED, never persisted).
 from __future__ import annotations
 
 import secrets
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
@@ -98,6 +99,21 @@ async def _active_credential_count(engine: AsyncEngine) -> int:
         ).scalar_one()
 
 
+async def _insert_installation(
+    engine: AsyncEngine, *, installation_id: int, tombstoned: bool
+) -> None:
+    tombstoned_at = datetime.now(UTC) if tombstoned else None  # bound param → NULL / timestamptz
+    async with async_sessionmaker(engine)() as session, session.begin():
+        await session.execute(
+            text(
+                "INSERT INTO installations (installation_id, app_slug, account_id, account_login, "
+                "account_type, permissions_at_install, tombstoned_at) VALUES "
+                "(:id, 'acme-outrider', 1, 'acme', 'Organization', '{}'::jsonb, :ts)"
+            ),
+            {"id": installation_id, "ts": tombstoned_at},
+        )
+
+
 # ── status + admin gating ─────────────────────────────────────────────────────
 
 
@@ -106,7 +122,20 @@ async def test_status_unconfigured(engine: AsyncEngine) -> None:
     client = _mount(engine, convert=_good_conversion())
     resp = client.get("/setup/status")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "UNCONFIGURED", "configured": False}
+    assert resp.json() == {"status": "UNCONFIGURED", "configured": False, "install_known": False}
+
+
+@pytest.mark.asyncio
+async def test_status_install_known_reflects_active_installations(engine: AsyncEngine) -> None:
+    """`install_known` (spec §Land) is True iff an ACTIVE (non-tombstoned) installation row exists —
+    so F5 can tell CONFIGURED-but-not-installed from fully installed. A tombstoned (uninstalled) row
+    does NOT count."""
+    client = _mount(engine, convert=_good_conversion())
+    assert client.get("/setup/status").json()["install_known"] is False
+    await _insert_installation(engine, installation_id=1, tombstoned=True)
+    assert client.get("/setup/status").json()["install_known"] is False  # uninstalled ≠ known
+    await _insert_installation(engine, installation_id=2, tombstoned=False)
+    assert client.get("/setup/status").json()["install_known"] is True
 
 
 @pytest.mark.asyncio
@@ -149,7 +178,13 @@ async def test_full_happy_path(engine: AsyncEngine) -> None:
     )
     assert cb.status_code == 302
     assert cb.headers["location"] == "https://github.com/apps/acme-outrider/installations/new"
-    assert client.get("/setup/status").json() == {"status": "CONFIGURED", "configured": True}
+    # CONFIGURED (credentials obtained) but install_known False — the operator hasn't completed
+    # GitHub's separate install step yet, so no `installations` row exists.
+    assert client.get("/setup/status").json() == {
+        "status": "CONFIGURED",
+        "configured": True,
+        "install_known": False,
+    }
 
     # a decryptable active credential row landed
     assert await _active_credential_count(engine) == 1
