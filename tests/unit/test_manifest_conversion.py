@@ -12,7 +12,13 @@ from typing import Any
 
 import pytest
 
-from outrider.github.manifest_conversion import ManifestConversionError, convert_manifest_code
+import outrider.github.manifest_conversion as conv_mod
+from outrider.api.setup.state_machine import _STALE_CONVERTING_AFTER
+from outrider.github.manifest_conversion import (
+    _CONVERSION_TIMEOUT_SECONDS,
+    ManifestConversionError,
+    convert_manifest_code,
+)
 
 _FULL_BODY: dict[str, Any] = {
     "id": 4242,
@@ -108,3 +114,31 @@ async def test_request_failure_maps_to_orphan_message() -> None:
     gh = _FakeGitHub(exc=_RequestFailedError())
     with pytest.raises(ManifestConversionError, match="already exists"):
         await convert_manifest_code("CODE", github=gh)  # type: ignore[arg-type]
+
+
+async def test_default_client_disables_retry_and_bounds_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production default client (no injected `github`) is built with `auto_retry=False` — the
+    `code` is single-use, so a retried POST would re-send a spent credential (a failed conversion
+    must orphan, never retry) — and a bounded `timeout` (githubkit defaults to none)."""
+    captured: dict[str, Any] = {}
+
+    class _CapturingGitHub:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        async def arequest(self, *_a: Any, **_k: Any) -> _Resp:
+            return _Resp(201, json.dumps(_FULL_BODY))
+
+    monkeypatch.setattr(conv_mod, "GitHub", _CapturingGitHub)
+    await convert_manifest_code("CODE")  # github=None → builds the production default client
+    assert captured["auto_retry"] is False
+    assert captured["timeout"] == _CONVERSION_TIMEOUT_SECONDS
+
+
+def test_conversion_timeout_is_below_the_stale_converting_threshold() -> None:
+    """The bounded conversion timeout MUST sit well under the state machine's stale-`CONVERTING`
+    orphan threshold — otherwise a genuinely in-flight conversion could be false-orphaned (the
+    load-bearing assumption in `state_machine._STALE_CONVERTING_AFTER`'s comment)."""
+    assert _STALE_CONVERTING_AFTER.total_seconds() > _CONVERSION_TIMEOUT_SECONDS
