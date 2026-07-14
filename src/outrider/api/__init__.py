@@ -5,8 +5,9 @@ V1 ships two surfaces:
   - `lifespan` (and `build_lifespan` for test-injection composition) —
     wires up the durable `AuditPersister`, the `AnthropicProvider`, the
     `RejectLLMContentFilter` re-registration step, the compiled graph,
-    and the per-installation `GitHubAppSettings` at app startup; drains
-    them on shutdown via `AsyncExitStack` LIFO teardown.
+    and the `GitHubCredentialProvider` (env- or database-mode, `#070`)
+    that the per-installation client factory resolves per operation, at
+    app startup; drains them on shutdown via `AsyncExitStack` LIFO teardown.
   - `webhooks/router.py` — `POST /webhooks/github` FastAPI router with
     signature verification, idempotency, active-membership check, and
     transactional review + audit row INSERT. Exported as
