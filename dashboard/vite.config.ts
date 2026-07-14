@@ -20,6 +20,26 @@ export default defineConfig({
       // route. Without this, the Sidebar footer link resolves against the Vite dev server
       // and React Router 404s. An exact ^…$ regex so it can't shadow a future SPA route.
       "^/privacy$": { target: BACKEND, changeOrigin: true },
+      // `/setup*` is DELIBERATELY ABSENT — do not add it. Two explicit topologies (FUP-230):
+      //
+      //   1. THIS dev server: component development only. NOT a live onboarding flow.
+      //   2. FastAPI serving the built SPA (OUTRIDER_SERVE_SPA=1, as deploy/Dockerfile.prod bakes):
+      //      the ONLY supported end-to-end onboarding topology.
+      //
+      // Why a proxy rule cannot bridge the gap: production splits /setup by METHOD in ONE origin —
+      // FastAPI owns POST /setup, while the exact GET /setup falls through to the app shell via
+      // api/spa.py's RESERVED_DESCENDANT_PREFIXES, and /setup/<sub> 404s. Vite's proxy keys match on
+      // PATH ONLY, so any rule here would have to re-implement that method split in a `bypass` hook
+      // — a second copy of a rule the backend already owns, free to drift such that dev goes green
+      // while prod stays untested. (Note a naive "/setup" key would also REGRESS today's behavior:
+      // it would proxy GET /setup to a backend that has no GET /setup, and Vite's non-regex matcher
+      // is `url.startsWith(context)`, so it would swallow /setupwizard too.)
+      //
+      // The full flow additionally needs GET /setup/callback (GitHub's redirect, which mints the
+      // App private key) and POST /webhooks/github to hit the real backend — under this server they
+      // land on the SPA shell and the manifest `code` is silently dropped, stranding a real App on
+      // GitHub. Onboarding hitting a non-API peer is surfaced loudly by api/setup.ts's
+      // SetupProtocolError rather than papered over here.
     },
   },
   test: {
