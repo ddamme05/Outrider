@@ -50,6 +50,13 @@ def esc(v: object) -> str:
 
 
 def table(headers: list[str], rows: list[list[str]]) -> str:
+    """Render a table. Headers are escaped here; CELLS ARE NOT.
+
+    Cells are emitted raw so a caller can pass pre-built badge/`<strong>` markup, which means every
+    cell carrying data — a model id, a fixture path, a probe/baseline string — MUST be wrapped in
+    `esc()` at the call site. Same convention as `_table` in `tests/eval/exemplar_baseline.py`.
+    Adding a row that interpolates a raw value from the artifact JSON is an injection vector.
+    """
     out = ["<table><thead><tr>", *(f"<th>{esc(h)}</th>" for h in headers), "</tr></thead><tbody>"]
     out += ["<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>" for row in rows]
     out.append("</tbody></table>")
@@ -186,9 +193,24 @@ def main() -> int:
         kw[field] = 1_000_000
         return float(compute_cost_usd(FW_PROFILE, FW_MODEL, **kw))
 
+    # A zero cache-read rate would not just make the ratio undefined — it would invalidate the WHOLE
+    # cost section: the sequential row prices cache_read at a discount, and the prod/seq mixture is
+    # meaningless if no discount exists (prod would equal seq). So refuse to render rather than
+    # degrade one sentence and leave the rest silently wrong — a crash beats a plausible lie. This
+    # is defence-in-depth: the EXPECTED_PRICING_VERSION pin above already blocks a rate change from
+    # reaching here (pricing.py requires a version bump, enforced by EXPECTED_PRICING_DIGEST).
+    cache_read_rate = _rate("cache_read_tokens")
+    if not cache_read_rate:
+        print(
+            f"{FW_MODEL} has no separate cache-read rate under {PRICING_VERSION}. This report's "
+            f"entire cost section assumes a cache discount exists (the sequential-vs-production "
+            f"mixture AND the rate ratio). Re-scope that section rather than render it wrong.",
+            file=sys.stderr,
+        )
+        return 1
     # The RATE ratio on the cached portion only — deliberately NOT the run-level gap, which is the
     # weighted mixture (prod/seq) above. Conflating the two overstates the production difference.
-    rate_ratio = _rate("input_tokens") / _rate("cache_read_tokens")
+    rate_ratio = _rate("input_tokens") / cache_read_rate
 
     # precomputed so the narrative f-string below stays readable
     fence_s, inv_s = f"{fence_chars:,}", f"{inv_chars:,}"
