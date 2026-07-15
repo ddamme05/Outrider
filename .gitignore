@@ -105,8 +105,15 @@ spikes/**/__pycache__/
 spikes/**/*.jsonl
 spikes/**/.local/
 
-# Local model-provider exploration spikes (Fireworks/GLM probes) — kept local.
-spikes/fireworks/
+# Local model-provider exploration spikes (Fireworks/GLM probes) — kept local, EXCEPT the one
+# sanitized, recon-free cache-probe result (per-arm cached-token integers + provenance + verdict; no
+# secrets, review/installation IDs, or prompt text — enforced by cache_probe.py's exact-key allowlist
+# self-test) so the paid decision evidence is reviewable on the branch. Probe SOURCE + wire-capture
+# fixtures stay local.
+spikes/fireworks/*
+!spikes/fireworks/fixtures/
+spikes/fireworks/fixtures/*
+!spikes/fireworks/fixtures/cache_probe_result.json
 spikes/glm/
 
 # --- Local dashboard feature write-ups (not a project artifact) ---
@@ -119,3 +126,12 @@ BUG_FIX_SESSION_HANDOFF.md
 
 # local progress reports (working artifacts, never commit)
 *PROGRESS_REPORT.md
+
+# local meeting prep (working artifact)
+meeting_stuff.md
+
+# Operator runbook — LOCAL until the /setup flow is proven end-to-end, then sanitized into the
+# public self-host quickstart. It has no publication tier yet: it is written generically (no vault
+# names / App ids / tunnel URLs), but it still assumes an ngrok-shaped tunnel and has not been
+# validated against a real onboarding run. Ignored so a stray `git add -A` can't publish it early.
+FRICTIONLESS_RUNBOOK.md

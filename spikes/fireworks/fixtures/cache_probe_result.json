@@ -1,0 +1,439 @@
+{
+  "arms": {
+    "none": {
+      "cold": [
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6419,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6419,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6419,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6419,
+          "realized": 0,
+          "status": "ok"
+        }
+      ],
+      "prewarmed": [
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6421,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6421,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6421,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6421,
+          "realized": 0,
+          "status": "ok"
+        }
+      ],
+      "warm_write": {
+        "channels": {
+          "header": 0,
+          "perf": 0,
+          "usage": 0
+        },
+        "error": null,
+        "prompt_tokens": 6421,
+        "realized": 0,
+        "status": "ok"
+      }
+    },
+    "prompt_cache_key": {
+      "cold": [
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6421,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6421,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6421,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6421,
+          "realized": 0,
+          "status": "ok"
+        }
+      ],
+      "prewarmed": [
+        {
+          "channels": {
+            "header": 6402,
+            "perf": 6402,
+            "usage": 6402
+          },
+          "error": null,
+          "prompt_tokens": 6423,
+          "realized": 6402,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6423,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6423,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6423,
+          "realized": 0,
+          "status": "ok"
+        }
+      ],
+      "warm_write": {
+        "channels": {
+          "header": 0,
+          "perf": 0,
+          "usage": 0
+        },
+        "error": null,
+        "prompt_tokens": 6423,
+        "realized": 0,
+        "status": "ok"
+      }
+    },
+    "user": {
+      "cold": [
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6419,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6419,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6419,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6419,
+          "realized": 0,
+          "status": "ok"
+        }
+      ],
+      "prewarmed": [
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6421,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6421,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6421,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 6400,
+            "perf": 6400,
+            "usage": 6400
+          },
+          "error": null,
+          "prompt_tokens": 6421,
+          "realized": 6400,
+          "status": "ok"
+        }
+      ],
+      "warm_write": {
+        "channels": {
+          "header": 0,
+          "perf": 0,
+          "usage": 0
+        },
+        "error": null,
+        "prompt_tokens": 6421,
+        "realized": 0,
+        "status": "ok"
+      }
+    },
+    "x-session-affinity": {
+      "cold": [
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6422,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6422,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6422,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6422,
+          "realized": 0,
+          "status": "ok"
+        }
+      ],
+      "prewarmed": [
+        {
+          "channels": {
+            "header": 6403,
+            "perf": 6403,
+            "usage": 6403
+          },
+          "error": null,
+          "prompt_tokens": 6424,
+          "realized": 6403,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6424,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6424,
+          "realized": 0,
+          "status": "ok"
+        },
+        {
+          "channels": {
+            "header": 0,
+            "perf": 0,
+            "usage": 0
+          },
+          "error": null,
+          "prompt_tokens": 6424,
+          "realized": 0,
+          "status": "ok"
+        }
+      ],
+      "warm_write": {
+        "channels": {
+          "header": 0,
+          "perf": 0,
+          "usage": 0
+        },
+        "error": null,
+        "prompt_tokens": 6424,
+        "realized": 0,
+        "status": "ok"
+      }
+    }
+  },
+  "base_url": "https://api.fireworks.ai/inference/v1",
+  "model": "accounts/fireworks/models/glm-5p2",
+  "prefix_chars": 26821,
+  "probe": "fireworks-cache-affinity",
+  "probe_contract_version": 2,
+  "reasoning_mode": "none",
+  "response_format_digest": "0a4a9a62bc33b703800ed8fafd60ef97e2a2c8f712693fe7492daece3f13abc8",
+  "schema_version": 3,
+  "system_prefix_sha256": "4520a00624438556a969fc7b28e051119ad0eb55d92d744c7c5900e82374e4d4",
+  "verdict": {
+    "message": "clean TRUSTWORTHY negative \u2014 every call returned ok, all three telemetry channels agreed, and every seed was cold, yet NO tested mechanism co-located the concurrent fan-out (best 1/4, indistinguishable from a random replica hit). Affinity is NOT the fix; do NOT re-run for trust. Pivot to BRANCH (c) prefix shrink (or reduce analyze concurrency).",
+    "outcome": "NO-FIX"
+  },
+  "warm_min_cached_tokens": 1000,
+  "wave": 4
+}
