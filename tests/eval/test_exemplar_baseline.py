@@ -933,6 +933,66 @@ def test_read_baseline_upgrades_v2_in_memory_never_on_disk(tmp_path, monkeypatch
     assert "measurement_contract" in details and "fixture_suite" in details
 
 
+def test_legacy_reader_rejects_anachronistic_fields(tmp_path, monkeypatch) -> None:
+    # A malformed/hand-edited legacy artifact carrying fields its shape never defined must fail
+    # LOUD — the strongest attempt is injecting the CURRENT identities: a preserved mc-2/suite-v2
+    # claim would dodge the measurement-contract gate while carrying no extras evidence (which
+    # the extras compare silently skips on None). Neither preserved nor silently overwritten.
+    from . import exemplar_baseline as mod  # noqa: PLC0415
+
+    monkeypatch.setattr(mod, "BASELINE_DIR", tmp_path)
+    base = _run(_meta("v10"))
+
+    def _write(name: str, data: dict) -> None:
+        (tmp_path / f"{name}.json").write_text(json.dumps(data), encoding="utf-8")
+
+    # v2 + each field that does not exist in the v2 shape, at every level it could hide
+    tampered = _as_v2(base)
+    tampered["measurement_contract"] = MEASUREMENT_CONTRACT  # the impossible current identity
+    _write("t1", tampered)
+    with pytest.raises(ValueError, match="does not exist in the v2 shape"):
+        read_baseline("t1")
+
+    tampered = _as_v2(base)
+    tampered["fixture_suite"] = FIXTURE_SUITE_VERSION
+    _write("t2", tampered)
+    with pytest.raises(ValueError, match="does not exist in the v2 shape"):
+        read_baseline("t2")
+
+    tampered = _as_v2(base)
+    tampered["harness_digest"] = "h-digest"
+    _write("t3", tampered)
+    with pytest.raises(ValueError, match="does not exist in the v2 shape"):
+        read_baseline("t3")
+
+    tampered = _as_v2(base)
+    next(iter(tampered["providers"].values()))["structured_output"] = {"attempts": 6}
+    _write("t4", tampered)
+    with pytest.raises(ValueError, match="does not exist in the v2 shape"):
+        read_baseline("t4")
+
+    tampered = _as_v2(base)
+    prov = next(iter(tampered["providers"].values()))
+    next(iter(prov["per_fixture"].values()))["extra_findings"] = {"values": [9], "total": 9}
+    _write("t5", tampered)
+    with pytest.raises(ValueError, match="does not exist in the v2 shape"):
+        read_baseline("t5")
+
+    # v3 + each field that does not exist in the v3 shape
+    tampered = _as_v3(base)
+    tampered["fixture_suite"] = FIXTURE_SUITE_VERSION
+    _write("t6", tampered)
+    with pytest.raises(ValueError, match="does not exist in the v3 shape"):
+        read_baseline("t6")
+
+    tampered = _as_v3(base)
+    prov = next(iter(tampered["providers"].values()))
+    next(iter(prov["per_fixture"].values()))["extra_findings"] = {"values": [0], "total": 0}
+    _write("t7", tampered)
+    with pytest.raises(ValueError, match="does not exist in the v3 shape"):
+        read_baseline("t7")
+
+
 def _as_v3(data: dict) -> dict:
     """Strip a v4 run to the exact v3 shape the PUSHED harness defined (measurement_contract +
     harness_digest + structured_output present; fixture_suite + extra_findings absent)."""

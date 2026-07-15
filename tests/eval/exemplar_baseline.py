@@ -1237,21 +1237,68 @@ def _upgrade_legacy(data: dict[str, object]) -> dict[str, object]:
     legitimately stops comparing (superseded as the bar by the suite-v2 freeze, not migrated).
     """
     version = data.get("schema_version")
-    if version == 2:  # v2 → v3: harness digest, structured-output counts, contract identity
-        data.setdefault("measurement_contract", "exemplar-mc-1")
-        data.setdefault("harness_digest", None)
+    if version == 2:
+        # v2's shape has NONE of the later fields — their presence means a malformed or
+        # hand-edited artifact, and silently preserving (or overwriting) a tampered identity
+        # would let an impossible mc-2/suite-v2 claim reach the gates. Fail loud instead.
+        _reject_anachronisms(
+            data,
+            version=2,
+            top=("measurement_contract", "harness_digest", "fixture_suite"),
+            provider=("structured_output",),
+            fixture=("structured_output", "extra_findings"),
+        )
+        data["measurement_contract"] = "exemplar-mc-1"
+        data["harness_digest"] = None
         for p in data.get("providers", {}).values():  # type: ignore[union-attr]
-            p.setdefault("structured_output", None)
+            p["structured_output"] = None
             for fx in p.get("per_fixture", {}).values():
-                fx.setdefault("structured_output", None)
-    # v3 → v4: suite identity + extras evidence. A v3 artifact could only have been collected
-    # over the 20-fixture set (the suite concept and the expanded suite landed together).
-    data.setdefault("fixture_suite", "suite-v1")
+                fx["structured_output"] = None
+    else:  # version == 3 (read_baseline pre-validates membership in _READABLE_SCHEMA_VERSIONS)
+        _reject_anachronisms(
+            data, version=3, top=("fixture_suite",), provider=(), fixture=("extra_findings",)
+        )
+    # v3 → v4 fills, applied to both legacy shapes AFTER validation proved the fields absent:
+    # a legacy artifact could only have been collected over the 20-fixture set (the suite
+    # concept and the expanded suite landed together). Unconditional assignment on purpose —
+    # these are declarations, never merge-with-whatever-was-there.
+    data["fixture_suite"] = "suite-v1"
     for p in data.get("providers", {}).values():  # type: ignore[union-attr]
         for fx in p.get("per_fixture", {}).values():
-            fx.setdefault("extra_findings", None)
+            fx["extra_findings"] = None
     data["schema_version"] = SCHEMA_VERSION
     return data
+
+
+def _reject_anachronisms(
+    data: dict[str, object],
+    *,
+    version: int,
+    top: tuple[str, ...],
+    provider: tuple[str, ...],
+    fixture: tuple[str, ...],
+) -> None:
+    """Fail loud if a legacy artifact carries fields its declared schema shape never defined —
+    the tamper/corruption signal `_upgrade_legacy` must never paper over."""
+
+    def _raise(field: str, where: str) -> None:
+        raise ValueError(
+            f"schema v{version} artifact carries {field!r} ({where}) — that field does not "
+            f"exist in the v{version} shape; refusing to upgrade a malformed or hand-edited "
+            "artifact"
+        )
+
+    for f in top:
+        if f in data:
+            _raise(f, "top-level")
+    for pname, p in data.get("providers", {}).items():  # type: ignore[union-attr]
+        for f in provider:
+            if f in p:
+                _raise(f, f"provider {pname}")
+        for fxname, fx in p.get("per_fixture", {}).items():
+            for f in fixture:
+                if f in fx:
+                    _raise(f, f"fixture {fxname}")
 
 
 def read_baseline(label: str) -> dict[str, object]:
