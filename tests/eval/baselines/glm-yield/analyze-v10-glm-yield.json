@@ -1,0 +1,296 @@
+{
+  "fixture_digests": {
+    "tests/eval/fixtures/mock_github/cmd_injection_eval_indirect.json": "f905f74a5065a6a38480e7a87c451683b861a1d0b32f2f6dfd04714bed9599fb",
+    "tests/eval/fixtures/mock_github/cmd_injection_subprocess.json": "5393351670ded5c243554ecaf731036a3748249994dc004ff405852470f73b59",
+    "tests/eval/fixtures/mock_github/eval_in_test_fixture.json": "01c4e6c81992daf1be40f8f2d0f8d12928dc77dcac66e5902ea290ceeafe6383",
+    "tests/eval/fixtures/mock_github/insecure_random_token.json": "2da8c37cfad6fc3c6ef7082a5216a2a98d305b0037da73d7377ebc8bf9b100ae",
+    "tests/eval/fixtures/mock_github/missing_error_handling.json": "669fcd0d4ddcff83bafcf2f0f949464cb4b40fc8778e317e62ae1a890464a75d",
+    "tests/eval/fixtures/mock_github/missing_input_validation.json": "870dba7ce91ebb143a29018c4ea1c05bd0d86f3868d2a425ef70b1369e8bcff5",
+    "tests/eval/fixtures/mock_github/n_plus_one_query.json": "34ffbed1f15efd7bd2211ed87e32939cfc4608edd25d3ea66ccb78a6b570ec3a",
+    "tests/eval/fixtures/mock_github/path_traversal.json": "3dd0cc53de7e24d2ffd26826ef3d815278d4800e56c91dcd9e1861d398741a0d",
+    "tests/eval/fixtures/mock_github/pygoat_auth_bypass.json": "1b243fab35115d1f194deebe0643af374b83a6f719e9d28a0ffb1297ff9cb2b1",
+    "tests/eval/fixtures/mock_github/pygoat_sql_injection.json": "26f716c21cab705397796dacf3a0d97ab0295cc165f19261819660675ce663c3",
+    "tests/eval/fixtures/mock_github/safe_refactor.json": "fefa98a9d1a134b6505632ad880bde8e9bef9bf06dc17c02b383de9ee3a88491",
+    "tests/eval/fixtures/mock_github/safe_subprocess_fixed_argv.json": "5cb76f78aee4fff05b6e2ab9c4f2349acefc580ed5b5912a3a5b723e200475fa",
+    "tests/eval/fixtures/mock_github/sqli_holdout_concat.json": "b332fe7ff068913e81f2ac40ebc28bd6f0fdea83f2aa1f4fa9fa85d573639c78",
+    "tests/eval/fixtures/mock_github/sqli_holdout_format.json": "3f44e2410c2f0031018e8e66eab95bf359ee85eefc19c0958b1db6e9de767fd9",
+    "tests/eval/fixtures/mock_github/sqli_holdout_fstring.json": "b9bad581a2ca0481d90cc7432d090f1e6daa401f98b583260410f8c7f7e7411d",
+    "tests/eval/fixtures/mock_github/sqli_holdout_orm_fstring.json": "027d78fffdcb783a3937b0ee28a39a2a81be17fbd5be2b5cf0402d18d65f4ecd",
+    "tests/eval/fixtures/mock_github/ssrf_fixed_host_safe.json": "54ff783b43b5f3fb7f983115d0ee3ac655cbe1b8e8a4a2342763b738c6363071",
+    "tests/eval/fixtures/mock_github/ssrf_user_host.json": "99f3a8d6eca85bb63aafa69cc3d8baef2a7d97729fee74e17d74bf8bc44382d9",
+    "tests/eval/fixtures/mock_github/weak_crypto_cast.json": "b171c36e39d36d1b3e338cde1bfe2f93fcca2bbb21e2371273911ff041ed89b0",
+    "tests/eval/fixtures/mock_github/weak_password_hash_md5.json": "bca09f6cb1259e2adc08b1d15472e6f6aa1ed280eec36a3221518f34102b29ad"
+  },
+  "harness_digest": "7caf79847f16e5b71d267d6a9379375b83b0e7da85a0f85ef2aba5c77229ebbf",
+  "hosts": {
+    "baseten-glm": {
+      "model": "zai-org/GLM-5.2",
+      "per_fixture": {
+        "tests/eval/fixtures/mock_github/cmd_injection_eval_indirect.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/cmd_injection_subprocess.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/eval_in_test_fixture.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/insecure_random_token.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/missing_error_handling.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/missing_input_validation.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/n_plus_one_query.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/path_traversal.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/pygoat_auth_bypass.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/pygoat_sql_injection.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/safe_refactor.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/safe_subprocess_fixed_argv.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_concat.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_format.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_fstring.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_orm_fstring.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/ssrf_fixed_host_safe.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/ssrf_user_host.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/weak_crypto_cast.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/weak_password_hash_md5.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        }
+      },
+      "profile_contract": "3bd337bbb7e8fcc15dec008909297a5dfe1ced7de1c3c757b6fd8c99fb5acf6b",
+      "totals": {
+        "accepted": 60,
+        "attempts_planned": 60,
+        "rejected": 0,
+        "void": 0
+      }
+    },
+    "fireworks-glm": {
+      "model": "accounts/fireworks/models/glm-5p2",
+      "per_fixture": {
+        "tests/eval/fixtures/mock_github/cmd_injection_eval_indirect.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/cmd_injection_subprocess.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/eval_in_test_fixture.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/insecure_random_token.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/missing_error_handling.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/missing_input_validation.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/n_plus_one_query.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/path_traversal.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/pygoat_auth_bypass.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/pygoat_sql_injection.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/safe_refactor.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/safe_subprocess_fixed_argv.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_concat.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_format.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_fstring.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_orm_fstring.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/ssrf_fixed_host_safe.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/ssrf_user_host.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/weak_crypto_cast.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        },
+        "tests/eval/fixtures/mock_github/weak_password_hash_md5.json": {
+          "accepted": 3,
+          "rejected": 0,
+          "void": 0,
+          "void_reasons": []
+        }
+      },
+      "profile_contract": "be644818886d19e054367cd2319e662e7719a5da06da5379ba3449aa7cc5829f",
+      "totals": {
+        "accepted": 60,
+        "attempts_planned": 60,
+        "rejected": 0,
+        "void": 0
+      }
+    }
+  },
+  "n_reps": 3,
+  "prompt_digest": "4520a00624438556a969fc7b28e051119ad0eb55d92d744c7c5900e82374e4d4",
+  "prompt_version": "analyze-v10",
+  "schema_version": 1,
+  "yield_contract": "glm-yield-mc-1"
+}
