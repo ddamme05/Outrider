@@ -16,6 +16,7 @@ structure).
 """
 
 import dataclasses
+import hashlib
 import re
 
 import pytest
@@ -1081,3 +1082,60 @@ def test_module_exports_all_documented_surfaces() -> None:
         "render_post_trace",
     }
     assert set(analyze.__all__) == expected
+
+
+# --- protected-region pins (suite-v2 spec, second review 2026-07-15) ------------------------------
+# The five non-type EXEMPLARS sections have no eval metrics yet, so fixture-suite work must not
+# touch them: an accidental edit fails here; a deliberate edit updates the pinned digest in the
+# same diff, making the touch reviewable. The per-type blocks are NOT pinned — they are the
+# sanctioned surface of future gated prompt work.
+_PROTECTED_EXEMPLAR_REGIONS = {
+    "Commonly-confused pairs (pick the root cause, not the symptom)": (
+        "6d70d230a2da6a93697750cb5abae25dca4028c167c0528c2250ccf70041165c"
+    ),
+    "Finding quality (title / description / evidence)": (
+        "4829a5de77b48cbe5095b4affdae7bbd605ebea6cb6483f22ef10f42059eb0af"
+    ),
+    "Line-number discipline": ("6162ebcab7bac5173f4eeb4f613f13045fc23dd20808c3dd83a6c504980bd0f4"),
+    "trace_candidates discipline (cross-file follow-up is a cost)": (
+        "fcca162050ee62e46a1ad61b10049fcca22fd9015110c55673e5197f1f556567"
+    ),
+    "Exemplar discipline (applies to every type above)": (
+        "7c6149612208f0f6fadb8c854d7c28efbd9173e43cdff6a391eacb45e24e8c8e"
+    ),
+}
+
+
+def _exemplar_sections() -> dict[str, str]:
+    """Split SYSTEM_PROMPT_EXEMPLARS into `### `-headed sections (heading -> body)."""
+    sections: dict[str, str] = {}
+    current: str | None = None
+    buf: list[str] = []
+    for line in SYSTEM_PROMPT_EXEMPLARS.splitlines(keepends=True):
+        if line.startswith("### "):
+            if current is not None:
+                sections[current] = "".join(buf)
+            current = line[4:].strip()
+            buf = []
+        else:
+            buf.append(line)
+    if current is not None:
+        sections[current] = "".join(buf)
+    return sections
+
+
+def test_protected_exemplar_regions_are_byte_pinned() -> None:
+    sections = _exemplar_sections()
+    for heading, pinned in _PROTECTED_EXEMPLAR_REGIONS.items():
+        # parse from the CURRENT prompt: a renamed or deleted protected heading fails loudly
+        # here rather than letting the digest comparison pass vacuously over a missing region
+        assert heading in sections, (
+            f"protected EXEMPLARS section {heading!r} not found — renamed or removed? The five "
+            "non-type sections are pinned until they have their own eval metrics."
+        )
+        actual = hashlib.sha256(sections[heading].encode("utf-8")).hexdigest()
+        assert actual == pinned, (
+            f"protected EXEMPLARS section {heading!r} changed (digest {actual[:12]}… != pinned "
+            f"{pinned[:12]}…). These sections have no eval metrics; if the edit is deliberate, "
+            "update the pin in the same diff so the touch is reviewable."
+        )
