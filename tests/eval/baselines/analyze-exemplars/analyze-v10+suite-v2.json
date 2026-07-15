@@ -1,0 +1,3676 @@
+{
+  "fixture_digests": {
+    "tests/eval/fixtures/mock_github/blocking_async_export_poll.json": "9bf6d3651a61081f18c4830547994b352f64ab8c562d8d6df344754037720ec3",
+    "tests/eval/fixtures/mock_github/cmd_injection_eval_indirect.json": "f905f74a5065a6a38480e7a87c451683b861a1d0b32f2f6dfd04714bed9599fb",
+    "tests/eval/fixtures/mock_github/cmd_injection_subprocess.json": "5393351670ded5c243554ecaf731036a3748249994dc004ff405852470f73b59",
+    "tests/eval/fixtures/mock_github/deprecated_api_event_loop.json": "db0a3859818d227b8455b6e258469a043daf160bd129fccbb466bd76d4237dc9",
+    "tests/eval/fixtures/mock_github/eval_in_test_fixture.json": "01c4e6c81992daf1be40f8f2d0f8d12928dc77dcac66e5902ea290ceeafe6383",
+    "tests/eval/fixtures/mock_github/hardcoded_secret_release_token.json": "281667d74c10488f653519b273fe6725225ce073d5700a148abc63afb0cf3f0f",
+    "tests/eval/fixtures/mock_github/insecure_random_token.json": "2da8c37cfad6fc3c6ef7082a5216a2a98d305b0037da73d7377ebc8bf9b100ae",
+    "tests/eval/fixtures/mock_github/missing_error_handling.json": "669fcd0d4ddcff83bafcf2f0f949464cb4b40fc8778e317e62ae1a890464a75d",
+    "tests/eval/fixtures/mock_github/missing_input_validation.json": "870dba7ce91ebb143a29018c4ea1c05bd0d86f3868d2a425ef70b1369e8bcff5",
+    "tests/eval/fixtures/mock_github/missing_test_shipping_rates.json": "bb275c72cd6deb8167f549e5ac4cfbcb44813561309eb3766236cf43c202e6f9",
+    "tests/eval/fixtures/mock_github/n_plus_one_query.json": "34ffbed1f15efd7bd2211ed87e32939cfc4608edd25d3ea66ccb78a6b570ec3a",
+    "tests/eval/fixtures/mock_github/path_traversal.json": "3dd0cc53de7e24d2ffd26826ef3d815278d4800e56c91dcd9e1861d398741a0d",
+    "tests/eval/fixtures/mock_github/pygoat_auth_bypass.json": "1b243fab35115d1f194deebe0643af374b83a6f719e9d28a0ffb1297ff9cb2b1",
+    "tests/eval/fixtures/mock_github/pygoat_sql_injection.json": "26f716c21cab705397796dacf3a0d97ab0295cc165f19261819660675ce663c3",
+    "tests/eval/fixtures/mock_github/safe_async_to_thread_hash.json": "b00f486eb978861070cf926fd407d925028d3d281119b5b48dcbded9c230c505",
+    "tests/eval/fixtures/mock_github/safe_reexport_init_all.json": "9400a1e939c444ad72bc3d6f900624f88085c4147e785fd82d2e9e4e233c9295",
+    "tests/eval/fixtures/mock_github/safe_refactor.json": "fefa98a9d1a134b6505632ad880bde8e9bef9bf06dc17c02b383de9ee3a88491",
+    "tests/eval/fixtures/mock_github/safe_secret_env_default.json": "1045015adfd0ba6faaaf840f62f9b67b847e0f9484d1fd2a782e1e98578e13d5",
+    "tests/eval/fixtures/mock_github/safe_stable_old_stdlib.json": "c6ea944dcae7775c11ff230424c4a7a570c00d7caf7d97511ed960d6a4889ab2",
+    "tests/eval/fixtures/mock_github/safe_subprocess_fixed_argv.json": "5cb76f78aee4fff05b6e2ab9c4f2349acefc580ed5b5912a3a5b723e200475fa",
+    "tests/eval/fixtures/mock_github/safe_trivial_delegations.json": "725a7a64a0bef0523876b9b1775b8e687c2ec955dc5c22e11ef4739f6c43641c",
+    "tests/eval/fixtures/mock_github/safe_xss_escaped_echo.json": "df801560ac86924721cb9b1b498e8c82b296c594a87c70f5f394c01e1128c1dc",
+    "tests/eval/fixtures/mock_github/sqli_holdout_concat.json": "b332fe7ff068913e81f2ac40ebc28bd6f0fdea83f2aa1f4fa9fa85d573639c78",
+    "tests/eval/fixtures/mock_github/sqli_holdout_format.json": "3f44e2410c2f0031018e8e66eab95bf359ee85eefc19c0958b1db6e9de767fd9",
+    "tests/eval/fixtures/mock_github/sqli_holdout_fstring.json": "b9bad581a2ca0481d90cc7432d090f1e6daa401f98b583260410f8c7f7e7411d",
+    "tests/eval/fixtures/mock_github/sqli_holdout_orm_fstring.json": "027d78fffdcb783a3937b0ee28a39a2a81be17fbd5be2b5cf0402d18d65f4ecd",
+    "tests/eval/fixtures/mock_github/ssrf_fixed_host_safe.json": "54ff783b43b5f3fb7f983115d0ee3ac655cbe1b8e8a4a2342763b738c6363071",
+    "tests/eval/fixtures/mock_github/ssrf_user_host.json": "99f3a8d6eca85bb63aafa69cc3d8baef2a7d97729fee74e17d74bf8bc44382d9",
+    "tests/eval/fixtures/mock_github/unused_import_added_csv.json": "4c97636e1141a284558afeb8f5aa027fea81eb4096331939bcf3a4c11b652683",
+    "tests/eval/fixtures/mock_github/weak_crypto_cast.json": "b171c36e39d36d1b3e338cde1bfe2f93fcca2bbb21e2371273911ff041ed89b0",
+    "tests/eval/fixtures/mock_github/weak_password_hash_md5.json": "bca09f6cb1259e2adc08b1d15472e6f6aa1ed280eec36a3221518f34102b29ad",
+    "tests/eval/fixtures/mock_github/xss_search_echo.json": "c4b82b072d87fc9da695c6ae1b3570080ffbf3f0d96b2333b7c257fc40b2c74e"
+  },
+  "fixture_suite": "suite-v2",
+  "harness_digest": "32c5cda1a0d514bb30ab9952d2e3886e46da8b153645c95be3909b487845cb13",
+  "majority_threshold": 2,
+  "measurement_contract": "exemplar-mc-2",
+  "n_reps": 3,
+  "prompt_digest": "4520a00624438556a969fc7b28e051119ad0eb55d92d744c7c5900e82374e4d4",
+  "prompt_version": "analyze-v10",
+  "providers": {
+    "claude-deep": {
+      "fp_count": 3,
+      "input_side_tokens": {
+        "by_class": {
+          "cache_read": 1033030,
+          "cache_write": 10874,
+          "input": 41358
+        },
+        "expected": 96,
+        "missing": 0,
+        "observed": 96,
+        "total": 1085262
+      },
+      "model": "claude-sonnet-5",
+      "per_fixture": {
+        "tests/eval/fixtures/mock_github/blocking_async_export_poll.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 1,
+            "values": [
+              0,
+              0,
+              1
+            ]
+          },
+          "finding_type": "blocking_call_in_async",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1365
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33987,
+            "values": [
+              11329,
+              11329,
+              11329
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/cmd_injection_eval_indirect.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 2,
+            "values": [
+              0,
+              1,
+              1
+            ]
+          },
+          "finding_type": "command_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1077
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33699,
+            "values": [
+              11233,
+              11233,
+              11233
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/cmd_injection_subprocess.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "command_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1086
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33708,
+            "values": [
+              11236,
+              11236,
+              11236
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/deprecated_api_event_loop.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "deprecated_api",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1083
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33705,
+            "values": [
+              11235,
+              11235,
+              11235
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/eval_in_test_fixture.json": {
+          "detected_reps": 2,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1845
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 34467,
+            "values": [
+              11489,
+              11489,
+              11489
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/hardcoded_secret_release_token.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "hardcoded_secret",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1698
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 34320,
+            "values": [
+              11440,
+              11440,
+              11440
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/insecure_random_token.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "insecure_randomness",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 966
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33588,
+            "values": [
+              11196,
+              11196,
+              11196
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/missing_error_handling.json": {
+          "detected_reps": 2,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "missing_error_handling",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1125
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33747,
+            "values": [
+              11249,
+              11249,
+              11249
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/missing_input_validation.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 3,
+            "values": [
+              1,
+              1,
+              1
+            ]
+          },
+          "finding_type": "missing_input_validation",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 987
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33609,
+            "values": [
+              11203,
+              11203,
+              11203
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/missing_test_shipping_rates.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "missing_test",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 2091
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 34713,
+            "values": [
+              11571,
+              11571,
+              11571
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/n_plus_one_query.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "n_plus_one_query",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1320
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33942,
+            "values": [
+              11314,
+              11314,
+              11314
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/path_traversal.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 3,
+            "values": [
+              1,
+              1,
+              1
+            ]
+          },
+          "finding_type": "path_traversal",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1098
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33720,
+            "values": [
+              11240,
+              11240,
+              11240
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/pygoat_auth_bypass.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 3,
+            "values": [
+              1,
+              1,
+              1
+            ]
+          },
+          "finding_type": "auth_bypass",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1278
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33900,
+            "values": [
+              11300,
+              11300,
+              11300
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/pygoat_sql_injection.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 2,
+            "values": [
+              0,
+              1,
+              1
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 21748,
+              "cache_write": 10874,
+              "input": 1299
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33921,
+            "values": [
+              11307,
+              11307,
+              11307
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_async_to_thread_hash.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1704
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 34326,
+            "values": [
+              11442,
+              11442,
+              11442
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_reexport_init_all.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1086
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33708,
+            "values": [
+              11236,
+              11236,
+              11236
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_refactor.json": {
+          "detected_reps": 3,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1434
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 34056,
+            "values": [
+              11352,
+              11352,
+              11352
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_secret_env_default.json": {
+          "detected_reps": 3,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1041
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33663,
+            "values": [
+              11221,
+              11221,
+              11221
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_stable_old_stdlib.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1221
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33843,
+            "values": [
+              11281,
+              11281,
+              11281
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_subprocess_fixed_argv.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1143
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33765,
+            "values": [
+              11255,
+              11255,
+              11255
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_trivial_delegations.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1806
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 34428,
+            "values": [
+              11476,
+              11476,
+              11476
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_xss_escaped_echo.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1218
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33840,
+            "values": [
+              11280,
+              11280,
+              11280
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_concat.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1260
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33882,
+            "values": [
+              11294,
+              11294,
+              11294
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_format.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1254
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33876,
+            "values": [
+              11292,
+              11292,
+              11292
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_fstring.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1230
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33852,
+            "values": [
+              11284,
+              11284,
+              11284
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_orm_fstring.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1143
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33765,
+            "values": [
+              11255,
+              11255,
+              11255
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/ssrf_fixed_host_safe.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1497
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 34119,
+            "values": [
+              11373,
+              11373,
+              11373
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/ssrf_user_host.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "ssrf",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1278
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33900,
+            "values": [
+              11300,
+              11300,
+              11300
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/unused_import_added_csv.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 3,
+            "values": [
+              1,
+              1,
+              1
+            ]
+          },
+          "finding_type": "unused_import",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1356
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33978,
+            "values": [
+              11326,
+              11326,
+              11326
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/weak_crypto_cast.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 1,
+            "values": [
+              0,
+              0,
+              1
+            ]
+          },
+          "finding_type": "weak_crypto",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1089
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33711,
+            "values": [
+              11237,
+              11237,
+              11237
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/weak_password_hash_md5.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "weak_password_hash",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1086
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33708,
+            "values": [
+              11236,
+              11236,
+              11236
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/xss_search_echo.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "xss",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 32622,
+              "cache_write": 0,
+              "input": 1194
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 33816,
+            "values": [
+              11272,
+              11272,
+              11272
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        }
+      },
+      "profile_contract": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+      "recall_by_type": {
+        "auth_bypass": {
+          "passed": 1,
+          "total": 1
+        },
+        "blocking_call_in_async": {
+          "passed": 1,
+          "total": 1
+        },
+        "command_injection": {
+          "passed": 2,
+          "total": 2
+        },
+        "deprecated_api": {
+          "passed": 1,
+          "total": 1
+        },
+        "hardcoded_secret": {
+          "passed": 1,
+          "total": 1
+        },
+        "insecure_randomness": {
+          "passed": 1,
+          "total": 1
+        },
+        "missing_error_handling": {
+          "passed": 1,
+          "total": 1
+        },
+        "missing_input_validation": {
+          "passed": 1,
+          "total": 1
+        },
+        "missing_test": {
+          "passed": 1,
+          "total": 1
+        },
+        "n_plus_one_query": {
+          "passed": 1,
+          "total": 1
+        },
+        "path_traversal": {
+          "passed": 1,
+          "total": 1
+        },
+        "sql_injection": {
+          "passed": 5,
+          "total": 5
+        },
+        "ssrf": {
+          "passed": 1,
+          "total": 1
+        },
+        "unused_import": {
+          "passed": 1,
+          "total": 1
+        },
+        "weak_crypto": {
+          "passed": 1,
+          "total": 1
+        },
+        "weak_password_hash": {
+          "passed": 1,
+          "total": 1
+        },
+        "xss": {
+          "passed": 1,
+          "total": 1
+        }
+      },
+      "role": "acceptance",
+      "structured_output": {
+        "accepted": 96,
+        "attempts": 96,
+        "rejected": 0,
+        "void": 0
+      },
+      "token_accounting": "prompt_excludes_cached"
+    },
+    "claude-standard": {
+      "fp_count": 6,
+      "input_side_tokens": {
+        "by_class": {
+          "cache_read": 756200,
+          "cache_write": 7960,
+          "input": 33285
+        },
+        "expected": 96,
+        "missing": 0,
+        "observed": 96,
+        "total": 797445
+      },
+      "model": "claude-haiku-4-5",
+      "per_fixture": {
+        "tests/eval/fixtures/mock_github/blocking_async_export_poll.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "blocking_call_in_async",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 1116
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24996,
+            "values": [
+              8332,
+              8332,
+              8332
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/cmd_injection_eval_indirect.json": {
+          "detected_reps": 0,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 3,
+            "values": [
+              1,
+              1,
+              1
+            ]
+          },
+          "finding_type": "command_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 873
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24753,
+            "values": [
+              8251,
+              8251,
+              8251
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/cmd_injection_subprocess.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "command_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 876
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24756,
+            "values": [
+              8252,
+              8252,
+              8252
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/deprecated_api_event_loop.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "deprecated_api",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 882
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24762,
+            "values": [
+              8254,
+              8254,
+              8254
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/eval_in_test_fixture.json": {
+          "detected_reps": 3,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 1446
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 25326,
+            "values": [
+              8442,
+              8442,
+              8442
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/hardcoded_secret_release_token.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "hardcoded_secret",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 1410
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 25290,
+            "values": [
+              8430,
+              8430,
+              8430
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/insecure_random_token.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "insecure_randomness",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 810
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24690,
+            "values": [
+              8230,
+              8230,
+              8230
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/missing_error_handling.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "missing_error_handling",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 915
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24795,
+            "values": [
+              8265,
+              8265,
+              8265
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/missing_input_validation.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "missing_input_validation",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 822
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24702,
+            "values": [
+              8234,
+              8234,
+              8234
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/missing_test_shipping_rates.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 3,
+            "values": [
+              1,
+              1,
+              1
+            ]
+          },
+          "finding_type": "missing_test",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 1623
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 25503,
+            "values": [
+              8501,
+              8501,
+              8501
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/n_plus_one_query.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "n_plus_one_query",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 1056
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24936,
+            "values": [
+              8312,
+              8312,
+              8312
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/path_traversal.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "path_traversal",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 891
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24771,
+            "values": [
+              8257,
+              8257,
+              8257
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/pygoat_auth_bypass.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "auth_bypass",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 1032
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24912,
+            "values": [
+              8304,
+              8304,
+              8304
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/pygoat_sql_injection.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 15920,
+              "cache_write": 7960,
+              "input": 1014
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24894,
+            "values": [
+              8298,
+              8298,
+              8298
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_async_to_thread_hash.json": {
+          "detected_reps": 3,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 1386
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 25266,
+            "values": [
+              8422,
+              8422,
+              8422
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_reexport_init_all.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 873
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24753,
+            "values": [
+              8251,
+              8251,
+              8251
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_refactor.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 1185
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 25065,
+            "values": [
+              8355,
+              8355,
+              8355
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_secret_env_default.json": {
+          "detected_reps": 3,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 786
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24666,
+            "values": [
+              8222,
+              8222,
+              8222
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_stable_old_stdlib.json": {
+          "detected_reps": 3,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 972
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24852,
+            "values": [
+              8284,
+              8284,
+              8284
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_subprocess_fixed_argv.json": {
+          "detected_reps": 3,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 921
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24801,
+            "values": [
+              8267,
+              8267,
+              8267
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_trivial_delegations.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 1518
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 25398,
+            "values": [
+              8466,
+              8466,
+              8466
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_xss_escaped_echo.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 996
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24876,
+            "values": [
+              8292,
+              8292,
+              8292
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_concat.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 954
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24834,
+            "values": [
+              8278,
+              8278,
+              8278
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_format.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 972
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24852,
+            "values": [
+              8284,
+              8284,
+              8284
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_fstring.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 948
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24828,
+            "values": [
+              8276,
+              8276,
+              8276
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_orm_fstring.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 885
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24765,
+            "values": [
+              8255,
+              8255,
+              8255
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/ssrf_fixed_host_safe.json": {
+          "detected_reps": 3,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 1239
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 25119,
+            "values": [
+              8373,
+              8373,
+              8373
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/ssrf_user_host.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 1,
+            "values": [
+              0,
+              0,
+              1
+            ]
+          },
+          "finding_type": "ssrf",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 1044
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24924,
+            "values": [
+              8308,
+              8308,
+              8308
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/unused_import_added_csv.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "unused_import",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 1122
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 25002,
+            "values": [
+              8334,
+              8334,
+              8334
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/weak_crypto_cast.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "weak_crypto",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 855
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24735,
+            "values": [
+              8245,
+              8245,
+              8245
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/weak_password_hash_md5.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "weak_password_hash",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 885
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24765,
+            "values": [
+              8255,
+              8255,
+              8255
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/xss_search_echo.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "xss",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 23880,
+              "cache_write": 0,
+              "input": 978
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 24858,
+            "values": [
+              8286,
+              8286,
+              8286
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        }
+      },
+      "profile_contract": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+      "recall_by_type": {
+        "auth_bypass": {
+          "passed": 1,
+          "total": 1
+        },
+        "blocking_call_in_async": {
+          "passed": 1,
+          "total": 1
+        },
+        "command_injection": {
+          "passed": 1,
+          "total": 2
+        },
+        "deprecated_api": {
+          "passed": 1,
+          "total": 1
+        },
+        "hardcoded_secret": {
+          "passed": 1,
+          "total": 1
+        },
+        "insecure_randomness": {
+          "passed": 1,
+          "total": 1
+        },
+        "missing_error_handling": {
+          "passed": 1,
+          "total": 1
+        },
+        "missing_input_validation": {
+          "passed": 1,
+          "total": 1
+        },
+        "missing_test": {
+          "passed": 1,
+          "total": 1
+        },
+        "n_plus_one_query": {
+          "passed": 1,
+          "total": 1
+        },
+        "path_traversal": {
+          "passed": 1,
+          "total": 1
+        },
+        "sql_injection": {
+          "passed": 5,
+          "total": 5
+        },
+        "ssrf": {
+          "passed": 1,
+          "total": 1
+        },
+        "unused_import": {
+          "passed": 1,
+          "total": 1
+        },
+        "weak_crypto": {
+          "passed": 1,
+          "total": 1
+        },
+        "weak_password_hash": {
+          "passed": 1,
+          "total": 1
+        },
+        "xss": {
+          "passed": 1,
+          "total": 1
+        }
+      },
+      "role": "acceptance",
+      "structured_output": {
+        "accepted": 96,
+        "attempts": 96,
+        "rejected": 0,
+        "void": 0
+      },
+      "token_accounting": "prompt_excludes_cached"
+    },
+    "fireworks-glm": {
+      "fp_count": 0,
+      "input_side_tokens": {
+        "by_class": {
+          "cache_read": 427272,
+          "cache_write": 0,
+          "input": 213732
+        },
+        "expected": 96,
+        "missing": 0,
+        "observed": 96,
+        "total": 641004
+      },
+      "model": "accounts/fireworks/models/glm-5p2",
+      "per_fixture": {
+        "tests/eval/fixtures/mock_github/blocking_async_export_poll.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "blocking_call_in_async",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13376,
+              "cache_write": 0,
+              "input": 6691
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 20067,
+            "values": [
+              6689,
+              6689,
+              6689
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/cmd_injection_eval_indirect.json": {
+          "detected_reps": 0,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 3,
+            "values": [
+              1,
+              1,
+              1
+            ]
+          },
+          "finding_type": "command_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13266,
+              "cache_write": 0,
+              "input": 6636
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19902,
+            "values": [
+              6634,
+              6634,
+              6634
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/cmd_injection_subprocess.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "command_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13266,
+              "cache_write": 0,
+              "input": 6636
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19902,
+            "values": [
+              6634,
+              6634,
+              6634
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/deprecated_api_event_loop.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "deprecated_api",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13254,
+              "cache_write": 0,
+              "input": 6630
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19884,
+            "values": [
+              6628,
+              6628,
+              6628
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/eval_in_test_fixture.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13572,
+              "cache_write": 0,
+              "input": 6789
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 20361,
+            "values": [
+              6787,
+              6787,
+              6787
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/hardcoded_secret_release_token.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "hardcoded_secret",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13576,
+              "cache_write": 0,
+              "input": 6791
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 20367,
+            "values": [
+              6789,
+              6789,
+              6789
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/insecure_random_token.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "insecure_randomness",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13232,
+              "cache_write": 0,
+              "input": 6619
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19851,
+            "values": [
+              6617,
+              6617,
+              6617
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/missing_error_handling.json": {
+          "detected_reps": 0,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "missing_error_handling",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13272,
+              "cache_write": 0,
+              "input": 6639
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19911,
+            "values": [
+              6637,
+              6637,
+              6637
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/missing_input_validation.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "missing_input_validation",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13236,
+              "cache_write": 0,
+              "input": 6621
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19857,
+            "values": [
+              6619,
+              6619,
+              6619
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/missing_test_shipping_rates.json": {
+          "detected_reps": 0,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "missing_test",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13728,
+              "cache_write": 0,
+              "input": 6867
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 20595,
+            "values": [
+              6865,
+              6865,
+              6865
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/n_plus_one_query.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "n_plus_one_query",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13372,
+              "cache_write": 0,
+              "input": 6689
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 20061,
+            "values": [
+              6687,
+              6687,
+              6687
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/path_traversal.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "path_traversal",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13276,
+              "cache_write": 0,
+              "input": 6641
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19917,
+            "values": [
+              6639,
+              6639,
+              6639
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/pygoat_auth_bypass.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "auth_bypass",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13352,
+              "cache_write": 0,
+              "input": 6679
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 20031,
+            "values": [
+              6677,
+              6677,
+              6677
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/pygoat_sql_injection.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13350,
+              "cache_write": 0,
+              "input": 6678
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 20028,
+            "values": [
+              6676,
+              6676,
+              6676
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_async_to_thread_hash.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13522,
+              "cache_write": 0,
+              "input": 6764
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 20286,
+            "values": [
+              6762,
+              6762,
+              6762
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_reexport_init_all.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13274,
+              "cache_write": 0,
+              "input": 6640
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19914,
+            "values": [
+              6638,
+              6638,
+              6638
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_refactor.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13410,
+              "cache_write": 0,
+              "input": 6708
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 20118,
+            "values": [
+              6706,
+              6706,
+              6706
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_secret_env_default.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13216,
+              "cache_write": 0,
+              "input": 6611
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19827,
+            "values": [
+              6609,
+              6609,
+              6609
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_stable_old_stdlib.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13298,
+              "cache_write": 0,
+              "input": 6652
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19950,
+            "values": [
+              6650,
+              6650,
+              6650
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_subprocess_fixed_argv.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13296,
+              "cache_write": 0,
+              "input": 6651
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19947,
+            "values": [
+              6649,
+              6649,
+              6649
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_trivial_delegations.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13580,
+              "cache_write": 0,
+              "input": 6793
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 20373,
+            "values": [
+              6791,
+              6791,
+              6791
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/safe_xss_escaped_echo.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13328,
+              "cache_write": 0,
+              "input": 6667
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19995,
+            "values": [
+              6665,
+              6665,
+              6665
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_concat.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13310,
+              "cache_write": 0,
+              "input": 6658
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19968,
+            "values": [
+              6656,
+              6656,
+              6656
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_format.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13308,
+              "cache_write": 0,
+              "input": 6657
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19965,
+            "values": [
+              6655,
+              6655,
+              6655
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_fstring.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13304,
+              "cache_write": 0,
+              "input": 6655
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19959,
+            "values": [
+              6653,
+              6653,
+              6653
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/sqli_holdout_orm_fstring.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "sql_injection",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13272,
+              "cache_write": 0,
+              "input": 6639
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19911,
+            "values": [
+              6637,
+              6637,
+              6637
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/ssrf_fixed_host_safe.json": {
+          "detected_reps": 0,
+          "dimension": "precision",
+          "extra_findings": null,
+          "finding_type": "",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13440,
+              "cache_write": 0,
+              "input": 6723
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 20163,
+            "values": [
+              6721,
+              6721,
+              6721
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/ssrf_user_host.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "ssrf",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13352,
+              "cache_write": 0,
+              "input": 6679
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 20031,
+            "values": [
+              6677,
+              6677,
+              6677
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/unused_import_added_csv.json": {
+          "detected_reps": 0,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "unused_import",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13402,
+              "cache_write": 0,
+              "input": 6704
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 20106,
+            "values": [
+              6702,
+              6702,
+              6702
+            ]
+          },
+          "majority_detected": false,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/weak_crypto_cast.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 1,
+            "values": [
+              0,
+              0,
+              1
+            ]
+          },
+          "finding_type": "weak_crypto",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13248,
+              "cache_write": 0,
+              "input": 6627
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19875,
+            "values": [
+              6625,
+              6625,
+              6625
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/weak_password_hash_md5.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "weak_password_hash",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13260,
+              "cache_write": 0,
+              "input": 6633
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19893,
+            "values": [
+              6631,
+              6631,
+              6631
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        },
+        "tests/eval/fixtures/mock_github/xss_search_echo.json": {
+          "detected_reps": 3,
+          "dimension": "recall",
+          "extra_findings": {
+            "total": 0,
+            "values": [
+              0,
+              0,
+              0
+            ]
+          },
+          "finding_type": "xss",
+          "input_side_tokens": {
+            "by_class": {
+              "cache_read": 13324,
+              "cache_write": 0,
+              "input": 6665
+            },
+            "expected": 3,
+            "missing": 0,
+            "observed": 3,
+            "total": 19989,
+            "values": [
+              6663,
+              6663,
+              6663
+            ]
+          },
+          "majority_detected": true,
+          "n_reps": 3,
+          "structured_output": {
+            "accepted": 3,
+            "attempts": 3,
+            "rejected": 0,
+            "void": 0
+          }
+        }
+      },
+      "profile_contract": "be644818886d19e054367cd2319e662e7719a5da06da5379ba3449aa7cc5829f",
+      "recall_by_type": {
+        "auth_bypass": {
+          "passed": 1,
+          "total": 1
+        },
+        "blocking_call_in_async": {
+          "passed": 1,
+          "total": 1
+        },
+        "command_injection": {
+          "passed": 1,
+          "total": 2
+        },
+        "deprecated_api": {
+          "passed": 1,
+          "total": 1
+        },
+        "hardcoded_secret": {
+          "passed": 1,
+          "total": 1
+        },
+        "insecure_randomness": {
+          "passed": 1,
+          "total": 1
+        },
+        "missing_error_handling": {
+          "passed": 0,
+          "total": 1
+        },
+        "missing_input_validation": {
+          "passed": 1,
+          "total": 1
+        },
+        "missing_test": {
+          "passed": 0,
+          "total": 1
+        },
+        "n_plus_one_query": {
+          "passed": 1,
+          "total": 1
+        },
+        "path_traversal": {
+          "passed": 1,
+          "total": 1
+        },
+        "sql_injection": {
+          "passed": 5,
+          "total": 5
+        },
+        "ssrf": {
+          "passed": 1,
+          "total": 1
+        },
+        "unused_import": {
+          "passed": 0,
+          "total": 1
+        },
+        "weak_crypto": {
+          "passed": 1,
+          "total": 1
+        },
+        "weak_password_hash": {
+          "passed": 1,
+          "total": 1
+        },
+        "xss": {
+          "passed": 1,
+          "total": 1
+        }
+      },
+      "role": "acceptance",
+      "structured_output": {
+        "accepted": 96,
+        "attempts": 96,
+        "rejected": 0,
+        "void": 0
+      },
+      "token_accounting": "prompt_includes_cached"
+    }
+  },
+  "schema_version": 3
+}
