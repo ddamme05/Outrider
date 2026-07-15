@@ -1260,6 +1260,27 @@ async def test_real_fixture_content_through_analyze_catches_regression(fixture_p
         assert cmp.passes is False  # the gate catches the recall regression
 
 
+@pytest.mark.parametrize("fixture_path", _SAFE_CODE_FIXTURES)
+@pytest.mark.asyncio
+async def test_safe_fixture_reaches_the_model_and_yields_no_findings(fixture_path: str) -> None:
+    """The FP instrument is only meaningful if the safe code is ACTUALLY REVIEWED: a fixture
+    analyze skips (NO_CHANGED_SCOPE_UNITS, skim/skip tier) produces zero findings VACUOUSLY and
+    would "prove" the don't-flag discriminator without exercising it — the FP counterpart of the
+    positive admission test above. Three assertions per safe fixture: the model was called at
+    least once (a skipped file makes no LLM call), the scripted clean response parsed
+    (a rejected response would also zero-out findings vacuously), and no findings survived."""
+    provider = _ScriptedProvider(_MISSES_RESPONSE)
+    findings, n_rejected = await run_analyze_under_model(
+        state_from_eval_fixture(fixture_path), provider=provider, model="claude-sonnet-4-6"
+    )
+    assert provider.calls, (
+        f"{fixture_path}: analyze never called the model — the file was skipped, so its "
+        "zero-findings result is vacuous, not evidence of the don't-flag discriminator"
+    )
+    assert n_rejected == 0  # the clean response actually parsed; rejection would mask findings
+    assert findings == ()  # and the genuine outcome on safe code is zero findings
+
+
 # ---------------------------------------------------------------------------
 # Opt-in REAL-model run (SPEND) — the evidence path. Skipped unless explicitly enabled.
 # Two dimensions: RECALL over known-vulnerability fixtures, PRECISION over safe code.
