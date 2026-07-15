@@ -1,0 +1,36 @@
+{
+ "installation_id": 7106,
+ "owner": "acme",
+ "repo": "exporter",
+ "pr_number": 36,
+ "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "pr_title": "Hash uploads off the event loop",
+ "pr_body": "Delegates file hashing to a worker thread.",
+ "author": "contributor",
+ "total_additions": 13,
+ "total_deletions": 0,
+ "files": [
+  {
+   "path": "uploads/hashing.py",
+   "status": "modified",
+   "additions": 13,
+   "deletions": 0,
+   "patch": "@@ -1 +1,14 @@\n+import asyncio\n import hashlib\n+\n+\n+def _sha256_file(path):\n+    digest = hashlib.sha256()\n+    with open(path, \"rb\") as fh:\n+        for chunk in iter(lambda: fh.read(65536), b\"\"):\n+            digest.update(chunk)\n+    return digest.hexdigest()\n+\n+\n+async def digest_upload(path):\n+    return await asyncio.to_thread(_sha256_file, path)\n",
+   "previous_path": null,
+   "content_base": "import hashlib\n",
+   "content_head": "import asyncio\nimport hashlib\n\n\ndef _sha256_file(path):\n    digest = hashlib.sha256()\n    with open(path, \"rb\") as fh:\n        for chunk in iter(lambda: fh.read(65536), b\"\"):\n            digest.update(chunk)\n    return digest.hexdigest()\n\n\nasync def digest_upload(path):\n    return await asyncio.to_thread(_sha256_file, path)\n"
+  }
+ ],
+ "llm_responses": {
+  "triage": [
+   "{\"file_tiers\": {\"uploads/hashing.py\": \"deep\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"performance\"], \"reasoning\": \"Review the upload hashing; blocking reads are delegated via asyncio.to_thread.\"}"
+  ],
+  "analyze": [
+   "{\"findings\": []}"
+  ],
+  "synthesize": [
+   "No findings: the blocking hash runs in a worker thread; the sync helper is only called there."
+  ]
+ }
+}

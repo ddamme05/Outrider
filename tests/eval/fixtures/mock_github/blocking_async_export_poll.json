@@ -1,0 +1,36 @@
+{
+ "installation_id": 7105,
+ "owner": "acme",
+ "repo": "exporter",
+ "pr_number": 35,
+ "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "pr_title": "Poll export jobs until completion",
+ "pr_body": "Waits for an export job to finish.",
+ "author": "contributor",
+ "total_additions": 12,
+ "total_deletions": 0,
+ "files": [
+  {
+   "path": "exports/poller.py",
+   "status": "modified",
+   "additions": 12,
+   "deletions": 0,
+   "patch": "@@ -1 +1,13 @@\n+import time\n+\n from exports import api\n+\n+POLL_INTERVAL_SECONDS = 2\n+\n+\n+async def wait_for_export(job_id):\n+    while True:\n+        job = await api.get_job(job_id)\n+        if job[\"state\"] in (\"done\", \"failed\"):\n+            return job\n+        time.sleep(POLL_INTERVAL_SECONDS)\n",
+   "previous_path": null,
+   "content_base": "from exports import api\n",
+   "content_head": "import time\n\nfrom exports import api\n\nPOLL_INTERVAL_SECONDS = 2\n\n\nasync def wait_for_export(job_id):\n    while True:\n        job = await api.get_job(job_id)\n        if job[\"state\"] in (\"done\", \"failed\"):\n            return job\n        time.sleep(POLL_INTERVAL_SECONDS)\n"
+  }
+ ],
+ "llm_responses": {
+  "triage": [
+   "{\"file_tiers\": {\"exports/poller.py\": \"deep\"}, \"overall_risk\": \"medium\", \"relevant_dimensions\": [\"performance\"], \"reasoning\": \"Deep-review the async polling loop for event-loop stalls.\"}"
+  ],
+  "analyze": [
+   "{\"findings\": [{\"finding_type\": \"blocking_call_in_async\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"time.sleep stalls the event loop in wait_for_export\", \"description\": \"wait_for_export() is an async coroutine but sleeps with time.sleep(), blocking the event loop for every concurrent task on each poll iteration. Use await asyncio.sleep(POLL_INTERVAL_SECONDS).\", \"evidence\": \"        time.sleep(POLL_INTERVAL_SECONDS)\", \"line_start\": 13, \"line_end\": 13, \"trace_candidates\": []}]}"
+  ],
+  "synthesize": [
+   "Performance finding: one MEDIUM blocking_call_in_async -- a synchronous sleep inside an async polling loop."
+  ]
+ }
+}

@@ -780,6 +780,57 @@ def test_extras_are_recall_only_and_nonnegative() -> None:
         aggregate(bad_neg, meta)
 
 
+# The 12 suite-v2 fixtures, subject to the behavioral-distinctness rule (spec item 4): same
+# rule boundary as their EXEMPLARS block, different code shape. The guard below enforces the
+# LITERAL half (no copied fence lines); identifier-only structural near-copies are reviewer
+# discipline, named as such in the spec.
+_SUITE_V2_FIXTURES = (
+    "xss_search_echo.json",
+    "safe_xss_escaped_echo.json",
+    "hardcoded_secret_release_token.json",
+    "safe_secret_env_default.json",
+    "blocking_async_export_poll.json",
+    "safe_async_to_thread_hash.json",
+    "unused_import_added_csv.json",
+    "safe_reexport_init_all.json",
+    "missing_test_shipping_rates.json",
+    "safe_trivial_delegations.json",
+    "deprecated_api_event_loop.json",
+    "safe_stable_old_stdlib.json",
+)
+
+
+def test_suite_v2_fixtures_do_not_copy_prompt_fence_lines() -> None:
+    from outrider.prompts.analyze import SYSTEM_PROMPT_EXEMPLARS  # noqa: PLC0415
+
+    prompt_lines = {line.strip() for line in SYSTEM_PROMPT_EXEMPLARS.splitlines()}
+    fixtures_dir = Path("tests/eval/fixtures/mock_github")
+    for name in _SUITE_V2_FIXTURES:
+        data = json.loads((fixtures_dir / name).read_text(encoding="utf-8"))
+        for f in data["files"]:
+            source = (f.get("content_head") or "") + "\n" + (f.get("content_base") or "")
+            for line in source.splitlines():
+                stripped = line.strip()
+                if len(stripped) < 10:  # skip trivial fragments (bare imports, braces, returns)
+                    continue
+                assert stripped not in prompt_lines, (
+                    f"{name}: fixture line {stripped!r} appears verbatim in "
+                    "SYSTEM_PROMPT_EXEMPLARS — a copied fence measures prompt-example "
+                    "recognition, not discriminator preservation; reshape the fixture code"
+                )
+
+
+def test_suite_v2_fixtures_are_registered_in_the_ground_truth() -> None:
+    from .test_model_comparison import (  # noqa: PLC0415
+        _GROUND_TRUTH_BY_FIXTURE,
+        _SAFE_CODE_FIXTURES,
+    )
+
+    registered = {p.split("/")[-1] for p in (*_GROUND_TRUTH_BY_FIXTURE, *_SAFE_CODE_FIXTURES)}
+    missing = [n for n in _SUITE_V2_FIXTURES if n not in registered]
+    assert not missing, f"suite-v2 fixtures not in the registry: {missing}"
+
+
 def test_harness_source_digest_is_stable_sha256() -> None:
     d = harness_source_digest()
     assert d == harness_source_digest()  # deterministic over the on-disk source

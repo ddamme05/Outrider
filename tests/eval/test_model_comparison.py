@@ -310,6 +310,65 @@ _GROUND_TRUTH_BY_FIXTURE: dict[str, tuple[ExpectedFinding, ...]] = {
             severity=lookup_severity(FindingType.INSECURE_RANDOMNESS),
         ),
     ),
+    # suite-v2 FLAG-side coverage (specs/2026-07-15-exemplar-coverage-fixture-suite-v2.md):
+    # one positive per previously-unmeasured EXEMPLARS type. Behaviorally distinct from the
+    # prompt fences by authoring rule — same rule boundary, different code/control-flow shape
+    # (enforced literally by the fence-copy guard in test_exemplar_baseline.py; structural
+    # near-copies are reviewer discipline). Lines are HEAD source lines, generator-computed.
+    "tests/eval/fixtures/mock_github/xss_search_echo.json": (
+        ExpectedFinding(
+            file_path="search/views.py",
+            line_start=6,
+            line_end=6,
+            finding_type=FindingType.XSS,
+            severity=lookup_severity(FindingType.XSS),
+        ),
+    ),
+    "tests/eval/fixtures/mock_github/hardcoded_secret_release_token.json": (
+        ExpectedFinding(
+            file_path="tools/release.py",
+            line_start=5,
+            line_end=5,
+            finding_type=FindingType.HARDCODED_SECRET,
+            severity=lookup_severity(FindingType.HARDCODED_SECRET),
+        ),
+    ),
+    "tests/eval/fixtures/mock_github/blocking_async_export_poll.json": (
+        ExpectedFinding(
+            file_path="exports/poller.py",
+            line_start=13,
+            line_end=13,
+            finding_type=FindingType.BLOCKING_CALL_IN_ASYNC,
+            severity=lookup_severity(FindingType.BLOCKING_CALL_IN_ASYNC),
+        ),
+    ),
+    "tests/eval/fixtures/mock_github/unused_import_added_csv.json": (
+        ExpectedFinding(
+            file_path="audit/manifest.py",
+            line_start=9,
+            line_end=9,
+            finding_type=FindingType.UNUSED_IMPORT,
+            severity=lookup_severity(FindingType.UNUSED_IMPORT),
+        ),
+    ),
+    "tests/eval/fixtures/mock_github/missing_test_shipping_rates.json": (
+        ExpectedFinding(
+            file_path="pricing/shipping.py",
+            line_start=5,
+            line_end=5,
+            finding_type=FindingType.MISSING_TEST,
+            severity=lookup_severity(FindingType.MISSING_TEST),
+        ),
+    ),
+    "tests/eval/fixtures/mock_github/deprecated_api_event_loop.json": (
+        ExpectedFinding(
+            file_path="cli/sync.py",
+            line_start=7,
+            line_end=7,
+            finding_type=FindingType.DEPRECATED_API,
+            severity=lookup_severity(FindingType.DEPRECATED_API),
+        ),
+    ),
 }
 
 # Safe-code scenarios — the PRECISION instrument (distinct from the recall fixtures above).
@@ -331,6 +390,17 @@ _SAFE_CODE_FIXTURES: tuple[str, ...] = (
     # any finding is a clean false positive — the precision counterpart to the recall fixtures.
     _SSRF_FIXED_HOST_SAFE_FIXTURE,
     "tests/eval/fixtures/mock_github/safe_subprocess_fixed_argv.json",
+    # suite-v2 don't-flag lookalikes (one per newly covered EXEMPLARS type): each targets the
+    # suppressive half of its block's contract — escaped echo (xss), env-sourced credential
+    # (hardcoded_secret), asyncio.to_thread delegation (blocking_call_in_async), __all__
+    # re-exports + TYPE_CHECKING import (unused_import), trivial delegations (missing_test),
+    # old-but-stable stdlib (deprecated_api). Any finding is a false positive.
+    "tests/eval/fixtures/mock_github/safe_xss_escaped_echo.json",
+    "tests/eval/fixtures/mock_github/safe_secret_env_default.json",
+    "tests/eval/fixtures/mock_github/safe_async_to_thread_hash.json",
+    "tests/eval/fixtures/mock_github/safe_reexport_init_all.json",
+    "tests/eval/fixtures/mock_github/safe_trivial_delegations.json",
+    "tests/eval/fixtures/mock_github/safe_stable_old_stdlib.json",
 )
 
 # Regression-track fixtures — safe, correctly-parameterized queries in several idioms (cursor

@@ -1,0 +1,36 @@
+{
+ "installation_id": 7101,
+ "owner": "acme",
+ "repo": "storefront",
+ "pr_number": 31,
+ "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "pr_title": "Add search results page",
+ "pr_body": "Renders a heading that echoes the search query.",
+ "author": "contributor",
+ "total_additions": 6,
+ "total_deletions": 0,
+ "files": [
+  {
+   "path": "search/views.py",
+   "status": "modified",
+   "additions": 6,
+   "deletions": 0,
+   "patch": "@@ -1 +1,7 @@\n from django.http import HttpResponse\n+\n+\n+def search_results(request):\n+    query = request.GET.get(\"q\", \"\")\n+    heading = f\"<p>Results for <b>{query}</b></p>\"\n+    return HttpResponse(heading)\n",
+   "previous_path": null,
+   "content_base": "from django.http import HttpResponse\n",
+   "content_head": "from django.http import HttpResponse\n\n\ndef search_results(request):\n    query = request.GET.get(\"q\", \"\")\n    heading = f\"<p>Results for <b>{query}</b></p>\"\n    return HttpResponse(heading)\n"
+  }
+ ],
+ "llm_responses": {
+  "triage": [
+   "{\"file_tiers\": {\"search/views.py\": \"deep\"}, \"overall_risk\": \"medium\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Deep-review the new view interpolating request text into an HTML response.\"}"
+  ],
+  "analyze": [
+   "{\"findings\": [{\"finding_type\": \"xss\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Unescaped search query echoed into HTML\", \"description\": \"search_results() interpolates request.GET['q'] into an HTML string with an f-string and returns it as the response body without escaping; a query like <script>... executes in the visitor's browser. Escape the value (django.utils.html.escape) or render through an auto-escaping template.\", \"evidence\": \"    heading = f\\\"<p>Results for <b>{query}</b></p>\\\"\", \"line_start\": 6, \"line_end\": 6, \"trace_candidates\": []}]}"
+  ],
+  "synthesize": [
+   "Security finding: one HIGH xss -- request-derived search text formatted into an HTML response body without escaping."
+  ]
+ }
+}

@@ -1,0 +1,36 @@
+{
+ "installation_id": 7109,
+ "owner": "acme",
+ "repo": "storefront",
+ "pr_number": 39,
+ "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "pr_title": "Add tiered shipping cost calculation",
+ "pr_body": "Weight-tiered rates plus surcharges.",
+ "author": "contributor",
+ "total_additions": 18,
+ "total_deletions": 0,
+ "files": [
+  {
+   "path": "pricing/shipping.py",
+   "status": "added",
+   "additions": 18,
+   "deletions": 0,
+   "patch": "@@ -0,0 +1,18 @@\n+EXPRESS_SURCHARGE = 7.5\n+REMOTE_AREA_SURCHARGE = 12.0\n+\n+\n+def shipping_cost(weight_kg, express, remote_area):\n+    if weight_kg <= 0:\n+        raise ValueError(\"weight must be positive\")\n+    if weight_kg <= 2:\n+        cost = 4.99\n+    elif weight_kg <= 10:\n+        cost = 4.99 + (weight_kg - 2) * 1.25\n+    else:\n+        cost = 14.99 + (weight_kg - 10) * 0.80\n+    if express:\n+        cost += EXPRESS_SURCHARGE\n+    if remote_area:\n+        cost += REMOTE_AREA_SURCHARGE\n+    return round(cost, 2)\n",
+   "previous_path": null,
+   "content_base": null,
+   "content_head": "EXPRESS_SURCHARGE = 7.5\nREMOTE_AREA_SURCHARGE = 12.0\n\n\ndef shipping_cost(weight_kg, express, remote_area):\n    if weight_kg <= 0:\n        raise ValueError(\"weight must be positive\")\n    if weight_kg <= 2:\n        cost = 4.99\n    elif weight_kg <= 10:\n        cost = 4.99 + (weight_kg - 2) * 1.25\n    else:\n        cost = 14.99 + (weight_kg - 10) * 0.80\n    if express:\n        cost += EXPRESS_SURCHARGE\n    if remote_area:\n        cost += REMOTE_AREA_SURCHARGE\n    return round(cost, 2)\n"
+  }
+ ],
+ "llm_responses": {
+  "triage": [
+   "{\"file_tiers\": {\"pricing/shipping.py\": \"deep\"}, \"overall_risk\": \"medium\", \"relevant_dimensions\": [\"test_coverage\"], \"reasoning\": \"Deep-review the new tiered pricing arithmetic; the PR adds no corresponding test.\"}"
+  ],
+  "analyze": [
+   "{\"findings\": [{\"finding_type\": \"missing_test\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Tiered shipping arithmetic added without a test\", \"description\": \"shipping_cost() introduces three weight tiers, two surcharges, and a validation boundary, and the PR adds no test exercising any of them; the tier boundaries (2kg, 10kg) and surcharge stacking are exactly the arithmetic a regression would silently break.\", \"evidence\": \"def shipping_cost(weight_kg, express, remote_area):\", \"line_start\": 5, \"line_end\": 5, \"trace_candidates\": []}]}"
+  ],
+  "synthesize": [
+   "Test-coverage finding: one LOW missing_test -- new tiered pricing arithmetic with no test in the PR."
+  ]
+ }
+}

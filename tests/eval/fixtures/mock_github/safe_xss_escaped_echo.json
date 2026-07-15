@@ -1,0 +1,36 @@
+{
+ "installation_id": 7102,
+ "owner": "acme",
+ "repo": "storefront",
+ "pr_number": 32,
+ "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "pr_title": "Add search results page with escaping",
+ "pr_body": "Echoes the query after HTML-escaping it.",
+ "author": "contributor",
+ "total_additions": 7,
+ "total_deletions": 0,
+ "files": [
+  {
+   "path": "search/views.py",
+   "status": "modified",
+   "additions": 7,
+   "deletions": 0,
+   "patch": "@@ -1 +1,8 @@\n from django.http import HttpResponse\n+from django.utils.html import escape\n+\n+\n+def search_results(request):\n+    query = request.GET.get(\"q\", \"\")\n+    heading = f\"<p>Results for <b>{escape(query)}</b></p>\"\n+    return HttpResponse(heading)\n",
+   "previous_path": null,
+   "content_base": "from django.http import HttpResponse\n",
+   "content_head": "from django.http import HttpResponse\nfrom django.utils.html import escape\n\n\ndef search_results(request):\n    query = request.GET.get(\"q\", \"\")\n    heading = f\"<p>Results for <b>{escape(query)}</b></p>\"\n    return HttpResponse(heading)\n"
+  }
+ ],
+ "llm_responses": {
+  "triage": [
+   "{\"file_tiers\": {\"search/views.py\": \"deep\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Review the new view; the interpolated request value is escaped before insertion.\"}"
+  ],
+  "analyze": [
+   "{\"findings\": []}"
+  ],
+  "synthesize": [
+   "No findings: the echoed query is HTML-escaped before insertion."
+  ]
+ }
+}

@@ -1,0 +1,36 @@
+{
+ "installation_id": 7108,
+ "owner": "meridian",
+ "repo": "auditkit",
+ "pr_number": 38,
+ "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "pr_title": "Expose the client classes from the package root",
+ "pr_body": "Package __init__ re-exports.",
+ "author": "contributor",
+ "total_additions": 14,
+ "total_deletions": 0,
+ "files": [
+  {
+   "path": "clients/__init__.py",
+   "status": "added",
+   "additions": 14,
+   "deletions": 0,
+   "patch": "@@ -0,0 +1,14 @@\n+from typing import TYPE_CHECKING\n+\n+from clients.http import HttpClient\n+from clients.queue import QueueClient\n+\n+if TYPE_CHECKING:\n+    from clients.config import ClientConfig\n+\n+__all__ = [\"HttpClient\", \"QueueClient\"]\n+\n+\n+def make_client(kind, config):\n+    cls = HttpClient if kind == \"http\" else QueueClient\n+    return cls(config)\n",
+   "previous_path": null,
+   "content_base": null,
+   "content_head": "from typing import TYPE_CHECKING\n\nfrom clients.http import HttpClient\nfrom clients.queue import QueueClient\n\nif TYPE_CHECKING:\n    from clients.config import ClientConfig\n\n__all__ = [\"HttpClient\", \"QueueClient\"]\n\n\ndef make_client(kind, config):\n    cls = HttpClient if kind == \"http\" else QueueClient\n    return cls(config)\n"
+  }
+ ],
+ "llm_responses": {
+  "triage": [
+   "{\"file_tiers\": {\"clients/__init__.py\": \"deep\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"code_quality\"], \"reasoning\": \"Review the package init; imports are __all__ re-exports plus a TYPE_CHECKING-only name.\"}"
+  ],
+  "analyze": [
+   "{\"findings\": []}"
+  ],
+  "synthesize": [
+   "No findings: the imports are deliberate re-exports listed in __all__ or type-checking-only."
+  ]
+ }
+}

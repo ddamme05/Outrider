@@ -355,7 +355,10 @@ async def test_yield_collector_wiring_covers_all_outcomes(monkeypatch) -> None:
     fake_provider = object()
     specs = [(FIREWORKS_GLM, fake_provider, "m-fw"), (BASETEN_GLM, fake_provider, "m-bt")]
     calls = await _collect_yield_calls(specs)
-    assert len(calls) == 2 * YIELD_REPS * 20  # every planned call accounted for, incl. voids
+    from .test_model_comparison import _GROUND_TRUTH_BY_FIXTURE as _GT  # noqa: PLC0415
+
+    n_fx = len(_GT) + len(_SAFE_CODE_FIXTURES)
+    assert len(calls) == 2 * YIELD_REPS * n_fx  # every planned call accounted for, incl. voids
 
     meta = _build_wiring_meta()
     data = aggregate_yield(calls, meta)
@@ -374,8 +377,8 @@ async def test_yield_collector_wiring_covers_all_outcomes(monkeypatch) -> None:
             "void_reasons": ["LLMTimeoutError"] * 3,
         }
         assert data["hosts"][host]["totals"] == {
-            "attempts_planned": 60,
-            "accepted": 54,
+            "attempts_planned": YIELD_REPS * n_fx,
+            "accepted": YIELD_REPS * (n_fx - 2),
             "rejected": 3,
             "void": 3,
         }

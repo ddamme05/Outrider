@@ -1,0 +1,36 @@
+{
+ "installation_id": 7111,
+ "owner": "meridian",
+ "repo": "syncd",
+ "pr_number": 41,
+ "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "pr_title": "Add the sync CLI entry point",
+ "pr_body": "Runs the full sync from the command line.",
+ "author": "contributor",
+ "total_additions": 7,
+ "total_deletions": 0,
+ "files": [
+  {
+   "path": "cli/sync.py",
+   "status": "modified",
+   "additions": 7,
+   "deletions": 0,
+   "patch": "@@ -1 +1,8 @@\n+import asyncio\n+\n from sync.jobs import sync_all\n+\n+\n+def main():\n+    loop = asyncio.get_event_loop()\n+    loop.run_until_complete(sync_all())\n",
+   "previous_path": null,
+   "content_base": "from sync.jobs import sync_all\n",
+   "content_head": "import asyncio\n\nfrom sync.jobs import sync_all\n\n\ndef main():\n    loop = asyncio.get_event_loop()\n    loop.run_until_complete(sync_all())\n"
+  }
+ ],
+ "llm_responses": {
+  "triage": [
+   "{\"file_tiers\": {\"cli/sync.py\": \"deep\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"best_practices\"], \"reasoning\": \"Review the CLI entry; it acquires an event loop with a deprecated call pattern.\"}"
+  ],
+  "analyze": [
+   "{\"findings\": [{\"finding_type\": \"deprecated_api\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"asyncio.get_event_loop() used outside a running loop\", \"description\": \"main() calls asyncio.get_event_loop() with no loop running \\u2014 deprecated since Python 3.10/3.12 in this context, emitting a DeprecationWarning and slated for removal. Use asyncio.run(sync_all()) as the replacement.\", \"evidence\": \"    loop = asyncio.get_event_loop()\", \"line_start\": 7, \"line_end\": 7, \"trace_candidates\": []}]}"
+  ],
+  "synthesize": [
+   "Best-practices finding: one INFO deprecated_api -- get_event_loop() in a non-running context; asyncio.run is the replacement."
+  ]
+ }
+}

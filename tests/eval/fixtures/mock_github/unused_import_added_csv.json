@@ -1,0 +1,36 @@
+{
+ "installation_id": 7107,
+ "owner": "meridian",
+ "repo": "auditkit",
+ "pr_number": 37,
+ "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "pr_title": "Add manifest CSV export",
+ "pr_body": "Writes manifest rows to a file.",
+ "author": "contributor",
+ "total_additions": 8,
+ "total_deletions": 0,
+ "files": [
+  {
+   "path": "audit/manifest.py",
+   "status": "modified",
+   "additions": 8,
+   "deletions": 0,
+   "patch": "@@ -3,3 +3,11 @@\n \n def read_manifest(base_dir):\n     return Path(base_dir, \"manifest.txt\").read_text()\n+\n+\n+def export_manifest(rows, out_path):\n+    import csv\n+\n+    lines = [\",\".join(str(value) for value in row) for row in rows]\n+    Path(out_path).write_text(\"\\n\".join(lines) + \"\\n\")\n+    return len(lines)\n",
+   "previous_path": null,
+   "content_base": "from pathlib import Path\n\n\ndef read_manifest(base_dir):\n    return Path(base_dir, \"manifest.txt\").read_text()\n",
+   "content_head": "from pathlib import Path\n\n\ndef read_manifest(base_dir):\n    return Path(base_dir, \"manifest.txt\").read_text()\n\n\ndef export_manifest(rows, out_path):\n    import csv\n\n    lines = [\",\".join(str(value) for value in row) for row in rows]\n    Path(out_path).write_text(\"\\n\".join(lines) + \"\\n\")\n    return len(lines)\n"
+  }
+ ],
+ "llm_responses": {
+  "triage": [
+   "{\"file_tiers\": {\"audit/manifest.py\": \"deep\"}, \"overall_risk\": \"low\", \"relevant_dimensions\": [\"code_quality\"], \"reasoning\": \"Review the new export helper; it imports csv but joins the rows by hand.\"}"
+  ],
+  "analyze": [
+   "{\"findings\": [{\"finding_type\": \"unused_import\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"csv imported but never used in export_manifest\", \"description\": \"export_manifest() imports csv and then builds the output by joining strings manually; csv is referenced nowhere in the file. Remove the unused import (or use csv.writer, which also handles quoting the manual join gets wrong).\", \"evidence\": \"    import csv\", \"line_start\": 9, \"line_end\": 9, \"trace_candidates\": []}]}"
+  ],
+  "synthesize": [
+   "Code-quality finding: one INFO unused_import -- csv is imported in export_manifest but never referenced."
+  ]
+ }
+}
