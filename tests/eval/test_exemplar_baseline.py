@@ -32,6 +32,7 @@ from .exemplar_baseline import (
     CLAUDE_DEEP,
     CLAUDE_STANDARD,
     FIREWORKS_GLM,
+    MEASUREMENT_CONTRACT,
     PRECISION,
     RECALL,
     REQUIRED_REPS,
@@ -150,6 +151,7 @@ def test_majority_threshold_is_two_thirds_ceil() -> None:
 def test_aggregate_stores_provenance_and_majority() -> None:
     base = _run(_meta("v10"), {CLAUDE_DEEP: (2, 0), CLAUDE_STANDARD: (1, 2)})
     assert base["schema_version"] == 3
+    assert base["measurement_contract"] == MEASUREMENT_CONTRACT
     assert base["harness_digest"] == "h-digest"
     assert base["n_reps"] == 3
     assert base["prompt_version"] == "ver-v10"
@@ -670,6 +672,31 @@ def test_aggregate_requires_harness_digest() -> None:
         _run(meta)
 
 
+def test_aggregate_requires_measurement_contract() -> None:
+    meta = _meta("v10")._replace(measurement_contract="")
+    with pytest.raises(ValueError, match="measurement_contract"):
+        _run(meta)
+
+
+def test_compare_gates_on_measurement_contract() -> None:
+    # provenance (harness_digest) never gates, but the measurement-semantics identity ALWAYS does:
+    # two runs collected under different aggregation/grading/majority semantics must not ε=0-compare
+    base = _run(_meta("v10"))
+    rotated = _run(_meta("v11")._replace(measurement_contract="exemplar-mc-2"))
+    v = compare(base, rotated)
+    assert v["passed"] is False
+    assert any(
+        r["kind"] == "integrity" and "measurement_contract" in r["detail"] for r in v["regressions"]
+    )
+
+
+def test_preflight_catches_measurement_contract_drift() -> None:
+    base = _run_full(_meta("v10"))
+    drifted = _meta("v11")._replace(measurement_contract="exemplar-mc-2")
+    reasons = preflight_comparability(base, drifted)
+    assert any("measurement_contract" in r for r in reasons)
+
+
 def test_harness_source_digest_is_stable_sha256() -> None:
     d = harness_source_digest()
     assert d == harness_source_digest()  # deterministic over the on-disk source
@@ -732,6 +759,7 @@ def _as_v2(data: dict) -> dict:
     v2 = copy.deepcopy(data)
     v2["schema_version"] = 2
     del v2["harness_digest"]
+    del v2["measurement_contract"]
     for p in v2["providers"].values():
         del p["structured_output"]
         for fx in p["per_fixture"].values():
@@ -747,8 +775,10 @@ def test_read_baseline_upgrades_v2_in_memory_never_on_disk(tmp_path, monkeypatch
     raw = json.dumps(v2, indent=2, sort_keys=True)
     (tmp_path / "frozen-v2.json").write_text(raw, encoding="utf-8")
     up = read_baseline("frozen-v2")
-    # upgraded in memory: new fields exist as None = UNRECORDED (distinct from a measured zero)
+    # upgraded in memory: new fields exist as None = UNRECORDED (distinct from a measured zero) —
+    # except measurement_contract, which is the reviewed DECLARATION that v2 semantics == mc-1
     assert up["schema_version"] == 3
+    assert up["measurement_contract"] == MEASUREMENT_CONTRACT
     assert up["harness_digest"] is None
     for p in up["providers"].values():
         assert p["structured_output"] is None
@@ -766,6 +796,7 @@ def test_frozen_v10_artifact_reads_under_v3_and_is_unchanged_on_disk() -> None:
     assert raw["schema_version"] == 2  # the on-disk artifact is still v2 — never rewritten
     up = read_baseline("analyze-v10")
     assert up["schema_version"] == 3
+    assert up["measurement_contract"] == MEASUREMENT_CONTRACT  # the reviewed v2 declaration
     assert up["harness_digest"] is None
     # the frozen quality cells survive the upgrade byte-for-byte (recomputed 2026-07-15)
     fp = {p: m["fp_count"] for p, m in up["providers"].items()}

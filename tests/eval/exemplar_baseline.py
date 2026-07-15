@@ -31,7 +31,10 @@ re-checked by `compare()`:
   provider (schema v3, FUP-219): raw counts, never a derived rate, so a later yield-metric
   definition change costs nothing. Recorded, never gated — yield is evidence, like tokens.
 - the artifact self-records its producing harness (`harness_digest`, FUP-238), so provenance is
-  readable from the artifact instead of reconstructed from the git DAG.
+  readable from the artifact instead of reconstructed from the git DAG. Provenance and
+  comparability are SEPARATE contracts: `harness_digest` is informational (surfaced by
+  `provenance_notes()`, never gated), while `measurement_contract` is the blocking semantics
+  identity `compare()` and `preflight_comparability()` enforce.
 
 Accept iff, per (acceptance-provider, finding_type), recall does not decrease and the
 false-positive count does not increase (ε = 0).
@@ -59,6 +62,19 @@ if TYPE_CHECKING:
 # the frozen on-disk evidence is never rewritten.
 SCHEMA_VERSION = 3
 _READABLE_SCHEMA_VERSIONS = frozenset({2, SCHEMA_VERSION})
+
+# The BLOCKING comparability identity for measurement SEMANTICS — deliberately separate from
+# `harness_digest` (informational provenance, surfaced not gated: any source edit rotates a code
+# digest, which would deadlock the immutable baseline). This string covers: the >=2/3 N-rep
+# majority rule, detection semantics (`not grade.missed` / `n_false_positives > 0` incl.
+# `grading.py`'s match criteria + line window — code OUTSIDE the source-digest file list), the
+# recall/FP cell model, the acceptance-set semantics, and the sequential single-file rep protocol.
+# Any change to those semantics MUST rotate this string or ship a reviewed compatibility mapping
+# in `_upgrade_v2`-style code; shape-only schema changes must NOT rotate it. v2 artifacts were
+# collected under these exact semantics (the v3 diff was capture-only), so `_upgrade_v2` declares
+# them "exemplar-mc-1" — that declaration is itself the reviewed compatibility mapping.
+MEASUREMENT_CONTRACT = "exemplar-mc-1"
+
 REQUIRED_REPS = 3  # the pre-registration pins exactly three clean reps
 BASELINE_DIR = Path(__file__).parent / "baselines" / "analyze-exemplars"
 # Derived HTML views (gitignored, like `reports/scorecard/`) — NOT evidence, so re-renderable.
@@ -160,6 +176,9 @@ class RunMeta(NamedTuple):
     # sha256 over the harness source (harness_source_digest()) so the artifact states which code
     # produced it (FUP-238). Defaulted for construction ergonomics; aggregate() rejects "".
     harness_digest: str = ""
+    # Blocking measurement-semantics identity (see MEASUREMENT_CONTRACT). Gated by compare() and
+    # preflight_comparability(); rotate on semantic change, never on shape-only change.
+    measurement_contract: str = MEASUREMENT_CONTRACT
 
 
 @dataclass
@@ -176,14 +195,15 @@ class _Cell:
 _HARNESS_FILES = ("exemplar_baseline.py", "test_exemplar_baseline.py")
 
 
-def harness_source_digest() -> str:
-    """sha256 over the two harness files' bytes, each prefixed by its name + NUL separators.
+def harness_source_digest(filenames: tuple[str, ...] = _HARNESS_FILES) -> str:
+    """sha256 over the named `tests/eval/` files' bytes, each prefixed by its name + NUL separators.
 
     Reproducible from git blobs at any commit (same recipe over `git show <sha>:<path>`), which is
     how a reader verifies WHICH code produced a frozen artifact without trusting the git DAG story.
+    Defaults to this harness's two files; other instruments (e.g. `glm_yield.py`) pass their own.
     """
     h = hashlib.sha256()
-    for name in _HARNESS_FILES:
+    for name in filenames:
         h.update(name.encode("utf-8") + b"\0")
         h.update((Path(__file__).parent / name).read_bytes())
         h.update(b"\0")
@@ -248,6 +268,11 @@ def aggregate(observations: list[Observation], meta: RunMeta) -> dict[str, objec
         raise ValueError(
             "meta.harness_digest is empty — a run that cannot state its producing harness must "
             "not be frozen (populate via harness_source_digest(); FUP-238)"
+        )
+    if not meta.measurement_contract:
+        raise ValueError(
+            "meta.measurement_contract is empty — a run must state the measurement semantics it "
+            "was collected under (see MEASUREMENT_CONTRACT)"
         )
     n_reps = meta.n_reps
     seen_providers = {o.provider for o in observations}
@@ -397,6 +422,7 @@ def aggregate(observations: list[Observation], meta: RunMeta) -> dict[str, objec
 
     return {
         "schema_version": SCHEMA_VERSION,
+        "measurement_contract": meta.measurement_contract,
         "n_reps": n_reps,
         "majority_threshold": majority_threshold(n_reps),
         "prompt_version": meta.prompt_version,
@@ -416,8 +442,9 @@ class Regression(NamedTuple):
 def compare(baseline: dict, candidate: dict) -> dict[str, object]:
     """Apply the role-aware ε=0 gate, after proving the two runs are COMPARABLE.
 
-    Run-level integrity (always gating): equal `schema_version`, `n_reps`, `majority_threshold`, and
-    identical `fixture_digests`; the acceptance set on both equals EXPECTED_ACCEPTANCE. Both the
+    Run-level integrity (always gating): equal `schema_version`, `measurement_contract`,
+    `n_reps`, `majority_threshold`, and identical `fixture_digests`; the acceptance set on both
+    equals EXPECTED_ACCEPTANCE. Both the
     analyze `prompt_version` AND the `prompt_digest` MUST DIFFER — a preregistered candidate that
     reuses either the VERSION or the exact prompt content is not a real prompt change and FAILS
     CLOSED (else ε=0 could "pass" without any prompt change under test).
@@ -438,7 +465,10 @@ def compare(baseline: dict, candidate: dict) -> dict[str, object]:
     passed = True
 
     # --- run-level integrity (always gating) ---
-    for field_name in ("schema_version", "n_reps", "majority_threshold"):
+    # measurement_contract is the BLOCKING semantics identity: two artifacts collected under
+    # different aggregation/grading/majority/acceptance semantics must never ε=0-compare, no
+    # matter how their shapes line up. (harness_digest stays non-gated — see provenance_notes.)
+    for field_name in ("schema_version", "measurement_contract", "n_reps", "majority_threshold"):
         b, c = baseline.get(field_name), candidate.get(field_name)
         if b != c:
             regressions.append(Regression("", "integrity", f"{field_name} mismatch: {b} vs {c}"))
@@ -615,6 +645,12 @@ def preflight_comparability(baseline: dict, meta: RunMeta) -> list[str]:
         reasons.append(f"n_reps {baseline.get('n_reps')} != planned {meta.n_reps}")
     if meta.n_reps != REQUIRED_REPS:
         reasons.append(f"planned n_reps {meta.n_reps} != required {REQUIRED_REPS}")
+    if baseline.get("measurement_contract") != meta.measurement_contract:
+        reasons.append(
+            f"measurement_contract {baseline.get('measurement_contract')!r} != planned "
+            f"{meta.measurement_contract!r} — the measurement semantics moved; rotate "
+            "deliberately or ship a reviewed compatibility mapping"
+        )
     if baseline.get("fixture_digests") != dict(meta.fixture_digests):
         reasons.append("fixture_digests differ (fixture set, source, or ground-truth labels moved)")
     if baseline.get("prompt_version") == meta.prompt_version:
@@ -1095,8 +1131,15 @@ def _upgrade_v2(data: dict[str, object]) -> dict[str, object]:
     from a measured zero, same discipline as token telemetry-absence. Every field `compare()`
     gates is identical across v2/v3, which is what keeps a v2 baseline comparable to a v3
     candidate without touching the evidence (FUP-238 route c).
+
+    The `measurement_contract` fill is NOT an unknown-marker: it is the reviewed compatibility
+    DECLARATION that v2 artifacts were collected under exemplar-mc-1 semantics (the v3 diff was
+    capture-only — aggregation, grading, majority, and acceptance semantics unchanged). A future
+    contract rotation must NOT extend this fill; it needs its own reviewed mapping or the v2
+    baseline legitimately stops comparing.
     """
     data["schema_version"] = SCHEMA_VERSION
+    data.setdefault("measurement_contract", MEASUREMENT_CONTRACT)
     data.setdefault("harness_digest", None)
     for p in data.get("providers", {}).values():  # type: ignore[union-attr]
         p.setdefault("structured_output", None)
