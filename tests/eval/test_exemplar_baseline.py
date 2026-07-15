@@ -933,64 +933,50 @@ def test_read_baseline_upgrades_v2_in_memory_never_on_disk(tmp_path, monkeypatch
     assert "measurement_contract" in details and "fixture_suite" in details
 
 
-def test_legacy_reader_rejects_anachronistic_fields(tmp_path, monkeypatch) -> None:
-    # A malformed/hand-edited legacy artifact carrying fields its shape never defined must fail
-    # LOUD — the strongest attempt is injecting the CURRENT identities: a preserved mc-2/suite-v2
-    # claim would dodge the measurement-contract gate while carrying no extras evidence (which
-    # the extras compare silently skips on None). Neither preserved nor silently overwritten.
+# Every (legacy version, nesting level, field) combination the shapes never defined — the full
+# anachronism domain, one row each so a case can't silently disappear from a shared blob. The
+# injected values are the CURRENT identities where those exist: the strongest attempt, since a
+# preserved mc-2/suite-v2 claim would dodge the measurement-contract gate while the extras
+# compare silently skips on None.
+_TAMPER_CASES = (
+    ("v2-top-contract", 2, "top", "measurement_contract", MEASUREMENT_CONTRACT),
+    ("v2-top-suite", 2, "top", "fixture_suite", FIXTURE_SUITE_VERSION),
+    ("v2-top-digest", 2, "top", "harness_digest", "h-digest"),
+    ("v2-provider-yield", 2, "provider", "structured_output", {"attempts": 6}),
+    ("v2-fixture-yield", 2, "fixture", "structured_output", {"attempts": 3}),
+    ("v2-fixture-extras", 2, "fixture", "extra_findings", {"values": [9], "total": 9}),
+    ("v3-top-suite", 3, "top", "fixture_suite", FIXTURE_SUITE_VERSION),
+    ("v3-fixture-extras", 3, "fixture", "extra_findings", {"values": [0], "total": 0}),
+)
+
+
+@pytest.mark.parametrize(
+    ("version", "level", "field", "value"),
+    [c[1:] for c in _TAMPER_CASES],
+    ids=[c[0] for c in _TAMPER_CASES],
+)
+def test_legacy_reader_rejects_anachronistic_fields(
+    tmp_path, monkeypatch, version: int, level: str, field: str, value: object
+) -> None:
+    # A malformed/hand-edited legacy artifact carrying a field its shape never defined must fail
+    # LOUD — neither preserved nor silently overwritten — and the error must NAME the field and
+    # the schema version (that specificity is part of the stated contract, so it is asserted).
     from . import exemplar_baseline as mod  # noqa: PLC0415
 
     monkeypatch.setattr(mod, "BASELINE_DIR", tmp_path)
-    base = _run(_meta("v10"))
-
-    def _write(name: str, data: dict) -> None:
-        (tmp_path / f"{name}.json").write_text(json.dumps(data), encoding="utf-8")
-
-    # v2 + each field that does not exist in the v2 shape, at every level it could hide
-    tampered = _as_v2(base)
-    tampered["measurement_contract"] = MEASUREMENT_CONTRACT  # the impossible current identity
-    _write("t1", tampered)
-    with pytest.raises(ValueError, match="does not exist in the v2 shape"):
-        read_baseline("t1")
-
-    tampered = _as_v2(base)
-    tampered["fixture_suite"] = FIXTURE_SUITE_VERSION
-    _write("t2", tampered)
-    with pytest.raises(ValueError, match="does not exist in the v2 shape"):
-        read_baseline("t2")
-
-    tampered = _as_v2(base)
-    tampered["harness_digest"] = "h-digest"
-    _write("t3", tampered)
-    with pytest.raises(ValueError, match="does not exist in the v2 shape"):
-        read_baseline("t3")
-
-    tampered = _as_v2(base)
-    next(iter(tampered["providers"].values()))["structured_output"] = {"attempts": 6}
-    _write("t4", tampered)
-    with pytest.raises(ValueError, match="does not exist in the v2 shape"):
-        read_baseline("t4")
-
-    tampered = _as_v2(base)
-    prov = next(iter(tampered["providers"].values()))
-    next(iter(prov["per_fixture"].values()))["extra_findings"] = {"values": [9], "total": 9}
-    _write("t5", tampered)
-    with pytest.raises(ValueError, match="does not exist in the v2 shape"):
-        read_baseline("t5")
-
-    # v3 + each field that does not exist in the v3 shape
-    tampered = _as_v3(base)
-    tampered["fixture_suite"] = FIXTURE_SUITE_VERSION
-    _write("t6", tampered)
-    with pytest.raises(ValueError, match="does not exist in the v3 shape"):
-        read_baseline("t6")
-
-    tampered = _as_v3(base)
-    prov = next(iter(tampered["providers"].values()))
-    next(iter(prov["per_fixture"].values()))["extra_findings"] = {"values": [0], "total": 0}
-    _write("t7", tampered)
-    with pytest.raises(ValueError, match="does not exist in the v3 shape"):
-        read_baseline("t7")
+    tampered = _as_v2(_run(_meta("v10"))) if version == 2 else _as_v3(_run(_meta("v10")))
+    if level == "top":
+        tampered[field] = value
+    elif level == "provider":
+        next(iter(tampered["providers"].values()))[field] = value
+    else:
+        prov = next(iter(tampered["providers"].values()))
+        next(iter(prov["per_fixture"].values()))[field] = value
+    (tmp_path / "tampered.json").write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(
+        ValueError, match=rf"carries '{field}'.*does not exist in the v{version} shape"
+    ):
+        read_baseline("tampered")
 
 
 def _as_v3(data: dict) -> dict:
