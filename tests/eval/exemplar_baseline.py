@@ -63,11 +63,18 @@ from typing import TYPE_CHECKING, NamedTuple
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
-# v3 adds `harness_digest` (FUP-238) + per-fixture/per-provider `structured_output` raw counts
-# (FUP-219). v2 artifacts stay readable via `read_baseline`'s deterministic in-memory upgrade —
+# Schema history — the version number tracks the serialized SHAPE (measurement semantics are
+# versioned separately by MEASUREMENT_CONTRACT; the two must never be conflated):
+# - v2: the original frozen shape (analyze-v10.json).
+# - v3: adds `harness_digest` (FUP-238), `structured_output` raw counts (FUP-219), and
+#   `measurement_contract`. This is the shape the pushed harness defined; no v3 baseline
+#   artifact was ever produced.
+# - v4: adds `fixture_suite` + per-fixture `extra_findings` (suite-v2 spec). Bumped on review:
+#   those fields first shipped under an unchanged "3", which mislabeled the shape.
+# Legacy artifacts stay readable via `read_baseline`'s deterministic in-memory upgrade chain —
 # the frozen on-disk evidence is never rewritten.
-SCHEMA_VERSION = 3
-_READABLE_SCHEMA_VERSIONS = frozenset({2, SCHEMA_VERSION})
+SCHEMA_VERSION = 4
+_READABLE_SCHEMA_VERSIONS = frozenset({2, 3, SCHEMA_VERSION})
 
 # The BLOCKING comparability identity for measurement SEMANTICS — deliberately separate from
 # `harness_digest` (informational provenance, surfaced not gated: any source edit rotates a code
@@ -76,12 +83,12 @@ _READABLE_SCHEMA_VERSIONS = frozenset({2, SCHEMA_VERSION})
 # `grading.py`'s match criteria + line window — code OUTSIDE the source-digest file list), the
 # recall/FP cell model, the extras evidence + gate (below), the acceptance-set semantics, and
 # the sequential single-file rep protocol. Any change to those semantics MUST rotate this string
-# or ship a reviewed compatibility mapping in `_upgrade_v2`-style code; shape-only schema
+# or ship a reviewed compatibility mapping in `_upgrade_legacy`-style code; shape-only schema
 # changes must NOT rotate it.
 #
 # Rotation history:
 # - exemplar-mc-1 — the frozen analyze-v10 collection: majority recall + majority FP counts,
-#   no extras evidence. `_upgrade_v2` declares v2 artifacts mc-1 (a LITERAL fill, deliberately
+#   no extras evidence. `_upgrade_legacy` declares v2 artifacts mc-1 (a LITERAL fill, deliberately
 #   not this constant — the declaration must not rotate with it).
 # - exemplar-mc-2 — adds per-fixture extra-findings raw counts on recall fixtures and the
 #   candidate-total<=baseline-total AND candidate-max<=baseline-max no-increase gate
@@ -91,8 +98,8 @@ MEASUREMENT_CONTRACT = "exemplar-mc-2"
 # Versioned fixture-suite identity, independent of the prompt VERSION: freeze labels are
 # "{prompt_version}+{fixture_suite}", so a suite change gets a new immutable artifact without
 # bumping the prompt VERSION (the prompt didn't change) and without touching older evidence.
-# suite-v1 = the frozen 20-fixture set (16 recall + 4 safe); `_upgrade_v2` declares it on v2
-# artifacts as a literal, same non-rotating rule as the mc-1 fill above.
+# suite-v1 = the frozen 20-fixture set (16 recall + 4 safe); `_upgrade_legacy` declares it on
+# v2/v3 artifacts as a literal, same non-rotating rule as the mc-1 fill above.
 FIXTURE_SUITE_VERSION = "suite-v2"
 
 REQUIRED_REPS = 3  # the pre-registration pins exactly three clean reps
@@ -1215,30 +1222,35 @@ def authoritative_attempt(label_prefix: str) -> Path | None:
     raise AssertionError("unreachable: itertools.count is infinite")  # pragma: no cover
 
 
-def _upgrade_v2(data: dict[str, object]) -> dict[str, object]:
-    """Deterministic IN-MEMORY v2 → v3 upgrade; the frozen on-disk artifact is never rewritten.
+def _upgrade_legacy(data: dict[str, object]) -> dict[str, object]:
+    """Deterministic IN-MEMORY upgrade chain (v2 → v3 → v4); the frozen on-disk artifact is
+    never rewritten.
 
-    v3 only ADDS fields, so the upgrade fills them with `None` = UNRECORDED-under-v2 — distinct
-    from a measured zero, same discipline as token telemetry-absence. Every field `compare()`
-    gates is identical across v2/v3, which is what keeps a v2 baseline comparable to a v3
-    candidate without touching the evidence (FUP-238 route c).
+    Each step only ADDS fields, filled with `None` = UNRECORDED-under-the-older-shape — distinct
+    from a measured zero, same discipline as token telemetry-absence (FUP-238 route c).
 
     The `measurement_contract` and `fixture_suite` fills are NOT unknown-markers: they are the
-    reviewed compatibility DECLARATIONS that v2 artifacts were collected under exemplar-mc-1
-    semantics over the suite-v1 fixture set. Both are LITERALS on purpose — the constants have
-    since rotated (mc-2 / suite-v2), and following them would falsely re-declare old evidence.
-    The mc-1 → mc-2 rotation ships no compatibility mapping: the v2 baseline legitimately stops
-    comparing (superseded as the bar by the suite-v2 freeze, not migrated).
+    reviewed compatibility DECLARATIONS of what legacy evidence was collected under —
+    exemplar-mc-1 semantics, the suite-v1 (20-fixture) set. Both are LITERALS on purpose: the
+    constants have since rotated (mc-2 / suite-v2), and following them would falsely re-declare
+    old evidence. The mc-1 → mc-2 rotation ships no compatibility mapping: the v2 baseline
+    legitimately stops comparing (superseded as the bar by the suite-v2 freeze, not migrated).
     """
-    data["schema_version"] = SCHEMA_VERSION
-    data.setdefault("measurement_contract", "exemplar-mc-1")
+    version = data.get("schema_version")
+    if version == 2:  # v2 → v3: harness digest, structured-output counts, contract identity
+        data.setdefault("measurement_contract", "exemplar-mc-1")
+        data.setdefault("harness_digest", None)
+        for p in data.get("providers", {}).values():  # type: ignore[union-attr]
+            p.setdefault("structured_output", None)
+            for fx in p.get("per_fixture", {}).values():
+                fx.setdefault("structured_output", None)
+    # v3 → v4: suite identity + extras evidence. A v3 artifact could only have been collected
+    # over the 20-fixture set (the suite concept and the expanded suite landed together).
     data.setdefault("fixture_suite", "suite-v1")
-    data.setdefault("harness_digest", None)
     for p in data.get("providers", {}).values():  # type: ignore[union-attr]
-        p.setdefault("structured_output", None)
         for fx in p.get("per_fixture", {}).values():
-            fx.setdefault("structured_output", None)
             fx.setdefault("extra_findings", None)
+    data["schema_version"] = SCHEMA_VERSION
     return data
 
 
@@ -1252,7 +1264,7 @@ def read_baseline(label: str) -> dict[str, object]:
             "the wrong contract"
         )
     if data.get("schema_version") != SCHEMA_VERSION:
-        return _upgrade_v2(data)
+        return _upgrade_legacy(data)
     return data
 
 

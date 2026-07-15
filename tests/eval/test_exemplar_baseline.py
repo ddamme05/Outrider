@@ -151,7 +151,7 @@ def test_majority_threshold_is_two_thirds_ceil() -> None:
 
 def test_aggregate_stores_provenance_and_majority() -> None:
     base = _run(_meta("v10"), {CLAUDE_DEEP: (2, 0), CLAUDE_STANDARD: (1, 2)})
-    assert base["schema_version"] == 3
+    assert base["schema_version"] == 4
     assert base["measurement_contract"] == MEASUREMENT_CONTRACT
     assert base["fixture_suite"] == FIXTURE_SUITE_VERSION
     assert base["harness_digest"] == "h-digest"
@@ -914,7 +914,7 @@ def test_read_baseline_upgrades_v2_in_memory_never_on_disk(tmp_path, monkeypatch
     # upgraded in memory: new fields exist as None = UNRECORDED (distinct from a measured
     # zero) — except measurement_contract / fixture_suite, which are the reviewed LITERAL
     # declarations of what v2 evidence was collected under (mc-1 semantics, suite-v1 fixtures)
-    assert up["schema_version"] == 3
+    assert up["schema_version"] == 4
     assert up["measurement_contract"] == "exemplar-mc-1"
     assert up["fixture_suite"] == "suite-v1"
     assert up["harness_digest"] is None
@@ -924,20 +924,54 @@ def test_read_baseline_upgrades_v2_in_memory_never_on_disk(tmp_path, monkeypatch
         assert all(fx["extra_findings"] is None for fx in p["per_fixture"].values())
     # ...and the frozen evidence bytes are untouched
     assert (tmp_path / "frozen-v2.json").read_text(encoding="utf-8") == raw
-    # Under the mc-2 rotation a v2 baseline DELIBERATELY stops comparing against current-contract
-    # candidates: superseded as the bar, never silently migrated. Both identity mismatches gate.
+    # Under the mc-2 rotation a legacy baseline DELIBERATELY stops comparing against
+    # current-contract candidates: superseded as the bar, never silently migrated. Both
+    # identity mismatches gate.
     verdict = compare(up, _run(_meta("v11")))
     assert verdict["passed"] is False
     details = " | ".join(r["detail"] for r in verdict["regressions"])
     assert "measurement_contract" in details and "fixture_suite" in details
 
 
-def test_frozen_v10_artifact_reads_under_v3_and_is_unchanged_on_disk() -> None:
+def _as_v3(data: dict) -> dict:
+    """Strip a v4 run to the exact v3 shape the PUSHED harness defined (measurement_contract +
+    harness_digest + structured_output present; fixture_suite + extra_findings absent)."""
+    v3 = copy.deepcopy(data)
+    v3["schema_version"] = 3
+    del v3["fixture_suite"]
+    for p in v3["providers"].values():
+        for fx in p["per_fixture"].values():
+            del fx["extra_findings"]
+    return v3
+
+
+def test_read_baseline_upgrades_v3_in_memory_never_on_disk(tmp_path, monkeypatch) -> None:
+    # no v3 baseline artifact was ever produced, but the pushed harness DEFINED the shape — the
+    # reader must handle it explicitly rather than conflating it with v4 (the misversioning the
+    # schema review caught: shape changes bump schema_version; mc-2 versions semantics only)
+    from . import exemplar_baseline as mod  # noqa: PLC0415
+
+    monkeypatch.setattr(mod, "BASELINE_DIR", tmp_path)
+    v3 = _as_v3(_run(_meta("v10")._replace(measurement_contract="exemplar-mc-1")))
+    raw = json.dumps(v3, indent=2, sort_keys=True)
+    (tmp_path / "frozen-v3.json").write_text(raw, encoding="utf-8")
+    up = read_baseline("frozen-v3")
+    assert up["schema_version"] == 4
+    assert up["measurement_contract"] == "exemplar-mc-1"  # recorded in-artifact, NOT refilled
+    assert up["fixture_suite"] == "suite-v1"  # the declaration: v3 predates the expanded suite
+    assert up["harness_digest"] == "h-digest"  # v3 recorded it; the upgrade must not None it
+    for p in up["providers"].values():
+        assert all(fx["structured_output"] is not None for fx in p["per_fixture"].values())
+        assert all(fx["extra_findings"] is None for fx in p["per_fixture"].values())
+    assert (tmp_path / "frozen-v3.json").read_text(encoding="utf-8") == raw  # disk untouched
+
+
+def test_frozen_v10_artifact_reads_under_current_schema_and_is_unchanged_on_disk() -> None:
     # pin against the REAL committed evidence: the immutable v2 artifact must stay readable
     raw = json.loads((BASELINE_DIR / "analyze-v10.json").read_text(encoding="utf-8"))
     assert raw["schema_version"] == 2  # the on-disk artifact is still v2 — never rewritten
     up = read_baseline("analyze-v10")
-    assert up["schema_version"] == 3
+    assert up["schema_version"] == 4
     assert up["measurement_contract"] == "exemplar-mc-1"  # the reviewed LITERAL declaration
     assert up["fixture_suite"] == "suite-v1"
     assert up["harness_digest"] is None
@@ -945,6 +979,26 @@ def test_frozen_v10_artifact_reads_under_v3_and_is_unchanged_on_disk() -> None:
     fp = {p: m["fp_count"] for p, m in up["providers"].items()}
     assert fp == {CLAUDE_DEEP: 2, CLAUDE_STANDARD: 3, FIREWORKS_GLM: 0, BASETEN_GLM: 0}
     assert all(m["structured_output"] is None for m in up["providers"].values())
+
+
+def test_frozen_suite_v2_bar_reads_natively_at_v4() -> None:
+    # pin against the LIVE bar: schema metadata 4 (corrected on review — the shape shipped
+    # mislabeled as 3), mc-2 semantics, suite-v2, exactly the three acceptance providers, and
+    # the extras/yield evidence present on every applicable cell
+    raw = json.loads((BASELINE_DIR / "analyze-v10+suite-v2.json").read_text(encoding="utf-8"))
+    assert raw["schema_version"] == 4  # native — no upgrade path involved
+    bar = read_baseline("analyze-v10+suite-v2")
+    assert bar == raw  # v4 reads verbatim
+    assert bar["measurement_contract"] == "exemplar-mc-2"
+    assert bar["fixture_suite"] == "suite-v2"
+    assert set(bar["providers"]) == {CLAUDE_DEEP, CLAUDE_STANDARD, FIREWORKS_GLM}
+    for m in bar["providers"].values():
+        assert len(m["per_fixture"]) == 32
+        assert all(
+            (fx["extra_findings"] is not None) == (fx["dimension"] == RECALL)
+            for fx in m["per_fixture"].values()
+        )
+        assert m["structured_output"]["attempts"] == 96
 
 
 def test_baseline_round_trips_to_tracked_dir(tmp_path, monkeypatch) -> None:
@@ -1574,7 +1628,7 @@ async def test_paid_runner_wiring_is_valid_without_spend(monkeypatch) -> None:
     assert meta.fixture_suite == FIXTURE_SUITE_VERSION
     # the runner's output must satisfy the freeze-time contract end-to-end
     data = aggregate(observations, meta)
-    assert data["schema_version"] == 3
+    assert data["schema_version"] == 4
     assert data["measurement_contract"] == MEASUREMENT_CONTRACT
     assert data["fixture_suite"] == FIXTURE_SUITE_VERSION
     assert data["harness_digest"] == harness_source_digest()  # the artifact self-records its code

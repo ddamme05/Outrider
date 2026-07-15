@@ -3672,5 +3672,5 @@
       "token_accounting": "prompt_includes_cached"
     }
   },
-  "schema_version": 3
+  "schema_version": 4
 }
