@@ -1,0 +1,12 @@
+{
+  "artifact": "analyze-v10.json",
+  "purpose": "Provenance sidecar (FUP-238): the v2 artifact predates the schema-v3 harness_digest field, so its producing harness is recorded here. Deterministic metadata about an unchanged measurement — the artifact itself is immutable and was not touched.",
+  "harness_digest": "eb4ccd20c5d6aab5c47984df6d95dddc9f91c8b802e2c0c54321f493952a2314",
+  "digest_recipe": "harness_source_digest() in tests/eval/exemplar_baseline.py: sha256 over exemplar_baseline.py then test_exemplar_baseline.py, each hashed as filename + NUL + file bytes + NUL. Reproducible from git blobs: `git show <commit>:tests/eval/<name>`.",
+  "verified": {
+    "date": "2026-07-15",
+    "harness_committed": "a201dd5 (pre-rebase) at 2026-07-15T11:07:47-04:00; rebased onto main as 751e596",
+    "artifact_committed": "53bc90c (pre-rebase) at 2026-07-15T11:31:55-04:00; rebased onto main as ee963af",
+    "byte_identity": "git diff a201dd5..2b100d9 over both harness files is empty, and git diff 53bc90c..2b100d9 over analyze-v10.json is empty (verified 2026-07-15) — so the digest above, computed over 2b100d9's harness blobs, is the digest of the code that produced the freeze. The schema-v3 harness change (90a24d4, the commit after 2b100d9) postdates the freeze and necessarily digests differently."
+  }
+}
