@@ -17,11 +17,17 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import sys
 from pathlib import Path
 
 from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd, min_cacheable_tokens
-from outrider.prompts.analyze import SYSTEM_PROMPT_STABLE_PREFIX, VERSION
+from outrider.prompts.analyze import (
+    SYSTEM_PROMPT_EXEMPLARS,
+    SYSTEM_PROMPT_INVARIANTS,
+    SYSTEM_PROMPT_STABLE_PREFIX,
+    VERSION,
+)
 
 REPO = Path(__file__).resolve().parent.parent
 BASELINE = REPO / "tests/eval/baselines/analyze-exemplars/analyze-v10.json"
@@ -92,6 +98,32 @@ def main() -> int:
     probe = json.loads(PROBE.read_text(encoding="utf-8"))
     provs = base["providers"]
     chars = len(SYSTEM_PROMPT_STABLE_PREFIX)
+    ex_chars, inv_chars = len(SYSTEM_PROMPT_EXEMPLARS), len(SYSTEM_PROMPT_INVARIANTS)
+
+    # The close-out ledger, RECOMPUTED from the live prompt rather than transcribed — if EXEMPLARS
+    # ever changes, these restate themselves instead of silently becoming a stale claim. Type-block
+    # prose is the only pool the trim could draw on; everything else is protected (fences are the
+    # literal FLAG/don't-flag discriminators; the rest are rules the frozen gate cannot see).
+    type_spans = [
+        (m.start(), m.end())
+        for m in re.finditer(r"(?ms)^### ([a-z_]+)$.*?(?=^### |^## |\Z)", SYSTEM_PROMPT_EXEMPLARS)
+    ]
+    type_total = sum(b - a for a, b in type_spans)
+    fence_chars = sum(
+        len(f.group(0))
+        for a, b in type_spans
+        for f in re.finditer(r"```.*?```", SYSTEM_PROMPT_EXEMPLARS[a:b], re.S)
+    )
+    prose_pool = type_total - fence_chars
+    protected = ex_chars - prose_pool
+    # blocks whose finding_type has NO positive/type-specific fixture in the frozen gate
+    measured_types = set(provs["claude-deep"]["recall_by_type"])
+    blind_prose = 0
+    for a, b in type_spans:
+        blk = SYSTEM_PROMPT_EXEMPLARS[a:b]
+        if blk.split("\n")[0].strip().replace("### ", "") not in measured_types:
+            fences = sum(len(f.group(0)) for f in re.finditer(r"```.*?```", blk, re.S))
+            blind_prose += len(blk) - fences
 
     # --- quality: the frozen bar ---
     q_rows = []
@@ -158,10 +190,21 @@ def main() -> int:
     # weighted mixture (prod/seq) above. Conflating the two overstates the production difference.
     rate_ratio = _rate("input_tokens") / _rate("cache_read_tokens")
 
+    # precomputed so the narrative f-string below stays readable
+    fence_s, inv_s = f"{fence_chars:,}", f"{inv_chars:,}"
+    blind_s, n_measured = f"{blind_prose:,}", len(measured_types)
+    n_types = len(type_spans)
+    n_overlap = sum(
+        1
+        for a, b in type_spans
+        if SYSTEM_PROMPT_EXEMPLARS[a:b].split("\n")[0].strip().replace("### ", "") in measured_types
+    )
+
     body = f"""
 <h1>Analyze EXEMPLARS prompt optimization — arc report</h1>
-<p class=sub>Generated from committed artifacts. Prompt <code>{esc(VERSION)}</code> ·
-baseline <code>{esc(BASELINE.name)}</code> · pricing <code>{esc(PRICING_VERSION)}</code></p>
+<p class=sub><span class="badge ok">COMPLETE — NO CHANGE JUSTIFIED</span> Generated from committed
+artifacts. Prompt <code>{esc(VERSION)}</code> (unchanged) · baseline
+<code>{esc(BASELINE.name)}</code> · pricing <code>{esc(PRICING_VERSION)}</code></p>
 
 <h2>Why this arc exists</h2>
 <p>The analyze stable prefix is {esc(f"{chars:,}")} characters, sent on <em>every</em> analyze
@@ -273,15 +316,45 @@ production sits somewhere in [{esc(f"${seq:.4f}")}, {esc(f"${prod:.4f}")}].</li>
 portion. The run-level gap is the weighted mixture above, not the rate ratio.</li>
 </ul>
 
-<h2>Where the arc stands</h2>
+<h2>Outcome: the shrink did not ship</h2>
+<p><span class="badge ok">COMPLETE</span> No <code>SYSTEM_PROMPT_EXEMPLARS</code> edit, no
+<code>VERSION</code> bump, no candidate paid run. <code>prompts/analyze.py</code> is byte-identical
+to its pre-arc state. This is a successful no-change result, not an abandoned feature: the arc built
+an instrument, priced the lever with it, and the lever did not clear the bar.</p>
+<p><strong>Why.</strong> Every deletion had to name a byte-visible surviving equivalent. Across all
+12 type blocks exactly ONE cleared — <code>sql_injection</code>'s self-admitted <em>"This restates
+the parameterized-query rule above"</em>, ~104 chars. That is <strong>~0.4% of the
+{esc(f"{chars:,}")}-char prefix</strong>: no measurable per-review saving, against a permanently
+authoritative attempt on a gate with zero slack in every acceptance cell.</p>
+<p>Two structural facts sealed it, neither knowable before the freeze:</p>
 <ul>
-<li><span class="badge ok">done</span> affinity remedy refuted; prefix size is the lever</li>
-<li><span class="badge ok">done</span> pre-registered harness built + committed</li>
-<li><span class="badge ok">done</span> baseline frozen + committed <em>before</em> any edit</li>
-<li><span class="badge warn">next</span> draft terser EXEMPLARS within ~4,296 chars, bump
-VERSION</li>
-<li><span class="badge mut">then</span> gate: ship only if every acceptance provider clears
-&epsilon;=0 <em>and</em> the cost objective is <code>proven</code></li>
+<li><strong>EXEMPLARS is discriminators, not compressible prose.</strong>
+{esc(f"{protected:,}")} of its {esc(f"{ex_chars:,}")} chars are protected (the
+{esc(f"{fence_chars:,}")} chars of FLAG/don't-flag fences, the root-cause rules, and the trace /
+description / line-number / proof-boundary disciplines the frozen gate cannot see), leaving
+{esc(f"{prose_pool:,}")} of per-type prose that is itself overwhelmingly boundary teaching.</li>
+<li><strong>The gate audits a different set than this block teaches.</strong> EXEMPLARS covers
+{n_types} types, the gate measures {n_measured}, and they overlap on only
+<strong>{n_overlap}</strong>. The blind blocks ({blind_s} chars of the pool) have no
+positive/type-specific fixture — emitting those types on a safe fixture would still raise
+<code>fp_count</code>, but nothing proves their FLAG side survives a trim. Meanwhile the gate
+measures types EXEMPLARS never names, which ride the JUDGED path taught elsewhere.</li>
+</ul>
+
+<h2>What carries forward</h2>
+<ul>
+<li><span class="badge ok">durable</span> <code>{esc(BASELINE.name)}</code> is the first real
+measurement of how the prefix actually tokenizes — the starting input for ANY future prompt-size
+work, and the reason we know the <code>#042</code> <code>len//5</code> proxy under-counts by
+48&ndash;103% (imprecise but SAFE: it over-protects the floor).</li>
+<li><span class="badge mut">separate spec</span> extend fixture coverage to the six
+no-positive-coverage blocks, then cut them with the gate watching.</li>
+<li><span class="badge mut">separate spec</span> a fence/representation redesign ({fence_s} chars,
+where the mass is) with its own targeted coverage. <strong>FUP-049 does not unlock this</strong>:
+a tokenizer can quantify floor headroom, but a floor budget is necessary, not sufficient — it
+cannot prove that compressing discriminators preserves behaviour.</li>
+<li><span class="badge mut">separate spec</span> <code>SYSTEM_PROMPT_INVARIANTS</code>
+({inv_s} chars) under its own analysis.</li>
 </ul>
 """
     OUT.parent.mkdir(parents=True, exist_ok=True)
