@@ -30,6 +30,12 @@ re-checked by `compare()`:
 - structured-output RAW COUNTS (accepted / rejected / void) are persisted per fixture and per
   provider (schema v3, FUP-219): raw counts, never a derived rate, so a later yield-metric
   definition change costs nothing. Recorded, never gated — yield is evidence, like tokens.
+- per-fixture EXTRA-FINDINGS raw counts on recall fixtures (mc-2): sorted per-rep values +
+  total, gated no-increase on BOTH total and max — over-emission conservatism, not correctness
+  adjudication (extras are unadjudicated; a genuine improvement is admitted by amendment).
+- the fixture suite carries a versioned identity (`fixture_suite`), gated and woven into freeze
+  labels (`{prompt_version}+{suite}`), so suite changes get new immutable artifacts without
+  prompt-VERSION abuse.
 - the artifact self-records its producing harness (`harness_digest`, FUP-238), so provenance is
   readable from the artifact instead of reconstructed from the git DAG. Provenance and
   comparability are SEPARATE contracts: `harness_digest` is informational (surfaced by
@@ -68,12 +74,26 @@ _READABLE_SCHEMA_VERSIONS = frozenset({2, SCHEMA_VERSION})
 # digest, which would deadlock the immutable baseline). This string covers: the >=2/3 N-rep
 # majority rule, detection semantics (`not grade.missed` / `n_false_positives > 0` incl.
 # `grading.py`'s match criteria + line window — code OUTSIDE the source-digest file list), the
-# recall/FP cell model, the acceptance-set semantics, and the sequential single-file rep protocol.
-# Any change to those semantics MUST rotate this string or ship a reviewed compatibility mapping
-# in `_upgrade_v2`-style code; shape-only schema changes must NOT rotate it. v2 artifacts were
-# collected under these exact semantics (the v3 diff was capture-only), so `_upgrade_v2` declares
-# them "exemplar-mc-1" — that declaration is itself the reviewed compatibility mapping.
-MEASUREMENT_CONTRACT = "exemplar-mc-1"
+# recall/FP cell model, the extras evidence + gate (below), the acceptance-set semantics, and
+# the sequential single-file rep protocol. Any change to those semantics MUST rotate this string
+# or ship a reviewed compatibility mapping in `_upgrade_v2`-style code; shape-only schema
+# changes must NOT rotate it.
+#
+# Rotation history:
+# - exemplar-mc-1 — the frozen analyze-v10 collection: majority recall + majority FP counts,
+#   no extras evidence. `_upgrade_v2` declares v2 artifacts mc-1 (a LITERAL fill, deliberately
+#   not this constant — the declaration must not rotate with it).
+# - exemplar-mc-2 — adds per-fixture extra-findings raw counts on recall fixtures and the
+#   candidate-total<=baseline-total AND candidate-max<=baseline-max no-increase gate
+#   (spec 2026-07-15-exemplar-coverage-fixture-suite-v2, second-review statistics).
+MEASUREMENT_CONTRACT = "exemplar-mc-2"
+
+# Versioned fixture-suite identity, independent of the prompt VERSION: freeze labels are
+# "{prompt_version}+{fixture_suite}", so a suite change gets a new immutable artifact without
+# bumping the prompt VERSION (the prompt didn't change) and without touching older evidence.
+# suite-v1 = the frozen 20-fixture set (16 recall + 4 safe); `_upgrade_v2` declares it on v2
+# artifacts as a literal, same non-rotating rule as the mc-1 fill above.
+FIXTURE_SUITE_VERSION = "suite-v2"
 
 REQUIRED_REPS = 3  # the pre-registration pins exactly three clean reps
 BASELINE_DIR = Path(__file__).parent / "baselines" / "analyze-exemplars"
@@ -140,7 +160,10 @@ class Observation(NamedTuple):
     by; `None` when the host reported no usage (telemetry-absent is NOT zero — it is dropped from
     the aggregate, not counted as 0). `n_rejected` is the structured-output yield signal: the
     count of rejected model outputs in this rep's analyze pass (0 or 1 — the runner asserts
-    single-file fixtures, so each rep is exactly one structured-output attempt).
+    single-file fixtures, so each rep is exactly one structured-output attempt). `n_extra` is
+    the over-emission signal on RECALL fixtures only (`len(GradeResult.extra)`): findings that
+    matched no expected finding. Deliberately unadjudicated — see the extras gate in `compare()`.
+    On PRECISION fixtures it must stay 0 (safe-code emissions are measured as false positives).
     """
 
     provider: str
@@ -150,6 +173,7 @@ class Observation(NamedTuple):
     detected: bool
     tokens: TokenUsage | None = None
     n_rejected: int = 0
+    n_extra: int = 0
 
 
 class ProviderMeta(NamedTuple):
@@ -179,6 +203,8 @@ class RunMeta(NamedTuple):
     # Blocking measurement-semantics identity (see MEASUREMENT_CONTRACT). Gated by compare() and
     # preflight_comparability(); rotate on semantic change, never on shape-only change.
     measurement_contract: str = MEASUREMENT_CONTRACT
+    # Versioned suite identity (see FIXTURE_SUITE_VERSION). Gated; also woven into freeze labels.
+    fixture_suite: str = FIXTURE_SUITE_VERSION
 
 
 @dataclass
@@ -188,6 +214,7 @@ class _Cell:
     detected: int = 0
     seen: int = 0
     rejected: int = 0  # structured-output rejections summed over reps (yield evidence)
+    extra_values: list[int] = field(default_factory=list)  # per-rep extras (recall fixtures)
     token_values: list[TokenUsage] = field(default_factory=list)  # per-rep usage (None dropped)
 
 
@@ -274,6 +301,11 @@ def aggregate(observations: list[Observation], meta: RunMeta) -> dict[str, objec
             "meta.measurement_contract is empty — a run must state the measurement semantics it "
             "was collected under (see MEASUREMENT_CONTRACT)"
         )
+    if not meta.fixture_suite:
+        raise ValueError(
+            "meta.fixture_suite is empty — a run must name its fixture-suite identity "
+            "(see FIXTURE_SUITE_VERSION)"
+        )
     n_reps = meta.n_reps
     seen_providers = {o.provider for o in observations}
     if set(meta.providers) != seen_providers:
@@ -326,6 +358,15 @@ def aggregate(observations: list[Observation], meta: RunMeta) -> dict[str, objec
                 "multi-attempt reps"
             )
         cell.rejected += o.n_rejected
+        if o.n_extra < 0:
+            raise ValueError(f"{key}: n_extra={o.n_extra} must be >= 0")
+        if o.dimension == PRECISION and o.n_extra:
+            raise ValueError(
+                f"{key}: n_extra={o.n_extra} on a safe fixture — safe-code emissions are "
+                "measured as false positives, never as extras"
+            )
+        if o.dimension == RECALL:
+            cell.extra_values.append(o.n_extra)
         if o.tokens is not None:
             cell.token_values.append(o.tokens)
 
@@ -372,6 +413,16 @@ def aggregate(observations: list[Observation], meta: RunMeta) -> dict[str, objec
             "detected_reps": cell.detected,
             "n_reps": n_reps,
             "majority_detected": maj,
+            # Over-emission evidence (recall fixtures only; mc-2): deterministic integer counts —
+            # sorted per-rep extras + their total. Gated total+max no-increase in compare();
+            # UNADJUDICATED (an extra may be a correct secondary defect), so evidence + a
+            # conservatism gate, never a correctness verdict. None on safe fixtures (their
+            # emissions are the FP dimension).
+            "extra_findings": (
+                {"values": sorted(cell.extra_values), "total": sum(cell.extra_values)}
+                if cell.dimension == RECALL
+                else None
+            ),
             # RAW yield counts (FUP-219), never a derived rate: one single-file structured-output
             # attempt per rep. `void` is 0 by construction — a provider error propagates and aborts
             # the sequential attempt before any artifact exists (no per-call containment), so an
@@ -423,6 +474,7 @@ def aggregate(observations: list[Observation], meta: RunMeta) -> dict[str, objec
     return {
         "schema_version": SCHEMA_VERSION,
         "measurement_contract": meta.measurement_contract,
+        "fixture_suite": meta.fixture_suite,
         "n_reps": n_reps,
         "majority_threshold": majority_threshold(n_reps),
         "prompt_version": meta.prompt_version,
@@ -443,8 +495,9 @@ def compare(baseline: dict, candidate: dict) -> dict[str, object]:
     """Apply the role-aware ε=0 gate, after proving the two runs are COMPARABLE.
 
     Run-level integrity (always gating): equal `schema_version`, `measurement_contract`,
-    `n_reps`, `majority_threshold`, and identical `fixture_digests`; the acceptance set on both
-    equals EXPECTED_ACCEPTANCE. Both the
+    `fixture_suite`, `n_reps`, `majority_threshold`, and identical `fixture_digests`; the
+    acceptance set on both equals EXPECTED_ACCEPTANCE. Per recall fixture, extras must not
+    increase on total OR max (the mc-2 over-emission gate). Both the
     analyze `prompt_version` AND the `prompt_digest` MUST DIFFER — a preregistered candidate that
     reuses either the VERSION or the exact prompt content is not a real prompt change and FAILS
     CLOSED (else ε=0 could "pass" without any prompt change under test).
@@ -467,8 +520,16 @@ def compare(baseline: dict, candidate: dict) -> dict[str, object]:
     # --- run-level integrity (always gating) ---
     # measurement_contract is the BLOCKING semantics identity: two artifacts collected under
     # different aggregation/grading/majority/acceptance semantics must never ε=0-compare, no
-    # matter how their shapes line up. (harness_digest stays non-gated — see provenance_notes.)
-    for field_name in ("schema_version", "measurement_contract", "n_reps", "majority_threshold"):
+    # matter how their shapes line up. fixture_suite is the suite identity (fixture_digests
+    # equality is the content gate; the suite label catches misuse at the naming layer).
+    # (harness_digest stays non-gated — see provenance_notes.)
+    for field_name in (
+        "schema_version",
+        "measurement_contract",
+        "fixture_suite",
+        "n_reps",
+        "majority_threshold",
+    ):
         b, c = baseline.get(field_name), candidate.get(field_name)
         if b != c:
             regressions.append(Regression("", "integrity", f"{field_name} mismatch: {b} vs {c}"))
@@ -557,6 +618,30 @@ def compare(baseline: dict, candidate: dict) -> dict[str, object]:
                     f"false positives {cand_p['fp_count']} > baseline {base_p['fp_count']}",
                 )
             )
+        # Extras gate (mc-2): per recall fixture, candidate TOTAL <= baseline total AND
+        # candidate MAX <= baseline max. Total alone misses (1,1,1)->(0,0,3) — equal mass,
+        # tripled worst rep; max closes it. Conservatism over unadjudicated emissions: an
+        # increase is unproven behavior change, blocked pending human adjudication (which may
+        # accept a genuine improvement via explicit amendment). Skipped when either side lacks
+        # the evidence (pre-mc-2 dict) — the measurement_contract gate has already failed then.
+        for fixture in sorted(base_p["per_fixture"]):
+            b_extra = base_p["per_fixture"][fixture].get("extra_findings")
+            c_extra = cand_p["per_fixture"].get(fixture, {}).get("extra_findings")
+            if b_extra is None or c_extra is None:
+                continue
+            b_values, c_values = b_extra["values"], c_extra["values"]
+            b_max = b_values[-1] if b_values else 0
+            c_max = c_values[-1] if c_values else 0
+            if c_extra["total"] > b_extra["total"] or c_max > b_max:
+                ok = False
+                bucket.append(
+                    Regression(
+                        provider,
+                        "extras",
+                        f"{fixture}: extra findings total {c_extra['total']}/max {c_max} exceed "
+                        f"baseline total {b_extra['total']}/max {b_max}",
+                    )
+                )
         per_provider[provider] = {"role": role, "ok": ok}
         if gating and not ok:
             passed = False
@@ -650,6 +735,12 @@ def preflight_comparability(baseline: dict, meta: RunMeta) -> list[str]:
             f"measurement_contract {baseline.get('measurement_contract')!r} != planned "
             f"{meta.measurement_contract!r} — the measurement semantics moved; rotate "
             "deliberately or ship a reviewed compatibility mapping"
+        )
+    if baseline.get("fixture_suite") != meta.fixture_suite:
+        reasons.append(
+            f"fixture_suite {baseline.get('fixture_suite')!r} != planned "
+            f"{meta.fixture_suite!r} — the suite identity moved; freeze a new baseline for the "
+            "new suite (never overwrite the old one)"
         )
     if baseline.get("fixture_digests") != dict(meta.fixture_digests):
         reasons.append("fixture_digests differ (fixture set, source, or ground-truth labels moved)")
@@ -1132,19 +1223,22 @@ def _upgrade_v2(data: dict[str, object]) -> dict[str, object]:
     gates is identical across v2/v3, which is what keeps a v2 baseline comparable to a v3
     candidate without touching the evidence (FUP-238 route c).
 
-    The `measurement_contract` fill is NOT an unknown-marker: it is the reviewed compatibility
-    DECLARATION that v2 artifacts were collected under exemplar-mc-1 semantics (the v3 diff was
-    capture-only — aggregation, grading, majority, and acceptance semantics unchanged). A future
-    contract rotation must NOT extend this fill; it needs its own reviewed mapping or the v2
-    baseline legitimately stops comparing.
+    The `measurement_contract` and `fixture_suite` fills are NOT unknown-markers: they are the
+    reviewed compatibility DECLARATIONS that v2 artifacts were collected under exemplar-mc-1
+    semantics over the suite-v1 fixture set. Both are LITERALS on purpose — the constants have
+    since rotated (mc-2 / suite-v2), and following them would falsely re-declare old evidence.
+    The mc-1 → mc-2 rotation ships no compatibility mapping: the v2 baseline legitimately stops
+    comparing (superseded as the bar by the suite-v2 freeze, not migrated).
     """
     data["schema_version"] = SCHEMA_VERSION
-    data.setdefault("measurement_contract", MEASUREMENT_CONTRACT)
+    data.setdefault("measurement_contract", "exemplar-mc-1")
+    data.setdefault("fixture_suite", "suite-v1")
     data.setdefault("harness_digest", None)
     for p in data.get("providers", {}).values():  # type: ignore[union-attr]
         p.setdefault("structured_output", None)
         for fx in p.get("per_fixture", {}).values():
             fx.setdefault("structured_output", None)
+            fx.setdefault("extra_findings", None)
     return data
 
 
