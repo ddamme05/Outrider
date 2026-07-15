@@ -45,8 +45,10 @@ from .exemplar_baseline import (
     compare,
     cost_objective,
     fixture_content_digest,
+    harness_source_digest,
     majority_threshold,
     preflight_comparability,
+    provenance_notes,
     read_baseline,
     render_comparison_html,
     render_run_html,
@@ -121,6 +123,7 @@ def _meta(
         prompt_digest=digest if digest is not None else f"dig-{prompt}",
         fixture_digests=dict(_DIGESTS),
         providers=providers,
+        harness_digest="h-digest",
     )
 
 
@@ -146,7 +149,8 @@ def test_majority_threshold_is_two_thirds_ceil() -> None:
 
 def test_aggregate_stores_provenance_and_majority() -> None:
     base = _run(_meta("v10"), {CLAUDE_DEEP: (2, 0), CLAUDE_STANDARD: (1, 2)})
-    assert base["schema_version"] == 2
+    assert base["schema_version"] == 3
+    assert base["harness_digest"] == "h-digest"
     assert base["n_reps"] == 3
     assert base["prompt_version"] == "ver-v10"
     assert base["prompt_digest"] == "dig-v10"
@@ -573,6 +577,17 @@ def test_render_run_html_marks_a_void_run() -> None:
     assert "VOID" in out and "VALID EVIDENCE" not in out
 
 
+def test_render_run_html_yield_column_distinguishes_unrecorded_from_zero() -> None:
+    data = _run_full(_meta("v10"))
+    out = render_run_html(data, title="t")
+    assert "yield (accepted/attempts)" in out
+    assert "6/6" in out  # v3 run: 2 fixtures x 3 reps, none rejected
+    v2ish = copy.deepcopy(data)
+    for p in v2ish["providers"].values():
+        p["structured_output"] = None  # what read_baseline's v2 upgrade produces
+    assert "unrecorded (v2)" in render_run_html(v2ish, title="t")
+
+
 def test_render_html_escapes_untrusted_content() -> None:
     # model ids / fixture paths / reasons flow into the report; none may inject markup
     meta = _meta("v10", models={CLAUDE_DEEP: "<script>alert(1)</script>"})
@@ -611,6 +626,95 @@ def test_write_report_is_overwritable_because_a_view_is_not_evidence(tmp_path, m
     assert p2.read_text(encoding="utf-8") == "<p>two</p>"
 
 
+# --- structured-output yield capture (schema v3, FUP-219) ----------------------------------------
+def test_aggregate_records_structured_output_raw_counts() -> None:
+    # RAW counts, never a derived rate: reps whose output was rejected land in `rejected`, the
+    # rest in `accepted`; attempts = one single-file attempt per rep.
+    meta = _meta("v10")
+    obs: list[Observation] = []
+    for p in meta.providers:
+        rejected = 2 if p == FIREWORKS_GLM else 0
+        obs += [
+            Observation(p, _SQLI, RECALL, "sql_injection", i >= rejected, None, i < rejected)
+            for i in range(3)
+        ]
+        obs += [Observation(p, _SAFE, PRECISION, "", False, None) for i in range(3)]
+    data = aggregate(obs, meta)
+    fw = data["providers"][FIREWORKS_GLM]
+    assert fw["per_fixture"][_SQLI]["structured_output"] == {
+        "attempts": 3,
+        "accepted": 1,
+        "rejected": 2,
+        "void": 0,
+    }
+    assert fw["structured_output"] == {"attempts": 6, "accepted": 4, "rejected": 2, "void": 0}
+    clean = data["providers"][CLAUDE_DEEP]
+    assert clean["structured_output"] == {"attempts": 6, "accepted": 6, "rejected": 0, "void": 0}
+
+
+def test_aggregate_rejects_multi_attempt_reps() -> None:
+    # n_rejected > 1 means a multi-file fixture reached the single-attempt cell model
+    meta = _meta("v10")
+    obs: list[Observation] = []
+    for p in meta.providers:
+        obs += _obs(p, 3, 0)
+    obs[0] = obs[0]._replace(n_rejected=2)
+    with pytest.raises(ValueError, match="one structured-output attempt per rep"):
+        aggregate(obs, meta)
+
+
+def test_aggregate_requires_harness_digest() -> None:
+    # loud-failure: an artifact that cannot state its producing harness must not freeze (FUP-238)
+    meta = _meta("v10")._replace(harness_digest="")
+    with pytest.raises(ValueError, match="harness_digest"):
+        _run(meta)
+
+
+def test_harness_source_digest_is_stable_sha256() -> None:
+    d = harness_source_digest()
+    assert d == harness_source_digest()  # deterministic over the on-disk source
+    assert len(d) == 64 and all(c in "0123456789abcdef" for c in d)
+
+
+def test_compare_never_gates_yield_or_provenance() -> None:
+    # yield counts and harness digest are evidence/provenance — a candidate with WORSE yield and a
+    # DIFFERENT producing harness still passes ε=0 (recall/FP are the acceptance criteria)
+    base = _run(_meta("v10"))
+    meta = _meta("v11")._replace(harness_digest="another-harness")
+    obs: list[Observation] = []
+    for p in meta.providers:
+        obs += [
+            Observation(p, _SQLI, RECALL, "sql_injection", True, None, n_rejected=1)
+            for _ in range(3)
+        ]
+        obs += [Observation(p, _SAFE, PRECISION, "", False, None) for _ in range(3)]
+    worse_yield = aggregate(obs, meta)
+    assert worse_yield["providers"][CLAUDE_DEEP]["structured_output"]["rejected"] == 3
+    assert compare(base, worse_yield)["passed"] is True
+
+
+def test_provenance_notes_surface_without_gating() -> None:
+    base = _run(_meta("v10"))
+    assert provenance_notes(base, _meta("v11")) == []  # same digest -> silent
+    mismatch = provenance_notes(base, _meta("v11")._replace(harness_digest="other-harness"))
+    assert len(mismatch) == 1 and "harness digest differs" in mismatch[0]
+    unrecorded = dict(base)
+    unrecorded["harness_digest"] = None  # what a v2 artifact upgrades to
+    notes = provenance_notes(unrecorded, _meta("v11"))
+    assert len(notes) == 1 and "does not record its producing harness" in notes[0]
+
+
+def test_run_validity_requires_the_full_acceptance_set() -> None:
+    # a partial/hand-made dict must never read as valid evidence — it could otherwise become the
+    # authoritative attempt for its prompt identity
+    assert run_validity({"providers": {}})["valid"] is False
+    partial = _run_full(_meta("v11"))
+    partial["providers"].pop(FIREWORKS_GLM)
+    verdict = run_validity(partial)
+    assert verdict["valid"] is False
+    assert "not a complete run" in verdict["reason"]
+
+
 # --- persistence ---------------------------------------------------------------------------------
 def test_read_baseline_rejects_wrong_schema_version(tmp_path, monkeypatch) -> None:
     from . import exemplar_baseline as mod  # noqa: PLC0415
@@ -621,6 +725,52 @@ def test_read_baseline_rejects_wrong_schema_version(tmp_path, monkeypatch) -> No
     (tmp_path / "stale.json").write_text(json.dumps(stale), encoding="utf-8")
     with pytest.raises(ValueError, match="schema_version"):
         read_baseline("stale")
+
+
+def _as_v2(data: dict) -> dict:
+    """Strip a v3 run down to the exact v2 shape (what aggregate() emitted before the bump)."""
+    v2 = copy.deepcopy(data)
+    v2["schema_version"] = 2
+    del v2["harness_digest"]
+    for p in v2["providers"].values():
+        del p["structured_output"]
+        for fx in p["per_fixture"].values():
+            del fx["structured_output"]
+    return v2
+
+
+def test_read_baseline_upgrades_v2_in_memory_never_on_disk(tmp_path, monkeypatch) -> None:
+    from . import exemplar_baseline as mod  # noqa: PLC0415
+
+    monkeypatch.setattr(mod, "BASELINE_DIR", tmp_path)
+    v2 = _as_v2(_run(_meta("v10")))
+    raw = json.dumps(v2, indent=2, sort_keys=True)
+    (tmp_path / "frozen-v2.json").write_text(raw, encoding="utf-8")
+    up = read_baseline("frozen-v2")
+    # upgraded in memory: new fields exist as None = UNRECORDED (distinct from a measured zero)
+    assert up["schema_version"] == 3
+    assert up["harness_digest"] is None
+    for p in up["providers"].values():
+        assert p["structured_output"] is None
+        assert all(fx["structured_output"] is None for fx in p["per_fixture"].values())
+    # ...and the frozen evidence bytes are untouched
+    assert (tmp_path / "frozen-v2.json").read_text(encoding="utf-8") == raw
+    # a v2 baseline gates cleanly against a v3 candidate — the upgrade is what keeps the frozen
+    # bar usable without a paid re-freeze
+    assert compare(up, _run(_meta("v11")))["passed"] is True
+
+
+def test_frozen_v10_artifact_reads_under_v3_and_is_unchanged_on_disk() -> None:
+    # pin against the REAL committed evidence: the immutable v2 artifact must stay readable
+    raw = json.loads((BASELINE_DIR / "analyze-v10.json").read_text(encoding="utf-8"))
+    assert raw["schema_version"] == 2  # the on-disk artifact is still v2 — never rewritten
+    up = read_baseline("analyze-v10")
+    assert up["schema_version"] == 3
+    assert up["harness_digest"] is None
+    # the frozen quality cells survive the upgrade byte-for-byte (recomputed 2026-07-15)
+    fp = {p: m["fp_count"] for p, m in up["providers"].items()}
+    assert fp == {CLAUDE_DEEP: 2, CLAUDE_STANDARD: 3, FIREWORKS_GLM: 0, BASETEN_GLM: 0}
+    assert all(m["structured_output"] is None for m in up["providers"].values())
 
 
 def test_baseline_round_trips_to_tracked_dir(tmp_path, monkeypatch) -> None:
@@ -950,6 +1100,7 @@ def _build_run_context() -> tuple[list[tuple], RunMeta]:
         prompt_digest=digest,
         fixture_digests=fixture_digests,
         providers=providers_meta,
+        harness_digest=harness_source_digest(),
     )
     return specs, meta
 
@@ -959,9 +1110,10 @@ async def _collect_real_observations(specs: list[tuple]) -> list[Observation]:
 
     Per (provider, fixture, rep): run one analyze pass, grade it, and record the summed
     provider-reported input-side usage for that run's LLM calls (snapshot-sliced from the provider's
-    own recorder so reps attribute cleanly). Recall detection = the expected finding matched
-    (`not grade.missed`); safe-fixture detection = a false positive was produced
-    (`grade.n_false_positives > 0`).
+    own recorder so reps attribute cleanly) plus the structured-output rejection count
+    (`n_rejected`, the FUP-219 yield signal — previously discarded). Recall detection = the
+    expected finding matched (`not grade.missed`); safe-fixture detection = a false positive was
+    produced (`grade.n_false_positives > 0`).
 
     Each rep is a REAL independent provider call: `run_analyze_under_model` never passes an
     `analyze_cache_store`, and every analyze cache path (scope-resolve / lookup / write) is
@@ -990,6 +1142,19 @@ async def _collect_real_observations(specs: list[tuple]) -> list[Observation]:
             cache_write_tokens=sum(u.cache_write_tokens for u in sliced),
         )
 
+    def _single_file_state(fx: str):  # noqa: ANN202
+        # The yield accounting records ONE structured-output attempt per rep (`n_rejected` is
+        # per-file), so a multi-file fixture would silently skew accepted/rejected — fail loud,
+        # same rule as the one-finding-type cell check below.
+        state = state_from_eval_fixture(fx)
+        n_files = len(state.pr_context.changed_files)
+        if n_files != 1:
+            raise AssertionError(
+                f"{fx} has {n_files} changed files; the yield accounting requires single-file "
+                "fixtures (one structured-output attempt per rep)"
+            )
+        return state
+
     observations: list[Observation] = []
     for key, _role, provider, model, _contract, _accounting, rec in specs:
         for _rep in range(REQUIRED_REPS):
@@ -1005,22 +1170,36 @@ async def _collect_real_observations(specs: list[tuple]) -> list[Observation]:
                     )
                 ftype = next(iter(types))
                 before = len(rec.records)
-                findings, _ = await run_analyze_under_model(
-                    state_from_eval_fixture(fx), provider=provider, model=model
+                findings, n_rejected = await run_analyze_under_model(
+                    _single_file_state(fx), provider=provider, model=model
                 )
                 gr = grade(findings, gt)
                 observations.append(
-                    Observation(key, fx, RECALL, ftype, not gr.missed, _run_tokens(rec, before))
+                    Observation(
+                        key,
+                        fx,
+                        RECALL,
+                        ftype,
+                        not gr.missed,
+                        _run_tokens(rec, before),
+                        n_rejected=n_rejected,
+                    )
                 )
             for fx in safe_fixtures:
                 before = len(rec.records)
-                findings, _ = await run_analyze_under_model(
-                    state_from_eval_fixture(fx), provider=provider, model=model
+                findings, n_rejected = await run_analyze_under_model(
+                    _single_file_state(fx), provider=provider, model=model
                 )
                 gr = grade(findings, ())
                 observations.append(
                     Observation(
-                        key, fx, PRECISION, "", gr.n_false_positives > 0, _run_tokens(rec, before)
+                        key,
+                        fx,
+                        PRECISION,
+                        "",
+                        gr.n_false_positives > 0,
+                        _run_tokens(rec, before),
+                        n_rejected=n_rejected,
                     )
                 )
     return observations
@@ -1118,6 +1297,10 @@ async def test_gate_shrunk_prompt_against_frozen_baseline() -> None:
         pytest.fail(
             "planned run is not comparable to the frozen baseline:\n  - " + "\n  - ".join(drift)
         )
+    # Provenance is surfaced, never gated: an immutable baseline can't be re-frozen to chase
+    # harness edits, so a digest mismatch is a fact for the reader, not an integrity failure.
+    for note in provenance_notes(baseline, meta):
+        print(f"\nprovenance: {note}")
     observations = await _collect_real_observations(specs)
     candidate = aggregate(observations, meta)
     # Persist under a label that is never a canonical baseline name, so a regressed candidate can't
@@ -1160,9 +1343,16 @@ async def test_paid_runner_wiring_is_valid_without_spend(monkeypatch) -> None:
     # providers at one slug (e.g. OUTRIDER_MODEL_ANALYZE_MODEL collapsing both Claude tiers).
     calls: list[tuple[int, str]] = []  # (provider instance id, resolved model) per invocation
 
-    async def _fake_run(state, *, provider, model):  # noqa: ANN001, ANN202, ARG001
+    # One fixture "rejects" its structured output on every rep, so the guard proves the runner
+    # THREADS n_rejected into the right per-fixture cell — a uniform zero would pass even if the
+    # runner still discarded the count (Observation.n_rejected defaults to 0).
+    rejected_fx = "tests/eval/fixtures/mock_github/cmd_injection_eval_indirect.json"
+    rejected_path = "app/calc.py"  # that fixture's single changed file (paths are fixture-unique)
+
+    async def _fake_run(state, *, provider, model):  # noqa: ANN001, ANN202
         calls.append((id(provider), model))
-        return (), 0  # no findings, no rejects — and crucially, no network call / no spend
+        n_rejected = 1 if state.pr_context.changed_files[0].path == rejected_path else 0
+        return (), n_rejected  # no findings — and crucially, no network call / no spend
 
     monkeypatch.setattr(mc, "run_analyze_under_model", _fake_run)
     for name in ("ANTHROPIC_API_KEY", "FIREWORKS_API_KEY", "BASETEN_API_KEY"):
@@ -1190,7 +1380,8 @@ async def test_paid_runner_wiring_is_valid_without_spend(monkeypatch) -> None:
     assert meta.providers[CLAUDE_DEEP].role == ACCEPTANCE
     # the runner's output must satisfy the freeze-time contract end-to-end
     data = aggregate(observations, meta)
-    assert data["schema_version"] == 2
+    assert data["schema_version"] == 3
+    assert data["harness_digest"] == harness_source_digest()  # the artifact self-records its code
     # faked run makes no LLM calls, so token telemetry is legitimately absent (not zero-faked) and
     # `missing` records every expected rep — which is what makes token_delta refuse to price it
     assert data["providers"][CLAUDE_DEEP]["input_side_tokens"] == {
@@ -1201,3 +1392,25 @@ async def test_paid_runner_wiring_is_valid_without_spend(monkeypatch) -> None:
         "by_class": {"input": 0, "cache_read": 0, "cache_write": 0},
     }
     assert token_delta(data, data)[CLAUDE_DEEP]["status"] == "inconclusive"
+    # The injected rejection landed in ITS cell (3 reps × 1) and nowhere else, per provider —
+    # raw counts, exactly one single-file attempt per rep.
+    for prov in (CLAUDE_DEEP, CLAUDE_STANDARD, FIREWORKS_GLM, BASETEN_GLM):
+        per_fixture = data["providers"][prov]["per_fixture"]
+        assert per_fixture[rejected_fx]["structured_output"] == {
+            "attempts": 3,
+            "accepted": 0,
+            "rejected": 3,
+            "void": 0,
+        }
+        others = sum(
+            fx["structured_output"]["rejected"]
+            for name, fx in per_fixture.items()
+            if name != rejected_fx
+        )
+        assert others == 0
+        assert data["providers"][prov]["structured_output"] == {
+            "attempts": 60,
+            "accepted": 57,
+            "rejected": 3,
+            "void": 0,
+        }

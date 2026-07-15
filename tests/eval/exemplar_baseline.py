@@ -27,6 +27,11 @@ re-checked by `compare()`:
   classes are required: the prefix is CACHED on Claude (`#042`), so it lands in cache_read and is
   NET of `input_tokens` — an input-only measure would show ~zero saving for Claude. Recorded and
   reported (`token_delta` / `cost_objective`), never gated by `compare()`.
+- structured-output RAW COUNTS (accepted / rejected / void) are persisted per fixture and per
+  provider (schema v3, FUP-219): raw counts, never a derived rate, so a later yield-metric
+  definition change costs nothing. Recorded, never gated — yield is evidence, like tokens.
+- the artifact self-records its producing harness (`harness_digest`, FUP-238), so provenance is
+  readable from the artifact instead of reconstructed from the git DAG.
 
 Accept iff, per (acceptance-provider, finding_type), recall does not decrease and the
 false-positive count does not increase (ε = 0).
@@ -49,7 +54,11 @@ from typing import TYPE_CHECKING, NamedTuple
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
-SCHEMA_VERSION = 2
+# v3 adds `harness_digest` (FUP-238) + per-fixture/per-provider `structured_output` raw counts
+# (FUP-219). v2 artifacts stay readable via `read_baseline`'s deterministic in-memory upgrade —
+# the frozen on-disk evidence is never rewritten.
+SCHEMA_VERSION = 3
+_READABLE_SCHEMA_VERSIONS = frozenset({2, SCHEMA_VERSION})
 REQUIRED_REPS = 3  # the pre-registration pins exactly three clean reps
 BASELINE_DIR = Path(__file__).parent / "baselines" / "analyze-exemplars"
 # Derived HTML views (gitignored, like `reports/scorecard/`) — NOT evidence, so re-renderable.
@@ -113,7 +122,9 @@ class Observation(NamedTuple):
     recall fixtures, "" for safe. `tokens` is the provider-correct input-side usage summed across
     the analyze pass's LLM call(s) for this fixture/rep — the cost evidence the shrink is measured
     by; `None` when the host reported no usage (telemetry-absent is NOT zero — it is dropped from
-    the aggregate, not counted as 0).
+    the aggregate, not counted as 0). `n_rejected` is the structured-output yield signal: the
+    count of rejected model outputs in this rep's analyze pass (0 or 1 — the runner asserts
+    single-file fixtures, so each rep is exactly one structured-output attempt).
     """
 
     provider: str
@@ -122,6 +133,7 @@ class Observation(NamedTuple):
     finding_type: str
     detected: bool
     tokens: TokenUsage | None = None
+    n_rejected: int = 0
 
 
 class ProviderMeta(NamedTuple):
@@ -145,6 +157,9 @@ class RunMeta(NamedTuple):
     # commits to source + ground-truth types + safe/unsafe, not just the source bytes.
     fixture_digests: dict[str, str]
     providers: dict[str, ProviderMeta]
+    # sha256 over the harness source (harness_source_digest()) so the artifact states which code
+    # produced it (FUP-238). Defaulted for construction ergonomics; aggregate() rejects "".
+    harness_digest: str = ""
 
 
 @dataclass
@@ -153,7 +168,26 @@ class _Cell:
     finding_type: str
     detected: int = 0
     seen: int = 0
+    rejected: int = 0  # structured-output rejections summed over reps (yield evidence)
     token_values: list[TokenUsage] = field(default_factory=list)  # per-rep usage (None dropped)
+
+
+# The harness's own source, in fixed order, hashed into `harness_digest` (FUP-238).
+_HARNESS_FILES = ("exemplar_baseline.py", "test_exemplar_baseline.py")
+
+
+def harness_source_digest() -> str:
+    """sha256 over the two harness files' bytes, each prefixed by its name + NUL separators.
+
+    Reproducible from git blobs at any commit (same recipe over `git show <sha>:<path>`), which is
+    how a reader verifies WHICH code produced a frozen artifact without trusting the git DAG story.
+    """
+    h = hashlib.sha256()
+    for name in _HARNESS_FILES:
+        h.update(name.encode("utf-8") + b"\0")
+        h.update((Path(__file__).parent / name).read_bytes())
+        h.update(b"\0")
+    return h.hexdigest()
 
 
 def majority_threshold(n_reps: int) -> int:
@@ -210,6 +244,11 @@ def aggregate(observations: list[Observation], meta: RunMeta) -> dict[str, objec
         raise ValueError(
             f"n_reps must be exactly {REQUIRED_REPS} (pre-registration); got {meta.n_reps}"
         )
+    if not meta.harness_digest:
+        raise ValueError(
+            "meta.harness_digest is empty — a run that cannot state its producing harness must "
+            "not be frozen (populate via harness_source_digest(); FUP-238)"
+        )
     n_reps = meta.n_reps
     seen_providers = {o.provider for o in observations}
     if set(meta.providers) != seen_providers:
@@ -252,6 +291,16 @@ def aggregate(observations: list[Observation], meta: RunMeta) -> dict[str, objec
             )
         cell.seen += 1
         cell.detected += 1 if o.detected else 0
+        # Single-file fixtures = one structured-output attempt per rep, so the per-rep rejection
+        # count is 0 or 1. A value outside that range means a multi-file fixture reached the cell
+        # model — fail loud rather than mislabel the yield accounting.
+        if o.n_rejected not in (0, 1):
+            raise ValueError(
+                f"{key}: n_rejected={o.n_rejected} — the cell model records one structured-output "
+                "attempt per rep (single-file fixtures); extend the schema before aggregating "
+                "multi-attempt reps"
+            )
+        cell.rejected += o.n_rejected
         if o.tokens is not None:
             cell.token_values.append(o.tokens)
 
@@ -282,6 +331,7 @@ def aggregate(observations: list[Observation], meta: RunMeta) -> dict[str, objec
                 "fp_count": 0,
                 "per_fixture": {},
                 "input_side_tokens": _empty_token_rollup(),
+                "structured_output": {"attempts": 0, "accepted": 0, "rejected": 0, "void": 0},
             },
         )
         recall_by_type: dict[str, dict[str, int]] = p["recall_by_type"]  # type: ignore[assignment]
@@ -297,6 +347,17 @@ def aggregate(observations: list[Observation], meta: RunMeta) -> dict[str, objec
             "detected_reps": cell.detected,
             "n_reps": n_reps,
             "majority_detected": maj,
+            # RAW yield counts (FUP-219), never a derived rate: one single-file structured-output
+            # attempt per rep. `void` is 0 by construction — a provider error propagates and aborts
+            # the sequential attempt before any artifact exists (no per-call containment), so an
+            # artifact that exists observed no voided calls. The slot is persisted so a runner
+            # change can populate it without another schema bump.
+            "structured_output": {
+                "attempts": n_reps,
+                "accepted": n_reps - cell.rejected,
+                "rejected": cell.rejected,
+                "void": 0,
+            },
             "input_side_tokens": {
                 "expected": n_reps,
                 "observed": len(usage),
@@ -310,6 +371,10 @@ def aggregate(observations: list[Observation], meta: RunMeta) -> dict[str, objec
                 "values": [u.total for u in usage],
             },
         }
+        prov_so: dict[str, int] = p["structured_output"]  # type: ignore[assignment]
+        prov_so["attempts"] += n_reps
+        prov_so["accepted"] += n_reps - cell.rejected
+        prov_so["rejected"] += cell.rejected
         prov_tokens: dict[str, object] = p["input_side_tokens"]  # type: ignore[assignment]
         prov_tokens["expected"] = int(prov_tokens["expected"]) + n_reps  # type: ignore[arg-type]
         prov_tokens["observed"] = int(prov_tokens["observed"]) + len(usage)  # type: ignore[arg-type]
@@ -336,6 +401,7 @@ def aggregate(observations: list[Observation], meta: RunMeta) -> dict[str, objec
         "majority_threshold": majority_threshold(n_reps),
         "prompt_version": meta.prompt_version,
         "prompt_digest": meta.prompt_digest,
+        "harness_digest": meta.harness_digest,
         "fixture_digests": dict(meta.fixture_digests),
         "providers": providers,
     }
@@ -358,7 +424,10 @@ def compare(baseline: dict, candidate: dict) -> dict[str, object]:
     Per provider: model / profile_contract / role must match; the per_fixture set and each type's
     `total` must match (no silently-skipped fixtures); then recall no-decrease + FP no-increase.
     ACCEPTANCE providers veto; SUPPORTING providers are advisory. A candidate provider not in the
-    baseline is a gating integrity failure. Token counts are NOT gated (they are cost evidence).
+    baseline is a gating integrity failure. Token counts and structured-output yield counts are
+    NOT gated (evidence, not acceptance criteria); `harness_digest` is provenance, surfaced by
+    `provenance_notes()` and never gated — the baseline is immutable, so gating it would deadlock
+    every future comparison after any harness edit.
 
     Returns {"passed", "regressions" (gating), "advisories" (non-gating),
     "providers": {p: {"role", "ok": bool|None}}}.
@@ -723,6 +792,7 @@ def render_run_html(data: dict, *, title: str) -> str:
     for name, p in sorted(providers.items()):
         passed, total = _recall_totals(p)
         tokens = p.get("input_side_tokens", {})
+        so = p.get("structured_output")
         gating = p.get("role") == ACCEPTANCE
         rows.append(
             [
@@ -731,6 +801,12 @@ def render_run_html(data: dict, *, title: str) -> str:
                 _esc(p.get("model")),
                 _esc(f"{passed}/{total}"),
                 _esc(p.get("fp_count")),
+                # None = unrecorded under schema v2 — distinct from a measured zero-rejection run.
+                (
+                    _esc(f"{so['accepted']}/{so['attempts']}")
+                    if so
+                    else _badge("unrecorded (v2)", "mut")
+                ),
                 _esc(f"{tokens.get('total', 0):,}"),
                 (
                     _badge(f"{tokens.get('missing', 0)} missing", "warn")
@@ -746,6 +822,7 @@ def render_run_html(data: dict, *, title: str) -> str:
             "model",
             "recall",
             "false positives",
+            "yield (accepted/attempts)",
             "input-side tokens",
             "telemetry",
         ],
@@ -958,8 +1035,21 @@ def run_validity(data: dict) -> dict[str, object]:
     unfavorable rep is not. Without the distinction, one dropped usage payload would permanently
     decide the experiment.
     """
+    providers = data.get("providers", {})
+    present_acceptance = {p for p, m in providers.items() if m.get("role") == ACCEPTANCE}
+    if present_acceptance != EXPECTED_ACCEPTANCE:
+        # A dict without the full acceptance set (partial/hand-made artifact) must never read as
+        # valid evidence — an empty providers map would otherwise pass vacuously and could become
+        # the authoritative attempt for its prompt identity.
+        return {
+            "valid": False,
+            "reason": (
+                f"acceptance providers {sorted(present_acceptance)} != "
+                f"{sorted(EXPECTED_ACCEPTANCE)} — not a complete run"
+            ),
+        }
     incomplete = []
-    for provider, m in sorted(data.get("providers", {}).items()):
+    for provider, m in sorted(providers.items()):
         if m.get("role") != ACCEPTANCE:
             continue  # SUPPORTING telemetry never decides anything, incl. validity
         tokens = m.get("input_side_tokens") or {}
@@ -998,12 +1088,55 @@ def authoritative_attempt(label_prefix: str) -> Path | None:
     raise AssertionError("unreachable: itertools.count is infinite")  # pragma: no cover
 
 
+def _upgrade_v2(data: dict[str, object]) -> dict[str, object]:
+    """Deterministic IN-MEMORY v2 → v3 upgrade; the frozen on-disk artifact is never rewritten.
+
+    v3 only ADDS fields, so the upgrade fills them with `None` = UNRECORDED-under-v2 — distinct
+    from a measured zero, same discipline as token telemetry-absence. Every field `compare()`
+    gates is identical across v2/v3, which is what keeps a v2 baseline comparable to a v3
+    candidate without touching the evidence (FUP-238 route c).
+    """
+    data["schema_version"] = SCHEMA_VERSION
+    data.setdefault("harness_digest", None)
+    for p in data.get("providers", {}).values():  # type: ignore[union-attr]
+        p.setdefault("structured_output", None)
+        for fx in p.get("per_fixture", {}).values():
+            fx.setdefault("structured_output", None)
+    return data
+
+
 def read_baseline(label: str) -> dict[str, object]:
     raw = (BASELINE_DIR / f"{label}.json").read_text(encoding="utf-8")
     data: dict[str, object] = json.loads(raw)
-    if data.get("schema_version") != SCHEMA_VERSION:
+    if data.get("schema_version") not in _READABLE_SCHEMA_VERSIONS:
         raise ValueError(
             f"baseline {label!r} has schema_version {data.get('schema_version')}, "
-            f"expected {SCHEMA_VERSION} — refusing to compare under the wrong contract"
+            f"expected one of {sorted(_READABLE_SCHEMA_VERSIONS)} — refusing to compare under "
+            "the wrong contract"
         )
+    if data.get("schema_version") != SCHEMA_VERSION:
+        return _upgrade_v2(data)
     return data
+
+
+def provenance_notes(baseline: dict, meta: RunMeta) -> list[str]:
+    """Non-blocking provenance surface (FUP-238): does the planned harness match the baseline's?
+
+    Deliberately NOT part of `preflight_comparability` and never gating: the frozen baseline is
+    immutable, so a blocking digest check would permanently deadlock every future gate after any
+    harness edit. A mismatch is a fact the reader weighs (did the collection semantics change?),
+    not an integrity failure — the gated comparability fields have their own equality checks.
+    """
+    base_digest = baseline.get("harness_digest")
+    if base_digest is None:
+        return [
+            "baseline does not record its producing harness (v2 artifact) — provenance rests on "
+            "the git DAG / a committed sidecar, not the artifact"
+        ]
+    if base_digest != meta.harness_digest:
+        return [
+            f"harness digest differs from the baseline's ({str(base_digest)[:12]}… vs planned "
+            f"{meta.harness_digest[:12]}…) — the harness changed between runs; weigh whether the "
+            "collection semantics moved"
+        ]
+    return []
