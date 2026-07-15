@@ -29,6 +29,11 @@ PROBE = REPO / "spikes/fireworks/fixtures/cache_probe_result.json"
 OUT = REPO / "reports/exemplar-baseline/arc-report.html"
 
 FW_PROFILE, FW_MODEL = "fireworks", "accounts/fireworks/models/glm-5p2"
+# The frozen run was BILLED under this pricing contract. This report prices a HISTORICAL run, but
+# `pricing.py` mutates its rate table in place and only bumps the version string — so re-rendering
+# after a rate change would silently restate what that run cost. Pin the contract and fail loud;
+# a rate move must force a deliberate call, not quietly rewrite the record.
+EXPECTED_PRICING_VERSION = "v6"
 # Measured at the 2026-07-15 freeze: each Claude tier wrote its cacheable block exactly ONCE
 # (cache_read/cache_write == 59.00 over 60 calls), so cache_write IS the tokenized prefix.
 ACCEPTANCE_MODELS = {"claude-deep": "claude-sonnet-5", "claude-standard": "claude-haiku-4-5"}
@@ -75,6 +80,14 @@ def main() -> int:
         if not p.exists():
             print(f"missing artifact: {p}", file=sys.stderr)
             return 1
+    if PRICING_VERSION != EXPECTED_PRICING_VERSION:
+        print(
+            f"pricing table is now {PRICING_VERSION!r}, but this report prices a run billed under "
+            f"{EXPECTED_PRICING_VERSION!r}. Re-rendering would restate history at today's rates. "
+            f"Pin the historical rates or re-scope the report deliberately before regenerating.",
+            file=sys.stderr,
+        )
+        return 1
     base = json.loads(BASELINE.read_text(encoding="utf-8"))
     probe = json.loads(PROBE.read_text(encoding="utf-8"))
     provs = base["providers"]
@@ -241,7 +254,7 @@ what the shrink reduces either way. But pricing this artifact understates the pr
                     esc(f"${seq:.4f}"),
                 ],
                 [
-                    esc("production fan-out (no cache)"),
+                    esc("production-shaped, ZERO-CACHE scenario"),
                     esc(f"{fw['input'] + fw['cache_read']:,}"),
                     esc("0"),
                     esc(f"${prod:.4f}"),
@@ -249,9 +262,16 @@ what the shrink reduces either way. But pricing this artifact understates the pr
             ],
         )
     }
-<p>Production is <strong>{float(prod / seq):.2f}&times;</strong> the harness for Fireworks
-input-side. Scope note: the {rate_ratio:.0f}&times; input-vs-cache-read <em>rate</em> ratio applies
-only to the cached portion; the run-level gap is the weighted mixture above, not the rate ratio.</p>
+<p>Under that zero-cache scenario production is <strong>{float(prod / seq):.2f}&times;</strong> the
+harness for Fireworks input-side. Two scope notes, both easy to overstate:</p>
+<ul>
+<li>The second row is a <em>scenario, not a measurement</em>. The probe proves there is no reliable
+affinity and the corpus observed zero realized cache — but incidental hits under a real fan-out
+remain possible, so $ {esc(f"{prod:.4f}")} is the zero-cache <strong>bound</strong>, and true
+production sits somewhere in [{esc(f"${seq:.4f}")}, {esc(f"${prod:.4f}")}].</li>
+<li>The {rate_ratio:.0f}&times; input-vs-cache-read <em>rate</em> ratio applies only to the cached
+portion. The run-level gap is the weighted mixture above, not the rate ratio.</li>
+</ul>
 
 <h2>Where the arc stands</h2>
 <ul>
