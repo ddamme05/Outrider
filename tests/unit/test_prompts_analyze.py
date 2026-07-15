@@ -1085,11 +1085,16 @@ def test_module_exports_all_documented_surfaces() -> None:
 
 
 # --- protected-region pins (suite-v2 spec, second review 2026-07-15) ------------------------------
-# The five non-type EXEMPLARS sections have no eval metrics yet, so fixture-suite work must not
-# touch them: an accidental edit fails here; a deliberate edit updates the pinned digest in the
-# same diff, making the touch reviewable. The per-type blocks are NOT pinned — they are the
-# sanctioned surface of future gated prompt work.
+# The non-type EXEMPLARS regions have no eval metrics yet, so fixture-suite work must not touch
+# them: an accidental edit fails here; a deliberate edit updates the pinned digest in the same
+# diff, making the touch reviewable. The per-type blocks are NOT pinned — they are the
+# sanctioned surface of future gated prompt work. The PREAMBLE (everything before the first
+# `### ` heading) is pinned too: it carries the never-flag-exemplar-code and bare-JSON-output
+# safety rules, which are exactly as unmeasured as the named sections.
+_EXEMPLARS_PREAMBLE_KEY = "(preamble)"
+
 _PROTECTED_EXEMPLAR_REGIONS = {
+    _EXEMPLARS_PREAMBLE_KEY: ("f2eb5f3cabbe88dec398b1c032b757b932ffcbf5dd11f29c6898563f54b64221"),
     "Commonly-confused pairs (pick the root cause, not the symptom)": (
         "6d70d230a2da6a93697750cb5abae25dca4028c167c0528c2250ccf70041165c"
     ),
@@ -1107,20 +1112,20 @@ _PROTECTED_EXEMPLAR_REGIONS = {
 
 
 def _exemplar_sections() -> dict[str, str]:
-    """Split SYSTEM_PROMPT_EXEMPLARS into `### `-headed sections (heading -> body)."""
+    """Split SYSTEM_PROMPT_EXEMPLARS into `### `-headed sections (heading -> body). Bytes before
+    the first heading — the safety-bearing preamble — are captured under
+    `_EXEMPLARS_PREAMBLE_KEY`, never dropped."""
     sections: dict[str, str] = {}
-    current: str | None = None
+    current: str = _EXEMPLARS_PREAMBLE_KEY
     buf: list[str] = []
     for line in SYSTEM_PROMPT_EXEMPLARS.splitlines(keepends=True):
         if line.startswith("### "):
-            if current is not None:
-                sections[current] = "".join(buf)
+            sections[current] = "".join(buf)
             current = line[4:].strip()
             buf = []
         else:
             buf.append(line)
-    if current is not None:
-        sections[current] = "".join(buf)
+    sections[current] = "".join(buf)
     return sections
 
 
