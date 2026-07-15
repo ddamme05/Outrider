@@ -717,9 +717,9 @@ def preflight_comparability(baseline: dict, meta: RunMeta) -> list[str]:
     Every field checked here is derivable before the paid loop: the schema/N contract is constants,
     the fixture + ground-truth digests come from files on disk, and the provider set / roles / model
     ids / profile-contract digests / token-accounting modes come from config + host profiles. So
-    static drift fails for free instead of surfacing as an integrity regression after ~240 paid
-    calls. This is exactly the static half of `compare()`; the quality and cost halves necessarily
-    need the observations.
+    static drift fails for free instead of surfacing as an integrity regression after the paid
+    loop. This is exactly the static half of `compare()`; the quality and cost halves
+    necessarily need the observations.
     """
     reasons: list[str] = []
     if baseline.get("schema_version") != SCHEMA_VERSION:

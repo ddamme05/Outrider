@@ -251,7 +251,7 @@ def _build_yield_context() -> tuple[list[tuple], YieldRunMeta]:
 
 
 async def _collect_yield_calls(specs: list[tuple]) -> list[YieldCall]:
-    """THE PAID LOOP: 2 hosts x YIELD_REPS x 20 fixtures, fully sequential.
+    """THE PAID LOOP: 2 hosts x YIELD_REPS x the fixture registry, fully sequential.
 
     Sequential on purpose: no token attribution here (so FUP-239's snapshot-slice constraint
     doesn't bind), but sequential keeps provider behavior comparable to the frozen baseline's
