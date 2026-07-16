@@ -12,15 +12,18 @@ and fixes are best-effort rather than an SLA.
 
 ## Scope
 
-In scope: anything under `src/outrider/`, the deployment stack under `deploy/`, and the
-dashboard under `dashboard/`.
+In scope: anything under `src/outrider/`, the dashboard under `dashboard/`, database
+migrations under `db/`, the deployment stack under `deploy/`, CI workflows under `.github/`,
+packaging and dependency configuration (`pyproject.toml`, `uv.lock`), and the operational
+scripts under `scripts/`.
 
 Out of scope:
 
 - The files under `scripts/demo_fixtures/`. They are deliberately vulnerable review targets
   for exercising the product and are never imported by the application.
-- Findings that require the operator to have already misconfigured a documented secret
-  (for example, publishing the dashboard admin key).
+- Reports whose entire impact is that an operator published a documented secret (for example,
+  posting the dashboard admin key somewhere public). If a product weakness makes such a
+  mistake easier to cause or worse in effect, that weakness is in scope.
 - Vulnerabilities in upstream dependencies with no Outrider-specific exposure. Report those
   upstream, though a heads-up is welcome if Outrider's usage makes one exploitable.
 

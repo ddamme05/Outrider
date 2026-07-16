@@ -14,11 +14,12 @@ human decision, and publish routing) lands in an append-only audit trail, so any
 reconstructed and verified after the fact.
 
 You run it on your own infrastructure, with **your own LLM API keys** (Anthropic by default,
-with OpenAI-compatible hosts such as Fireworks and Baseten (GLM-5.2 tested) supported). Your code reaches exactly one third
-party: your model provider. Everything Outrider stores stays in your Postgres. Review,
-finding, and LLM-exchange content ages out under retention windows you configure. Two stores
-sit outside those windows by design: the append-only audit metadata, and the LangGraph
-checkpoint store, which needs your own retention controls if you split it out.
+with OpenAI-compatible hosts such as Fireworks and Baseten (GLM-5.2 tested) supported). Beyond GitHub itself, your code, diffs,
+and PR text go only to your configured model provider. Everything Outrider stores stays in
+your Postgres. Review, finding, and LLM-exchange content ages out under retention windows you
+configure. Two stores sit outside those windows: the append-only audit metadata, and the
+LangGraph checkpoint store, which Outrider does not purge or scrub in V1 whether it shares the
+application database or runs separately. Apply your own retention controls to it.
 
 [![CI](https://github.com/ddamme05/Outrider/actions/workflows/ci.yml/badge.svg)](https://github.com/ddamme05/Outrider/actions/workflows/ci.yml)
 ![Python 3.13](https://img.shields.io/badge/python-3.13-blue)
@@ -30,7 +31,9 @@ checkpoint store, which needs your own retention controls if you split it out.
 > users yet, and configuration surfaces and APIs may still change before a stable release. Read
 > [What Outrider is not](#what-outrider-is-not) before forming expectations.
 
-**Live demo (read-only, seeded data):** <https://outrider-review.duckdns.org>
+**Live demo (read-only, seeded data):** <https://outrider-review.duckdns.org>. The dashboard
+reads a viewer token from a `#token=` URL fragment (the sharing mechanism documented in
+[deploy/README.md](deploy/README.md)), so use the shared access link rather than the bare URL.
 
 **Contents:** [How a review works](#how-a-review-works) ·
 [Design guarantees](#design-guarantees) · [Evaluation](#evaluation) ·
@@ -102,7 +105,7 @@ The load-bearing properties, with links to the public architecture-decision reco
 | Severity is never model-assigned | The LLM picks a `FindingType` from a 22-member enum. A frozen, versioned policy table maps type to severity. The response schema has no severity field (`extra="forbid"`), the policy table is immutable at runtime, and historical reviews replay under the policy version they ran under. |
 | Findings can't claim evidence they don't have | Every finding carries an evidence tier: `observed` (a tree-sitter query fired, with the query id), `inferred` (a recorded trace path), or `judged` (model judgment). Schema validators reject an `observed` claim without a real query id. |
 | High-risk findings require a human | Critical and high findings gate at an interrupt checkpoint. The review resumes only on an explicit per-finding decision (dashboard `POST /reviews/{id}/decide`), and a timed-out approval expires without posting. |
-| Reviews are reconstructable | Append-only `audit_events` (database triggers block UPDATE and DELETE, verified by an integration test), with asynchronous replay-equivalence verification of each completed review by a background job. Replay validates event structure, proof references, and content hashes. Re-executing stored queries against evidence spans is future scope. |
+| Reviews are reconstructable | Append-only `audit_events` (database triggers block UPDATE and DELETE, verified by an integration test), with asynchronous replay-equivalence verification of each eligible completed production review by a background job (eval runs excluded). Replay validates event structure, proof references, and content hashes. Re-executing stored queries against evidence spans is future scope. |
 | Vendor SDKs are quarantined | `anthropic` imports only under `llm/`, `githubkit` under `github/`, `tree_sitter` under `ast_facts/`, `slack_sdk` under `notify/`. A CI boundary lint enforces this ([#038](DECISIONS.md#038-the-cipre-commit-import-lint-is-the-deterministic-trust-boundary-floor-fup-005), [`scripts/check_import_boundaries.py`](scripts/check_import_boundaries.py)). Auditing or replacing a vendor dependency is a one-folder change. |
 
 ## Evaluation
@@ -113,7 +116,7 @@ every number from the JSON without trusting this README.
 ### Cross-provider baseline (tracked artifact)
 
 [`tests/eval/baselines/analyze-exemplars/analyze-v10+suite-v2.json`](tests/eval/baselines/analyze-exemplars/analyze-v10+suite-v2.json)
-records 288 paid calls: 3 providers × 32 fixtures (22 planted-vulnerability plus 10 safe) × 3
+records 288 provider calls: 3 providers × 32 fixtures (22 planted-vulnerability plus 10 safe) × 3
 repetitions, majority vote at 2 of 3. It was frozen 2026-07-15 as the pre-registered bar that
 future prompt changes must clear.
 
@@ -173,8 +176,10 @@ internally measured result, unlike the tables above, which are recomputable from
 
 ### The offline tiers
 
-The eval harness's structural tier (186 tests) validates tree-sitter extraction and coordinate
-translation with zero LLM calls and no network. Every fixture in the paid suite is first
+The eval harness's structural tier (currently 186 tests, collected by
+`uv run pytest tests/eval/scenarios/structural --is-eval`) validates tree-sitter extraction and
+coordinate translation with zero LLM calls and no network. Every fixture in the paid suite is
+first
 driven through the real analyze admission path offline, so a fixture the pipeline would skip or
 veto never reaches a paid run.
 
@@ -195,6 +200,9 @@ cp .env.example deploy/.env
 #   + GitHub App credentials: pick mode A or B below
 docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml up -d --build
 ```
+
+To use a GLM host instead of Anthropic, set `OUTRIDER_LLM_HOST=fireworks` plus
+`FIREWORKS_API_KEY` (or `baseten` plus `BASETEN_API_KEY`) in place of the Anthropic key.
 
 That is the whole sequence. The image builds the dashboard and installs dependencies, a
 one-shot `migrate` container applies database migrations before the app starts, and the app
@@ -265,10 +273,17 @@ review posts. Both deep-link to the dashboard. You cannot trigger reviews or app
 from Slack. Configure a Slack app with the `chat:write` scope, set
 `OUTRIDER_SLACK_CLIENT_ID`, `OUTRIDER_SLACK_CLIENT_SECRET`, `OUTRIDER_SLACK_REDIRECT_URI`,
 `OUTRIDER_SLACK_STATE_SECRET`, and `OUTRIDER_TOKEN_ENC_KEY`, then start the per-installation
-OAuth flow with your admin bearer token:
-`GET /slack/install?installation_id=<your GitHub installation id>&channel_id=<C… channel id>`.
-Invite the bot to the channel first. Bot tokens are encrypted at rest. When unset, Slack is
-simply off and never blocks the review pipeline.
+OAuth flow. The endpoint needs your admin bearer token, so fetch the redirect with curl and
+open the returned Slack URL in a browser:
+
+```bash
+curl -si -H "Authorization: Bearer $OUTRIDER_ADMIN_API_KEY" \
+  "https://review.example.com/slack/install?installation_id=<github install id>&channel_id=<C0000000000>" \
+  | grep -i '^location:'
+```
+
+Invite the bot to the channel before installing. Bot tokens are encrypted at rest. When unset,
+Slack is simply off and never blocks the review pipeline.
 
 ### Verify the installation
 
@@ -293,7 +308,7 @@ load-bearing subset:
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `DATABASE_URL` | yes (the prod compose derives it) | none | Postgres, `postgresql+psycopg://` scheme enforced |
-| `CHECKPOINT_DATABASE_URL` | no | falls back to `DATABASE_URL` | separate LangGraph checkpoint store. If split, it is an independent content-bearing store your retention controls must also cover |
+| `CHECKPOINT_DATABASE_URL` | no | falls back to `DATABASE_URL` | separate LangGraph checkpoint store. Content-bearing and not purged by Outrider in V1 (shared or split), so your retention controls must cover it |
 | `OUTRIDER_ADMIN_API_KEY` | yes | none | dashboard and approval-endpoint bearer token |
 | `OUTRIDER_TRUNCATION_HMAC_SECRET` | yes | none | authenticates truncation markers in sanitized output |
 | `ANTHROPIC_API_KEY` | with the default host | none | LLM provider key |
@@ -371,9 +386,9 @@ penetration tested.
 - **Two cost optimizations run in shadow mode by default** (a trivial-scope filter and a
   file-hash analyze cache). They measure and audit but don't act, pending evidence. Savings
   claimed from them: none.
-- **Prompts are tuned against Claude models only.** Every precision wording in the shared
-  prompt prefix was validated on Sonnet and Haiku. GLM runs the same prefix and holds its own
-  baseline column above, but no GLM-specific calibration experiment has been run.
+- **Prompts are tuned against Claude models only.** Prompt calibration was performed against
+  Sonnet and Haiku. GLM runs the same prefix and holds its own baseline column above, but no
+  GLM-specific calibration experiment has been run.
 - **Structural analysis covers Python and JS/TS/TSX.** Other languages skip the structural
   tier (with an audited skip event), and the model still reviews them with plain diff context.
 - **Replay verifies structure and hashes.** Re-executing tree-sitter queries against stored
