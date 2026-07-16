@@ -29,8 +29,9 @@ async def require_credentials_configured(request: Request) -> None:
 
     Reads `app.state.credential_provider` (set in every non-demo boot). A `None` provider (should
     not occur on a mounted gated route — demo mode does not mount these) or an unconfigured
-    `database`-mode provider fails closed. The webhook path returning 503 is the GitHub-retry
-    signal.
+    `database`-mode provider fails closed. The webhook path returning 503 marks the delivery
+    failed on GitHub's side; GitHub does NOT auto-retry, so the operator redelivers missed
+    events from the App's Recent Deliveries page after setup completes.
     """
     provider: GitHubCredentialProvider | None = getattr(
         request.app.state, "credential_provider", None

@@ -247,9 +247,10 @@ async def receive_pull_request_webhook(
     try:
         creds = await credential_provider.current()
     except GitHubUnconfiguredError:
-        # `database` mode, not yet CONFIGURED → fail closed with 503 (GitHub retries). The
-        # setup-only route gating also returns 503 here; this is the defense-in-depth read at the
-        # secret source.
+        # `database` mode, not yet CONFIGURED → fail closed with 503 (the delivery shows as
+        # failed on GitHub; the operator redelivers after setup — GitHub does not auto-retry).
+        # The setup-only route gating also returns 503 here; this is the defense-in-depth read
+        # at the secret source.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="setup incomplete"
         ) from None
@@ -427,7 +428,8 @@ async def receive_pull_request_webhook(
         # Step 9 cont'd: narrow IntegrityError introspection — only
         # uq_review_natural_key violations are duplicate-delivery.
         # Anything else (audit-events PK collision, FK violation,
-        # driver without diag) re-raises so GitHub retries.
+        # driver without diag) re-raises so the delivery is marked
+        # failed on GitHub (redeliverable; GitHub does not auto-retry).
         if _is_reviews_natural_key_conflict(exc):
             # The duplicate row exists. Re-read it (separate session
             # because the failing transaction was rolled back).
@@ -458,8 +460,8 @@ async def receive_pull_request_webhook(
         # re-raise, OR (b) psycopg / driver shape change made
         # `exc.orig.diag.constraint_name` unreadable. (b) is a
         # silent-misclassification risk: every duplicate delivery
-        # surfaces as 5xx → GitHub retries indefinitely → loss of
-        # idempotency under a dependency upgrade.
+        # surfaces as 5xx → shows failed on GitHub and invites manual
+        # redelivery → loss of idempotency under a dependency upgrade.
         #
         # Cheap defense: SELECT the natural-key row. If it exists, the
         # failed INSERT was a duplicate delivery; return 200. If not,
