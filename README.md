@@ -15,8 +15,10 @@ reconstructed and verified after the fact.
 
 You run it on your own infrastructure, with **your own LLM API keys** (Anthropic by default,
 with OpenAI-compatible hosts such as Fireworks and Baseten (GLM-5.2 tested) supported). Your code reaches exactly one third
-party: your model provider. Everything Outrider stores stays in your Postgres, under retention
-windows you configure.
+party: your model provider. Everything Outrider stores stays in your Postgres. Review,
+finding, and LLM-exchange content ages out under retention windows you configure. Two stores
+sit outside those windows by design: the append-only audit metadata, and the LangGraph
+checkpoint store, which needs your own retention controls if you split it out.
 
 [![CI](https://github.com/ddamme05/Outrider/actions/workflows/ci.yml/badge.svg)](https://github.com/ddamme05/Outrider/actions/workflows/ci.yml)
 ![Python 3.13](https://img.shields.io/badge/python-3.13-blue)
@@ -29,6 +31,13 @@ windows you configure.
 > [What Outrider is not](#what-outrider-is-not) before forming expectations.
 
 **Live demo (read-only, seeded data):** <https://outrider-review.duckdns.org>
+
+**Contents:** [How a review works](#how-a-review-works) ·
+[Design guarantees](#design-guarantees) · [Evaluation](#evaluation) ·
+[Quickstart](#quickstart) · [Configuration](#configuration) ·
+[Security and privacy](#security-and-privacy) ·
+[What Outrider is not](#what-outrider-is-not) · [Known limitations](#known-limitations) ·
+[Development](#development) · [License](#license)
 
 <!-- TODO(screenshots): 1) PR opened → 2) dashboard approval screen → 3) posted GitHub review.
      Use a sandbox repo. Redact installation ids and webhook URLs. -->
@@ -93,7 +102,7 @@ The load-bearing properties, with links to the public architecture-decision reco
 | Severity is never model-assigned | The LLM picks a `FindingType` from a 22-member enum. A frozen, versioned policy table maps type to severity. The response schema has no severity field (`extra="forbid"`), the policy table is immutable at runtime, and historical reviews replay under the policy version they ran under. |
 | Findings can't claim evidence they don't have | Every finding carries an evidence tier: `observed` (a tree-sitter query fired, with the query id), `inferred` (a recorded trace path), or `judged` (model judgment). Schema validators reject an `observed` claim without a real query id. |
 | High-risk findings require a human | Critical and high findings gate at an interrupt checkpoint. The review resumes only on an explicit per-finding decision (dashboard `POST /reviews/{id}/decide`), and a timed-out approval expires without posting. |
-| Reviews are reconstructable | Append-only `audit_events` (database triggers block UPDATE and DELETE, verified by an integration test), with automatic replay-equivalence verification after every completed review. Replay validates event structure, proof references, and content hashes. Re-executing stored queries against evidence spans is future scope. |
+| Reviews are reconstructable | Append-only `audit_events` (database triggers block UPDATE and DELETE, verified by an integration test), with asynchronous replay-equivalence verification of each completed review by a background job. Replay validates event structure, proof references, and content hashes. Re-executing stored queries against evidence spans is future scope. |
 | Vendor SDKs are quarantined | `anthropic` imports only under `llm/`, `githubkit` under `github/`, `tree_sitter` under `ast_facts/`, `slack_sdk` under `notify/`. A CI boundary lint enforces this ([#038](DECISIONS.md#038-the-cipre-commit-import-lint-is-the-deterministic-trust-boundary-floor-fup-005), [`scripts/check_import_boundaries.py`](scripts/check_import_boundaries.py)). Auditing or replacing a vendor dependency is a one-folder change. |
 
 ## Evaluation
@@ -165,7 +174,7 @@ internally measured result, unlike the tables above, which are recomputable from
 ### The offline tiers
 
 The eval harness's structural tier (186 tests) validates tree-sitter extraction and coordinate
-translation with zero LLM calls in under a second. Every fixture in the paid suite is first
+translation with zero LLM calls and no network. Every fixture in the paid suite is first
 driven through the real analyze admission path offline, so a fixture the pipeline would skip or
 veto never reaches a paid run.
 
@@ -226,9 +235,10 @@ Outrider verifies the response against what it requested, encrypts the private k
 secret into Postgres, and sends you to GitHub's install page to pick repositories. Setup state
 is a signed single-use token, so refreshing the callback URL fails by design.
 
-Until setup completes, webhook and review routes return 503. GitHub does not retry failed
-webhook deliveries on its own, so if a PR event arrived during that window, redeliver it from
-the App's settings page (Advanced → Recent Deliveries) once setup finishes.
+Until setup completes, the webhook receiver and other credential-dependent routes return 503,
+while `/setup`, `/health`, `/privacy`, and the read-only dashboard stay up. GitHub does not
+retry failed webhook deliveries on its own, so if a PR event arrived during that window,
+redeliver it from the App's settings page (Advanced → Recent Deliveries) once setup finishes.
 
 Every secret above must be a distinct value. Startup rejects secrets reused across variables.
 
@@ -243,8 +253,9 @@ OUTRIDER_GITHUB_APP_PRIVATE_KEY=<PEM contents>
 OUTRIDER_GITHUB_WEBHOOK_SECRET=<your webhook secret>
 ```
 
-The `OUTRIDER_` prefix is required. A bare `GITHUB_APP_ID` is silently ignored, while a typo
-inside the prefix fails loudly at startup.
+The `OUTRIDER_` prefix is required. A bare `GITHUB_APP_ID` is silently ignored, and so is a
+misspelled name inside the prefix, so double-check the three names. A missing required variable
+fails at startup with the field named.
 
 ### Slack notifications (optional)
 
@@ -253,16 +264,19 @@ human approval (finding titles and locations, never code or evidence), and a mes
 review posts. Both deep-link to the dashboard. You cannot trigger reviews or approve findings
 from Slack. Configure a Slack app with the `chat:write` scope, set
 `OUTRIDER_SLACK_CLIENT_ID`, `OUTRIDER_SLACK_CLIENT_SECRET`, `OUTRIDER_SLACK_REDIRECT_URI`,
-`OUTRIDER_SLACK_STATE_SECRET`, and `OUTRIDER_TOKEN_ENC_KEY`, then run the per-installation
-OAuth flow from `/slack/install` (admin-authenticated). Bot tokens are encrypted at rest. When
-unset, Slack is simply off and never blocks the review pipeline.
+`OUTRIDER_SLACK_STATE_SECRET`, and `OUTRIDER_TOKEN_ENC_KEY`, then start the per-installation
+OAuth flow with your admin bearer token:
+`GET /slack/install?installation_id=<your GitHub installation id>&channel_id=<C… channel id>`.
+Invite the bot to the channel first. Bot tokens are encrypted at rest. When unset, Slack is
+simply off and never blocks the review pipeline.
 
 ### Verify the installation
 
 1. Open a pull request in a sandbox repository the App is installed on. The repo ships
    deliberately vulnerable demo fixtures under
-   [`scripts/demo_fixtures/`](scripts/demo_fixtures/) (intentional, don't report them) and
-   expected outcomes in [`LIVE_RUN_EXPECTED_FINDINGS.md`](LIVE_RUN_EXPECTED_FINDINGS.md).
+   [`scripts/demo_fixtures/`](scripts/demo_fixtures/) (intentional, don't report them), with
+   their own README covering the PR procedure, and expected outcomes in
+   [`LIVE_RUN_EXPECTED_FINDINGS.md`](LIVE_RUN_EXPECTED_FINDINGS.md).
 2. Watch the review appear in the dashboard: webhook received, stages progressing, then status
    `completed`, or `awaiting_approval` if anything critical or high was found.
 3. If gated, approve or reject per finding in the dashboard. The review resumes and posts.
@@ -315,16 +329,18 @@ Application logs stay metadata-only. LLM content lives in the database, never in
 Slack, when enabled, receives finding titles and locations plus dashboard links, never code.
 
 **Input hardening.** Webhook signatures verify with `hmac.compare_digest`. Payloads parse
-through strict schemas before anything downstream sees them. File paths validate before
+through shape-validated schemas before anything downstream sees them (unknown GitHub fields
+are deliberately tolerated for forward compatibility). File paths validate before
 filesystem or API use. There is no shell execution with GitHub-sourced strings anywhere in the
 application source tree (`src/outrider/`, CI-enforced). The deliberately vulnerable demo
-fixtures under `scripts/demo_fixtures/` are the documented exception in the wider repo. GitHub
-App credentials and Slack tokens are encrypted at rest, and the App-setup callback carries
-single-use signed state.
+fixtures under `scripts/demo_fixtures/` are the documented exception in the wider repo.
+Database-stored GitHub App credentials (setup mode A) and Slack tokens are encrypted before
+they are written to Postgres, and the App-setup callback carries single-use signed state. In
+mode B the App credentials live in your environment, and protecting that file is on you.
 
-**Reporting.** No formal security policy is published yet. Please report suspected
-vulnerabilities privately through GitHub's security advisories for this repository rather than
-a public issue. Outrider has **not** been independently audited or penetration tested.
+**Reporting.** See [SECURITY.md](SECURITY.md). Please report suspected vulnerabilities
+privately, not in a public issue. Outrider has **not** been independently audited or
+penetration tested.
 
 ## What Outrider is not
 
@@ -338,14 +354,16 @@ a public issue. Outrider has **not** been independently audited or penetration t
 - Slack is notification plus deep-link only. No review triggering, no inline approval.
 - Reviews post as PR reviews. There is no GitHub Checks integration.
 - Not independently security audited. No SLA. Not suitable for HIPAA-subject workloads.
-- It does not train models on your code, and sends nothing to anyone but your LLM provider.
+- It does not train models on your code. Source code, diffs, and PR text go only to your
+  configured model provider. Review output posts back to GitHub, and Slack (when enabled)
+  receives metadata-only notifications.
 
 ## Known limitations
 
 - **Latency is unmeasured.** Instrumentation exists, but there is no published figure yet.
-- **Cost per review at full coverage is unmeasured.** Real sandbox runs cost about $0.10 to
-  $0.12, but they ran under a token budget that skipped files. Treat any composed full-coverage
-  figure as a model, not a measurement.
+- **Cost per review at full coverage is unmeasured.** Internal sandbox runs (not a tracked
+  artifact) came in around $0.10 to $0.12, but they ran under a token budget that skipped
+  files. Treat any composed full-coverage figure as a model, not a measurement.
 - **Module-level-only Python changes can escape LLM review.** A diff touching only imports or
   module constants is skipped unless a structural query matches, so a hardcoded secret added in
   a constants-only diff is not reviewed today. Known, tracked, and honestly the sharpest
@@ -353,9 +371,9 @@ a public issue. Outrider has **not** been independently audited or penetration t
 - **Two cost optimizations run in shadow mode by default** (a trivial-scope filter and a
   file-hash analyze cache). They measure and audit but don't act, pending evidence. Savings
   claimed from them: none.
-- **Prompts are tuned against Claude models only.** The shared prompt prefix is validated on
-  Sonnet and Haiku. GLM inherits it unvalidated, and its baseline column above is the current
-  evidence.
+- **Prompts are tuned against Claude models only.** Every precision wording in the shared
+  prompt prefix was validated on Sonnet and Haiku. GLM runs the same prefix and holds its own
+  baseline column above, but no GLM-specific calibration experiment has been run.
 - **Structural analysis covers Python and JS/TS/TSX.** Other languages skip the structural
   tier (with an audited skip event), and the model still reviews them with plain diff context.
 - **Replay verifies structure and hashes.** Re-executing tree-sitter queries against stored
@@ -365,6 +383,7 @@ a public issue. Outrider has **not** been independently audited or penetration t
 
 ```bash
 uv sync --dev
+.venv/bin/pre-commit install --install-hooks
 cp .env.example .env                        # fill POSTGRES_* and TEST_POSTGRES_* for the DB containers
 docker compose up -d postgres-test          # isolated tmpfs Postgres for the test tiers (port 5433)
 export TEST_DATABASE_URL="$(grep -E '^TEST_DATABASE_URL=' .env | cut -d= -f2-)"
