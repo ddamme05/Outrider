@@ -48,7 +48,8 @@ _NEUTRAL_FACTS = (
 
 # --- Anthropic + ZDR NOT attested: the default-terms retention facts. ---
 _ANTHROPIC_DEFAULT_FACTS = (
-    "retained for 30 days",
+    "deleted within 30 days",
+    "Usage Policy enforcement, or legal requirements",
     "2 years",
     "7 years",
     "used for training without permission",
@@ -71,6 +72,7 @@ _ANTHROPIC_ZDR_FACTS = (
 # so the two canonical copies of the mandated statement cannot drift. ---
 _README_FACTS = (
     "30 days",
+    "Usage Policy enforcement, or legal requirements",
     "2 years",
     "7 years",
     "used for training without permission",
@@ -80,6 +82,72 @@ _README_FACTS = (
     "does not currently support HIPAA-subject workloads",
     "local database",
 )
+
+
+# --- Egress-contract categories (DECISIONS #013 + #015, Amended 2026-07-16) that must appear
+# VERBATIM in BOTH the rendered page and README.md, one substring per contract category, so
+# neither public copy can silently drop a sent category or an explicitly-unsent field. These
+# pin the PROSE mirror only — they do not prove prompt code matches the prose. Agreement
+# between the contract and prompt code is reviewed and tested separately.
+_EGRESS_SENT_FACTS = (
+    "review-stage model calls",
+    "the PR title, changed-file paths and metadata",
+    "diff patches",
+    "complete bodies of scopes containing added lines",
+    "bounded diff hunks on degraded paths",
+    "structural query identifiers",
+    "trace candidate identifiers, import strings, and reasons",
+    "scope bodies from uniquely resolved related files",
+    "finding identifiers, metadata, titles, descriptions, and evidence",
+    "target source lines used for suggested fixes",
+    "risk classification and metrics",
+)
+# Slack + checkpoint-store disclosures, pinned verbatim in both the page and the
+# README (Slack setup section / opening retention paragraph).
+_SLACK_AND_STORAGE_FACTS = (
+    "up to three gated findings",
+    "posted versus dashboard-only counts",
+    "suggested fixes, and source context are not sent",
+    "may quote short source fragments",
+    "OUTRIDER_DASHBOARD_BASE_URL",
+    "does not purge or scrub",
+)
+
+# The three-surface outbound inventory (#011 Amended 2026-07-16): the page lead and the
+# README security section must both name GitHub publication and the Slack field posture.
+_OUTBOUND_SURFACE_FACTS = (
+    "posts back to GitHub",
+    "limited notification fields",
+)
+
+_EGRESS_UNSENT_FACTS = (
+    "does not currently send the PR body, author login, commit messages, or branch names",
+    "requires a new privacy-contract amendment",
+    "fetched and checkpointed locally",
+    "whole-file payloads during normal analysis",
+    "may contain most or all of an added or heavily rewritten file",
+    "does not include its own operator credentials",
+    "does not secret-scan repository content before review",
+    "committed inside reviewed code can appear in patches and scope text",
+)
+
+
+def test_egress_contract_mirrored_in_page_and_readme(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every egress-contract category (sent AND explicitly-unsent) appears verbatim in BOTH
+    canonical copies. Provider-neutral: checked on the default-Anthropic page, and the clause
+    is a _NEUTRAL_CLAUSES member so it renders for every host."""
+    page = _anthropic_page(monkeypatch, zdr=False)
+    readme = Path("README.md").read_text(encoding="utf-8")
+    for fact in (
+        *_EGRESS_SENT_FACTS,
+        *_EGRESS_UNSENT_FACTS,
+        *_SLACK_AND_STORAGE_FACTS,
+        *_OUTBOUND_SURFACE_FACTS,
+    ):
+        assert fact in page, f"egress fact missing from page: {fact!r}"
+        assert fact in readme, f"egress fact missing from README.md: {fact!r}"
 
 
 def _anthropic_page(monkeypatch: pytest.MonkeyPatch, *, zdr: bool) -> str:
@@ -122,8 +190,8 @@ def test_anthropic_zdr_attested_flips_retention(monkeypatch: pytest.MonkeyPatch)
     page = _anthropic_page(monkeypatch, zdr=True)
     for fact in _ANTHROPIC_ZDR_FACTS:
         assert fact in page, f"ZDR-attested fact missing: {fact!r}"
-    # The default 30-day retention claim must NOT appear once ZDR is attested.
-    assert "retained for 30 days" not in page, "30-day retention shown despite ZDR attested"
+    # The default 30-day deletion claim must NOT appear once ZDR is attested.
+    assert "within 30 days" not in page, "30-day retention shown despite ZDR attested"
 
 
 def test_privacy_reuses_provider_zdr_resolver() -> None:

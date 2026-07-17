@@ -8,9 +8,16 @@ data (separate spec); intake fetches/populates ChangedFile content using a
 short-lived API token minted from `installation_id`; triage classifies its
 files into ReviewTiers; analyze consumes the file content; publish references
 the original PR coordinates. The structured-field shape is the implementation
-of `docs/trust-boundaries.md` #5 sub-rule 2 — webhook payload strings (branch
-names, PR titles, commit messages) cross into LLM prompts as PRContext fields,
-never as f-string interpolation.
+of `docs/trust-boundaries.md` #5 sub-rule 2 — webhook payload strings reach
+prompts only as data values carried in PRContext fields and rendered through
+fixed templates. They are never template-control (no payload string ever
+becomes a format string). Of the carried fields, triage sends the PR
+title and per-file path/patch/metadata; analyze later derives and sends
+selected scope bodies from `content_head` (or `content_base` when head is
+absent), and patch generation may send one target source line from
+`content_head`; `pr_body` and `author` are carried but not sent (#013
+Amended 2026-07-16); branch names and commit messages are not carried at
+all.
 
 The `installation_id` field was added 2026-05-08 to close a canonical-vs-impl
 drift: spec §15.2 build_graph snippet calls `state.pr_context.installation_id`

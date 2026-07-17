@@ -60,11 +60,25 @@ from outrider.llm.host_profiles import (
 _NEUTRAL_CLAUSES: tuple[tuple[str, str], ...] = (
     (
         "What leaves your infrastructure",
-        "Outrider is self-hosted: it runs in your own infrastructure. Code and PR "
-        "text (changed-file contents, PR title and body, commit messages, branch "
-        "names, author login, and extracted scope/evidence snippets) reach exactly "
-        "one third party — the configured LLM provider. No secret material (GitHub "
-        "App key, webhook secret, installation tokens) is ever sent.",
+        "Outrider is self-hosted: it runs in your own infrastructure. Outrider sends "
+        "data to the configured LLM provider only through its review-stage model calls. "
+        "Depending on the stage, this includes: the PR title, changed-file paths and "
+        "metadata, diff patches, complete bodies of scopes containing added lines (or "
+        "bounded diff hunks on degraded paths), structural query identifiers, trace "
+        "candidate identifiers, import strings, and reasons, scope bodies from uniquely "
+        "resolved related files, finding identifiers, metadata, titles, descriptions, "
+        "and evidence, target source lines used for suggested fixes, and the risk "
+        "classification and metrics used to generate the final summary. Outrider does "
+        "not currently send the PR body, author login, commit messages, or branch "
+        "names; adding any of these requires a new privacy-contract amendment. Complete "
+        "eligible file content is fetched and checkpointed locally. Outrider does not "
+        "send the separately fetched base and head file blobs as whole-file payloads "
+        "during normal analysis, but GitHub diff patches may contain most or all of an "
+        "added or heavily rewritten file. Outrider does not include its own operator "
+        "credentials (GitHub App private key, webhook secret, installation tokens, "
+        "Slack tokens) in model prompts. Outrider does not secret-scan repository "
+        "content before review, so secrets accidentally committed inside reviewed code "
+        "can appear in patches and scope text like any other code.",
     ),
     (
         "Local storage of LLM content",
@@ -73,6 +87,25 @@ _NEUTRAL_CLAUSES: tuple[tuple[str, str], ...] = (
         "purged on installation.deleted along with reviews and findings, per "
         "DECISIONS.md#012 + #014). Outrider does not transmit stored LLM content to "
         "any third party other than the configured LLM provider at request time.",
+    ),
+    (
+        "Slack notifications (optional)",
+        "When Slack is configured, Outrider posts outbound-only notifications: an "
+        "approval card carrying the repository, PR number and title, severity "
+        "counts, and up to three gated findings with their severity, type, file "
+        "location, and model-written title, or a one-line posted message carrying "
+        "the repository, PR number, and posted versus dashboard-only counts. "
+        "Descriptions, evidence, suggested fixes, and source context are not sent "
+        "to Slack, though model-written titles may quote short source fragments. When "
+        "OUTRIDER_DASHBOARD_BASE_URL is set, messages also deep-link to the review in "
+        "the operator's dashboard, and they omit the link otherwise.",
+    ),
+    (
+        "LangGraph checkpoint store",
+        "Review state checkpoints (fetched file content, patches, findings, and "
+        "summaries) live in a content-bearing Postgres store that Outrider does "
+        "not purge or scrub in V1, whether it shares the application database or "
+        "runs separately. Retention controls for it are the operator's to apply.",
     ),
     (
         "Logs stay metadata-only",
@@ -111,8 +144,10 @@ def _anthropic_clauses(zdr_attested: bool) -> tuple[tuple[str, str], ...]:
         )
     else:
         retention = (
-            "Under Anthropic's default terms, inputs and outputs are retained for 30 "
-            "days; content flagged for policy violations is retained up to 2 years and "
+            "Under Anthropic's default terms, API inputs and outputs are deleted "
+            "within 30 days, though retention can extend under contractual "
+            "arrangements, Usage Policy enforcement, or legal requirements; content "
+            "flagged for policy violations is retained up to 2 years and "
             "classification scores up to 7 years; no data is used for training without "
             "permission. Zero-data-retention is not attested for this deployment "
             "(ANTHROPIC_ZDR_ENABLED is not set)."
@@ -276,8 +311,10 @@ def render_privacy_html(ctx: PrivacyContext) -> str:
         "<body>\n"
         "  <main>\n"
         "    <h1>Privacy &amp; data handling</h1>\n"
-        '    <p class="lead">Outrider is self-hosted: your code and data stay in your '
-        "infrastructure, and the only egress is the LLM call described below.</p>\n"
+        '    <p class="lead">Outrider is self-hosted: it runs in your infrastructure. '
+        "Data leaves through three outbound surfaces: the review-stage model calls "
+        "described below, review output that posts back to GitHub, and optional Slack "
+        "notifications carrying limited notification fields.</p>\n"
         f"{clauses}{provider_block}\n"
         "  </main>\n"
         "</body>\n"

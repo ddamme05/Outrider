@@ -194,20 +194,24 @@ def render(pr_context: PRContext) -> TriagePromptParts:
     the volatile per-PR data (title, file list, diffs) and stays outside
     the cache boundary by design.
 
-    Egress-eligible `PRContext` fields per DECISIONS#013 point 1
-    ("Egress include list"):
+    Currently SENT `PRContext` fields per DECISIONS#013 point 1
+    ("Egress include list", Amended 2026-07-16):
       - `pr_title`              ✓ used here
-      - `pr_body`                   not currently used; would be eligible
       - `changed_files[].path`  ✓ used (file list)
       - `changed_files[].patch` ✓ used (diff summary; = file content delta)
       - `changed_files[].status`/`.additions`/`.deletions` ✓ used (metadata)
-      - `author`                    not currently used; eligible
-      - branch names                not in PRContext today
+
+    Carried but NOT sent — future use of any of these requires a new
+    privacy-contract amendment first (#013 Amended 2026-07-16):
+      - `pr_body`
+      - `author`
+      - branch names / commit messages  (not carried in PRContext at all)
 
     `PRContext` fields that are NOT egress-eligible per DECISIONS#013
     point 2 ("Egress exclude list") AND any future-refactor that
     enriches the prompt MUST keep these OUT of the LLM payload:
-      - `installation_id`       — operational secret (auth scope)
+      - `installation_id`       — operational identifier (auth-scoped),
+                                  not credential material
       - `base_sha` / `head_sha` — commit identifiers; not explicitly
                                   excluded in #013 but not in the include
                                   list either; treat as metadata that
