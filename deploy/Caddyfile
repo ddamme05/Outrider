@@ -10,6 +10,14 @@
 	handle /health {
 		reverse_proxy app:8000
 	}
+	# The backend-rendered privacy page (DECISIONS #013/#015/#016). The `*` also
+	# covers a trailing slash (/privacy/), which the exact matcher would otherwise
+	# leak to the SPA catch-all. Every non-/api backend route needs its own handle
+	# here — the catch-all below silently swallows anything unproxied
+	# (tests/unit/test_demo_caddyfile_parity.py is the drift guard).
+	handle /privacy* {
+		reverse_proxy app:8000
+	}
 
 	# Everything else -> the dashboard SPA, with history-API fallback to index.html.
 	handle {
