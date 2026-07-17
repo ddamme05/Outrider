@@ -43,7 +43,7 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, TextIO
 
@@ -64,10 +64,13 @@ from live_claude_smoke import (  # noqa: E402 — sys.path set above
 )
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.engine import make_url  # noqa: E402
-from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: E402
 from sqlalchemy.pool import NullPool  # noqa: E402
 
+from outrider.audit.config import RetentionSettings  # noqa: E402
+from outrider.audit.persister import AuditPersister  # noqa: E402
 from outrider.llm.base import LLMRateLimitError, LLMTimeoutError  # noqa: E402
+from outrider.sweep.replay_verdict import project_replay_verdicts  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _FIXTURES = _REPO_ROOT / "scripts" / "demo_fixtures"
@@ -146,8 +149,14 @@ class SeedSpec:
     # types. "hitl": a CRITICAL/HIGH finding must park the review at the gate.
     # "published": the review must auto-publish (NO hitl_request + publish_routing
     # events) — a HIGH/CRITICAL over-flag that parks it is a gate failure, not a pass.
+    # "decided": the review must gate AND be pre-decided in-process (hitl_request +
+    # hitl_decision + publish_routing all present) — the full gated lifecycle.
     # "any": routing is model-dependent across a real arc; don't assert it.
-    expected_outcome: Literal["hitl", "published", "any"] = "any"
+    expected_outcome: Literal["hitl", "published", "decided", "any"] = "any"
+    # Decide the HITL gate in-process after the interrupt (live_claude_smoke
+    # resumes with a demo-reviewer decision: approve all gated findings, one
+    # truthful severity downgrade). Pair with expected_outcome="decided".
+    pre_decide: bool = False
     diff_file: str | None = None  # a fixture under scripts/demo_fixtures/
     git_range: str | None = None  # OR a two-dot git range (the showcase)
     repo_root: str | None = None  # git_range against a DIFFERENT repo (the smoke breadth review)
@@ -184,13 +193,17 @@ SEED_SPECS: tuple[SeedSpec, ...] = (
     ),
     SeedSpec(
         key="observed_proof",
-        label="OBSERVED proof (weak_crypto, deterministic query_match_id)",
+        label="OBSERVED proof (weak_crypto, deterministic query_match_id) + decided gate",
         diff_file="weak_crypto_handler.py",
         expect_findings=True,
         expected_finding_types=frozenset({"weak_crypto"}),
-        # weak_crypto is HIGH (severity policy) -> trips the HITL gate, so this
-        # review parks at AWAITING_APPROVAL like hitl_gate. Verify that row exists.
-        expected_outcome="hitl",
+        # weak_crypto is HIGH (severity policy) -> trips the HITL gate; this entry
+        # is then PRE-DECIDED in-process so the demo carries one review with the
+        # full gated lifecycle (hitl_request -> hitl_decision with a severity
+        # override -> publish routing). hitl_gate and smoke_breadth stay parked
+        # at AWAITING_APPROVAL for the attention-rail story.
+        expected_outcome="decided",
+        pre_decide=True,
     ),
     SeedSpec(
         key="breadth",
@@ -370,6 +383,37 @@ async def _validate_capture(db_url: str, review_id: str, spec: SeedSpec) -> Capt
                         "expected a HITL request event (CRITICAL/HIGH finding parks the gate), "
                         "found none"
                     )
+            elif spec.expected_outcome == "decided":
+                if not hitl:
+                    failures.append(
+                        "expected a HITL request event before the in-process decision, found none"
+                    )
+                decided = (
+                    await conn.execute(
+                        text(
+                            "SELECT count(*) FROM audit_events WHERE review_id = :id "
+                            "AND event_type = 'hitl_decision'"
+                        ),
+                        {"id": review_id},
+                    )
+                ).scalar_one()
+                if not decided:
+                    failures.append(
+                        "expected an in-process hitl_decision event (pre_decide), found none"
+                    )
+                routed_after_decide = (
+                    await conn.execute(
+                        text(
+                            "SELECT count(*) FROM audit_events WHERE review_id = :id "
+                            "AND event_type = 'publish_routing'"
+                        ),
+                        {"id": review_id},
+                    )
+                ).scalar_one()
+                if not routed_after_decide:
+                    failures.append(
+                        "expected publish_routing events after the decided gate, found none"
+                    )
             elif spec.expected_outcome == "published":
                 if hitl:
                     failures.append(
@@ -503,6 +547,84 @@ def _restore_to_checkpoint(admin_url: str, demo_url: str, *, have_checkpoint: bo
     return True
 
 
+async def _project_replay_verdicts_or_fail(demo_url: str) -> str | None:
+    """Project a replay verdict for every completed review, then gate the dump.
+
+    Runs AFTER every graph.ainvoke has returned, so `settle_grace=0` is safe: the
+    publish phase-end commit precedes ainvoke's return, and the two-transaction
+    race the default 60s grace guards against cannot fire here. The DEFAULT grace
+    would silently skip every just-completed review and ship a verdict-less dump
+    (the dashboard Replay-% card aggregates persisted verdicts; the demo box
+    never runs the projector sweep).
+
+    Postconditions (any failure rejects the dump):
+      1. projector `failed == 0` — a swallowed per-review exception is a dud seed;
+      2. every completed non-eval review has a verdict (at-most-one is the partial
+         unique index's job; at-least-one is asserted via anti-join) — correct on
+         both the full and `--only` incremental paths, unlike pinning `projected`;
+      3. no verdict on a non-completed review — the parked awaiting_approval
+         entries are structurally excluded and must stay verdict-free;
+      4. every verdict is replay_equivalent (capture-gate spirit: an inequivalent
+         replay must never ship as the public demo's trust story).
+
+    Returns an error string on failure, None on success. Idempotent under the
+    checkpoint-restore retry path: emission is natural-key deduped.
+    """
+    engine = create_async_engine(demo_url, poolclass=NullPool)
+    try:
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        persister = AuditPersister(
+            session_factory=session_factory, retention_settings=RetentionSettings()
+        )
+        result = await project_replay_verdicts(
+            session_factory=session_factory,
+            audit_persister=persister,
+            settle_grace=timedelta(0),
+        )
+        if result["failed"]:
+            return f"replay projection failed for {result['failed']} review(s)"
+        async with session_factory() as session:
+            missing = (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM reviews r"
+                        " WHERE r.status = 'completed' AND r.is_eval = false"
+                        " AND NOT EXISTS (SELECT 1 FROM audit_events e"
+                        "   WHERE e.review_id = r.id"
+                        "   AND e.event_type = 'replay_verdict')"
+                    )
+                )
+            ).scalar_one()
+            if missing:
+                return f"{missing} completed review(s) lack a replay verdict"
+            stray = (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM audit_events e"
+                        " JOIN reviews r ON r.id = e.review_id"
+                        " WHERE e.event_type = 'replay_verdict'"
+                        " AND r.status <> 'completed'"
+                    )
+                )
+            ).scalar_one()
+            if stray:
+                return f"{stray} replay verdict(s) on non-completed review(s)"
+            inequivalent = (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM audit_events e"
+                        " WHERE e.event_type = 'replay_verdict'"
+                        " AND e.payload->>'replay_equivalent' <> 'true'"
+                    )
+                )
+            ).scalar_one()
+            if inequivalent:
+                return f"{inequivalent} replay verdict(s) not replay-equivalent"
+        return None
+    finally:
+        await engine.dispose()
+
+
 def _print_plan() -> None:
     print("  Demo seed plan (specs/2026-06-21-demo-deployment.md):", flush=True)
     for i, spec in enumerate(SEED_SPECS):
@@ -513,12 +635,21 @@ def _print_plan() -> None:
         if spec.required_observed_proofs:
             bits.append(f"OBSERVED proofs: {', '.join(sorted(spec.required_observed_proofs))}")
         exp = "; ".join(bits) or "(model-dependent)"
-        outcome = {"hitl": " +HITL", "published": " +auto-publish", "any": ""}[
-            spec.expected_outcome
-        ]
+        outcome = {
+            "hitl": " +HITL (parks)",
+            "published": " +auto-publish",
+            "decided": " +HITL decided in-process",
+            "any": "",
+        }[spec.expected_outcome]
         print(f"    {i + 1}. {spec.key:<14} head_sha=…{_head_sha_for(i)[-6:]}  {src}", flush=True)
         print(f"        {spec.label} — expect: {exp}{outcome}", flush=True)
-    print(f"\n  -> one review each into {_DEMO_DB_NAME}, then pg_dump -> {_SEED_SQL}", flush=True)
+    print(
+        f"\n  -> one review each into {_DEMO_DB_NAME}, then replay-verdict projection"
+        " (grace=0; dump gated on: zero failures, a verdict per completed review,"
+        " none on parked reviews, all equivalent),"
+        f" then pg_dump -> {_SEED_SQL}",
+        flush=True,
+    )
 
 
 async def _recreate_demo_db(admin_url: str) -> None:
@@ -597,7 +728,13 @@ def _seed_all(admin_url: str, api_key: str, *, only: str | None = None) -> int:
             try:
                 scenario = spec.build_scenario(_head_sha_for(i))
                 review_id, structural_ok = asyncio.run(
-                    _run(demo_url, api_key, scenario, expect_findings=spec.expect_findings)
+                    _run(
+                        demo_url,
+                        api_key,
+                        scenario,
+                        expect_findings=spec.expect_findings,
+                        pre_decide=spec.pre_decide,
+                    )
                 )
                 cap = asyncio.run(_validate_capture(demo_url, str(review_id), spec))
                 if not structural_ok:
@@ -648,6 +785,11 @@ def _seed_all(admin_url: str, api_key: str, *, only: str | None = None) -> int:
             )
         return 1
 
+    print("  Projecting replay verdicts (grace=0; all graph runs returned) ...", flush=True)
+    verdict_error = asyncio.run(_project_replay_verdicts_or_fail(demo_url))
+    if verdict_error is not None:
+        print(f"\n  SEED REJECTED — {verdict_error}; demo_seed.sql NOT written.", flush=True)
+        return 1
     if not _pg_dump(demo_url, _SEED_SQL):
         return 1
     print(

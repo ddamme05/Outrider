@@ -27,7 +27,7 @@ if [ -d demo_seed.sql ]; then
 fi
 [ -f demo_seed.sql ] || fail "deploy/demo_seed.sql is missing. From your laptop:
     scp scripts/demo_fixtures/demo_seed.sql root@<droplet-ip>:/opt/outrider/deploy/demo_seed.sql"
-[ -s demo_seed.sql ] || fail "deploy/demo_seed.sql is empty — re-scp the real ~795K dump."
+[ -s demo_seed.sql ] || fail "deploy/demo_seed.sql is empty — re-scp the real ~1MB dump."
 [ -f .env ] || fail "deploy/.env is missing. Create it (see .env.demo.example)."
 
 # Read KEY=value from .env, stripping ONE layer of surrounding quotes (compose's dotenv

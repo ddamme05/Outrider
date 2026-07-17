@@ -57,7 +57,7 @@ also be suppressed — an acceptable tradeoff for these tiny single-purpose file
 
 ## Running the demo locally (to inspect the seeded reviews)
 
-After a successful `scripts/seed_demo.py` run, the five reviews live in the
+After a successful `scripts/seed_demo.py` run, the six reviews live in the
 `outrider_test_demo` database on the test container (port 5433). Point the API
 server at it and open the dashboard. Two ways to boot:
 
@@ -109,15 +109,18 @@ op run --env-file=.env -- printenv OUTRIDER_ADMIN_API_KEY
 
 **What to look at**
 
-- The reviews list — five reviews. Some park at `AWAITING_APPROVAL` (the HITL gate
-  fires on a CRITICAL/HIGH finding); others publish inline comments.
+- The reviews list — six reviews. Two park at `AWAITING_APPROVAL` (the HITL gate
+  fires on a CRITICAL/HIGH finding), one is decided in-process at seed time
+  (`observed_proof`: full gated lifecycle incl. a severity override), and the
+  rest publish inline comments.
 - A review's findings — severity comes from the policy table (not the model), and
   OBSERVED findings (`weak_crypto`, `blocking_call_in_async`) carry a real
   `query_match_id`.
 - The audit explorer — the full event stream; run a **replay** to watch it
   reconstruct and re-verify.
-- `scale_triage` — the 27-file self-review: the triage tiers, ~15 files reviewed,
-  and the one `.ts` file skipped as `UNSUPPORTED_LANGUAGE`.
+- `scale_triage` — the 27-file self-review: the triage tiers and per-file
+  examinations. (Under the June analyze-v5 seed its one `.ts` file shows an
+  `UNSUPPORTED_LANGUAGE` skip; a re-seed under the JS/TS adapters analyzes it.)
 
 **Restore from the snapshot instead** (the test container is ephemeral — a
 `docker compose restart postgres-test` wipes the seed DB; this also matches the
@@ -133,6 +136,8 @@ op run --env-file=.env -- bash -c '
 '
 ```
 
-Note: the HITL reviews show `AWAITING_APPROVAL` but can't be *resumed* from the
-seed — the seed used an in-memory checkpointer, so there's no persisted checkpoint.
-Viewing works; the live resume flow needs a real run.
+Note: the parked HITL reviews show `AWAITING_APPROVAL` but can't be *resumed*
+from the seed — the seed used an in-memory checkpointer, so there's no persisted
+checkpoint. Viewing works; the live resume flow needs a real run. The decided
+review (`observed_proof`) exercised that resume in-process at seed time, before
+the checkpointer was discarded.

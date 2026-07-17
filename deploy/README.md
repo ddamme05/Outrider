@@ -56,7 +56,8 @@ ufw allow OpenSSH && ufw allow 80 && ufw allow 443 && ufw --force enable
 - `https://demo.yourdomain.com/health` → `{"status":"ok"}`. Caddy starts before the app
   finishes booting, so the first hit may return **502 for ~15s** — retry, it's not a failure.
 - Open `https://demo.yourdomain.com`, paste `OUTRIDER_ADMIN_API_KEY` when prompted →
-  the 6 seeded reviews appear. Three park at `awaiting_approval` (the HITL gate); the rest
+  the 6 seeded reviews appear. Two park at `awaiting_approval` (the HITL gate), one is
+  decided at seed time (full gated lifecycle incl. a severity override), and the rest
   publish. The 28-file breadth review carries the broad taxonomy; run a **replay** on any
   review to watch it reconstruct.
 
