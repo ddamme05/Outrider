@@ -17,6 +17,8 @@ function replay(overrides: Record<string, unknown> = {}) {
     granularity: "day",
     buckets: [],
     generated_at: "2026-06-04T12:00:00Z",
+    window_end: "2026-06-04T12:00:00Z",
+    anchored: false,
     deltas: {
       current: { equivalent: 47, total: 50 },
       previous: { equivalent: 40, total: 45 },

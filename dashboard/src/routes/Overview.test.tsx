@@ -41,6 +41,8 @@ function metrics(overrides: Record<string, unknown> = {}) {
     window: "7d",
     granularity: "day",
     generated_at: "2026-06-04T12:00:00Z",
+    window_end: "2026-06-04T12:00:00Z",
+    anchored: false,
     buckets: [
       { bucket: "2026-05-29T00:00:00Z", reviews: 2, cost_usd: 1.9, findings: 9, failed: 0 },
       { bucket: "2026-05-30T00:00:00Z", reviews: 4, cost_usd: 2.4, findings: 12, failed: 1 },
@@ -67,6 +69,8 @@ function replay(overrides: Record<string, unknown> = {}) {
     window: "7d",
     granularity: "day",
     generated_at: "2026-06-04T12:00:00Z",
+    window_end: "2026-06-04T12:00:00Z",
+    anchored: false,
     buckets: [
       { bucket: "2026-05-29T00:00:00Z", equivalent: 2, total: 2 },
       { bucket: "2026-05-30T00:00:00Z", equivalent: 3, total: 4 },
@@ -198,6 +202,18 @@ test("findings distributions render severity + tier counts and the proof footnot
   const segLegend = document.querySelector(".seg-legend");
   expect(segLegend).toHaveTextContent("critical");
   expect(segLegend).toHaveTextContent("info");
+});
+
+test("demo-anchored window labels the snapshot instead of implying live recency", async () => {
+  mount({
+    metrics: metrics({ anchored: true, window_end: "2026-06-23T12:00:00Z" }),
+    replay: replay({ anchored: true, window_end: "2026-06-23T12:00:00Z" }),
+  });
+  // The visible snapshot notice names the anchor date (#039-honest labeling)...
+  expect(await screen.findByText(/Snapshot through .*2026/)).toBeInTheDocument();
+  // ...and the window caps say "ending <date>", never "last 7d".
+  expect(screen.getAllByText(/7d ending/).length).toBeGreaterThan(0);
+  expect(screen.queryByText("last 7d")).not.toBeInTheDocument();
 });
 
 test("honest zeros on an empty window — no fabricated series", async () => {

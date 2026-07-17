@@ -35,6 +35,15 @@ import {
 type Phase = "loading" | "unavailable" | "error" | "topology";
 type StatusState = SetupStatus | Phase;
 
+// Badge tone per lifecycle state — reuses the dashboard's semantic palette so the status chip
+// reads at a glance (configured = pos, failed/orphaned = neg, in-flight = warn, fresh = info).
+function statusTone(status: string): string {
+  if (status === "CONFIGURED") return "pos";
+  if (status === "ORPHANED") return "neg";
+  if (status === "AWAITING_CALLBACK" || status === "CONVERTING") return "warn";
+  return "info";
+}
+
 /**
  * Terminate a sentence exactly once. Neither assumption holds on its own: a backend `detail` is
  * usually unpunctuated ("setup incomplete") while our own messages sometimes end in their own
@@ -126,25 +135,36 @@ export function SetupGitHubApp() {
   const startLabel = inFlight ? "Retry setup" : "Set up GitHub App";
 
   return (
-    <div className="content">
-      <div className="card" style={{ maxWidth: 620 }}>
-        <h1 className="rd-title">Set up the GitHub App</h1>
-        <p>
-          Create this deployment&rsquo;s GitHub App from a pre-filled manifest — one click here, one
-          confirmation on GitHub. GitHub hands the credentials back automatically; no secrets to copy
-          and no restart. The App must be owned by the organization whose repositories Outrider
-          reviews (personal-account onboarding is not supported in V1).
-        </p>
+    <div className="setup-page">
+      <div className="card setup-card">
+        <header className="setup-head">
+          <h1 className="setup-title">Set up the GitHub App</h1>
+          <p className="setup-lead">
+            Create this deployment&rsquo;s GitHub App from a pre-filled manifest — one click here,
+            one confirmation on GitHub. GitHub hands the credentials back automatically; no secrets
+            to copy and no restart. The App must be owned by the organization whose repositories
+            Outrider reviews (personal-account onboarding is not supported in V1).
+          </p>
+        </header>
 
-        {state === "loading" && <p>Checking setup status&hellip;</p>}
+        {status && (
+          <div className="setup-status">
+            <span className="setup-status__label">Current status</span>
+            <span className={`setup-badge setup-badge--${statusTone(status)}`}>{status}</span>
+          </div>
+        )}
+
+        {state === "loading" && <p className="setup-muted">Checking setup status&hellip;</p>}
+
         {state === "unavailable" && (
-          <p>
+          <p className="setup-note">
             This instance uses environment credentials, so App-Manifest onboarding isn&rsquo;t
             available here.
           </p>
         )}
+
         {state === "topology" && (
-          <p className="error">
+          <p className="setup-note setup-note--error">
             This page isn&rsquo;t reaching the Outrider API &mdash; something else answered. The
             onboarding flow is supported only when FastAPI serves the built dashboard (
             <code>OUTRIDER_SERVE_SPA=1</code>); the Vite dev server deliberately does not proxy{" "}
@@ -152,10 +172,11 @@ export function SetupGitHubApp() {
             the same way.
           </p>
         )}
+
         {/* Start STAYS available here, unlike `topology` — see `showStart`. The message may end in
             its own punctuation, so it is rendered as its own sentence rather than spliced into one. */}
         {state === "error" && (
-          <p className="error">
+          <p className="setup-note setup-note--error">
             {sentence(
               statusError
                 ? `Couldn’t read setup status: ${statusError}`
@@ -164,19 +185,16 @@ export function SetupGitHubApp() {
             You can still try below.
           </p>
         )}
-        {status && (
-          <p>
-            Current status: <span className="badge">{status}</span>
-          </p>
-        )}
 
         {/* CONFIGURED: credentials obtained — but the operator may not have finished GitHub's
             separate install step, so distinguish configured from installed (spec §Land). */}
         {configured &&
           (installed ? (
-            <p>This instance is fully set up — the App is configured and installed. &#10003;</p>
+            <p className="setup-note setup-note--ok">
+              This instance is fully set up — the App is configured and installed. &#10003;
+            </p>
           ) : (
-            <p>
+            <p className="setup-note">
               Credentials are configured, but the App isn&rsquo;t installed on any repositories yet.
               Open your organization&rsquo;s GitHub App settings and install it to start receiving
               reviews.
@@ -187,7 +205,7 @@ export function SetupGitHubApp() {
             repair path (an expired AWAITING_CALLBACK is reset and a stale CONVERTING is orphaned);
             a genuinely in-progress attempt returns a clear 409 below. */}
         {inFlight && (
-          <p>
+          <p className="setup-note">
             An onboarding attempt is already in progress. If you didn&rsquo;t finish it on GitHub,
             retry below to start over — an abandoned attempt is cleared automatically. If it&rsquo;s
             genuinely mid-flight, you&rsquo;ll be told it&rsquo;s already running.
@@ -198,24 +216,25 @@ export function SetupGitHubApp() {
             resetting (spec F4) — otherwise repeated resets accumulate orphaned root-credential Apps.
             The reset is gated on an explicit deletion confirmation. */}
         {status === "ORPHANED" && (
-          <div>
-            <p className="error">
+          <div className="setup-block">
+            <p className="setup-note setup-note--error">
               The last onboarding attempt failed. GitHub had already created the App before the
               failure, so it still exists and holds credentials. Delete it first: open your
               organization&rsquo;s GitHub App settings, remove the partial App, then confirm and
               reset below.
             </p>
-            <label style={{ display: "block", margin: "0.5rem 0" }}>
+            <label className="setup-check">
               <input
                 type="checkbox"
+                className="setup-check__box"
                 checked={confirmDeleted}
                 onChange={(e) => setConfirmDeleted(e.target.checked)}
                 disabled={busy}
-              />{" "}
-              I have deleted the orphaned App on GitHub.
+              />
+              <span className="setup-check__text">I have deleted the orphaned App on GitHub.</span>
             </label>
             <button
-              className="btn"
+              className="btn setup-btn setup-btn--danger"
               type="button"
               onClick={() => void onReset()}
               disabled={busy || !confirmDeleted}
@@ -226,11 +245,14 @@ export function SetupGitHubApp() {
         )}
 
         {showStart && (
-          <form onSubmit={onStart}>
-            <label>
-              Organization that will own the App
+          <form className="setup-form" onSubmit={onStart}>
+            <div className="setup-field">
+              <label className="setup-field__label" htmlFor="setup-org">
+                Organization that will own the App
+              </label>
               <input
-                className="field"
+                id="setup-org"
+                className="setup-field__input"
                 value={org}
                 onChange={(e) => setOrg(e.target.value)}
                 placeholder="acme-inc"
@@ -238,15 +260,18 @@ export function SetupGitHubApp() {
                 spellCheck={false}
                 disabled={busy}
               />
-            </label>
-            <button className="btn" type="submit" disabled={busy}>
+              <span className="setup-field__hint">
+                The GitHub organization login, exactly as it appears in your org URL.
+              </span>
+            </div>
+            <button className="btn primary setup-btn" type="submit" disabled={busy}>
               {busy ? "Opening GitHub…" : startLabel}
             </button>
           </form>
         )}
 
         {error && (
-          <p className="error" role="alert">
+          <p className="setup-note setup-note--error" role="alert">
             {error}
           </p>
         )}

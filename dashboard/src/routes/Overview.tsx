@@ -174,6 +174,17 @@ function Analytics({
   const sev = data.severity_distribution;
   const buckets = data.buckets;
   const avgCost = cur.reviews > 0 ? cur.cost_usd / cur.reviews : 0;
+  // Demo-snapshot anchoring (#039-honest label): when the backend anchored the
+  // window to the seeded data's latest instant, every window caption says so —
+  // "7d ending <date>" — instead of implying live recency with "last 7d".
+  const snapshotDate = data.anchored
+    ? new Date(data.window_end).toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      })
+    : null;
+  const windowCap = snapshotDate ? `${data.window} ending ${snapshotDate}` : `last ${data.window}`;
 
   // Replay-% (5th card): equivalent/total over the window. Degrades to a muted "—"
   // when the sibling query hasn't resolved (loading/error) OR resolved with no
@@ -193,12 +204,17 @@ function Analytics({
           Couldn&rsquo;t refresh metrics — showing the last loaded window.
         </p>
       ) : null}
+      {snapshotDate ? (
+        <p className="queue-notice" role="note">
+          Snapshot through {snapshotDate} — windows end at the seeded data, not today.
+        </p>
+      ) : null}
 
       <div className="stat-row">
         <MetricCard
           label="Reviews"
           value={cur.reviews}
-          cap={`last ${data.window}`}
+          cap={windowCap}
           delta={deltaInfo(cur.reviews, prev.reviews, "up-good")}
           spark={buckets.map((b) => b.reviews)}
           sparkVariant="accent"
@@ -222,7 +238,7 @@ function Analytics({
         <MetricCard
           label="Failed"
           value={cur.failed}
-          cap={`last ${data.window}`}
+          cap={windowCap}
           delta={deltaInfo(cur.failed, prev.failed, "up-bad")}
           spark={buckets.map((b) => b.failed)}
           sparkVariant="pos"
@@ -252,6 +268,7 @@ function Analytics({
             <h2>Findings distribution</h2>
             <div className="sub">
               {cur.findings} in {data.window}
+              {snapshotDate ? ` (ending ${snapshotDate})` : ""}
             </div>
           </div>
           <div className="panel-b">

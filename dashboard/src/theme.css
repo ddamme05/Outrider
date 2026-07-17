@@ -526,6 +526,17 @@ h1 {
 /* Status pills — sharp Signal chips, color from the semantic palette (never
  * hardcoded). running=info, awaiting=high, expired=neutral(dashed), completed=pos,
  * failed=critical, skipped=faint. */
+/* Read-only demo banner (App shell, under the topbar). Deliberately quiet:
+   informative chrome, not an alert. */
+.demo-banner {
+  padding: 6px 20px;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--warn, #b45309);
+  background: color-mix(in srgb, var(--warn, #b45309) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--warn, #b45309) 30%, transparent);
+}
+
 .pill {
   display: inline-flex;
   align-items: center;
@@ -2998,5 +3009,261 @@ tr.review-row:hover {
   .sidebar,
   .nav-scrim {
     transition: none;
+  }
+}
+
+/* ============================================================
+ * GitHub App setup (/setup, DECISIONS.md#070) — polished onboarding
+ * card matching the Signal system: padded card with the accent tick,
+ * a real labelled field with a focus ring, a custom checkbox, and
+ * semantic status/callout chrome. (Replaces the unstyled default form.)
+ * ============================================================ */
+.setup-page {
+  /* No side padding and no own scroll container: the parent `.content` already
+     pads (24px) and scrolls. Only a modest top offset is added here. */
+  padding: 16px 0 40px;
+  display: flex;
+  justify-content: center;
+}
+.setup-card {
+  width: 100%;
+  max-width: 560px;
+  padding: 30px 32px 32px;
+  box-shadow: var(--shadow-pop);
+}
+.setup-head {
+  margin-bottom: 22px;
+}
+.setup-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  margin: 0 0 10px;
+}
+.setup-lead {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.62;
+}
+.setup-muted {
+  color: var(--faint);
+  font-size: 13px;
+}
+
+/* Status row — micro-label + toned lifecycle chip. */
+.setup-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.setup-status__label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  color: var(--faint);
+  font-family: var(--mono);
+}
+.setup-badge {
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--line2);
+  color: var(--muted);
+  background: var(--panel2);
+}
+.setup-badge--pos {
+  color: color-mix(in srgb, var(--pos) 66%, var(--text));
+  border-color: color-mix(in srgb, var(--pos) 42%, var(--line2));
+  background: color-mix(in srgb, var(--pos) 13%, var(--panel2));
+}
+.setup-badge--neg {
+  color: color-mix(in srgb, var(--neg) 66%, var(--text));
+  border-color: color-mix(in srgb, var(--neg) 42%, var(--line2));
+  background: color-mix(in srgb, var(--neg) 13%, var(--panel2));
+}
+.setup-badge--warn {
+  color: color-mix(in srgb, var(--sev-high) 66%, var(--text));
+  border-color: color-mix(in srgb, var(--sev-high) 42%, var(--line2));
+  background: color-mix(in srgb, var(--sev-high) 13%, var(--panel2));
+}
+.setup-badge--info {
+  color: color-mix(in srgb, var(--sev-info) 66%, var(--text));
+  border-color: color-mix(in srgb, var(--sev-info) 42%, var(--line2));
+  background: color-mix(in srgb, var(--sev-info) 13%, var(--panel2));
+}
+
+/* Callout notes — quiet by default, toned + left-ruled for error/ok. */
+.setup-note {
+  margin: 0 0 16px;
+  padding: 11px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--hair);
+  background: var(--bg2);
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.setup-note code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--panel2);
+  color: var(--accent-on);
+}
+.setup-note--error {
+  border-left-color: var(--neg);
+  color: color-mix(in srgb, var(--neg) 24%, var(--text));
+  background: color-mix(in srgb, var(--neg) 7%, var(--bg2));
+}
+.setup-note--ok {
+  border-left-color: var(--pos);
+  color: color-mix(in srgb, var(--pos) 26%, var(--text));
+  background: color-mix(in srgb, var(--pos) 7%, var(--bg2));
+}
+.setup-block {
+  margin-top: 4px;
+}
+
+/* The field — the centrepiece. Micro-label, generous input with a focus glow,
+ * a quiet hint. Replaces the browser-default box. */
+.setup-form {
+  margin-top: 4px;
+}
+.setup-field {
+  margin-bottom: 18px;
+}
+.setup-field__label {
+  display: block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-family: var(--mono);
+  margin-bottom: 8px;
+}
+.setup-field__input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 13px;
+  background: var(--bg);
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13.5px;
+  letter-spacing: 0.01em;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+.setup-field__input::placeholder {
+  color: var(--faint);
+}
+.setup-field__input:hover:not(:disabled) {
+  border-color: var(--hair);
+}
+.setup-field__input:focus {
+  outline: none;
+  border-color: var(--accent-edge);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.setup-field__input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.setup-field__hint {
+  display: block;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--faint);
+  line-height: 1.5;
+}
+
+/* Custom checkbox — native <input> (a11y + testing preserved) restyled via
+ * appearance:none, accent fill + checkmark on :checked, focus ring. */
+.setup-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 16px;
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.5;
+  cursor: pointer;
+}
+.setup-check__box {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  display: inline-grid;
+  place-content: center;
+  border: 1px solid var(--hair);
+  border-radius: 4px;
+  background: var(--bg);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+.setup-check__box::after {
+  content: "";
+  width: 4px;
+  height: 8px;
+  margin-top: -2px;
+  border: solid var(--accent-ink);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg) scale(0);
+  transition: transform 0.12s ease;
+}
+.setup-check__box:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.setup-check__box:checked::after {
+  transform: rotate(45deg) scale(1);
+}
+.setup-check__box:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.setup-check__box:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.setup-check__text {
+  padding-top: 0;
+}
+
+/* Buttons inherit the shared .btn / .btn.primary; add a spacing + danger tone. */
+.setup-btn {
+  margin-top: 2px;
+}
+.setup-btn--danger {
+  border-color: color-mix(in srgb, var(--neg) 40%, var(--line2));
+  color: color-mix(in srgb, var(--neg) 60%, var(--text));
+}
+.setup-btn--danger:hover:not(:disabled) {
+  border-color: var(--neg);
+  background: color-mix(in srgb, var(--neg) 10%, var(--panel));
+}
+
+@media (max-width: 640px) {
+  .setup-page {
+    padding: 24px 14px;
+  }
+  .setup-card {
+    padding: 24px 20px 26px;
   }
 }

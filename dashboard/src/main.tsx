@@ -5,6 +5,7 @@ import { RouterProvider } from "react-router/dom";
 
 import { adoptTokenFromUrlFragment } from "./auth/token";
 import { TokenGate } from "./auth/TokenGate";
+import { DemoBanner } from "./components/DemoBanner";
 import { router } from "./router";
 import "./theme.css";
 
@@ -28,6 +29,7 @@ if (!rootElement) {
 createRoot(rootElement).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
+      <DemoBanner />
       <TokenGate>
         <RouterProvider router={router} />
       </TokenGate>

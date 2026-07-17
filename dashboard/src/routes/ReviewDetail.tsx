@@ -9,6 +9,7 @@ import { PolicyModal } from "../components/PolicyModal";
 import { ReplayFeed } from "../components/ReplayFeed";
 import { ReplayInfoModal } from "../components/ReplayInfoModal";
 import { StatusPill } from "../components/StatusPill";
+import { useDemoStatus } from "../lib/demo";
 import { expiresLabel } from "../lib/format";
 import { SEVERITY_ORDER } from "../lib/metrics";
 import {
@@ -103,6 +104,20 @@ export function ReviewDetail() {
     return [...(findings.data?.findings ?? [])].sort((a, b) => rank(a.severity) - rank(b.severity));
   }, [findings.data]);
   const actionable = isActionable(detail.data?.status ?? "");
+  // Demo boxes have no decide route (unmounted AND unproxied): keep the gated
+  // findings RENDERING as gated (wasGated stays true — forcing actionable=false
+  // would flip FindingCard into its decided-at-review-time label, false for a
+  // parked review) but lock every control and route the sticky bar to a
+  // read-only message instead of a Submit that can only error. Tri-state: the
+  // mutation gate requires CONFIRMED production, so an unresolved/erroring meta
+  // fails closed (no live Submit) rather than defaulting to production.
+  const demoStatus = useDemoStatus();
+  const isDemo = demoStatus === "demo";
+  const productionConfirmed = demoStatus === "production";
+  // Not-yet-resolved (pending, retrying, exhausted, or malformed meta). Controls
+  // fail closed either way, but a production /api/meta outage must SAY so rather
+  // than look like a silently broken review page with no Submit.
+  const demoChecking = demoStatus === "loading";
   // Authoritative gated set from the server (ReviewDetail.findings_requiring_approval),
   // by finding_id — never inferred from severity. The decide endpoint enforces
   // the identical set.
@@ -172,7 +187,8 @@ export function ReviewDetail() {
   // The review advanced off the gate after our submit — the resume took.
   const resumed = submitted && !actionable;
   // Submit is re-enabled if never submitted, OR the resume looks stuck.
-  const canSubmit = actionable && allGatedValid && !decide.isPending && (!submitted || stuck);
+  const canSubmit =
+    productionConfirmed && actionable && allGatedValid && !decide.isPending && (!submitted || stuck);
   // The fixed decision bar shows whenever decisions are pending or a submit is in flight; the
   // section reserves bottom space (.has-sticky-bar) so the last content clears the fixed bar.
   const showHitlBar = submitted || (actionable && gated.length > 0);
@@ -391,7 +407,7 @@ export function ReviewDetail() {
                   // the stuck state: a re-submit must resend the SAME payload
                   // (divergent content wedges the audit row), so editing stays
                   // closed until the page reloads with fresh state.
-                  disabled={decide.isPending || submitted}
+                  disabled={!productionConfirmed || decide.isPending || submitted}
                   onDecisionChange={decidable ? (next) => setDraft(f.finding_id, next) : undefined}
                 />
               );
@@ -424,7 +440,11 @@ export function ReviewDetail() {
         <div className="hitl-sticky" role="region" aria-label="Pending decisions">
           <span className="hs-tick" aria-hidden="true" />
           <span className="status-text">
-            {resumed ? (
+            {isDemo ? (
+              <b>Read-only demo — decisions are disabled on this deployment.</b>
+            ) : demoChecking ? (
+              <b>Checking deployment status — decisions are unavailable until it resolves.</b>
+            ) : resumed ? (
               <b>Decision submitted — review is now {d.status}.</b>
             ) : submitted && stuck ? (
               <b>Resume hasn't completed yet — refresh to check, or re-submit.</b>
@@ -439,7 +459,7 @@ export function ReviewDetail() {
               </>
             )}
           </span>
-          {gated.length > 0 && !submitted ? (
+          {gated.length > 0 && !submitted && productionConfirmed ? (
             <span className="hs-pips" aria-hidden="true">
               {gated.map((f) => (
                 <span
@@ -460,7 +480,7 @@ export function ReviewDetail() {
                 Refresh status
               </button>
             ) : null}
-            {!resumed ? (
+            {!resumed && productionConfirmed ? (
               <button className="btn primary" disabled={!canSubmit} onClick={onSubmit}>
                 {decide.isPending
                   ? "Submitting…"

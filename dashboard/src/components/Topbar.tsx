@@ -34,6 +34,10 @@ export function Topbar() {
   );
   const rc = replay.data?.deltas.current;
   const rate = rc ? replayRate(rc.equivalent, rc.total) : null;
+  // Demo-snapshot anchoring: the title never implies live recency on a demo box.
+  const pillWindow = replay.data?.anchored
+    ? `30d ending ${new Date(replay.data.window_end).toLocaleDateString()}`
+    : "30d";
 
   return (
     <header className="topbar">
@@ -66,7 +70,7 @@ export function Topbar() {
         {rc && rate !== null ? (
           <span
             className="pill replay-pill"
-            title={`replay-equivalence over 30d — ${rc.equivalent}/${rc.total} verified`}
+            title={`replay-equivalence over ${pillWindow} — ${rc.equivalent}/${rc.total} verified`}
           >
             {rate.toFixed(0)}% replay
           </span>
