@@ -23,6 +23,7 @@ only reads `finding_content_hash` / `severity` / `evidence_tier`).
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
@@ -481,3 +482,33 @@ async def test_is_eval_drift_events_excluded_both_directions(
     assert fcur["findings"] == 2  # hp + he; hd + hm (drift) still excluded
     assert fcur["cost_usd"] == pytest.approx(10.09)  # cp 0.10 + ce 9.99; cd (drift) excluded
     assert full["severity_distribution"]["critical"] == 1  # he (agreeing eval), NOT hd (drift)
+
+
+async def test_demo_mode_anchors_window_end_to_latest_data(metrics_client: TestClient) -> None:
+    """Demo boxes serve a frozen seed: `_resolve_window_end` anchors the window to
+    the newest data instant (surfaced as `anchored=True` + `window_end`) instead of
+    wall clock, so a stale snapshot renders its real content under an honest label.
+    Production (the default, no `app.state.demo_mode`) stays wall-clock."""
+    prod = _get(metrics_client, window="7d")
+    assert prod["anchored"] is False
+    prod_end = datetime.fromisoformat(prod["window_end"])
+    prod_gen = datetime.fromisoformat(prod["generated_at"])
+    assert abs((prod_end - prod_gen).total_seconds()) < 60  # wall-clock end
+
+    metrics_client.app.state.demo_mode = True  # type: ignore[attr-defined]
+    try:
+        body = _get(metrics_client, window="7d")
+    finally:
+        metrics_client.app.state.demo_mode = False  # type: ignore[attr-defined]
+    assert body["anchored"] is True
+    end = datetime.fromisoformat(body["window_end"])
+    gen = datetime.fromisoformat(body["generated_at"])
+    # Anchored to the newest seeded row (age ~1 day), not to the wall clock...
+    assert end < gen - timedelta(hours=12)
+    assert end > gen - timedelta(days=2)
+    # ...while generated_at stays wall clock.
+    assert abs((gen - prod_gen).total_seconds()) < 300
+    # The seeded scenario's rows sit at the same window offsets relative to either
+    # end (ages 1-2d in-window, 10d in the prior window), so totals must agree.
+    assert body["deltas"]["current"] == prod["deltas"]["current"]
+    assert body["deltas"]["previous"] == prod["deltas"]["previous"]

@@ -108,6 +108,12 @@ class DashboardMetricsResponse(BaseModel):
     window: _WindowParam
     granularity: str
     generated_at: AwareDatetime
+    # Demo-mode snapshot anchoring (#039-honest): `window_end` is the instant the
+    # buckets/deltas computed against — wall clock in production, the seeded data's
+    # latest instant on a demo box. `anchored=True` marks the demo case so the
+    # frontend labels the window "ending <date>" instead of implying live recency.
+    window_end: AwareDatetime
+    anchored: bool
     buckets: tuple[MetricBucket, ...]
     severity_distribution: dict[str, int]
     evidence_tier_distribution: dict[str, int]
@@ -147,8 +153,59 @@ class ReplayMetricsResponse(BaseModel):
     window: _WindowParam
     granularity: str
     generated_at: AwareDatetime
+    # Same demo-snapshot anchoring contract as `DashboardMetricsResponse`.
+    window_end: AwareDatetime
+    anchored: bool
     buckets: tuple[ReplayBucket, ...]
     deltas: ReplayDeltas
+
+
+async def _resolve_window_end(
+    request: Request, session: AsyncSession, wall_now: datetime, *, include_eval: bool
+) -> tuple[datetime, bool]:
+    """The instant windows compute against: wall clock in production; in demo mode
+    (`app.state.demo_mode`) the latest data instant across review clocks and the
+    audit stream, so a frozen seeded snapshot renders its real content instead of
+    honest-but-empty recent windows. #039's honest-data rule holds because the
+    response carries `window_end` + `anchored=True` and the frontend labels the
+    window as ending there — a re-anchored control never claims live recency.
+    Falls back to wall clock (`anchored=False`) on an empty database. Timestamp
+    MUTATION of the seed is the rejected alternative: audit rows are append-only
+    and the payload/column timestamp consistency check would fail a partial
+    rewrite on the demo box's own read path.
+
+    The anchor respects `include_eval` identically to the bucket queries: with the
+    default (production) scope it excludes `is_eval=True` rows, so newer eval rows
+    sharing the DB can't drag the anchor past the production data and re-empty the
+    window. The audit-stream clock joins its review and applies the FUP-130
+    equality predicate, matching `_cost_by_bucket`/`_finding_representatives`.
+    """
+    if not bool(getattr(request.app.state, "demo_mode", False)):
+        return wall_now, False
+    review_clock = (
+        select(func.greatest(func.max(Review.created_at), func.max(Review.completed_at)))
+        .where(*_not_eval(Review.is_eval, include_eval))
+        .scalar_subquery()
+    )
+    event_clock = (
+        select(func.max(AuditEvent.timestamp))
+        .select_from(AuditEvent)
+        .join(Review, AuditEvent.review_id == Review.id)
+        .where(
+            AuditEvent.is_eval == Review.is_eval,  # reject is_eval drift (either direction)
+            *_not_eval(Review.is_eval, include_eval),
+        )
+        .scalar_subquery()
+    )
+    anchor = (
+        await session.execute(select(func.greatest(review_clock, event_clock)))
+    ).scalar_one_or_none()
+    if anchor is None:
+        return wall_now, False
+    # Every window predicate is half-open ([start, end) — `timestamp < end`), so an
+    # end sitting exactly ON the newest row's timestamp would exclude that row.
+    # Nudge past it by one second; nothing is newer than the anchor by construction.
+    return anchor + timedelta(seconds=1), True
 
 
 router = APIRouter(
@@ -346,17 +403,20 @@ async def get_metrics(
     """Honest Signal Overview analytics — see module docstring + `DECISIONS.md#039`."""
     delta = _WINDOWS[window]
     granularity = _GRANULARITY[window]
-    now = datetime.now(UTC)
-    start = now - delta
-    prev_start = start - delta
+    generated_at = datetime.now(UTC)
 
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        rf = await _reviews_failed_by_bucket(
-            session, start, now, granularity, include_eval=include_eval
+        end, anchored = await _resolve_window_end(
+            request, session, generated_at, include_eval=include_eval
         )
-        cost = await _cost_by_bucket(session, start, now, granularity, include_eval=include_eval)
-        reps = await _representatives(session, start, now, include_eval=include_eval)
+        start = end - delta
+        prev_start = start - delta
+        rf = await _reviews_failed_by_bucket(
+            session, start, end, granularity, include_eval=include_eval
+        )
+        cost = await _cost_by_bucket(session, start, end, granularity, include_eval=include_eval)
+        reps = await _representatives(session, start, end, include_eval=include_eval)
         prev_reviews, prev_failed, prev_cost = await _review_cost_totals(
             session, prev_start, start, include_eval=include_eval
         )
@@ -374,7 +434,7 @@ async def get_metrics(
             cost_usd=cost.get(b, 0.0),
             findings=findings_by_bucket.get(b, 0),
         )
-        for b in _bucket_starts(start, now, granularity)
+        for b in _bucket_starts(start, end, granularity)
     )
     # `current` derived from the rendered series (cannot drift from the buckets); only
     # `previous` needs its own queries.
@@ -390,7 +450,9 @@ async def get_metrics(
     return DashboardMetricsResponse(
         window=window,
         granularity=granularity,
-        generated_at=now,
+        generated_at=generated_at,
+        window_end=end,
+        anchored=anchored,
         buckets=buckets,
         severity_distribution={s.value: sev_dist.get(s.value, 0) for s in FindingSeverity},
         evidence_tier_distribution={t.value: tier_dist.get(t.value, 0) for t in EvidenceTier},
@@ -495,14 +557,17 @@ async def get_replay_metrics(
     """
     delta = _WINDOWS[window]
     granularity = _GRANULARITY[window]
-    now = datetime.now(UTC)
-    start = now - delta
-    prev_start = start - delta
+    generated_at = datetime.now(UTC)
 
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
+        end, anchored = await _resolve_window_end(
+            request, session, generated_at, include_eval=include_eval
+        )
+        start = end - delta
+        prev_start = start - delta
         by_bucket = await _replay_by_bucket(
-            session, start, now, granularity, include_eval=include_eval
+            session, start, end, granularity, include_eval=include_eval
         )
         prev_equivalent, prev_total = await _replay_totals(
             session, prev_start, start, include_eval=include_eval
@@ -514,7 +579,7 @@ async def get_replay_metrics(
             equivalent=by_bucket.get(b, (0, 0))[0],
             total=by_bucket.get(b, (0, 0))[1],
         )
-        for b in _bucket_starts(start, now, granularity)
+        for b in _bucket_starts(start, end, granularity)
     )
     current = ReplayPeriodTotals(
         equivalent=sum(b.equivalent for b in buckets),
@@ -524,7 +589,9 @@ async def get_replay_metrics(
     return ReplayMetricsResponse(
         window=window,
         granularity=granularity,
-        generated_at=now,
+        generated_at=generated_at,
+        window_end=end,
+        anchored=anchored,
         buckets=buckets,
         deltas=ReplayDeltas(current=current, previous=previous),
     )

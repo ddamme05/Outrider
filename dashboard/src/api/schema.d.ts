@@ -256,6 +256,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/meta": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Meta
+         * @description Deployment-shape flags. `demo_mode` mirrors `app.state.demo_mode`.
+         */
+        get: operations["get_meta_api_meta_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhooks/github": {
         parameters: {
             query?: never;
@@ -320,7 +340,11 @@ export interface paths {
         };
         /**
          * Slack Install
-         * @description Admin-authed install start: validate channel → sign state → redirect to Slack.
+         * @description Admin-authed install start: validate channel → sign state → hand back the Slack
+         *     authorize URL. Content-negotiated: `Accept: application/json` (the dashboard
+         *     "Connect Slack" flow, which must READ the URL to navigate the browser — a `fetch`
+         *     cannot read a cross-origin `302`) returns `SlackInstallURL`; anything else keeps the
+         *     `302` redirect (the headless `curl` flow the README documents). Same URL either way.
          */
         get: operations["slack_install_slack_install_get"];
         put?: never;
@@ -946,6 +970,13 @@ export interface components {
              * Format: date-time
              */
             generated_at: string;
+            /**
+             * Window End
+             * Format: date-time
+             */
+            window_end: string;
+            /** Anchored */
+            anchored: boolean;
             /** Buckets */
             buckets: components["schemas"]["MetricBucket"][];
             /** Severity Distribution */
@@ -1551,6 +1582,11 @@ export interface components {
             reasoning_enabled?: boolean | null;
             /** Profile Contract Digest */
             profile_contract_digest?: string | null;
+        };
+        /** MetaResponse */
+        MetaResponse: {
+            /** Demo Mode */
+            demo_mode: boolean;
         };
         /**
          * MetricBucket
@@ -2205,6 +2241,13 @@ export interface components {
              * Format: date-time
              */
             generated_at: string;
+            /**
+             * Window End
+             * Format: date-time
+             */
+            window_end: string;
+            /** Anchored */
+            anchored: boolean;
             /** Buckets */
             buckets: components["schemas"]["ReplayBucket"][];
             deltas: components["schemas"]["ReplayDeltas"];
@@ -2714,6 +2757,17 @@ export interface components {
          * @enum {string}
          */
         SkipReason: "OVERSIZED" | "VENDORED" | "GENERATED_FILENAME" | "MINIFIED" | "GENERATED_BANNER" | "BINARY" | "COST_BUDGET_EXHAUSTED" | "NO_REVIEWABLE_CONTEXT" | "NO_CHANGED_SCOPE_UNITS" | "UNSUPPORTED_LANGUAGE" | "ALL_SCOPES_TRIVIAL" | "PATCH_HEAD_MISALIGNED";
+        /**
+         * SlackInstallURL
+         * @description JSON body of `GET /slack/install` when the caller sends `Accept: application/json`
+         *     (the dashboard "Connect Slack" flow). Carries the Slack authorize URL the browser
+         *     then navigates to — the same URL the default `302` puts in `Location`, so the
+         *     signed `state` is exposed identically. Admin-gated like the redirect.
+         */
+        SlackInstallURL: {
+            /** Authorize Url */
+            authorize_url: string;
+        };
         /**
          * SlackNotificationEvent
          * @description A Slack notification posted for a review (dashboard-in-Slack, V1).
@@ -3435,6 +3489,26 @@ export interface operations {
             };
         };
     };
+    get_meta_api_meta_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetaResponse"];
+                };
+            };
+        };
+    };
     receive_pull_request_webhook_webhooks_github_post: {
         parameters: {
             query?: never;
@@ -3517,14 +3591,21 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Accept: application/json — the Slack authorize URL to navigate to. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["SlackInstallURL"];
                 };
+            };
+            /** @description Default — redirect (Location) to Slack's authorize page. */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

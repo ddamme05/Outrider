@@ -27,6 +27,9 @@ _FASTAPI_BUILTINS = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"
 # The EXACT read-only allowlist served in demo mode (all GET, no side effects).
 _DEMO_ALLOWLIST = {
     ("/health", frozenset({"GET"})),
+    # Deployment-shape flags: unauthenticated read-only boolean surface the SPA
+    # uses for the read-only-demo banner (must render before any token exists).
+    ("/api/meta", frozenset({"GET"})),
     ("/api/metrics", frozenset({"GET"})),
     ("/api/metrics/replay", frozenset({"GET"})),
     ("/api/policy/{version}", frozenset({"GET"})),

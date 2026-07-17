@@ -124,7 +124,20 @@ def spa_client(tmp_path: Path) -> TestClient:
 
 
 @pytest.mark.parametrize(
-    "path", ["/", "/reviews", "/reviews/123", "/reviews/123/replay", "/settings", "/setup"]
+    "path",
+    [
+        "/",
+        "/reviews",
+        "/reviews/123",
+        "/reviews/123/replay",
+        "/settings",
+        "/setup",
+        # `/connect-slack` is a top-level SPA route (the Connect Slack page). It is deliberately
+        # NOT under the reserved `/setup` descendant namespace, so a direct nav / refresh serves the
+        # shell rather than 404 — see test_reserved_namespace_unknown_subpath_404s for why the
+        # earlier `/setup/slack` placement was a deep-link blocker.
+        "/connect-slack",
+    ],
 )
 def test_spa_serves_shell_for_client_routes(spa_client: TestClient, path: str) -> None:
     """Browser navigations to SPA client routes (incl. the whole GET `/reviews/*` space + the exact
@@ -164,6 +177,7 @@ def test_api_route_still_served(spa_client: TestClient) -> None:
         "/openapi.json/x",  # the one reserved entry with a dot / exact-path shape
         "/setup/reset",  # descendant-only: POST-only backend route, GET must not be the shell
         "/setup/unknown",  # descendant-only reserved: unknown sub-path 404s, not the shell
+        "/setup/slack",  # why Connect Slack lives at /connect-slack, not here: this 404s the shell
     ],
 )
 def test_reserved_namespace_unknown_subpath_404s(spa_client: TestClient, path: str) -> None:

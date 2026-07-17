@@ -513,6 +513,28 @@
         }
       }
     },
+    "/api/meta": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Get Meta",
+        "description": "Deployment-shape flags. `demo_mode` mirrors `app.state.demo_mode`.",
+        "operationId": "get_meta_api_meta_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetaResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/webhooks/github": {
       "post": {
         "summary": "Receive Pull Request Webhook",
@@ -654,7 +676,7 @@
           "slack-oauth"
         ],
         "summary": "Slack Install",
-        "description": "Admin-authed install start: validate channel \u2192 sign state \u2192 redirect to Slack.",
+        "description": "Admin-authed install start: validate channel \u2192 sign state \u2192 hand back the Slack\nauthorize URL. Content-negotiated: `Accept: application/json` (the dashboard\n\"Connect Slack\" flow, which must READ the URL to navigate the browser \u2014 a `fetch`\ncannot read a cross-origin `302`) returns `SlackInstallURL`; anything else keeps the\n`302` redirect (the headless `curl` flow the README documents). Same URL either way.",
         "operationId": "slack_install_slack_install_get",
         "parameters": [
           {
@@ -678,12 +700,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "Accept: application/json \u2014 the Slack authorize URL to navigate to.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/SlackInstallURL"
+                }
               }
             }
+          },
+          "302": {
+            "description": "Default \u2014 redirect (Location) to Slack's authorize page."
           },
           "422": {
             "description": "Validation Error",
@@ -1744,6 +1771,15 @@
             "format": "date-time",
             "title": "Generated At"
           },
+          "window_end": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Window End"
+          },
+          "anchored": {
+            "type": "boolean",
+            "title": "Anchored"
+          },
           "buckets": {
             "items": {
               "$ref": "#/components/schemas/MetricBucket"
@@ -1775,6 +1811,8 @@
           "window",
           "granularity",
           "generated_at",
+          "window_end",
+          "anchored",
           "buckets",
           "severity_distribution",
           "evidence_tier_distribution",
@@ -2900,6 +2938,20 @@
         ],
         "title": "LLMCallEvent",
         "description": "Metadata for one LLM call. Content lives in `llm_call_content` per #016.\n\nToken / cost / latency fields carry `ge=0` constraints so the cost-budget\nanomaly (V1 sums LLMCallEvent.cost_usd, V1.5 estimates pre-flight) can't\nbe poisoned by a malformed negative-cost event understating review cost.\n\n`pricing_version` records the `llm.pricing.PRICING_VERSION` value the\nwrapper used to compute `cost_usd`, per DECISIONS.md#016 Amended\n2026-05-05. Replay reads this field directly so reconstruction never\ndepends on an external version-effective-range map."
+      },
+      "MetaResponse": {
+        "properties": {
+          "demo_mode": {
+            "type": "boolean",
+            "title": "Demo Mode"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "demo_mode"
+        ],
+        "title": "MetaResponse"
       },
       "MetricBucket": {
         "properties": {
@@ -4065,6 +4117,15 @@
             "format": "date-time",
             "title": "Generated At"
           },
+          "window_end": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Window End"
+          },
+          "anchored": {
+            "type": "boolean",
+            "title": "Anchored"
+          },
           "buckets": {
             "items": {
               "$ref": "#/components/schemas/ReplayBucket"
@@ -4082,6 +4143,8 @@
           "window",
           "granularity",
           "generated_at",
+          "window_end",
+          "anchored",
           "buckets",
           "deltas"
         ],
@@ -5347,6 +5410,21 @@
         ],
         "title": "SkipReason",
         "description": "Skip-reason taxonomy across parser AND analyze-node decisions.\n\nTwo naming axes per `DECISIONS.md#018` Amended 2026-05-20 + 2026-05-21:\n- Parser-stage (rule rooted in file content OR intake decode gate):\n  `OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`, `MINIFIED`,\n  `GENERATED_BANNER`, `BINARY`. See `parser_outcome.EXCLUSION_RULES`\n  for the actual rule tuple (multiple rules may share a reason).\n  `BINARY` is set by intake's `_classify_or_reserve_decode` for\n  NUL-byte / UTF-8-decode-failure content; the other five are set\n  by `should_skip` over file content + path.\n- Analyze-stage (rule rooted in analyze's decision rationale):\n  `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,\n  `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`,\n  `ALL_SCOPES_TRIVIAL`, `PATCH_HEAD_MISALIGNED`. Set by the\n  analyze node body when it skips a file mid-pass.\n  `UNSUPPORTED_LANGUAGE` is capability-scoped: it fires for\n  extensions with no registered ast_facts adapter (the registry\n  covers Python + JS/TS/TSX); the value names \"today's analyze\n  implementation cannot review this,\" not \"Outrider forever\n  cannot.\"\n\nImported by `outrider/audit/events.py` per `DECISIONS.md#018`."
+      },
+      "SlackInstallURL": {
+        "properties": {
+          "authorize_url": {
+            "type": "string",
+            "title": "Authorize Url"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "authorize_url"
+        ],
+        "title": "SlackInstallURL",
+        "description": "JSON body of `GET /slack/install` when the caller sends `Accept: application/json`\n(the dashboard \"Connect Slack\" flow). Carries the Slack authorize URL the browser\nthen navigates to \u2014 the same URL the default `302` puts in `Location`, so the\nsigned `state` is exposed identically. Admin-gated like the redirect."
       },
       "SlackNotificationEvent": {
         "properties": {

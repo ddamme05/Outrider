@@ -62,6 +62,7 @@ from outrider.api import lifespan
 from outrider.api.dashboard import (
     agent_view_router,
     hitl_router,
+    meta_router,
     metrics_router,
     policy_router,
     reviews_router,
@@ -112,6 +113,10 @@ def _include_routers(app: FastAPI, *, demo_mode: bool) -> None:
     # privacy-policy URL + the dashboard footer target. Always mounted (incl. demo
     # mode): it must be readable before any install exists, and it is read-only.
     app.include_router(privacy_router)
+    # Deployment-shape flags (GET /api/meta) — unauthenticated, read-only, always
+    # mounted: the SPA reads `demo_mode` to render the read-only-demo banner (above
+    # its token gate, so a demo viewer sees it pre-auth) and disable HITL controls.
+    app.include_router(meta_router)
     if demo_mode:
         return
     # Production-only: mutation + side-effecting routers. Each is credential-dependent and fails

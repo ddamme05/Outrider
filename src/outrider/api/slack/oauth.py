@@ -29,8 +29,9 @@ import logging
 from typing import TYPE_CHECKING, Annotated
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel, ConfigDict
 
 from outrider.api.dashboard.auth import require_admin_api_key
 from outrider.db.models.installations import set_slack_config
@@ -57,6 +58,24 @@ _ADMIN_PRINCIPAL = "admin"
 router = APIRouter(prefix="/slack", tags=["slack-oauth"])
 
 
+class SlackInstallURL(BaseModel):
+    """JSON body of `GET /slack/install` when the caller sends `Accept: application/json`
+    (the dashboard "Connect Slack" flow). Carries the Slack authorize URL the browser
+    then navigates to — the same URL the default `302` puts in `Location`, so the
+    signed `state` is exposed identically. Admin-gated like the redirect."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    authorize_url: str
+
+
+# The install response carries a short-lived signed `state` (stateless — TTL-bounded, NOT
+# nonce-consumed, so not literally single-use), which must never sit in a shared or private HTTP
+# cache; and it is content-negotiated, so caches must key on `Accept` (RFC 9111). Applied to both
+# branches (the JSON body and the 302).
+_INSTALL_HEADERS: dict[str, str] = {"Cache-Control": "no-store", "Vary": "Accept"}
+
+
 def _require_oauth_settings(request: Request) -> SlackOAuthSettings:
     """The OAuth flow is opt-in: when `OUTRIDER_SLACK_CLIENT_ID` is unset the lifespan
     binds `slack_oauth_settings = None` and both routes are disabled with a uniform
@@ -70,13 +89,27 @@ def _require_oauth_settings(request: Request) -> SlackOAuthSettings:
     return settings
 
 
-@router.get("/install", dependencies=[Depends(require_admin_api_key)])
+@router.get(
+    "/install",
+    dependencies=[Depends(require_admin_api_key)],
+    responses={
+        200: {
+            "model": SlackInstallURL,
+            "description": "Accept: application/json — the Slack authorize URL to navigate to.",
+        },
+        302: {"description": "Default — redirect (Location) to Slack's authorize page."},
+    },
+)
 async def slack_install(
     request: Request,
     installation_id: Annotated[int, Query()],
     channel_id: Annotated[str, Query()],
-) -> RedirectResponse:
-    """Admin-authed install start: validate channel → sign state → redirect to Slack."""
+) -> Response:
+    """Admin-authed install start: validate channel → sign state → hand back the Slack
+    authorize URL. Content-negotiated: `Accept: application/json` (the dashboard
+    "Connect Slack" flow, which must READ the URL to navigate the browser — a `fetch`
+    cannot read a cross-origin `302`) returns `SlackInstallURL`; anything else keeps the
+    `302` redirect (the headless `curl` flow the README documents). Same URL either way."""
     settings = _require_oauth_settings(request)
     try:
         channel = validate_channel_id(channel_id)
@@ -104,9 +137,16 @@ async def slack_install(
             "state": state,
         }
     )
+    authorize_url = f"{_SLACK_AUTHORIZE_URL}?{query}"
+    if "application/json" in request.headers.get("accept", ""):
+        return JSONResponse(
+            SlackInstallURL(authorize_url=authorize_url).model_dump(),
+            headers=_INSTALL_HEADERS,
+        )
     return RedirectResponse(
-        url=f"{_SLACK_AUTHORIZE_URL}?{query}",
+        url=authorize_url,
         status_code=status.HTTP_302_FOUND,
+        headers=_INSTALL_HEADERS,
     )
 
 

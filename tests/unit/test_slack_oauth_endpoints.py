@@ -160,6 +160,9 @@ def test_install_redirects_to_slack_with_signed_state() -> None:
         follow_redirects=False,
     )
     assert resp.status_code == 302
+    # State-bearing + content-negotiated → uncacheable, keyed on Accept (RFC 9111).
+    assert resp.headers["cache-control"] == "no-store"
+    assert resp.headers["vary"] == "Accept"
     location = resp.headers["location"]
     assert location.startswith("https://slack.com/oauth/v2/authorize?")
     assert "client_id=123.456" in location
@@ -169,6 +172,51 @@ def test_install_redirects_to_slack_with_signed_state() -> None:
     verified = verify_state(state)
     assert verified.installation_id == 42
     assert verified.channel_id == "C0ABCDE"
+
+
+@pytest.mark.usefixtures("secrets_env")
+def test_install_returns_json_authorize_url_when_accept_json() -> None:
+    # The dashboard "Connect Slack" flow sends Accept: application/json and must READ the
+    # URL (a fetch cannot follow a cross-origin 302), so the same authorize URL comes back
+    # in a JSON body — carrying the same signed state — instead of a redirect.
+    client = TestClient(_build_app())
+    resp = client.get(
+        "/slack/install",
+        params={"installation_id": 42, "channel_id": "C0ABCDE"},
+        headers={**_AUTH, "Accept": "application/json"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-store"
+    assert resp.headers["vary"] == "Accept"
+    body = resp.json()
+    assert set(body) == {"authorize_url"}
+    url = body["authorize_url"]
+    assert url.startswith("https://slack.com/oauth/v2/authorize?")
+    assert "scope=chat%3Awrite" in url
+    state = parse_qs(urlparse(url).query)["state"][0]
+    verified = verify_state(state)
+    assert verified.installation_id == 42
+    assert verified.channel_id == "C0ABCDE"
+
+
+@pytest.mark.usefixtures("secrets_env")
+def test_install_json_branch_still_admin_gated_and_validates_channel() -> None:
+    # The content-negotiated branch shares the redirect's guards: no auth → 401, bad
+    # channel → 400 (never a 200 URL leak for an unauthenticated or malformed request).
+    client = TestClient(_build_app())
+    no_auth = client.get(
+        "/slack/install",
+        params={"installation_id": 42, "channel_id": "C0ABCDE"},
+        headers={"Accept": "application/json"},
+    )
+    assert no_auth.status_code == 401
+    bad_channel = client.get(
+        "/slack/install",
+        params={"installation_id": 42, "channel_id": "nope"},
+        headers={**_AUTH, "Accept": "application/json"},
+    )
+    assert bad_channel.status_code == 400
 
 
 # ── GET /slack/oauth/callback ───────────────────────────────────────────────
