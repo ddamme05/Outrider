@@ -59,6 +59,12 @@ export function Sidebar() {
         </svg>
         Set up GitHub App
       </NavLink>
+      <NavLink to="/connect-slack" className={navClass} onClick={closeNav}>
+        <svg className="ico" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M4 9.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 1.5-1.5V9.5H4zM6.5 9.5v1.5a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-1.5-1.5h-1.5zM11.5 6.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0-1.5 1.5v1.5h1.5zM9 6.5V5a1.5 1.5 0 1 0-3 0 1.5 1.5 0 0 0 1.5 1.5H9z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
+        </svg>
+        Connect Slack
+      </NavLink>
 
       <div className="sb-spacer" />
 

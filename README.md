@@ -387,10 +387,17 @@ to Slack before it records the post, so a failure to record can repeat a message
 resume, and a persistently failing record can let one gated review receive both message
 kinds. Configure a Slack app with the `chat:write` scope, set
 `OUTRIDER_SLACK_CLIENT_ID`, `OUTRIDER_SLACK_CLIENT_SECRET`, `OUTRIDER_SLACK_REDIRECT_URI`,
-`OUTRIDER_SLACK_STATE_SECRET`, and `OUTRIDER_TOKEN_ENC_KEY`, then start the per-installation
-OAuth flow. The endpoint needs your admin bearer token (export it from `deploy/.env` first,
-since the quickstart only wrote it there), then fetch the redirect with curl and open the
-returned Slack URL in a browser:
+`OUTRIDER_SLACK_STATE_SECRET`, and `OUTRIDER_TOKEN_ENC_KEY`, then connect a channel.
+
+The simplest way is the dashboard: open **Connect Slack** in the sidebar, enter the GitHub
+installation id and the Slack channel id, and click Connect. That sends you to Slack to
+approve the app, Slack redirects back, and the bot token is stored encrypted. This runs only
+when the app is serving the built dashboard (the same one-origin requirement as GitHub App
+setup), not on the Vite dev server.
+
+For a headless deployment you can drive the same endpoint by hand. It needs your admin bearer
+token (export it from `deploy/.env` first, since the quickstart only wrote it there), then
+fetch the redirect with curl and open the returned Slack URL in a browser:
 
 ```bash
 export OUTRIDER_ADMIN_API_KEY="$(grep -E '^OUTRIDER_ADMIN_API_KEY=' deploy/.env | cut -d= -f2-)"
