@@ -119,8 +119,10 @@ op run --env-file=.env -- printenv OUTRIDER_ADMIN_API_KEY
 - The audit explorer — the full event stream; run a **replay** to watch it
   reconstruct and re-verify.
 - `scale_triage` — the 27-file self-review: the triage tiers and per-file
-  examinations. (Under the June analyze-v5 seed its one `.ts` file shows an
-  `UNSUPPORTED_LANGUAGE` skip; a re-seed under the JS/TS adapters analyzes it.)
+  examinations. Its three largest modules exceed the absolute per-file token cap,
+  so the cost gate skips them as `COST_BUDGET_EXHAUSTED` and the anomaly scanner
+  raises a `cost_budget_starvation` anomaly — a live demonstration of the
+  cost-control machinery on a genuinely large PR, not a degraded review.
 
 **Restore from the snapshot instead** (the test container is ephemeral — a
 `docker compose restart postgres-test` wipes the seed DB; this also matches the

@@ -14,11 +14,13 @@ so the seed path and the smoke path cannot drift. Each entry gets a unique
 `(repo_id, pr_number, head_sha)` natural key.
 
 The capture gate (the recall safeguard — why a 21-file kitchen sink once shipped a
-thin review): for every seeded review assert (a) no COST_BUDGET_EXHAUSTED skip,
-(b) no finding_proposal_rejected AND no analyze_response_rejected (a wholesale
-degraded analyze), (c) every expected finding type is present, and (d) the
-expected HITL / audit rows exist. A review that fails any check is reported and
-the seed exits non-zero — a dud is never dumped.
+thin review): for every seeded review assert (a) no COST_BUDGET_EXHAUSTED skip
+(except entries with `allow_cost_starvation=True` — the 27-file self-review, whose
+largest modules exceed the absolute per-file token cap by design), (b) no
+finding_proposal_rejected AND no analyze_response_rejected (a wholesale degraded
+analyze), (c) every expected finding type is present, and (d) the expected HITL /
+audit rows exist. A review that fails any check is reported and the seed exits
+non-zero — a dud is never dumped.
 
 Run it:
 
@@ -157,6 +159,15 @@ class SeedSpec:
     # resumes with a demo-reviewer decision: approve all gated findings, one
     # truthful severity downgrade). Pair with expected_outcome="decided".
     pre_decide: bool = False
+    # Allow COST_BUDGET_EXHAUSTED skips for this entry. Default False: on the
+    # single-file / planted-fixture reviews a cost-starved file IS a degraded seed.
+    # The 27-file self-review is the exception — its three largest modules
+    # (analyze.py, persister.py, events.py) each exceed the ABSOLUTE per-file token
+    # cap (MAX_PER_FILE_TOKENS_ABSOLUTE=60_000, deliberately decoupled from the
+    # review budget), so the cost gate engaging on them is correct product behavior,
+    # not a seed defect — and it makes the showcase demonstrate the cost-control +
+    # cost-budget-anomaly features on a genuinely large PR.
+    allow_cost_starvation: bool = False
     diff_file: str | None = None  # a fixture under scripts/demo_fixtures/
     git_range: str | None = None  # OR a two-dot git range (the showcase)
     repo_root: str | None = None  # git_range against a DIFFERENT repo (the smoke breadth review)
@@ -227,6 +238,9 @@ SEED_SPECS: tuple[SeedSpec, ...] = (
         git_range=_SHOWCASE_RANGE,
         expect_findings=False,  # findings model-dependent across a real arc; gate loosely
         expected_outcome="any",  # routing is model-dependent on a real arc; don't assert it
+        # The largest modules exceed the absolute per-file token cap, so the cost gate
+        # engaging on them is expected — it demonstrates cost control on a big PR.
+        allow_cost_starvation=True,
     ),
     SeedSpec(
         key="smoke_breadth",
@@ -282,7 +296,7 @@ async def _validate_capture(db_url: str, review_id: str, spec: SeedSpec) -> Capt
                     {"id": review_id},
                 )
             ).scalar_one()
-            if starved:
+            if starved and not spec.allow_cost_starvation:
                 failures.append(f"{starved} file(s) starved (COST_BUDGET_EXHAUSTED)")
 
             rejected = (
