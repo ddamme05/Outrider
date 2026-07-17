@@ -95,3 +95,15 @@ repos:
         language: system
         pass_filenames: false
         files: ^scripts/(check_import_boundaries|test_check_import_boundaries)\.py$
+
+      # Zero-spend contract test for the live-smoke/seed scenario path: the
+      # injected github_factory must stay awaitable (#070) and serve the client
+      # surface intake's fetch wrappers consume. Fires on the scripts that own
+      # the stub AND on the src files that own the awaited contract, so a
+      # contract flip like a0eb420 cannot silently strand scripts/ again.
+      - id: live-smoke-contract-tests-pass
+        name: live_claude_smoke zero-spend contract tests pass
+        entry: .venv/bin/python scripts/test_live_claude_smoke.py
+        language: system
+        pass_filenames: false
+        files: ^(scripts/(live_claude_smoke|test_live_claude_smoke|seed_demo|_git_range_scenario)\.py|tests/integration/test_e2e_smoke\.py|src/outrider/agent/nodes/intake\.py|src/outrider/agent/nodes/trace\.py|src/outrider/agent/nodes/publish\.py|src/outrider/github/(auth|fetch)\.py)$

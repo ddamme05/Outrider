@@ -107,7 +107,7 @@ runtime-evaluated-base-classes = ["outrider.db.models._base.Base"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101"]       # assert is fine in tests
 "tests/fixtures/python_canonical.py" = ["I", "F"]  # test data fixture; not imported/run
-"scripts/test_*.py" = ["S603"]   # smoke tests run trusted local scripts
+"scripts/test_*.py" = ["S603", "S101"]  # smoke tests run trusted local scripts; assert is fine in tests
 "spikes/**/*.py" = ["S", "N"]   # throwaway — relax security and naming, keep bugbear
 # Live-review demo fixtures: input to the seed demo, carrying deliberate planted
 # flaws. They must read as plausible production code (no inline noqa, which the

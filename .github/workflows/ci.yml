@@ -302,3 +302,5 @@ jobs:
         run: pre-commit run extractor-tests-pass --all-files
       - name: boundary-lint-tests-pass (pre-commit hook)
         run: pre-commit run boundary-lint-tests-pass --all-files
+      - name: live-smoke-contract-tests-pass (pre-commit hook)
+        run: pre-commit run live-smoke-contract-tests-pass --all-files

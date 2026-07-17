@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
 # Bare import: running `python scripts/live_claude_smoke.py` puts scripts/ at
 # sys.path[0], so the sibling helper resolves without packaging scripts/.
@@ -83,6 +83,7 @@ if str(_REPO_ROOT) not in sys.path:
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
+from langgraph.types import Command  # noqa: E402
 from pydantic import SecretStr  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.engine import make_url  # noqa: E402
@@ -119,6 +120,16 @@ from outrider.cache import AnalyzeCacheStore  # noqa: E402
 from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: E402
 from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: E402
 from outrider.llm.config import ModelConfig  # noqa: E402
+from outrider.llm.host_profiles import (  # noqa: E402
+    ANTHROPIC_PROFILE_ID,
+    resolve_host_identity,
+)
+from outrider.policy.severity import FindingSeverity  # noqa: E402
+from outrider.schemas.hitl import (  # noqa: E402
+    HITLDecision,
+    PerFindingDecision,
+    PerFindingOutcome,
+)
 
 _RULE = "=" * 62
 _INSTALLATION_ID = 12345  # matches tests.integration.test_e2e_smoke._INSTALLATION_ID
@@ -217,7 +228,7 @@ class _StubNotFoundError(Exception):
         self.response = _StubHTTPResponse(status_code=404)
 
 
-def _make_scenario_github_factory(scenario: _Scenario) -> Callable[[int], object]:
+def _make_scenario_github_factory(scenario: _Scenario) -> Callable[[int], Awaitable[object]]:
     """Stub GitHub serving `scenario`'s files via the real intake fetch path.
 
     `async_list_files` returns one meta per file (wire-faithful: `previous_filename`
@@ -298,7 +309,9 @@ def _make_scenario_github_factory(scenario: _Scenario) -> Callable[[int], object
         def __init__(self) -> None:
             self.rest = _Rest()
 
-    def _factory(installation_id: int) -> object:
+    async def _factory(installation_id: int) -> object:
+        # Async to match intake/trace/publish's awaited github_factory contract
+        # (post-#070: Callable[[int], Awaitable[InstallationGitHubClient]]).
         if installation_id != _INSTALLATION_ID:
             raise ValueError(f"unexpected installation_id {installation_id}")
         return _GitHub()
@@ -452,8 +465,85 @@ def _migrate(db_url: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _demo_decision(gated_ids: list[str], severity_by_id: dict[str, str]) -> HITLDecision:
+    """Pure builder (no DB) — approve every gated finding except the highest-severity
+    one, which gets a one-step severity DOWNGRADE, so the seed exercises the
+    override-provenance surfaces with a truthful `original_severity`. Split out from
+    the DB reads so it is zero-spend testable (the paid seed is the only other caller,
+    and a missing required field like `decided_at` must fail in a test, not mid-run).
+    """
+    downgrade = {"critical": "high", "high": "medium", "medium": "low", "low": "info"}
+    rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    ordered = sorted(gated_ids, key=lambda f: (rank.get(severity_by_id.get(f, ""), 9), f))
+    decisions: list[PerFindingDecision] = []
+    override_done = False
+    for fid in ordered:
+        severity = severity_by_id.get(fid)
+        if not override_done and severity in downgrade:
+            decisions.append(
+                PerFindingDecision(
+                    finding_id=UUID(fid),
+                    outcome=PerFindingOutcome.SEVERITY_OVERRIDE,
+                    reason="Demo showcase: illustrative one-step severity downgrade.",
+                    original_severity=FindingSeverity(severity),
+                    override_severity=FindingSeverity(downgrade[severity]),
+                )
+            )
+            override_done = True
+        else:
+            decisions.append(
+                PerFindingDecision(
+                    finding_id=UUID(fid), outcome=PerFindingOutcome.APPROVE, reason=""
+                )
+            )
+    return HITLDecision(
+        reviewer_id="demo-seed",
+        decisions=tuple(decisions),
+        annotation="Pre-decided in-process by seed_demo for the demo showcase.",
+        decided_at=datetime.now(UTC),
+    )
+
+
+async def _build_demo_decision(engine: AsyncEngine, review_id: UUID) -> HITLDecision:
+    """Read the gate + finding severities from the audit stream, then build the demo
+    decision. The decision set exactly equals the gate's `findings_requiring_approval`;
+    the resume path re-validates that equality.
+    """
+    async with engine.begin() as conn:
+        gated_ids = (
+            await conn.execute(
+                text(
+                    "SELECT payload->'findings_requiring_approval' FROM audit_events "
+                    "WHERE review_id = :id AND event_type = 'hitl_request' "
+                    "ORDER BY sequence_number DESC LIMIT 1"
+                ),
+                {"id": review_id},
+            )
+        ).scalar_one()
+        severity_by_id = dict(
+            (
+                await conn.execute(
+                    text(
+                        "SELECT payload->>'finding_id', payload->>'severity' "
+                        "FROM audit_events WHERE review_id = :id AND event_type = 'finding' "
+                        # ORDER so a re-emitted finding_id resolves to its LATEST
+                        # severity deterministically (dict keeps the last row).
+                        "ORDER BY sequence_number"
+                    ),
+                    {"id": review_id},
+                )
+            ).all()
+        )
+    return _demo_decision(list(gated_ids), severity_by_id)
+
+
 async def _run(
-    db_url: str, api_key: str, scenario: _Scenario | None, *, expect_findings: bool
+    db_url: str,
+    api_key: str,
+    scenario: _Scenario | None,
+    *,
+    expect_findings: bool,
+    pre_decide: bool = False,
 ) -> tuple[UUID, bool]:
     """Run one review into `db_url` and return (review_id, structural-verdict).
 
@@ -463,13 +553,20 @@ async def _run(
     """
     engine = create_async_engine(db_url, poolclass=NullPool)
     try:
-        return await _drive(engine, api_key, scenario, expect_findings=expect_findings)
+        return await _drive(
+            engine, api_key, scenario, expect_findings=expect_findings, pre_decide=pre_decide
+        )
     finally:
         await engine.dispose()
 
 
 async def _drive(
-    engine: AsyncEngine, api_key: str, scenario: _Scenario | None, *, expect_findings: bool
+    engine: AsyncEngine,
+    api_key: str,
+    scenario: _Scenario | None,
+    *,
+    expect_findings: bool,
+    pre_decide: bool = False,
 ) -> tuple[UUID, bool]:
     review_id = uuid4()
     await _seed_installation(engine)
@@ -485,17 +582,26 @@ async def _drive(
     )
     publisher = _RecordingPublisher()
     # THE one swap vs scripts/smoke_e2e.py: the real Anthropic provider.
-    # model_config reads OUTRIDER_MODEL_* env (defaults to current Claude tiers).
+    # ONE shared ModelConfig for provider + graph (for_host("anthropic") is
+    # byte-identical to ModelConfig() but production-parity with api/lifespan).
+    # The #056 identity triad is resolved once from the same canonical source the
+    # provider stamps from, then passed to build_graph so analyze/synthesize
+    # completion events and cache keys are host-QUALIFIED like production rows —
+    # AnthropicProvider takes no triad params; it stamps its own identity.
+    model_config = ModelConfig.for_host(ANTHROPIC_PROFILE_ID)
     provider = AnthropicProvider(
         api_key=SecretStr(api_key),
-        model_config=ModelConfig(),
+        model_config=model_config,
         persister=persister,
+    )
+    profile_id, reasoning_enabled, profile_contract_digest = resolve_host_identity(
+        ANTHROPIC_PROFILE_ID, reasoning=False
     )
 
     # Default (no --diff-file): the exact proven e2e scenario. With --diff-file:
     # local stubs serve the supplied file (intake re-fetches from these).
     if scenario is None:
-        github_factory: Callable[[int], object] = _stub_github_factory
+        github_factory: Callable[[int], Awaitable[object]] = _stub_github_factory
         seed_state = _seed_state(review_id)
         analyzed_label = "src/handler.py (built-in synthetic diff)"
     else:
@@ -508,7 +614,10 @@ async def _drive(
         github_factory=github_factory,
         installation_authorizer=_always_authorized,
         provider=provider,
-        model_config=ModelConfig(),
+        model_config=model_config,
+        profile_id=profile_id,
+        reasoning_enabled=reasoning_enabled,
+        profile_contract_digest=profile_contract_digest,
         phase_event_sink=persister,
         file_examination_sink=persister,
         analyze_event_sink=persister,
@@ -535,8 +644,8 @@ async def _drive(
         total_review_budget_tokens=AnalyzeConfig().review_budget_tokens,
     )
     _say(
-        f"  Models ............... {ModelConfig().analyze_model} (analyze) + "
-        f"{ModelConfig().triage_model} (triage/synthesize)"
+        f"  Models ............... {model_config.analyze_model} (analyze) + "
+        f"{model_config.triage_model} (triage/synthesize)"
     )
     _say(f"  Calling real Claude .. analyzing {analyzed_label}")
     _say()
@@ -551,6 +660,24 @@ async def _drive(
             seed_state, config={"configurable": {"thread_id": str(review_id)}}
         )
         interrupted = "__interrupt__" in result
+        if pre_decide and interrupted:
+            # Demo showcase: decide the gate in-process while the graph + its
+            # InMemorySaver checkpoint are still in scope, mirroring the dashboard
+            # endpoint's Command(resume=decision.model_dump(mode="json")) shape
+            # (api/dashboard/hitl.py). The dump then carries one review with the
+            # FULL gated lifecycle — hitl_request, hitl_decision (including one
+            # truthful severity override), publish routing — which a parked
+            # awaiting_approval review can never show.
+            decision = await _build_demo_decision(engine, review_id)
+            _say(
+                f"  Pre-deciding the HITL gate in-process "
+                f"({len(decision.decisions)} decision(s), one severity override) ..."
+            )
+            result = await graph.ainvoke(
+                Command(resume=decision.model_dump(mode="json")),
+                config={"configurable": {"thread_id": str(review_id)}},
+            )
+            interrupted = "__interrupt__" in result
         await _report(engine, review_id, result, publisher, interrupted=interrupted)
         # Full-granularity dumps (same recipe as scripts/smoke_e2e.py): the real
         # provider persists every exchange, so the USER prompt + Claude's REAL

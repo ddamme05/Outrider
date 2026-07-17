@@ -101,6 +101,7 @@ from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: E
 from outrider.github.auth import make_installation_client_factory  # noqa: E402
 from outrider.github.authz import make_installation_authorizer  # noqa: E402
 from outrider.github.config import GitHubAppSettings  # noqa: E402
+from outrider.github.credentials import EnvCredentialProvider  # noqa: E402
 from outrider.github.publisher import GitHubKitPublisher  # noqa: E402
 from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: E402
 from outrider.llm.config import ModelConfig  # noqa: E402
@@ -193,7 +194,7 @@ async def _fetch_pr_seed(
     metadata, promote a `get_pr_metadata` wrapper into `github/fetch.py` with
     tests (decision 2026-05-31).
     """
-    gh = github_factory(installation_id)
+    gh = await github_factory(installation_id)
     resp = await gh.rest.pulls.async_get(owner, repo, pr_number)
     pr = resp.parsed_data
     pr_context = PRContext(
@@ -441,10 +442,13 @@ async def _run(args: argparse.Namespace) -> int:
     profile_id, reasoning_enabled, profile_contract_digest = resolve_host_identity(
         llm_host, reasoning=llm_reasoning
     )
-    github_factory = make_installation_client_factory(github_settings)
+    # #070 credential-provider contract: both factories take a GitHubCredentialProvider,
+    # not raw settings; env mode wraps the validated triad (mirrors api/lifespan wiring).
+    credential_provider = EnvCredentialProvider(github_settings)
+    github_factory = make_installation_client_factory(credential_provider)
     # #065 live-authorization gate: the demo runs a REAL live check (App-JWT install probe +
     # repo-scoped token mint) at intake, same as production — not a stub.
-    installation_authorizer = make_installation_authorizer(github_settings)
+    installation_authorizer = make_installation_authorizer(credential_provider)
 
     _say(f"  Host ................. {llm_host}  (reasoning={llm_reasoning})")
     if model_config.analyze_model == model_config.triage_model:
