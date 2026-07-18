@@ -22,9 +22,9 @@ import hashlib
 import re
 from enum import StrEnum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from outrider.llm.base import LLMInvalidResponseError
 
@@ -34,7 +34,13 @@ if TYPE_CHECKING:
 # Bump on ANY shaper/accounting FUNCTION-body change (audit-7 #3). It is folded into
 # `profile_contract_digest`, so a behavior change to a shaper invalidates warm cache rows
 # even though no profile DATA field changed.
-SHAPER_CONTRACT_VERSION: Final[str] = "v1"
+# v2 (specs/2026-07-18-openai-native-host.md): the openai-native-host provider-boundary
+# extension — GPT-5.6's novel usage layout (cache writes as a distinct billed class →
+# read_usage widened to a 4-tuple), the JsonMode-aware kwargs builder branch
+# (JSON_OBJECT), message.refusal normalization, and three new digest-folded profile
+# fields (flat-rate ceiling, prompt_cache_key, requested_service_tier). Rotates every
+# profile's contract digest; GLM-host analyze cache rows re-key by design (#056).
+SHAPER_CONTRACT_VERSION: Final[str] = "v2"
 
 
 class ReasoningMechanism(StrEnum):
@@ -44,7 +50,9 @@ class ReasoningMechanism(StrEnum):
     CHAT_TEMPLATE_ARGS = (
         "chat_template_args"  # Baseten/Telnyx: extra_body.chat_template_args.enable_thinking=False
     )
-    REASONING_EFFORT_NONE = "reasoning_effort_none"  # Fireworks/DeepInfra: reasoning_effort="none"
+    REASONING_EFFORT_NONE = (
+        "reasoning_effort_none"  # Fireworks/DeepInfra/OpenAI: top-level reasoning_effort="none"
+    )
     REASONING_ENABLED_FALSE = (
         "reasoning_enabled_false"  # Together: extra_body.reasoning={"enabled": False}
     )
@@ -57,6 +65,11 @@ class TokenAccounting(StrEnum):
 
     PROMPT_INCLUDES_CACHED = "prompt_includes_cached"  # Baseten/DeepInfra
     PROMPT_EXCLUDES_CACHED = "prompt_excludes_cached"  # Anthropic-like
+    # OpenAI GPT-5.6+: cached reads ⊂ prompt_tokens AND cache writes reported as a
+    # DISTINCT billed class (usage.prompt_tokens_details.cache_write_tokens, 1.25×
+    # input). Whether writes are ALSO inside prompt_tokens is the conservation
+    # equation the cold-write paid fixture pins (openai-native-host spec).
+    PROMPT_INCLUDES_CACHED_WRITES_REPORTED = "prompt_includes_cached_writes_reported"
     UNVERIFIED = "unverified"  # never assumed — fail loud if cached actually fires
 
 
@@ -113,30 +126,51 @@ def read_usage(
     raw_cached_tokens: int,
     completion_tokens: int,
     accounting: TokenAccounting,
-) -> tuple[int, int, int]:
-    """§8a normalization. Returns `(input_tokens, cache_read_tokens, output_tokens)`.
+    raw_cache_write_tokens: int = 0,
+) -> tuple[int, int, int, int]:
+    """§8a normalization. Returns
+    `(input_tokens, cache_read_tokens, cache_write_tokens, output_tokens)`.
 
     `prompt_includes_cached` (Baseten/DeepInfra): cached is a SUBSET of prompt_tokens, so
     subtract — capping cached at prompt_tokens keeps `input + cache_read == prompt_tokens`
-    self-consistent. `prompt_excludes_cached`: prompt_tokens is already the uncached input.
-    `unverified`: NEVER guess — raise if the response actually reports cached tokens.
+    self-consistent; no write class exists (`cache_write=0`).
+    `prompt_includes_cached_writes_reported` (OpenAI 5.6+): reads as above, writes carried
+    through as their own billed class. The write-vs-prompt conservation equation is
+    pinned by the cold-write paid fixture (openai-native-host spec); until then writes
+    are NOT subtracted from input, and a write count exceeding `prompt_tokens` is
+    rejected as malformed. `prompt_excludes_cached`: prompt_tokens is already the
+    uncached input. `unverified`: NEVER guess — raise if cached or write tokens fire.
 
     A negative usage component is a malformed wire payload (normalized at this boundary per
     trust-boundaries §5 sub-rule 6) — reject it before it drives a negative token or cost.
     """
-    if prompt_tokens < 0 or raw_cached_tokens < 0 or completion_tokens < 0:
+    if (
+        prompt_tokens < 0
+        or raw_cached_tokens < 0
+        or completion_tokens < 0
+        or raw_cache_write_tokens < 0
+    ):
         raise LLMInvalidResponseError(
             f"negative usage component: prompt={prompt_tokens} "
-            f"cached={raw_cached_tokens} completion={completion_tokens}"
+            f"cached={raw_cached_tokens} completion={completion_tokens} "
+            f"cache_write={raw_cache_write_tokens}"
         )
     if accounting is TokenAccounting.PROMPT_INCLUDES_CACHED:
         cache_read = min(raw_cached_tokens, prompt_tokens)
-        return prompt_tokens - cache_read, cache_read, completion_tokens
+        return prompt_tokens - cache_read, cache_read, 0, completion_tokens
+    if accounting is TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED:
+        cache_read = min(raw_cached_tokens, prompt_tokens)
+        if raw_cache_write_tokens > prompt_tokens:
+            raise LLMInvalidResponseError(
+                f"cache_write_tokens={raw_cache_write_tokens} exceeds "
+                f"prompt_tokens={prompt_tokens}: malformed usage payload"
+            )
+        return prompt_tokens - cache_read, cache_read, raw_cache_write_tokens, completion_tokens
     if accounting is TokenAccounting.PROMPT_EXCLUDES_CACHED:
-        return prompt_tokens, raw_cached_tokens, completion_tokens
-    if raw_cached_tokens > 0:
+        return prompt_tokens, raw_cached_tokens, 0, completion_tokens
+    if raw_cached_tokens > 0 or raw_cache_write_tokens > 0:
         raise LLMInvalidResponseError()
-    return prompt_tokens, 0, completion_tokens
+    return prompt_tokens, 0, 0, completion_tokens
 
 
 class HostPrivacy(BaseModel):
@@ -195,6 +229,20 @@ class HostProfile(BaseModel):
     token_accounting: TokenAccounting
     reasoning_mechanism: ReasoningMechanism
     privacy: HostPrivacy
+    # openai-native-host spec (2026-07-18) — three digest-folded behaviors:
+    # (1) flat-rate input ceiling: billed prompt tokens above this reprice the FULL
+    #     request (pricing.LONG_CONTEXT_POLICY), so the provider rejects pre-flight on a
+    #     conservative byte bound and post-checks the billed count. None = no documented
+    #     repricing boundary (every pre-5.6 host).
+    flat_rate_input_ceiling_tokens: int | None = Field(default=None, gt=0)
+    # (2) prompt_cache_key: GPT-5.6+ requires the key for reliable cache matching; the
+    #     provider sends a stable key derived from (profile_contract_digest, prompt
+    #     VERSION) so the #042 stable-prefix packing keeps paying. ~15 RPM per key.
+    sends_prompt_cache_key: bool = False
+    # (3) requested tier: sent verbatim on every request (host DATA, never a builder
+    #     constant). Declaring it means an echo is EXPECTED — an absent echoed tier
+    #     becomes Unpriced(absent_tier); tier-less hosts (None) can never produce it.
+    requested_service_tier: Literal["default"] | None = None
 
     @property
     def profile_contract_digest(self) -> str:
@@ -208,6 +256,9 @@ class HostProfile(BaseModel):
                 self.json_mode.value,
                 self.token_accounting.value,
                 self.reasoning_mechanism.value,
+                str(self.flat_rate_input_ceiling_tokens),
+                str(self.sends_prompt_cache_key),
+                str(self.requested_service_tier),
                 SHAPER_CONTRACT_VERSION,
             )
         )
@@ -301,6 +352,47 @@ FIREWORKS_PROFILE: Final[HostProfile] = HostProfile(
     ),
 )
 
+# OpenAI native (api.openai.com), GPT-5.6 family — specs/2026-07-18-openai-native-host.md.
+# JSON_OBJECT, not strict: OpenAI's strict json_schema REQUIRES every property in
+# `required` + additionalProperties:false (structured-outputs guide, mirror 2026-07-18) —
+# the required-completion shape #056 amendment (b) rejected as harmful to the proof
+# boundary — and unlike the GLM hosts OpenAI genuinely ENFORCES strict, so the raw
+# partial-required analyze schema would 400. json_object gives a syntactic-JSON guarantee
+# with the soft-path backstops unchanged. Explicit model slugs only: the `gpt-5.6` alias
+# routes to Sol server-side and would desync the request-side pricing key.
+OPENAI_PROFILE: Final[HostProfile] = HostProfile(
+    host_id="openai",
+    base_url="https://api.openai.com/v1",
+    api_key_env="OPENAI_API_KEY",
+    model_slug_pattern=r"^gpt-5\.6-(sol|terra|luna)$",
+    json_mode=JsonMode.JSON_OBJECT,
+    token_accounting=TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED,
+    reasoning_mechanism=ReasoningMechanism.REASONING_EFFORT_NONE,
+    flat_rate_input_ceiling_tokens=272_000,
+    sends_prompt_cache_key=True,
+    requested_service_tier="default",
+    privacy=HostPrivacy(
+        egress_host="api.openai.com",
+        model_origin="openai",
+        direct_hosted=True,  # first-party API; no reseller in the path.
+        trains_on_inputs=False,  # "data sent to the OpenAI API is not used to train or
+        # improve OpenAI models (unless you explicitly opt in)" — Outrider does not opt in.
+        retention=(
+            "Abuse-monitoring logs may retain prompts/responses up to 30 days by default; "
+            "Zero Data Retention / Modified Abuse Monitoring are approval-only controls "
+            "Outrider does not assume. Prompt-cache prefixes: prompt_cache_options.ttl "
+            "sets a 30-minute MINIMUM lifetime (the only supported value and the default) "
+            "and OpenAI may retain eligibility longer, while encrypted KV cache "
+            "application state is not retained past its 24-hour expiration (the your-data "
+            "guide names that maximum explicitly, distinct from the TTL minimum). The "
+            "pre-5.6 prompt_cache_retention selector is deprecated for this family. "
+            "Chat Completions store defaults to false and is never set true."
+        ),
+        source_url="https://developers.openai.com/api/docs/guides/your-data",
+        verified_date="2026-07-18",
+    ),
+)
+
 # ADD-A-HOST CHECKLIST (e.g. DeepInfra — arc 2). The registries below
 # (HOST_PROFILES, HOST_DEFAULT_MODELS) + pricing's RATE_TABLE / MIN_CACHEABLE_TOKENS are
 # the ONLY host enumerations in src/, and the error strings auto-derive their host lists
@@ -330,6 +422,7 @@ HOST_PROFILES: Final[Mapping[str, HostProfile]] = MappingProxyType(
     {
         BASETEN_PROFILE.host_id: BASETEN_PROFILE,
         FIREWORKS_PROFILE.host_id: FIREWORKS_PROFILE,
+        OPENAI_PROFILE.host_id: OPENAI_PROFILE,
     }
 )
 
@@ -361,11 +454,26 @@ _BASETEN_DEFAULT_MODELS: Final[Mapping[str, str]] = MappingProxyType(
 _FIREWORKS_DEFAULT_MODELS: Final[Mapping[str, str]] = MappingProxyType(
     {field: "accounts/fireworks/models/glm-5p2" for field in _MODEL_FIELDS}
 )
+# GPT-5.6 tiering mirrors the anthropic shape (big model for DEEP analyze, small for the
+# five cheap nodes) rather than the GLM single-slug collapse. PROVISIONAL per the
+# openai-native-host spec: canonized per-field by the scorecard / node-specific
+# instruments; a miss swaps that field to gpt-5.6-terra and reruns.
+_OPENAI_DEFAULT_MODELS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "triage_model": "gpt-5.6-luna",
+        "analyze_model": "gpt-5.6-sol",
+        "standard_analyze_model": "gpt-5.6-luna",
+        "synthesize_model": "gpt-5.6-luna",
+        "trace_model": "gpt-5.6-luna",
+        "patch_model": "gpt-5.6-luna",
+    }
+)
 HOST_DEFAULT_MODELS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyType(
     {
         "anthropic": _ANTHROPIC_DEFAULT_MODELS,
         "baseten": _BASETEN_DEFAULT_MODELS,
         "fireworks": _FIREWORKS_DEFAULT_MODELS,
+        "openai": _OPENAI_DEFAULT_MODELS,
     }
 )
 

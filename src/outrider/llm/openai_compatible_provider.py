@@ -367,7 +367,7 @@ class OpenAICompatibleProvider:
         # `read_usage` applies the host's includes/excludes-cached rule (Baseten INCLUDES
         # cached → subtract, capping at prompt_tokens so a malformed cached can't drive
         # input negative or break input+cache_read==prompt) and rejects negative components.
-        input_tokens, cached_tokens, output_tokens = read_usage(
+        input_tokens, cached_tokens, cache_write_tokens, output_tokens = read_usage(
             prompt_tokens=usage.prompt_tokens,
             raw_cached_tokens=raw_cached,
             completion_tokens=usage.completion_tokens,
@@ -387,7 +387,9 @@ class OpenAICompatibleProvider:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cache_read_tokens=cached_tokens,
-            cache_write_tokens=0,  # GLM/Baseten has no cache-write token class.
+            # 0 for the GLM hosts (no cache-write token class); the real §8a-normalized
+            # write count for hosts whose accounting reports writes distinctly (5.6+).
+            cache_write_tokens=cache_write_tokens,
             finish_reason=finish_reason,
             latency_ms=int(latency_ms),
             # Host-identity triad (DECISIONS.md#056), stamped together so the coherence envelope

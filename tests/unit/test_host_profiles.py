@@ -16,6 +16,7 @@ from outrider.llm.host_profiles import (
     FIREWORKS_PROFILE,
     HOST_DEFAULT_MODELS,
     HOST_PROFILES,
+    OPENAI_PROFILE,
     HostPrivacy,
     JsonMode,
     ReasoningMechanism,
@@ -87,7 +88,7 @@ def test_read_usage_prompt_includes_cached_subtracts() -> None:
         raw_cached_tokens=30,
         completion_tokens=50,
         accounting=TokenAccounting.PROMPT_INCLUDES_CACHED,
-    ) == (70, 30, 50)
+    ) == (70, 30, 0, 50)
 
 
 def test_read_usage_caps_cached_at_prompt_tokens() -> None:
@@ -97,7 +98,7 @@ def test_read_usage_caps_cached_at_prompt_tokens() -> None:
         raw_cached_tokens=130,
         completion_tokens=50,
         accounting=TokenAccounting.PROMPT_INCLUDES_CACHED,
-    ) == (0, 100, 50)
+    ) == (0, 100, 0, 50)
 
 
 def test_read_usage_prompt_excludes_cached_passes_through() -> None:
@@ -106,7 +107,7 @@ def test_read_usage_prompt_excludes_cached_passes_through() -> None:
         raw_cached_tokens=30,
         completion_tokens=50,
         accounting=TokenAccounting.PROMPT_EXCLUDES_CACHED,
-    ) == (100, 30, 50)
+    ) == (100, 30, 0, 50)
 
 
 def test_read_usage_unverified_raises_on_cached_but_passes_on_zero() -> None:
@@ -123,7 +124,7 @@ def test_read_usage_unverified_raises_on_cached_but_passes_on_zero() -> None:
         raw_cached_tokens=0,
         completion_tokens=50,
         accounting=TokenAccounting.UNVERIFIED,
-    ) == (100, 0, 50)
+    ) == (100, 0, 0, 50)
 
 
 def test_profile_contract_digest_is_deterministic_and_rotates_on_wire_change() -> None:
@@ -170,7 +171,8 @@ def test_host_default_models_anthropic_matches_canonical_tiers() -> None:
 def test_resolve_host_profile() -> None:
     assert resolve_host_profile("baseten") is BASETEN_PROFILE
     assert resolve_host_profile("fireworks") is FIREWORKS_PROFILE
-    assert set(HOST_PROFILES) == {"baseten", "fireworks"}  # arc 1a Baseten + arc 1b Fireworks
+    assert resolve_host_profile("openai") is OPENAI_PROFILE
+    assert set(HOST_PROFILES) == {"baseten", "fireworks", "openai"}
     with pytest.raises(ValueError, match="unknown OpenAI-compatible host 'deepinfra'"):
         resolve_host_profile("deepinfra")
 
@@ -209,7 +211,7 @@ def test_fireworks_usage_maps_cached_as_subset_of_prompt() -> None:
     """PROMPT_INCLUDES_CACHED, grounded in the captured wire (adapted.json:
     prompt_tokens=159, cached_tokens=158): cache_read is the cached subset, input is the
     remainder, and input + cache_read == prompt_tokens."""
-    input_tokens, cache_read, output_tokens = read_usage(
+    input_tokens, cache_read, _cache_write, output_tokens = read_usage(
         prompt_tokens=159,
         raw_cached_tokens=158,
         completion_tokens=410,
@@ -315,3 +317,103 @@ def test_host_privacy_rejects_malformed_provenance(field: str, bad: str) -> None
     kwargs[field] = bad
     with pytest.raises(ValidationError):
         HostPrivacy(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# OpenAI native host (specs/2026-07-18-openai-native-host.md).
+# ---------------------------------------------------------------------------
+
+
+def test_openai_profile_wire_contract() -> None:
+    """The profile encodes the mirror-verified 5.6 contract: JSON_OBJECT (strict
+    would 400 the partial-required analyze schema), writes-reported accounting,
+    top-level reasoning_effort=none, and the three digest-folded behaviors."""
+    p = OPENAI_PROFILE
+    assert p.host_id == "openai"
+    assert p.base_url == "https://api.openai.com/v1"
+    assert p.api_key_env == "OPENAI_API_KEY"
+    assert p.json_mode is JsonMode.JSON_OBJECT
+    assert p.token_accounting is TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED
+    assert p.reasoning_mechanism is ReasoningMechanism.REASONING_EFFORT_NONE
+    assert p.flat_rate_input_ceiling_tokens == 272_000
+    assert p.sends_prompt_cache_key is True
+    assert p.requested_service_tier == "default"
+    assert p.privacy.trains_on_inputs is False
+    assert p.reasoning_forced_on is False
+
+
+def test_openai_slug_pattern_rejects_alias_and_foreign_slugs() -> None:
+    """Explicit slugs only — the bare `gpt-5.6` alias routes to Sol server-side
+    and would desync the request-side pricing key; each admitted slug is pinned
+    individually (per-variant, not a union assertion)."""
+    for ok in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+        OPENAI_PROFILE.validate_model_slug(ok)
+    for bad in ("gpt-5.6", "gpt-5.5", "gpt-5.6-sol\n", "claude-sonnet-5", "gpt-5.6-mini"):
+        with pytest.raises(ValueError):
+            OPENAI_PROFILE.validate_model_slug(bad)
+
+
+def test_openai_default_models_tiered_sol_deep_luna_cheap() -> None:
+    assert HOST_DEFAULT_MODELS["openai"] == {
+        "triage_model": "gpt-5.6-luna",
+        "analyze_model": "gpt-5.6-sol",
+        "standard_analyze_model": "gpt-5.6-luna",
+        "synthesize_model": "gpt-5.6-luna",
+        "trace_model": "gpt-5.6-luna",
+        "patch_model": "gpt-5.6-luna",
+    }
+    assert HOST_DEFAULT_MODELS["openai"].keys() == HOST_DEFAULT_MODELS["anthropic"].keys()
+
+
+def test_new_profile_fields_are_digest_folded() -> None:
+    """Each of the three new fields rotates the contract digest independently —
+    they are wire/billing-affecting host DATA, not decoration."""
+    base = OPENAI_PROFILE.profile_contract_digest
+    for update in (
+        {"flat_rate_input_ceiling_tokens": 300_000},
+        {"sends_prompt_cache_key": False},
+        {"requested_service_tier": None},
+    ):
+        moved = OPENAI_PROFILE.model_copy(update=update)
+        assert moved.profile_contract_digest != base, update
+
+
+def test_read_usage_writes_reported_arm() -> None:
+    """5.6 accounting: reads subtracted (subset, documented); writes carried as
+    their own class, NOT subtracted (conservation equation is probe-pinned);
+    writes exceeding prompt_tokens is malformed wire."""
+    assert read_usage(
+        prompt_tokens=2000,
+        raw_cached_tokens=1500,
+        completion_tokens=300,
+        accounting=TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED,
+        raw_cache_write_tokens=400,
+    ) == (500, 1500, 400, 300)
+    with pytest.raises(LLMInvalidResponseError):
+        read_usage(
+            prompt_tokens=100,
+            raw_cached_tokens=0,
+            completion_tokens=10,
+            accounting=TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED,
+            raw_cache_write_tokens=101,
+        )
+    with pytest.raises(LLMInvalidResponseError):
+        read_usage(
+            prompt_tokens=100,
+            raw_cached_tokens=0,
+            completion_tokens=10,
+            accounting=TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED,
+            raw_cache_write_tokens=-1,
+        )
+
+
+def test_read_usage_unverified_raises_on_write_tokens() -> None:
+    """UNVERIFIED never guesses about EITHER cache class."""
+    with pytest.raises(LLMInvalidResponseError):
+        read_usage(
+            prompt_tokens=100,
+            raw_cached_tokens=0,
+            completion_tokens=10,
+            accounting=TokenAccounting.UNVERIFIED,
+            raw_cache_write_tokens=5,
+        )
