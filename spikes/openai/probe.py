@@ -19,9 +19,14 @@ Evidence-integrity rules:
   - Every row has a REQUIRED success predicate; the run exits non-zero and the
     manifest records `all_required_passed: false` if any required row fails.
   - The manifest records the capture's provenance (base_url + the profile
-    contract digest, so a profile change stales the capture) and each
-    fixture's sha256, and the scorecard gate re-verifies all of it plus the
-    cold/warm conservation inequalities FROM THE FIXTURE BYTES.
+    contract digest, so a profile change stales the capture; PROBE_CONTRACT_VERSION,
+    so a prompt/matrix/predicate change stales it too) and each fixture's
+    sha256, and the scorecard gate re-verifies all of it plus the cold/warm
+    conservation inequalities FROM THE FIXTURE BYTES.
+  - The conservation EQUATION (writes inside prompt_tokens or additive — the
+    spec's [probe] item) is count-characterized by the probe but adjudicated
+    by the OPERATOR against billed usage; the scorecard refuses to admit until
+    the manifest's adjudication matches what read_usage() implements.
 
 Capture matrix — Sol + Luna full; Terra the cheap reasoning row (a Terra tier
 swap later inherits the FULL matrix before serving, per the spec). ALL rows
@@ -53,7 +58,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 from uuid import uuid4
 
 import openai
@@ -70,6 +75,17 @@ from outrider.schemas.llm.analyze import (
 
 _FIXTURE_DIR = Path(__file__).parent / "fixtures"
 _MANIFEST = _FIXTURE_DIR / "manifest.json"
+
+# The probe PROCEDURE's contract version. Folds the evidentiary identity of a
+# capture: the prompts (_SYS/_USER/_REFUSAL_USER/_STABLE_PREFIX), the schema
+# bytes riding response_schema_json, the plan's tag matrix, the per-row success
+# predicates in _evaluate, and the manifest field shape (MANIFEST_SCHEMA_VERSION
+# below). Bump on ANY change to those — a manifest captured under an older
+# procedure must not admit a scorecard run. The scorecard pins the expected
+# value (test_openai_scorecard._EXPECTED_PROBE_CONTRACT_VERSION); the pair
+# failing loud on drift is the sync mechanism.
+PROBE_CONTRACT_VERSION: Final[int] = 1
+MANIFEST_SCHEMA_VERSION: Final[int] = 1
 
 FULL_MODELS = ("gpt-5.6-sol", "gpt-5.6-luna")
 CHEAP_MODEL = "gpt-5.6-terra"
@@ -159,7 +175,40 @@ def _usage_triple(usage: Any) -> dict[str, int | None]:
             getattr(ptd, "cache_write_tokens", None) if ptd is not None else None
         ),
         "completion_tokens": usage.completion_tokens,
+        # total_tokens is the count-level disambiguator between the spec's two
+        # candidate equations: total == prompt + completion means writes are
+        # INSIDE prompt_tokens; total == prompt + writes + completion means
+        # writes are an additive class.
+        "total_tokens": getattr(usage, "total_tokens", None),
     }
+
+
+def _conservation_facts(results: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Per-model count-level facts for the conservation adjudication — recorded
+    and characterized, never self-certified: the count analysis suggests an
+    equation, but the OPERATOR confirms against billed usage (the OpenAI usage
+    dashboard / costs API) before filling `conservation_adjudication`."""
+    facts: dict[str, Any] = {}
+    for model in FULL_MODELS:
+        cold = (results.get(f"{model}:cold") or {}).get("usage") or {}
+        warm = (results.get(f"{model}:warm") or {}).get("usage") or {}
+        prompt, write = cold.get("prompt_tokens"), cold.get("cache_write_tokens")
+        completion, total = cold.get("completion_tokens"), cold.get("total_tokens")
+        supported = "indeterminate"
+        if all(isinstance(v, int) for v in (prompt, write, completion, total)) and write:
+            if total == prompt + completion:
+                # writes ride INSIDE prompt_tokens -> one billing class per
+                # token -> normalized input must subtract them.
+                supported = "prompt_minus_cached_minus_writes"
+            elif total == prompt + write + completion:
+                supported = "prompt_minus_cached"
+        facts[model] = {
+            "cold": cold,
+            "warm": warm,
+            "prompt_equal_across_pair": cold.get("prompt_tokens") == warm.get("prompt_tokens"),
+            "supported_by_counts": supported,
+        }
+    return facts
 
 
 def _evaluate(tag: str, response: Any) -> tuple[bool, str]:
@@ -251,20 +300,40 @@ async def _run_paid() -> int:
         planned = {tag for tag, _req, _kw in _plan()}
         missing = sorted(planned - set(results))
         manifest = {
-            "schema_version": 1,
+            "schema_version": MANIFEST_SCHEMA_VERSION,
+            "probe_contract_version": PROBE_CONTRACT_VERSION,
             "generated_by": "spikes/openai/probe.py",
             "base_url": OPENAI_PROFILE.base_url,
             "profile_contract_digest": OPENAI_PROFILE.profile_contract_digest,
             "results": results,
             "missing_rows": missing,
             "all_required_passed": not required_failed and not missing,
+            "conservation_facts": _conservation_facts(results),
+            # The equation choice is a BILLING fact the counts alone cannot
+            # certify (spec: [probe] classification). The OPERATOR adjudicates
+            # against billed usage and fills equation/evidence/adjudicated_by
+            # by hand; the scorecard gate refuses to admit while equation is
+            # null or differs from what read_usage() implements.
+            "conservation_adjudication": {
+                "equation": None,
+                "evidence": None,
+                "adjudicated_by": None,
+            },
         }
         _MANIFEST.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         print(f"\nmanifest: {_MANIFEST} (all_required_passed={manifest['all_required_passed']})")
     if required_failed or missing:
         print(f"REQUIRED FAILURES: {required_failed or missing} — do NOT run the scorecard.")
         return 1
-    print("all required rows passed — pin the fixtures, then run the scorecard.")
+    print(
+        "all required rows passed. BEFORE the scorecard: adjudicate the conservation\n"
+        "equation — read conservation_facts (supported_by_counts + the cold/warm\n"
+        "triples), cross-check the billed input classes for this window in the OpenAI\n"
+        "usage dashboard, then fill conservation_adjudication.equation\n"
+        "('prompt_minus_cached' or 'prompt_minus_cached_minus_writes'), .evidence, and\n"
+        ".adjudicated_by in the manifest. If the verdict is minus_writes, read_usage()\n"
+        "must change BEFORE any scorecard run — the gate enforces the match."
+    )
     return 0
 
 

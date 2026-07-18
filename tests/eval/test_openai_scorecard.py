@@ -24,11 +24,15 @@ inherits the full paid-wire probe matrix (spikes/openai/probe.py).
 PRECONDITION (enforced, not advisory): a passing, coherent, CURRENT probe
 capture (`spikes/openai/fixtures/manifest.json`) is REQUIRED — this test FAILS
 without it. The gate verifies the verdict boolean AND the capture's provenance
-(canonical base_url, the profile contract digest — a wire-affecting profile
-change stales the capture), the full expected row set (refusal rows included:
-the refusal-normalization fixture is a pre-ship gate per model), each
-fixture's sha256, and the cold/warm conservation inequalities recomputed from
-fixture bytes — so a conformance surprise is caught on the probe's cheap
+(canonical base_url; the profile contract digest AND the probe's own
+procedure/manifest versions — a wire-affecting profile change or a probe
+prompt/matrix/predicate change both stale the capture), the EXACT expected row
+set (refusal rows included: the refusal-normalization fixture is a pre-ship
+gate per model; extra rows rejected), each fixture's sha256, the cold/warm
+conservation BOUNDS recomputed from fixture bytes, and — because bounds cannot
+choose between the spec's two accounting equations — the operator's
+billing-verified `conservation_adjudication`, which must match the equation
+`read_usage()` ships. A conformance surprise is caught on the probe's cheap
 capture, never on this ~128-call run.
 
 Run (keys resolve from .env via 1Password):
@@ -82,6 +86,24 @@ _EXPECTED_PROBE_ROWS: frozenset[str] = frozenset(
     f"{model}:{kind}" for model in (_SOL, _LUNA) for kind in ("envelope", "cold", "warm", "refusal")
 ) | {"gpt-5.6-terra:reasoning"}
 
+# Pinned against the probe's PROBE_CONTRACT_VERSION / MANIFEST_SCHEMA_VERSION:
+# a capture from an older probe PROCEDURE (different prompts, schema bytes,
+# matrix, or predicates) or manifest shape must not admit, exactly as a
+# stale profile digest must not.
+_EXPECTED_PROBE_CONTRACT_VERSION = 1
+_EXPECTED_MANIFEST_SCHEMA_VERSION = 1
+
+# The conservation equation `read_usage()` currently implements for
+# PROMPT_INCLUDES_CACHED_WRITES_REPORTED: input = prompt - cached, writes NOT
+# subtracted (host_profiles.read_usage). The spec classifies the true equation
+# as [probe] — count-undecidable from bounds, adjudicated by the operator
+# against billed usage. If the adjudication lands on
+# "prompt_minus_cached_minus_writes", read_usage + the pricing math change
+# FIRST, then this pin with them — the gate refuses to admit a scorecard while
+# the shipped accounting disagrees with the adjudicated wire.
+_READ_USAGE_PINNED_EQUATION = "prompt_minus_cached"
+_KNOWN_EQUATIONS = ("prompt_minus_cached", "prompt_minus_cached_minus_writes")
+
 
 def _require_probe_manifest() -> None:
     """FAIL (not skip) without a passing, coherent, CURRENT probe capture: the
@@ -106,6 +128,17 @@ def _require_probe_manifest() -> None:
     if not _PROBE_MANIFEST.exists():
         _fail(f"success manifest missing at {_PROBE_MANIFEST}")
     manifest = json.loads(_PROBE_MANIFEST.read_text(encoding="utf-8"))
+    if manifest.get("schema_version") != _EXPECTED_MANIFEST_SCHEMA_VERSION:
+        _fail(
+            f"manifest schema_version {manifest.get('schema_version')!r} != "
+            f"{_EXPECTED_MANIFEST_SCHEMA_VERSION} — unknown manifest shape"
+        )
+    if manifest.get("probe_contract_version") != _EXPECTED_PROBE_CONTRACT_VERSION:
+        _fail(
+            f"probe_contract_version {manifest.get('probe_contract_version')!r} != "
+            f"{_EXPECTED_PROBE_CONTRACT_VERSION} — the capture predates a probe "
+            "PROCEDURE change (prompts/schema/matrix/predicates): stale evidence"
+        )
     if manifest.get("all_required_passed") is not True:
         _fail("all_required_passed is not true")
     if manifest.get("base_url") != OPENAI_PROFILE.base_url:
@@ -119,6 +152,12 @@ def _require_probe_manifest() -> None:
             "the capture predates a wire-affecting profile change (stale evidence)"
         )
     results = manifest.get("results") or {}
+    extra_rows = sorted(set(results) - _EXPECTED_PROBE_ROWS)
+    if extra_rows:
+        _fail(
+            f"unexpected result rows {extra_rows} — the row set is exact; extras mean "
+            "probe-procedure drift or a hand-edited manifest"
+        )
     for tag in sorted(_EXPECTED_PROBE_ROWS):
         row = results.get(tag)
         if not isinstance(row, dict):
@@ -149,6 +188,27 @@ def _require_probe_manifest() -> None:
                     f"conservation violated in {fixture_name!r}: {side}={value} "
                     f"vs prompt_tokens={prompt} (expected 0 < {side} <= prompt)"
                 )
+    # The bounds above catch malformed wire; they CANNOT choose between the
+    # spec's two accounting equations. Admission requires the operator's
+    # billing-verified adjudication, and it must match what read_usage() ships.
+    adjudication = manifest.get("conservation_adjudication") or {}
+    equation = adjudication.get("equation")
+    if equation is None:
+        _fail(
+            "conservation equation not adjudicated — read conservation_facts, "
+            "cross-check billed usage, and fill conservation_adjudication "
+            "(equation/evidence/adjudicated_by) in the manifest"
+        )
+    if equation not in _KNOWN_EQUATIONS:
+        _fail(f"unknown conservation equation {equation!r} (expected one of {_KNOWN_EQUATIONS})")
+    if equation != _READ_USAGE_PINNED_EQUATION:
+        _fail(
+            f"adjudicated equation {equation!r} != read_usage()'s "
+            f"{_READ_USAGE_PINNED_EQUATION!r} — the shipped accounting disagrees with "
+            "the wire; change read_usage + pricing first, then update this pin"
+        )
+    if not adjudication.get("evidence") or not adjudication.get("adjudicated_by"):
+        _fail("conservation_adjudication must carry non-empty evidence and adjudicated_by")
 
 
 def _write_valid_capture(capture_dir: Path) -> dict[str, object]:
@@ -177,12 +237,18 @@ def _write_valid_capture(capture_dir: Path) -> dict[str, object]:
             "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
         }
     manifest: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": _EXPECTED_MANIFEST_SCHEMA_VERSION,
+        "probe_contract_version": _EXPECTED_PROBE_CONTRACT_VERSION,
         "base_url": OPENAI_PROFILE.base_url,
         "profile_contract_digest": OPENAI_PROFILE.profile_contract_digest,
         "results": results,
         "missing_rows": [],
         "all_required_passed": True,
+        "conservation_adjudication": {
+            "equation": _READ_USAGE_PINNED_EQUATION,
+            "evidence": "zero-spend pin fixture",
+            "adjudicated_by": "test",
+        },
     }
     (capture_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
@@ -194,10 +260,12 @@ def _rewrite_manifest(capture_dir: Path, manifest: dict[str, object]) -> None:
 
 def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Zero-spend pins for the paid-run gate, one per admission dimension: a
-    coherent CURRENT capture admits; missing manifest, failed verdict, wrong
-    host, stale profile digest, a dropped required row (refusal included — the
-    pre-ship gate), a non-passing row, a missing/tampered fixture, and a
-    conservation violation each FAIL. Fail (not skip) because the operator
+    coherent CURRENT capture admits; missing manifest, failed verdict, unknown
+    manifest shape, stale probe-procedure version, wrong host, stale profile
+    digest, a dropped required row (refusal included — the pre-ship gate), a
+    non-passing row, an EXTRA row, a missing/tampered fixture, a conservation
+    bounds violation, and an unadjudicated / mismatched / evidence-less
+    conservation equation each FAIL. Fail (not skip) because the operator
     explicitly opted into spend — a silent skip would read as a clean run."""
     import copy  # noqa: PLC0415
     import sys  # noqa: PLC0415
@@ -215,6 +283,20 @@ def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyP
     broken["all_required_passed"] = False
     _rewrite_manifest(tmp_path, broken)
     with pytest.raises(pytest.fail.Exception, match="all_required_passed is not true"):
+        _require_probe_manifest()
+
+    broken = copy.deepcopy(valid)
+    broken["schema_version"] = 99
+    _rewrite_manifest(tmp_path, broken)
+    with pytest.raises(pytest.fail.Exception, match="unknown manifest shape"):
+        _require_probe_manifest()
+
+    # A capture from an older probe PROCEDURE (prompts/matrix/predicates) is
+    # stale evidence even when the profile digest still matches.
+    broken = copy.deepcopy(valid)
+    broken["probe_contract_version"] = 0
+    _rewrite_manifest(tmp_path, broken)
+    with pytest.raises(pytest.fail.Exception, match="probe PROCEDURE change"):
         _require_probe_manifest()
 
     broken = copy.deepcopy(valid)
@@ -240,6 +322,33 @@ def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyP
     broken["results"][f"{_LUNA}:refusal"]["ok"] = False  # type: ignore[index, call-overload]
     _rewrite_manifest(tmp_path, broken)
     with pytest.raises(pytest.fail.Exception, match="not a passing required row"):
+        _require_probe_manifest()
+
+    # The row set is EXACT: an extra row means procedure drift or a hand edit.
+    broken = copy.deepcopy(valid)
+    broken["results"]["gpt-5.6-terra:envelope"] = {"ok": True, "required": True}  # type: ignore[index, call-overload]
+    _rewrite_manifest(tmp_path, broken)
+    with pytest.raises(pytest.fail.Exception, match="unexpected result rows"):
+        _require_probe_manifest()
+
+    # Bounds cannot choose the accounting equation: an unadjudicated capture
+    # (equation null) and a mismatched adjudication both refuse admission.
+    broken = copy.deepcopy(valid)
+    broken["conservation_adjudication"]["equation"] = None  # type: ignore[index, call-overload]
+    _rewrite_manifest(tmp_path, broken)
+    with pytest.raises(pytest.fail.Exception, match="not adjudicated"):
+        _require_probe_manifest()
+
+    broken = copy.deepcopy(valid)
+    broken["conservation_adjudication"]["equation"] = "prompt_minus_cached_minus_writes"  # type: ignore[index, call-overload]
+    _rewrite_manifest(tmp_path, broken)
+    with pytest.raises(pytest.fail.Exception, match="shipped accounting disagrees"):
+        _require_probe_manifest()
+
+    broken = copy.deepcopy(valid)
+    broken["conservation_adjudication"]["evidence"] = ""  # type: ignore[index, call-overload]
+    _rewrite_manifest(tmp_path, broken)
+    with pytest.raises(pytest.fail.Exception, match="non-empty evidence"):
         _require_probe_manifest()
 
     _rewrite_manifest(tmp_path, valid)
