@@ -353,6 +353,10 @@ FIREWORKS_PROFILE: Final[HostProfile] = HostProfile(
 )
 
 # OpenAI native (api.openai.com), GPT-5.6 family — specs/2026-07-18-openai-native-host.md.
+# WIRE-PENDING (#056 admission): registered + selectable so the paid probe can exercise
+# the real code path, but NOT production-admitted until the captured wire fixture, the
+# scorecard, and the node-admission instruments land — the Fireworks precedent shipped
+# its profile WITH the fixtures; this one ships ahead of them by design (spec gates).
 # JSON_OBJECT, not strict: OpenAI's strict json_schema REQUIRES every property in
 # `required` + additionalProperties:false (structured-outputs guide, mirror 2026-07-18) —
 # the required-completion shape #056 amendment (b) rejected as harmful to the proof
