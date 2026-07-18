@@ -464,18 +464,19 @@ def compute_cost_outcome(
     output_tokens: int,
     billed_prompt_tokens: int | None = None,
     service_tier: str | None = None,
-    expects_tier_echo: bool = False,
 ) -> PricingOutcome:
     """The canonical pricing authority (specs/2026-07-18-openai-native-host.md).
 
-    Derives the >272K long-context determination INTERNALLY from the raw
-    `billed_prompt_tokens` wire count — callers never decide the threshold —
-    and gates the rate on the ECHOED `service_tier` when the host's profile
-    declares a requested tier (`expects_tier_echo=True`). Tier-less hosts
-    (Anthropic, the GLM hosts) pass neither kwarg and price flat, byte-identical
-    to the pre-v7 behavior. Raises `KeyError` on an unpriced `(profile_id,
-    model)` (coverage bug, same as always); returns `Unpriced(reason)` for the
-    documented-but-unpriceable echoes rather than fabricating a cost.
+    Derives EVERY policy decision internally: the >272K long-context
+    determination from the raw `billed_prompt_tokens` wire count, AND whether a
+    service-tier echo is expected from `profile_id` membership in the versioned
+    `TIER_ECHO_EXPECTED_PROFILE_IDS` — callers supply wire facts only, never
+    policy booleans, so an OpenAI caller cannot misprice an absent/auto/scale
+    echo as Standard by omitting a flag. Tier-less hosts (Anthropic, the GLM
+    hosts) price flat, byte-identical to the pre-v7 behavior. Raises `KeyError`
+    on an unpriced `(profile_id, model)` (coverage bug, same as always);
+    returns `Unpriced(reason)` for the documented-but-unpriceable echoes rather
+    than fabricating a cost.
     """
     import decimal
 
@@ -489,6 +490,7 @@ def compute_cost_outcome(
     key = pricing_key(profile_id, model)
     rates = RATE_TABLE[key]  # KeyError on unpriced model — intentional, pre-tier.
 
+    expects_tier_echo = profile_id in TIER_ECHO_EXPECTED_PROFILE_IDS
     tier_mult = Decimal("1")
     if expects_tier_echo:
         if not service_tier:
@@ -541,7 +543,6 @@ def compute_cost_usd(
     output_tokens: int,
     billed_prompt_tokens: int | None = None,
     service_tier: str | None = None,
-    expects_tier_echo: bool = False,
 ) -> Decimal:
     """Compute total cost in USD for one LLM call on `(profile_id, model)`.
 
@@ -600,7 +601,6 @@ def compute_cost_usd(
         output_tokens=output_tokens,
         billed_prompt_tokens=billed_prompt_tokens,
         service_tier=service_tier,
-        expects_tier_echo=expects_tier_echo,
     )
     if isinstance(outcome, Unpriced):
         raise ValueError(

@@ -545,7 +545,6 @@ def test_long_context_reprices_full_request_per_model() -> None:
             key[1],
             billed_prompt_tokens=272_001,
             service_tier="default",
-            expects_tier_echo=True,
             **_TOKENS,
         )
         assert outcome == Priced(_long_cost(key)), key
@@ -557,14 +556,12 @@ def test_long_context_boundary_is_strictly_greater() -> None:
         *_SOL_KEY,
         billed_prompt_tokens=272_000,
         service_tier="default",
-        expects_tier_echo=True,
         **_TOKENS,
     )
     over = compute_cost_outcome(
         *_SOL_KEY,
         billed_prompt_tokens=272_001,
         service_tier="default",
-        expects_tier_echo=True,
         **_TOKENS,
     )
     assert at == Priced(_flat_cost(_SOL_KEY))
@@ -576,14 +573,12 @@ def test_flex_is_half_of_default_short_and_long() -> None:
         *_SOL_KEY,
         billed_prompt_tokens=1_000,
         service_tier="flex",
-        expects_tier_echo=True,
         **_TOKENS,
     )
     flex_long = compute_cost_outcome(
         *_SOL_KEY,
         billed_prompt_tokens=300_000,
         service_tier="flex",
-        expects_tier_echo=True,
         **_TOKENS,
     )
     assert flex_short == Priced(_flat_cost(_SOL_KEY) * Decimal("0.5"))
@@ -597,14 +592,12 @@ def test_priority_is_double_short_context_only() -> None:
         *_SOL_KEY,
         billed_prompt_tokens=1_000,
         service_tier="priority",
-        expects_tier_echo=True,
         **_TOKENS,
     )
     prio_long = compute_cost_outcome(
         *_SOL_KEY,
         billed_prompt_tokens=300_000,
         service_tier="priority",
-        expects_tier_echo=True,
         **_TOKENS,
     )
     assert prio_short == Priced(_flat_cost(_SOL_KEY) * Decimal("2"))
@@ -625,7 +618,6 @@ def test_unpriceable_tier_taxonomy_per_variant() -> None:
             *_SOL_KEY,
             billed_prompt_tokens=1_000,
             service_tier=echo,
-            expects_tier_echo=True,
             **_TOKENS,
         )
         assert outcome == Unpriced(reason), (echo, reason)
@@ -645,7 +637,7 @@ def test_tierless_hosts_never_produce_unpriced() -> None:
 def test_compute_cost_usd_wrapper_refuses_unpriced() -> None:
     """The legacy Decimal wrapper cannot silently swallow an Unpriced outcome."""
     with pytest.raises(ValueError, match="compute_cost_outcome"):
-        compute_cost_usd(*_SOL_KEY, service_tier="scale", expects_tier_echo=True, **_TOKENS)
+        compute_cost_usd(*_SOL_KEY, service_tier="scale", **_TOKENS)
 
 
 def test_tier_echo_policy_coherent_with_profiles() -> None:

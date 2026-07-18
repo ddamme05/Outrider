@@ -125,7 +125,6 @@ def _event(review_id: str, response: LLMResponse, **overrides: Any) -> LLMCallEv
         output_tokens=response.output_tokens,
         billed_prompt_tokens=response.billed_prompt_tokens,
         service_tier=response.service_tier_actual,
-        expects_tier_echo=True,
     )
     if isinstance(outcome, Priced):
         cost: float | None = float(outcome.cost_usd)
