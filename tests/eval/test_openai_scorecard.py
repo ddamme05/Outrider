@@ -21,17 +21,19 @@ tier's incumbent. A miss on either swaps THAT field to `gpt-5.6-terra` and
 reruns this scorecard — never a silent fallback — and a Terra swap first
 inherits the full paid-wire probe matrix (spikes/openai/probe.py).
 
-PRECONDITION: the openai host is WIRE-PENDING until spikes/openai/probe.py has
-captured the request/usage/refusal fixtures — run the probe BEFORE this
-scorecard so a conformance surprise is caught on a one-call capture, not a
-40-call scorecard.
+PRECONDITION (enforced, not advisory): the probe's success manifest
+(`spikes/openai/fixtures/manifest.json` with `all_required_passed: true`) is
+REQUIRED — this test FAILS without it, so a conformance surprise is caught on
+the probe's one-call capture, never on this ~128-call run.
 
 Run (keys resolve from .env via 1Password):
   OUTRIDER_EVAL_REAL_MODELS=1 op run --env-file=.env -- \
     uv run pytest tests/eval/test_openai_scorecard.py --is-eval -v -s
 
-Cost: 2 candidate columns x (16 recall + 4 safe) scenarios + the shared
-Anthropic baselines — roughly 80 small analyze calls.
+Cost: 2 candidate columns x the FULL imported evidence catalog (22 recall + 10
+safe fixtures at last count — counts are computed at runtime and printed before
+any spend) = 64 comparisons, each a baseline + candidate call: ~128 small
+analyze calls.
 """
 
 from __future__ import annotations
@@ -60,6 +62,52 @@ if TYPE_CHECKING:
 _SOL = "gpt-5.6-sol"
 _LUNA = "gpt-5.6-luna"
 
+# The probe's success manifest — the enforced precondition for any paid run.
+_PROBE_MANIFEST = (
+    Path(__file__).resolve().parents[2] / "spikes" / "openai" / "fixtures" / "manifest.json"
+)
+
+
+def _require_probe_manifest() -> None:
+    """FAIL (not skip) without a passing probe manifest: the operator has
+    explicitly opted into real spend, so a silent skip would read as a clean
+    run. The probe is the cheap capture; this run is the expensive one."""
+    if not _PROBE_MANIFEST.exists():
+        pytest.fail(
+            f"probe success manifest missing at {_PROBE_MANIFEST} — run the paid wire "
+            "probe first: op run --env-file=.env -- uv run python spikes/openai/probe.py"
+        )
+    manifest = json.loads(_PROBE_MANIFEST.read_text(encoding="utf-8"))
+    if manifest.get("all_required_passed") is not True:
+        pytest.fail(
+            "probe manifest exists but all_required_passed is not true — fix the failed "
+            f"probe rows before the scorecard (see {_PROBE_MANIFEST})"
+        )
+
+
+def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Zero-spend pin for the paid-run gate: missing manifest FAILS, a manifest
+    with failed required rows FAILS, a passing manifest admits. Fail (not skip)
+    because the operator explicitly opted into spend — a silent skip would read
+    as a clean run."""
+    import sys  # noqa: PLC0415
+
+    mod = sys.modules[_require_probe_manifest.__module__]
+    monkeypatch.setattr(mod, "_PROBE_MANIFEST", tmp_path / "manifest.json")
+    with pytest.raises(pytest.fail.Exception, match="manifest missing"):
+        _require_probe_manifest()
+
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"all_required_passed": False}), encoding="utf-8"
+    )
+    with pytest.raises(pytest.fail.Exception, match="all_required_passed is not true"):
+        _require_probe_manifest()
+
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"all_required_passed": True}), encoding="utf-8"
+    )
+    _require_probe_manifest()  # admits without raising
+
 
 @pytest.mark.skipif(
     os.environ.get("OUTRIDER_EVAL_REAL_MODELS") != "1",
@@ -86,6 +134,7 @@ async def test_gpt56_vs_anthropic_scorecard() -> None:
             "OPENAI_API_KEY (resolved, not an op:// ref) is required for the GPT-5.6 "
             "candidates; run under `op run --env-file=.env -- ...`"
         )
+    _require_probe_manifest()
 
     from pydantic import SecretStr  # noqa: PLC0415
 
@@ -111,6 +160,19 @@ async def test_gpt56_vs_anthropic_scorecard() -> None:
     columns: tuple[tuple[str, str], ...] = (
         (_SOL, cfg.analyze_model),
         (_LUNA, cfg.standard_analyze_model),
+    )
+
+    # Pre-spend plan: real counts from the imported catalog, printed BEFORE the
+    # first paid call so the operator sees the true call volume, not a docstring
+    # estimate. Exactly one gate entry per scheduled (scenario, column) — the
+    # completion pin below holds this equality.
+    recall_n = len(_GROUND_TRUTH_BY_FIXTURE)
+    safe_n = len(_SAFE_CODE_FIXTURES)
+    scheduled = len(columns) * (recall_n + safe_n)
+    print(  # noqa: T201 — pre-spend operator plan
+        f"\n[openai scorecard plan: {recall_n} recall + {safe_n} safe scenarios x "
+        f"{len(columns)} candidate columns = {scheduled} comparisons "
+        f"(~{2 * scheduled} paid calls incl. baselines)]"
     )
 
     gate_results: list[tuple[str, str, bool, str]] = []
@@ -152,7 +214,9 @@ async def test_gpt56_vs_anthropic_scorecard() -> None:
                 cmp = await _compare_or_errored(
                     fixture_path,
                     ground_truth,
-                    "recall",
+                    # Column-qualified so an ERRORED gate entry names WHICH
+                    # candidate's scenario needs the rerun (Codex round-8 #5).
+                    f"recall:{candidate_model}",
                     candidate_model=candidate_model,
                     baseline_model=baseline_model,
                 )
@@ -183,7 +247,7 @@ async def test_gpt56_vs_anthropic_scorecard() -> None:
                 cmp = await _compare_or_errored(
                     fixture_path,
                     (),
-                    "precision",
+                    f"precision:{candidate_model}",
                     candidate_model=candidate_model,
                     baseline_model=baseline_model,
                 )
@@ -220,8 +284,23 @@ async def test_gpt56_vs_anthropic_scorecard() -> None:
         # rows survive a mid-loop failure; nested so provider close always runs.
         try:
             report_dir = Path("reports/scorecard")
-            if rows or any(a is not None for a in aggregates.values()):
+            if rows or gate_results or any(a is not None for a in aggregates.values()):
                 report_dir.mkdir(parents=True, exist_ok=True)
+            if gate_results:
+                # The FULL gate table — ERRORED rows included, column-qualified —
+                # persists alongside the scorecard so transiently errored
+                # scenarios survive into the adjudication artifact instead of
+                # existing only in stdout (Codex round-8 #5).
+                (report_dir / "openai-gpt56-gates.json").write_text(
+                    json.dumps(
+                        [
+                            {"scenario": fx, "dimension": dim, "ok": ok, "label": label}
+                            for fx, dim, ok, label in gate_results
+                        ],
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
             if rows:
                 card = Scorecard(rows=tuple(rows))
                 (report_dir / "openai-gpt56-scorecard.json").write_text(
@@ -242,9 +321,14 @@ async def test_gpt56_vs_anthropic_scorecard() -> None:
             await baseline_provider.aclose()
             await candidate_provider.aclose()
 
-    # Report-only completion pin: every scheduled scenario either produced a row
-    # or an explicit ERRORED gate entry — nothing silently dropped.
-    assert rows or gate_results
+    # Completion pin: EXACTLY one gate entry per scheduled (scenario, column) —
+    # a completed comparison and a transient ERRORED each append one, so any
+    # shortfall means a scenario was silently dropped (Codex round-8 #5). The
+    # old `rows or gate_results` truthiness passed on a 1-of-64 run.
+    assert len(gate_results) == scheduled, (
+        f"scorecard incomplete: {len(gate_results)} gate entries for {scheduled} "
+        f"scheduled (scenario, column) pairs — see reports/scorecard/openai-gpt56-gates.json"
+    )
     flagged = [(fx, dim, label) for fx, dim, ok, label in gate_results if not ok]
     print(  # noqa: T201 — operator gate summary (adjudication happens on the report)
         f"\n[openai scorecard: {len(gate_results) - len(flagged)} green / "
