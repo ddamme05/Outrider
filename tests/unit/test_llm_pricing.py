@@ -17,10 +17,16 @@ import pytest
 
 from outrider.llm.config import ModelConfig
 from outrider.llm.pricing import (
+    LONG_CONTEXT_POLICY,
     MIN_CACHEABLE_TOKENS,
     PRICING_VERSION,
     RATE_TABLE,
+    SERVICE_TIER_MULTIPLIERS,
+    CostUnpricedReason,
     ModelPricing,
+    Priced,
+    Unpriced,
+    compute_cost_outcome,
     compute_cost_usd,
     min_cacheable_tokens,
     pricing_key,
@@ -249,10 +255,19 @@ def test_compute_cost_usd_token_args_are_keyword_only() -> None:
 
 
 def _compute_rate_table_digest() -> str:
-    """Hash the rate table's content. Bumping rates without bumping
-    PRICING_VERSION + this expected digest fails the next test loud."""
+    """Hash the pricing contract's replay-bearing content.
+
+    v1-v6 hashed RATE_TABLE alone; v7 widened the hash to the full versioned
+    policy — long-context threshold/multipliers, service-tier map, and the
+    unpriced-reason classification — per specs/2026-07-18-openai-native-host.md,
+    so pricing BEHAVIOR outside the rate table cannot drift outside the pin.
+    Historical v1-v6 entries are records of the old table-only hash; only the
+    current PRICING_VERSION's digest is ever recomputed."""
     items = sorted(RATE_TABLE.items())
-    serialized = repr(items).encode("utf-8")
+    long_context = sorted(LONG_CONTEXT_POLICY.items())
+    tiers = sorted(SERVICE_TIER_MULTIPLIERS.items())
+    reasons = [reason.value for reason in CostUnpricedReason]
+    serialized = repr((items, long_context, tiers, reasons)).encode("utf-8")
     return hashlib.sha256(serialized).hexdigest()[:16]
 
 
@@ -271,6 +286,11 @@ EXPECTED_PRICING_DIGEST: dict[str, str] = {
     # v6 (#056 amendment): added ("fireworks", "accounts/fireworks/models/glm-5p2")
     # at $1.40/$0.14/$4.40 (verified live 2026-07-06). No other rate VALUES changed.
     "v6": "ff3388e38abc33f2",
+    # v7 (openai-native-host spec): added the three ("openai", gpt-5.6-*) rows
+    # (mirror snapshot 2026-07-18) AND widened the hash itself to cover the
+    # long-context/tier policy + unpriced-reason classification. No prior rate
+    # VALUES changed; the digest function changed shape at this version.
+    "v7": "7ff2da7b81f1e5f5",
 }
 
 
@@ -464,3 +484,161 @@ def test_rate_table_raw_dict_not_importable() -> None:
             cache_read_per_token=Decimal("0"),
             out_per_token=Decimal("0"),
         )
+
+
+# ---------------------------------------------------------------------------
+# v7: long-context / service-tier policy + canonical outcome
+# (specs/2026-07-18-openai-native-host.md).
+# ---------------------------------------------------------------------------
+
+_SOL_KEY = ("openai", "gpt-5.6-sol")
+_TOKENS = dict(
+    input_tokens=100_000, cache_write_tokens=2_000, cache_read_tokens=50_000, output_tokens=4_000
+)
+
+
+def _flat_cost(key: tuple[str, str]) -> Decimal:
+    r = RATE_TABLE[key]
+    return (
+        r.in_per_token * _TOKENS["input_tokens"]
+        + r.cache_write_per_token * _TOKENS["cache_write_tokens"]
+        + r.cache_read_per_token * _TOKENS["cache_read_tokens"]
+        + r.out_per_token * _TOKENS["output_tokens"]
+    )
+
+
+def _long_cost(key: tuple[str, str]) -> Decimal:
+    r = RATE_TABLE[key]
+    lc = LONG_CONTEXT_POLICY[key]
+    return (
+        r.in_per_token * lc.in_mult * _TOKENS["input_tokens"]
+        + r.cache_write_per_token * lc.cache_write_mult * _TOKENS["cache_write_tokens"]
+        + r.cache_read_per_token * lc.cache_read_mult * _TOKENS["cache_read_tokens"]
+        + r.out_per_token * lc.out_mult * _TOKENS["output_tokens"]
+    )
+
+
+def test_every_gpt56_model_has_long_context_policy() -> None:
+    """All three 5.6 rows carry the 272K full-request repricing; no other key does."""
+    gpt56_keys = {k for k in RATE_TABLE if k[0] == "openai"}
+    assert gpt56_keys == set(LONG_CONTEXT_POLICY.keys())
+    for policy in LONG_CONTEXT_POLICY.values():
+        assert policy.threshold_tokens == 272_000
+        assert (policy.in_mult, policy.cache_write_mult, policy.cache_read_mult) == (
+            Decimal("2"),
+            Decimal("2"),
+            Decimal("2"),
+        )
+        assert policy.out_mult == Decimal("1.5")
+
+
+def test_long_context_reprices_full_request_per_model() -> None:
+    """Above the threshold, every token class of the FULL request reprices —
+    pinned per model, not via a union assertion."""
+    for key in LONG_CONTEXT_POLICY:
+        outcome = compute_cost_outcome(
+            key[0],
+            key[1],
+            billed_prompt_tokens=272_001,
+            service_tier="default",
+            expects_tier_echo=True,
+            **_TOKENS,
+        )
+        assert outcome == Priced(_long_cost(key)), key
+
+
+def test_long_context_boundary_is_strictly_greater() -> None:
+    """272_000 exactly stays flat (docs: '>272K'); 272_001 reprices."""
+    at = compute_cost_outcome(
+        *_SOL_KEY,
+        billed_prompt_tokens=272_000,
+        service_tier="default",
+        expects_tier_echo=True,
+        **_TOKENS,
+    )
+    over = compute_cost_outcome(
+        *_SOL_KEY,
+        billed_prompt_tokens=272_001,
+        service_tier="default",
+        expects_tier_echo=True,
+        **_TOKENS,
+    )
+    assert at == Priced(_flat_cost(_SOL_KEY))
+    assert over == Priced(_long_cost(_SOL_KEY))
+
+
+def test_flex_is_half_of_default_short_and_long() -> None:
+    flex_short = compute_cost_outcome(
+        *_SOL_KEY,
+        billed_prompt_tokens=1_000,
+        service_tier="flex",
+        expects_tier_echo=True,
+        **_TOKENS,
+    )
+    flex_long = compute_cost_outcome(
+        *_SOL_KEY,
+        billed_prompt_tokens=300_000,
+        service_tier="flex",
+        expects_tier_echo=True,
+        **_TOKENS,
+    )
+    assert flex_short == Priced(_flat_cost(_SOL_KEY) * Decimal("0.5"))
+    assert flex_long == Priced(_long_cost(_SOL_KEY) * Decimal("0.5"))
+
+
+def test_priority_is_double_short_context_only() -> None:
+    """Priority short = 2x the flat row; priority+long has no published rates
+    and is Unpriced(PRIORITY_LONG_CONTEXT), never a guessed cost."""
+    prio_short = compute_cost_outcome(
+        *_SOL_KEY,
+        billed_prompt_tokens=1_000,
+        service_tier="priority",
+        expects_tier_echo=True,
+        **_TOKENS,
+    )
+    prio_long = compute_cost_outcome(
+        *_SOL_KEY,
+        billed_prompt_tokens=300_000,
+        service_tier="priority",
+        expects_tier_echo=True,
+        **_TOKENS,
+    )
+    assert prio_short == Priced(_flat_cost(_SOL_KEY) * Decimal("2"))
+    assert prio_long == Unpriced(CostUnpricedReason.PRIORITY_LONG_CONTEXT)
+
+
+def test_unpriceable_tier_taxonomy_per_variant() -> None:
+    """Each unpriceable echo maps to its own reason — pinned individually."""
+    cases = [
+        (None, CostUnpricedReason.ABSENT_TIER),
+        ("", CostUnpricedReason.ABSENT_TIER),
+        ("auto", CostUnpricedReason.AUTO_TIER),
+        ("scale", CostUnpricedReason.SCALE_TIER),
+        ("turbo-9000", CostUnpricedReason.NOVEL_TIER),
+    ]
+    for echo, reason in cases:
+        outcome = compute_cost_outcome(
+            *_SOL_KEY,
+            billed_prompt_tokens=1_000,
+            service_tier=echo,
+            expects_tier_echo=True,
+            **_TOKENS,
+        )
+        assert outcome == Unpriced(reason), (echo, reason)
+
+
+def test_tierless_hosts_never_produce_unpriced() -> None:
+    """With expects_tier_echo=False (Anthropic/GLM), the same absent/novel echoes
+    price flat — absent_tier fires only for echo-expecting profiles."""
+    for echo in (None, "", "auto", "scale", "turbo-9000"):
+        outcome = compute_cost_outcome(
+            "anthropic", "claude-haiku-4-5", service_tier=echo, **_TOKENS
+        )
+        anthropic_flat = compute_cost_usd("anthropic", "claude-haiku-4-5", **_TOKENS)
+        assert outcome == Priced(anthropic_flat), echo
+
+
+def test_compute_cost_usd_wrapper_refuses_unpriced() -> None:
+    """The legacy Decimal wrapper cannot silently swallow an Unpriced outcome."""
+    with pytest.raises(ValueError, match="compute_cost_outcome"):
+        compute_cost_usd(*_SOL_KEY, service_tier="scale", expects_tier_echo=True, **_TOKENS)
