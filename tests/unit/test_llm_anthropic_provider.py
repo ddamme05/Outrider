@@ -9,6 +9,7 @@ is testable without a live Anthropic endpoint.
 
 import logging
 import os
+import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -1182,6 +1183,87 @@ async def test_translate_anthropic_error_does_not_leak_sdk_text_into_wrapper() -
         "raise-from-None failed to set __suppress_context__; "
         "traceback formatter would still render __context__"
     )
+
+
+@pytest.mark.asyncio
+async def test_complete_attaches_safe_diagnostics_and_never_leaks_body() -> None:
+    """A terminal 400 through `complete()` carries BOUNDED diagnostic metadata (status /
+    request id / error category) AND never surfaces the vendor message/body anywhere — not
+    in str, repr, args, the metadata dict, or a formatted traceback. This is the durable
+    replacement for reading the raw SDK error outside the wrapper (which would leak)."""
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(), model_config=_model_config(), persister=persister
+    )
+
+    secret = "secret_body_message_qq7_do_not_surface"  # noqa: S105 — test fixture
+    response = httpx.Response(
+        status_code=400,
+        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+        headers={"request-id": "req_diag_ABC123"},
+    )
+    sdk_exc = anthropic.BadRequestError(
+        secret,
+        response=response,
+        body={"error": {"type": "invalid_request_error", "message": secret}},
+    )
+    assert secret in str(sdk_exc)  # sanity: the SDK exception DOES carry the secret
+
+    with _patched_create(raise_with=sdk_exc), pytest.raises(LLMInvalidRequestError) as ei:
+        await provider.complete(_request())
+    wrapper = ei.value
+
+    # The bounded, safe metadata IS attached.
+    meta = wrapper.diagnostic_metadata()
+    assert meta["http_status"] == 400
+    assert meta["error_category"] == "invalid_request_error"
+    assert meta["request_id"] == "req_diag_ABC123"
+
+    # The vendor message/body NEVER surfaces — str, repr, args, metadata, traceback.
+    tb = "".join(traceback.format_exception(type(wrapper), wrapper, wrapper.__traceback__))
+    for surface in (str(wrapper), repr(wrapper), str(wrapper.args), str(meta), tb):
+        assert secret not in surface, "vendor body/message leaked through a wrapper surface"
+
+
+def test_attach_diagnostics_validates_and_drops_unsafe_values() -> None:
+    """`attach_diagnostics` admits only bounded values and drops anything that could carry
+    content: an out-of-range status, a non-id-shaped request id (e.g. a smuggled message),
+    and an unlisted error category. Dropped strings must not surface on the error."""
+    ok = LLMInvalidRequestError().attach_diagnostics(
+        http_status=400, request_id="req_ok_123", error_category="invalid_request_error"
+    )
+    assert ok.diagnostic_metadata() == {
+        "http_status": 400,
+        "request_id": "req_ok_123",
+        "error_category": "invalid_request_error",
+    }
+
+    bad = LLMInvalidRequestError().attach_diagnostics(
+        http_status=99,  # out of HTTP range → dropped
+        request_id="an id with spaces and a secret_leak_xyz",  # not id-shaped → dropped
+        error_category="here is a free-text leaked_message",  # not allowlisted → dropped
+    )
+    assert bad.diagnostic_metadata() == {
+        "http_status": None,
+        "request_id": None,
+        "error_category": None,
+    }
+    assert "secret_leak_xyz" not in repr(bad)
+    assert "leaked_message" not in repr(bad)
+
+
+def test_diagnostic_metadata_revalidates_on_direct_mutation() -> None:
+    """The backing attributes are public and mutable, so `diagnostic_metadata()` must RE-VALIDATE
+    on output: assigning arbitrary text directly (bypassing `attach_diagnostics`) is filtered back
+    to None, never surfaced through the metadata channel."""
+    err = LLMInvalidRequestError()
+    err.diagnostic_http_status = 700  # type: ignore[assignment] — out of range, injected directly
+    err.diagnostic_request_id = "an id with spaces and a smuggled_secret"
+    err.diagnostic_error_category = "a free-text leaked_body_message"
+    meta = err.diagnostic_metadata()
+    assert meta == {"http_status": None, "request_id": None, "error_category": None}
+    assert "smuggled_secret" not in str(meta)
+    assert "leaked_body_message" not in str(meta)
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,7 @@ notes worth pinning here:
 
 import hashlib
 import json
+import re
 from typing import (
     Any,
     ClassVar,
@@ -153,6 +154,51 @@ def _redact_text(value: str, info: SerializationInfo) -> str:
 
 RetryLayer = Literal["wrapper", "node", "graph", "none"]
 
+# Diagnostic-metadata validation (see `LLMProviderError.attach_diagnostics`). These gate what a
+# provider may attach to a terminal error, so no vendor content leaks through the
+# metadata channel.
+# `error_category` is the vendor error TYPE — a bounded category enum, NOT the free-text message.
+# The set covers Anthropic's documented error types; other providers reusing the taxonomy
+# add theirs.
+_ALLOWED_ERROR_CATEGORIES: Final[frozenset[str]] = frozenset(
+    {
+        "invalid_request_error",
+        "authentication_error",
+        "permission_error",
+        "not_found_error",
+        "request_too_large",
+        "rate_limit_error",
+        "api_error",
+        "overloaded_error",
+        "billing_error",
+        "timeout_error",
+    }
+)
+# A request id is an opaque, id-shaped token (e.g. `req_011C...`) — never content. Bound its shape
+# and length so an unexpected value can't carry arbitrary text.
+_PROVIDER_REQUEST_ID_RE: Final[re.Pattern[str]] = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
+
+
+def _valid_http_status(value: object) -> int | None:
+    """An int in the HTTP status range; anything else (incl. bool) → None."""
+    if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599:
+        return value
+    return None
+
+
+def _valid_request_id(value: object) -> str | None:
+    """An id-shaped token per `_PROVIDER_REQUEST_ID_RE`; anything else → None."""
+    if isinstance(value, str) and _PROVIDER_REQUEST_ID_RE.match(value):
+        return value
+    return None
+
+
+def _valid_error_category(value: object) -> str | None:
+    """A member of the bounded `_ALLOWED_ERROR_CATEGORIES` enum; anything else → None."""
+    if isinstance(value, str) and value in _ALLOWED_ERROR_CATEGORIES:
+        return value
+    return None
+
 
 class LLMProviderError(Exception):
     """Abstract-by-construction base.
@@ -212,10 +258,60 @@ class LLMProviderError(Exception):
                 f"{cls.retry_at_layer!r} not in {get_args(RetryLayer)}"
             )
 
+    # Bounded, privacy-safe diagnostic metadata about a terminal provider failure. Stored as
+    # instance attributes SEPARATE from `Exception.args`, so `str(exc)`, `repr(exc)`, and traceback
+    # rendering never surface them — and, by construction, never surface the vendor message/body the
+    # translator deliberately drops. Populated ONLY through `attach_diagnostics`, which validates
+    # every field. Default `None` = not populated. NOT auto-logged or persisted — exposed only for
+    # explicit structured inspection via `diagnostic_metadata()`.
+    diagnostic_http_status: int | None = None
+    diagnostic_request_id: str | None = None
+    diagnostic_error_category: str | None = None
+
     def __init__(self, *args: object) -> None:
         if type(self) is LLMProviderError:
             raise TypeError("LLMProviderError is abstract; raise a concrete subclass.")
         super().__init__(*args)
+
+    def attach_diagnostics(
+        self,
+        *,
+        http_status: object = None,
+        request_id: object = None,
+        error_category: object = None,
+    ) -> Self:
+        """Attach bounded, validated diagnostic metadata; returns `self` so a caller can
+        `raise err.attach_diagnostics(...)`.
+
+        Every field is validated and kept ONLY if it is a bounded, non-content value:
+          - `http_status`: an int in the HTTP range (100-599); anything else is dropped.
+          - `request_id`: matches `_PROVIDER_REQUEST_ID_RE` (short id-shaped token); else dropped.
+          - `error_category`: a member of `_ALLOWED_ERROR_CATEGORIES` (a fixed enum of
+            vendor error
+            TYPES, never the free-text message); anything else is dropped.
+        A provider extracts raw values from its SDK exception and calls this; validation runs here
+        AND again at output (`diagnostic_metadata`), so no provider can smuggle content in and no
+        direct mutation of the public attrs can leak text either. Never accepts a message or body.
+        """
+        self.diagnostic_http_status = _valid_http_status(http_status)
+        self.diagnostic_request_id = _valid_request_id(request_id)
+        self.diagnostic_error_category = _valid_error_category(error_category)
+        return self
+
+    def diagnostic_metadata(self) -> dict[str, object | None]:
+        """The validated, privacy-safe diagnostic fields as a dict, for explicit inspection
+        (structured logging, a diagnostic harness). Contains ONLY the bounded fields — never the
+        vendor message, body, or `str(exc)`.
+
+        Re-validates on output: the backing attributes are public and mutable, so this re-applies
+        the same bounds — direct assignment of arbitrary text to `diagnostic_error_category` (etc.)
+        is filtered back to `None` here rather than surfaced.
+        """
+        return {
+            "http_status": _valid_http_status(self.diagnostic_http_status),
+            "request_id": _valid_request_id(self.diagnostic_request_id),
+            "error_category": _valid_error_category(self.diagnostic_error_category),
+        }
 
 
 class LLMUnknownError(LLMProviderError):

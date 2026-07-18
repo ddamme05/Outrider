@@ -949,7 +949,37 @@ def _extract_single_text_block(message: Message) -> str:
     return message.content[0].text
 
 
+def _safe_anthropic_diagnostics(
+    exc: anthropic.AnthropicError,
+) -> tuple[object, object, object]:
+    """Extract ONLY bounded, non-content fields for `LLMProviderError.attach_diagnostics`
+    (which re-validates each). Reads the HTTP `status_code`, the `request_id`, and the error
+    `type` — a bounded category enum. NEVER the error message, the body text, or `str(exc)`;
+    reads exactly the `body["error"]["type"]` key, not the message. Returns raw values; the
+    base-class validator is the single gate that admits or drops each."""
+    status = getattr(exc, "status_code", None)
+    request_id = getattr(exc, "request_id", None)
+    category: object = None
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict):
+            category = err.get("type")  # bounded enum; `attach_diagnostics` allowlists it
+    return status, request_id, category
+
+
 def _translate_anthropic_error(exc: anthropic.AnthropicError) -> LLMProviderError:
+    """Map an Anthropic SDK exception to the typed `LLMProviderError` and attach bounded,
+    privacy-safe diagnostic metadata (status / request id / error category — never the message
+    or body). The typed IDENTITY plus this metadata is the operational signal."""
+    err = _classify_anthropic_error(exc)
+    status, request_id, category = _safe_anthropic_diagnostics(exc)
+    return err.attach_diagnostics(
+        http_status=status, request_id=request_id, error_category=category
+    )
+
+
+def _classify_anthropic_error(exc: anthropic.AnthropicError) -> LLMProviderError:
     """Map an Anthropic SDK exception to the typed `LLMProviderError`
     subclass per the mapping table.
 
