@@ -51,13 +51,20 @@ a refusal fixture is required per full-matrix model, not best-effort:
   warm      immediate same-prefix repeat: cached_tokens > 0.
   refusal   message.refusal POPULATED. A comply-with-caveats response fails
             the row honestly — iterate the elicitation prompt and rerun (the
-            probe is 9 cheap calls); never soften the gate instead.
+            probe is 11 cheap calls); never soften the gate instead.
+  trace     (Luna) the REAL trace-node ranking request over the admission
+            scenario: valid permutation per the production parser, the
+            load-bearing candidate ranked first. Graded offline again by
+            tests/eval/test_trace_admission.py.
+  patch     (Luna) the REAL synthesize patch-pass request over the admission
+            scenario: an anchored single-line fix surviving apply_patch_batch.
+            Graded offline again by tests/eval/test_patch_admission.py.
   reasoning (Terra) reasoning_effort="none" accepted, tier echoed.
 
 Run (PAID):  op run --env-file=.env -- uv run --no-sync python spikes/openai/probe.py
 Dry  (free): uv run --no-sync python spikes/openai/probe.py --dry-run
 
-CREDIT NOTE: 9 calls; the four cold/warm rows carry a ~2.6k-token prefix, the
+CREDIT NOTE: 11 calls; the four cold/warm rows carry a ~2.6k-token prefix, the
 rest are small. 401/402 on the first call means fix the key, nothing spent.
 """
 
@@ -68,19 +75,30 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Final
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import openai
 
+from outrider.agent.nodes.patch_generation import apply_patch_batch
+from outrider.agent.nodes.trace_parser import TraceRankingParsed, parse_trace_ranking
+from outrider.audit.events import compute_finding_content_hash
 from outrider.llm.base import LLMRequest
 from outrider.llm.host_profiles import OPENAI_PROFILE
 from outrider.llm.openai_compatible_provider import _build_sdk_kwargs
 from outrider.llm.pricing import MIN_CACHEABLE_TOKENS
+from outrider.policy import EvidenceTier, FindingType, lookup_severity
+from outrider.policy.canonical import compute_candidate_id
+from outrider.policy.dimensions import lookup_dimension
+from outrider.policy.severity import ACTIVE_POLICY_VERSION
+from outrider.prompts import patch as patch_prompt
+from outrider.prompts import trace as trace_prompt
+from outrider.schemas import ReviewFinding
 from outrider.schemas.llm.analyze import (
     ANALYZE_RESPONSE_SCHEMA,
     ANALYZE_RESPONSE_SCHEMA_JSON,
     AnalyzeResponseRaw,
 )
+from outrider.schemas.trace_candidate import TraceCandidate
 
 _FIXTURE_DIR = Path(__file__).parent / "fixtures"
 _MANIFEST = _FIXTURE_DIR / "manifest.json"
@@ -95,7 +113,10 @@ _MANIFEST = _FIXTURE_DIR / "manifest.json"
 # scorecard pins the expected value
 # (test_openai_scorecard._EXPECTED_PROBE_CONTRACT_VERSION); the pair failing
 # loud on drift is the sync mechanism.
-PROBE_CONTRACT_VERSION: Final[int] = 1
+# v2: the matrix gained the two node-admission rows (gpt-5.6-luna:trace /
+# :patch — real trace/patch prompts, parser-backed predicates) per the spec's
+# "one paid row each folded into the probe run".
+PROBE_CONTRACT_VERSION: Final[int] = 2
 # v2: conservation_adjudication became a pointer to the operator-authored,
 # sanitized billing_adjudication.json artifact (equation/evidence moved there).
 # v3: the pointer block gained raw_export_file (the local raw export the gate
@@ -129,6 +150,81 @@ _REFUSAL_USER = (
 _CACHE_FLOOR = MIN_CACHEABLE_TOKENS[("openai", "gpt-5.6-sol")] or 1024
 _STABLE_PREFIX = _SYS + "\n\n" + ("Review guideline line. " * 400)  # ~2.6k tokens
 
+# --- Node-admission scenarios: DUPLICATED in the eval instruments -----------
+# (tests/eval/test_trace_admission.py / test_patch_admission.py — spikes/ is
+# not importable from tests). Drift fails loud: the instruments grade these
+# captures with the production parsers over THEIR copy of the scenario, so a
+# divergent candidate id or target line cannot pass.
+_TRACE_REAL_IMPORT = "app.db"
+_TRACE_DISTRACTOR_IMPORT = "app.render_helpers"
+_TRACE_REAL_REASON = (
+    "handlers.py builds the flagged query via run_query imported from app.db; "
+    "the finding's tainted value flows directly into it"
+)
+_TRACE_DISTRACTOR_REASON = (
+    "render_error_page formats the error string shown when the request fails; "
+    "cosmetic to the finding's data flow"
+)
+
+
+def _trace_candidates() -> tuple[TraceCandidate, TraceCandidate]:
+    real = TraceCandidate(
+        candidate_id=compute_candidate_id(
+            source_proposal_hash="3" * 64,
+            import_string=_TRACE_REAL_IMPORT,
+            reason=_TRACE_REAL_REASON,
+        ),
+        source_proposal_hash="3" * 64,
+        reason=_TRACE_REAL_REASON,
+        import_string=_TRACE_REAL_IMPORT,
+    )
+    distractor = TraceCandidate(
+        candidate_id=compute_candidate_id(
+            source_proposal_hash="4" * 64,
+            import_string=_TRACE_DISTRACTOR_IMPORT,
+            reason=_TRACE_DISTRACTOR_REASON,
+        ),
+        source_proposal_hash="4" * 64,
+        reason=_TRACE_DISTRACTOR_REASON,
+        import_string=_TRACE_DISTRACTOR_IMPORT,
+    )
+    return (real, distractor)
+
+
+_PATCH_FINDING_ID = UUID("00000000-0000-0000-0000-0000000000f1")
+_PATCH_FILE = "app/config_loader.py"
+_PATCH_LINE_NO = 6
+_PATCH_TARGET_LINE = "    return yaml.load(stream)"
+
+
+def _patch_finding() -> ReviewFinding:
+    return ReviewFinding(
+        finding_id=_PATCH_FINDING_ID,
+        review_id=UUID("00000000-0000-0000-0000-0000000000e1"),
+        installation_id=42,
+        finding_type=FindingType.UNSAFE_DESERIALIZATION,
+        severity=lookup_severity(FindingType.UNSAFE_DESERIALIZATION),
+        file_path=_PATCH_FILE,
+        line_start=_PATCH_LINE_NO,
+        line_end=_PATCH_LINE_NO,
+        title="yaml.load without a safe loader deserializes arbitrary objects",
+        description=(
+            "load_config parses an operator-provided stream with yaml.load and no "
+            "Loader argument; a crafted document instantiates arbitrary Python objects."
+        ),
+        evidence=_PATCH_TARGET_LINE,
+        dimension=lookup_dimension(FindingType.UNSAFE_DESERIALIZATION),
+        evidence_tier=EvidenceTier.JUDGED,
+        policy_version=ACTIVE_POLICY_VERSION,
+        content_hash=compute_finding_content_hash(
+            file_path=_PATCH_FILE,
+            line_start=_PATCH_LINE_NO,
+            line_end=_PATCH_LINE_NO,
+            finding_type=FindingType.UNSAFE_DESERIALIZATION,
+        ),
+        proposal_hash="a" * 64,
+    )
+
 
 def _request(model: str, *, system: str, user: str) -> LLMRequest:
     return LLMRequest(
@@ -154,6 +250,45 @@ def _kwargs(model: str, *, system: str, user: str) -> dict[str, Any]:
     return _build_sdk_kwargs(_request(model, system=system, user=user), profile=OPENAI_PROFILE)
 
 
+def _trace_kwargs(model: str) -> dict[str, Any]:
+    """The trace node's EXACT production request shape over the admission
+    scenario: node_id='trace', trace-v1 template, no response schema (the
+    parser is the contract, not the wire)."""
+    parts = trace_prompt.render(_trace_candidates())
+    request = LLMRequest(
+        system_prompt=parts.system_prompt,
+        user_prompt=parts.user_prompt,
+        model=model,
+        max_tokens=trace_prompt.MAX_TOKENS,
+        temperature=trace_prompt.TEMPERATURE,
+        review_id=uuid4(),
+        node_id="trace",
+        prompt_template_version=trace_prompt.VERSION,
+        degraded_mode=False,
+    )
+    return _build_sdk_kwargs(request, profile=OPENAI_PROFILE)
+
+
+def _patch_kwargs(model: str) -> dict[str, Any]:
+    """The patch pass's EXACT production request shape over the admission
+    scenario: node_id='synthesize' (patch cost rolls into synthesize),
+    patch-v1 template, no response schema."""
+    finding = _patch_finding()
+    parts = patch_prompt.render((finding,), {finding.finding_id: _PATCH_TARGET_LINE})
+    request = LLMRequest(
+        system_prompt=parts.system_prompt,
+        user_prompt=parts.user_prompt,
+        model=model,
+        max_tokens=patch_prompt.MAX_TOKENS,
+        temperature=patch_prompt.TEMPERATURE,
+        review_id=uuid4(),
+        node_id="synthesize",
+        prompt_template_version=patch_prompt.VERSION,
+        degraded_mode=False,
+    )
+    return _build_sdk_kwargs(request, profile=OPENAI_PROFILE)
+
+
 def _plan() -> list[tuple[str, bool, dict[str, Any]]]:
     """(tag, required, kwargs) rows. ALL rows required — the refusal fixture is
     a pre-ship gate per model (spec: wire admission is PER MODEL), so nothing
@@ -166,6 +301,11 @@ def _plan() -> list[tuple[str, bool, dict[str, Any]]]:
         rows.append((f"{model}:cold", True, _kwargs(model, system=_STABLE_PREFIX, user=_USER)))
         rows.append((f"{model}:warm", True, _kwargs(model, system=_STABLE_PREFIX, user=_USER)))
         rows.append((f"{model}:refusal", True, _kwargs(model, system=_SYS, user=_REFUSAL_USER)))
+    # Node-admission rows (spec: "one paid row each folded into the probe
+    # run") — Luna is the provisional default for trace + the synthesize
+    # patch pass; the eval instruments grade these captures offline.
+    rows.append(("gpt-5.6-luna:trace", True, _trace_kwargs("gpt-5.6-luna")))
+    rows.append(("gpt-5.6-luna:patch", True, _patch_kwargs("gpt-5.6-luna")))
     rows.append((f"{CHEAP_MODEL}:reasoning", True, _kwargs(CHEAP_MODEL, system=_SYS, user=_USER)))
     return rows
 
@@ -271,6 +411,30 @@ def _evaluate(tag: str, response: Any) -> tuple[bool, str]:
                 "fixture is a pre-ship gate; adjust the elicitation prompt and rerun"
             )
         return True, f"refusal populated: {refusal[:80]!r}"
+    if kind == "trace":
+        outcome = parse_trace_ranking(
+            response_text=choice.message.content or "", candidates=_trace_candidates()
+        )
+        if not isinstance(outcome, TraceRankingParsed):
+            return False, f"trace ranking REJECTED by the production parser: {outcome.reason}"
+        first = outcome.ordered_candidates[0]
+        if first.import_string != _TRACE_REAL_IMPORT:
+            return False, (f"trace ranked {first.import_string!r} above the load-bearing candidate")
+        return True, f"valid permutation, {_TRACE_REAL_IMPORT!r} ranked first"
+    if kind == "patch":
+        finding = _patch_finding()
+        patches = apply_patch_batch(
+            choice.message.content or "",
+            (finding,),
+            {finding.finding_id: _PATCH_TARGET_LINE},
+        )
+        replacement = patches.get(finding.finding_id)
+        if not replacement:
+            return False, (
+                "no valid anchored single-line patch survived the production rules "
+                "(rejected batch, echo drift, out-of-scope edit, or null fix)"
+            )
+        return True, f"anchored single-line patch: {replacement!r}"
     return False, f"unknown row kind {kind!r}"
 
 
@@ -397,12 +561,23 @@ async def _run_paid() -> int:
 def _run_dry() -> int:
     """Free prefix: builds every PRODUCTION request body; no network, no key use."""
     print(f"base_url={OPENAI_PROFILE.base_url} (profile-pinned)  cache_floor={_CACHE_FLOOR}")
-    expected_cache_key = f"outrider:{OPENAI_PROFILE.profile_contract_digest[:16]}:{_PROMPT_VERSION}"
+    digest16 = OPENAI_PROFILE.profile_contract_digest[:16]
+    # trace/patch rows ride the real node requests: no response schema on the
+    # wire (the parser is the contract) and their own template versions in the
+    # production-derived cache key.
+    version_by_kind = {"trace": trace_prompt.VERSION, "patch": patch_prompt.VERSION}
     problems = 0
     for tag, required, kwargs in _plan():
+        kind = tag.rsplit(":", 1)[1]
+        schema_row = kind not in ("trace", "patch")
+        expected_cache_key = f"outrider:{digest16}:{version_by_kind.get(kind, _PROMPT_VERSION)}"
         body_bytes = sum(len(str(m["content"]).encode("utf-8")) for m in kwargs["messages"])
         checks = {
-            "json_object": kwargs.get("response_format") == {"type": "json_object"},
+            "response_format": (
+                kwargs.get("response_format") == {"type": "json_object"}
+                if schema_row
+                else "response_format" not in kwargs
+            ),
             "tier_default": kwargs.get("service_tier") == "default",
             "reasoning_none": kwargs.get("reasoning_effort") == "none",
             "prod_cache_key": kwargs.get("prompt_cache_key") == expected_cache_key,

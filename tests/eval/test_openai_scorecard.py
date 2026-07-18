@@ -89,15 +89,24 @@ _PROBE_MANIFEST = (
 # loud, which is the intended sync mechanism. Refusal rows are in the required
 # set — the refusal-normalization fixture is a PRE-SHIP gate per model (spec
 # "Gates before any production-shaped use"; wire admission is PER MODEL).
-_EXPECTED_PROBE_ROWS: frozenset[str] = frozenset(
-    f"{model}:{kind}" for model in (_SOL, _LUNA) for kind in ("envelope", "cold", "warm", "refusal")
-) | {"gpt-5.6-terra:reasoning"}
+_EXPECTED_PROBE_ROWS: frozenset[str] = (
+    frozenset(
+        f"{model}:{kind}"
+        for model in (_SOL, _LUNA)
+        for kind in ("envelope", "cold", "warm", "refusal")
+    )
+    # Node-admission rows (spec: one paid row each, folded into the probe) —
+    # graded offline by test_trace_admission.py / test_patch_admission.py.
+    | {f"{_LUNA}:trace", f"{_LUNA}:patch"}
+    | {"gpt-5.6-terra:reasoning"}
+)
 
 # Pinned against the probe's PROBE_CONTRACT_VERSION / MANIFEST_SCHEMA_VERSION:
 # a capture from an older probe PROCEDURE (different prompts, schema bytes,
 # matrix, or predicates) or manifest shape must not admit, exactly as a
 # stale profile digest must not.
-_EXPECTED_PROBE_CONTRACT_VERSION = 1
+# Procedure v2: the matrix gained the trace/patch node-admission rows.
+_EXPECTED_PROBE_CONTRACT_VERSION = 2
 _EXPECTED_MANIFEST_SCHEMA_VERSION = 3
 
 # The operator-authored, sanitized billing-adjudication artifact (raw exports
