@@ -489,7 +489,6 @@ class OpenAICompatibleProvider:
                 output_tokens=response.output_tokens,
                 billed_prompt_tokens=response.billed_prompt_tokens,
                 service_tier=response.service_tier_actual,
-                expects_tier_echo=expects_tier_echo,
             )
         except KeyError as exc:
             missing_key = pricing_key(self._profile.host_id, model_id)

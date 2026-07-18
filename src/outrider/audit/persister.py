@@ -2128,7 +2128,6 @@ class AuditPersister:
                 output_tokens=response.output_tokens,
                 billed_prompt_tokens=response.billed_prompt_tokens,
                 service_tier=response.service_tier_actual,
-                expects_tier_echo=expects_tier_echo,
             )
             if isinstance(outcome, Priced):
                 if event.cost_usd != float(outcome.cost_usd):

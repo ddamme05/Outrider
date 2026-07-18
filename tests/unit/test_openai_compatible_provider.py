@@ -1220,7 +1220,6 @@ def _expected_outcome_cost(response_usage: Any, *, service_tier: str | None) -> 
         output_tokens=response_usage.completion_tokens,
         billed_prompt_tokens=response_usage.prompt_tokens,
         service_tier=service_tier,
-        expects_tier_echo=True,
     )
     assert isinstance(outcome, _Priced)
     return float(outcome.cost_usd)
