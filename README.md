@@ -1,5 +1,7 @@
 # Outrider
 
+**▶ Live demo — [outrider-review.duckdns.org](https://outrider-review.duckdns.org/#token=demo_0d4890832aa14a0c0b3d64cb38bae952)** · a keyless, read-only dashboard over six seeded reviews (token pre-filled, no signup). Open a review's findings, browse the append-only audit trail, and run a replay.
+
 Outrider is a self-hosted AI code-review agent for GitHub. A seven-stage LangGraph pipeline
 reviews eligible pull requests and can post an ordinary GitHub review with inline comments
 and suggested fixes. For supported languages (Python and JS/TS/TSX today), tree-sitter gives the
@@ -36,11 +38,6 @@ application database or runs separately. Apply your own retention controls to it
 > and has driven real pull requests end-to-end on sandbox repositories. It has no production
 > users yet, and configuration surfaces and APIs may still change before a stable release. Read
 > [What Outrider is not](#what-outrider-is-not) before forming expectations.
-
-<!-- TODO(demo): restore a live-demo link once a shareable viewer credential exists. A
-     read-only demo deployment runs at https://outrider-review.duckdns.org. The dashboard reads
-     a token from a #token= URL fragment (see deploy/README.md). Do not publish the admin key
-     here even though the demo server is GET-only. -->
 
 **Contents:** [How a review works](#how-a-review-works) ·
 [A file's journey](#a-files-journey) ·
