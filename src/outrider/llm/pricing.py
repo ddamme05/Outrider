@@ -33,14 +33,23 @@ When rates change:
 import re
 from collections.abc import Mapping
 from decimal import Decimal
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Final, NamedTuple
 
 __all__ = [
+    "LONG_CONTEXT_POLICY",
     "MIN_CACHEABLE_TOKENS",
     "PRICING_VERSION",
     "RATE_TABLE",
+    "SERVICE_TIER_MULTIPLIERS",
+    "CostUnpricedReason",
+    "LongContextPolicy",
     "ModelPricing",
+    "Priced",
+    "PricingOutcome",
+    "Unpriced",
+    "compute_cost_outcome",
     "compute_cost_usd",
     "min_cacheable_tokens",
     "normalize_to_pricing_key",
@@ -132,7 +141,7 @@ version-keyed cost aggregation.
 #   2026-06-30 INTRODUCTORY rate ($2.00 in / $10.00 out per MTok; cache read
 #   $0.20 = 0.10× input, cache write $2.50 = 1.25× input). Introductory pricing
 #   runs through 2026-08-31; STANDARD pricing ($3.00 in / $15.00 out) takes effect
-#   2026-09-01 and needs a bump then (FUP-201, now the v7 slot). The prior
+#   2026-09-01 and needs a bump then (FUP-201, now the v8 slot). The prior
 #   claude-sonnet-4-6 rates are RETAINED for historical replay + the GLM-vs-Anthropic
 #   scorecard baseline. Anthropic pricing values are runtime-enforced and can drift
 #   between snapshots — verify live before that bump.
@@ -142,7 +151,17 @@ version-keyed cost aggregation.
 #   cached-input DIVERGES from Baseten's $0.26 (dropped to $0.14 on 6/30) — the host-qualified
 #   key resolves both. No Anthropic/Baseten rate VALUES changed; the bump records v6 so a
 #   Fireworks-host call replays under this table.
-PRICING_VERSION: Final[str] = "v6"
+# v7 (specs/2026-07-18-openai-native-host.md): added the native OpenAI host — three
+#   ("openai", gpt-5.6-{sol,terra,luna}) rows at the Standard short-context rates
+#   (mirror openai-api snapshot 2026-07-18: Sol $5.00/$6.25/$0.50/$30.00 per MTok
+#   in/write/read/out; Terra $2.50/$3.125/$0.25/$15.00; Luna $1.00/$1.25/$0.10/$6.00;
+#   writes are 1.25× input across the family) — PLUS the versioned long-context/tier
+#   policy (LONG_CONTEXT_POLICY: >272K reprices the FULL request 2×/2×/2×/1.5×;
+#   SERVICE_TIER_MULTIPLIERS: flex 0.5×, priority 2× short-context-only) and the
+#   CostUnpricedReason classification, all folded into the widened v7 digest.
+#   No prior rate VALUES changed. The Sonnet 5 standard-rate bump (FUP-201) now
+#   targets v8.
+PRICING_VERSION: Final[str] = "v7"
 if not re.fullmatch(PRICING_VERSION_PATTERN, PRICING_VERSION):
     raise RuntimeError(
         f"PRICING_VERSION must match {PRICING_VERSION_PATTERN!r} "
@@ -246,6 +265,32 @@ RATE_TABLE: Final[Mapping[tuple[str, str], ModelPricing]] = MappingProxyType(
             cache_read_per_token=Decimal("0.00000014"),  # 0.14/MTok (cached input)
             out_per_token=Decimal("0.0000044"),  # 4.40/MTok
         ),
+        # GPT-5.6 family on api.openai.com (PRICING_VERSION v7;
+        # specs/2026-07-18-openai-native-host.md). Standard SHORT-CONTEXT rates from the
+        # openai-api mirror pricing page (snapshot 2026-07-18). Cache writes are a real
+        # billed class on 5.6+ (1.25× input); >272K-input requests reprice the FULL
+        # request via LONG_CONTEXT_POLICY below — these flat rows are provably correct
+        # only together with the provider's pre-flight input ceiling. Explicit slugs
+        # only: the `gpt-5.6` alias routes to Sol server-side and is rejected by the
+        # profile's model_slug_pattern so the request-side pricing key never desyncs.
+        ("openai", "gpt-5.6-sol"): ModelPricing(
+            in_per_token=Decimal("0.000005"),  # 5.00/MTok
+            cache_write_per_token=Decimal("0.00000625"),  # 6.25/MTok (1.25× input)
+            cache_read_per_token=Decimal("0.0000005"),  # 0.50/MTok (0.10× input)
+            out_per_token=Decimal("0.00003"),  # 30.00/MTok
+        ),
+        ("openai", "gpt-5.6-terra"): ModelPricing(
+            in_per_token=Decimal("0.0000025"),  # 2.50/MTok
+            cache_write_per_token=Decimal("0.000003125"),  # 3.125/MTok (1.25× input)
+            cache_read_per_token=Decimal("0.00000025"),  # 0.25/MTok (0.10× input)
+            out_per_token=Decimal("0.000015"),  # 15.00/MTok
+        ),
+        ("openai", "gpt-5.6-luna"): ModelPricing(
+            in_per_token=Decimal("0.000001"),  # 1.00/MTok
+            cache_write_per_token=Decimal("0.00000125"),  # 1.25/MTok (1.25× input)
+            cache_read_per_token=Decimal("0.0000001"),  # 0.10/MTok (0.10× input)
+            out_per_token=Decimal("0.000006"),  # 6.00/MTok
+        ),
     }
 )
 
@@ -294,6 +339,12 @@ MIN_CACHEABLE_TOKENS: Final[Mapping[tuple[str, str], int | None]] = MappingProxy
         # not consult this (Fireworks caches automatically; the provider reads cached_tokens
         # straight from usage); the entry exists for the RATE_TABLE key-set parity test.
         ("fireworks", "accounts/fireworks/models/glm-5p2"): 0,
+        # OpenAI: automatic caching for prompts >= 1024 tokens (prompt-caching guide,
+        # mirror snapshot 2026-07-18: "caching is enabled automatically for prompts that
+        # are 1024 tokens or longer"). One documented floor for the whole 5.6 family.
+        ("openai", "gpt-5.6-sol"): 1024,
+        ("openai", "gpt-5.6-terra"): 1024,
+        ("openai", "gpt-5.6-luna"): 1024,
     }
 )
 
@@ -312,6 +363,163 @@ def min_cacheable_tokens(profile_id: str, model: str) -> int | None:
     return MIN_CACHEABLE_TOKENS[pricing_key(profile_id, model)]
 
 
+class CostUnpricedReason(StrEnum):
+    """Closed reasons a COMPLETED, billed exchange cannot be honestly priced.
+
+    Rides `LLMCallEvent.cost_unpriced_reason`, coupled to a null `cost_usd`
+    (priced ⇔ reason absent). The actual vendor tier echo is preserved
+    separately as a bounded raw string — a novel echo is never collapsed
+    into this enum. Absent-echo fires only for profiles that DECLARE a
+    `requested_service_tier` (specs/2026-07-18-openai-native-host.md).
+    """
+
+    ABSENT_TIER = "absent_tier"
+    AUTO_TIER = "auto_tier"
+    SCALE_TIER = "scale_tier"
+    NOVEL_TIER = "novel_tier"
+    PRIORITY_LONG_CONTEXT = "priority_long_context"
+
+
+class Priced(NamedTuple):
+    """Canonical priced outcome: the exact `Decimal` cost for one call."""
+
+    cost_usd: Decimal
+
+
+class Unpriced(NamedTuple):
+    """Canonical unpriceable outcome: typed reason, no fabricated cost."""
+
+    reason: CostUnpricedReason
+
+
+PricingOutcome = Priced | Unpriced
+"""The ONE pricing authority's result type (specs/2026-07-18-openai-native-host.md):
+both providers and `audit/persister.py`'s fresh-write cross-check consume this, so
+the unpriceable classification exists exactly once."""
+
+
+class LongContextPolicy(NamedTuple):
+    """Full-request repricing above a flat-rate input-token threshold."""
+
+    threshold_tokens: int
+    in_mult: Decimal
+    cache_write_mult: Decimal
+    cache_read_mult: Decimal
+    out_mult: Decimal
+
+
+# >272K-input requests reprice the FULL request (mirror openai-api snapshot
+# 2026-07-18, per-model pages: "2x input and 1.5x output for the full request";
+# the pricing table's long-context columns are exactly 2×/2×/2×/1.5× of each
+# flat row for all three models). Keyed like RATE_TABLE; absence = no
+# documented long-context repricing (every non-5.6 key today).
+LONG_CONTEXT_POLICY: Final[Mapping[tuple[str, str], LongContextPolicy]] = MappingProxyType(
+    {
+        key: LongContextPolicy(
+            threshold_tokens=272_000,
+            in_mult=Decimal("2"),
+            cache_write_mult=Decimal("2"),
+            cache_read_mult=Decimal("2"),
+            out_mult=Decimal("1.5"),
+        )
+        for key in (
+            ("openai", "gpt-5.6-sol"),
+            ("openai", "gpt-5.6-terra"),
+            ("openai", "gpt-5.6-luna"),
+        )
+    }
+)
+
+# Echoed-service-tier multipliers over the corresponding default-tier rate
+# (mirror pricing tables, snapshot 2026-07-18: Flex = 0.5× Standard short AND
+# long; Priority = 2× Standard, SHORT CONTEXT ONLY — no published Priority
+# long-context rates, so priority+long is Unpriced(PRIORITY_LONG_CONTEXT)).
+SERVICE_TIER_MULTIPLIERS: Final[Mapping[str, Decimal]] = MappingProxyType(
+    {
+        "default": Decimal("1"),
+        "flex": Decimal("0.5"),
+        "priority": Decimal("2"),
+    }
+)
+
+
+def compute_cost_outcome(
+    profile_id: str | None,
+    model: str,
+    *,
+    input_tokens: int,
+    cache_write_tokens: int,
+    cache_read_tokens: int,
+    output_tokens: int,
+    billed_prompt_tokens: int | None = None,
+    service_tier: str | None = None,
+    expects_tier_echo: bool = False,
+) -> PricingOutcome:
+    """The canonical pricing authority (specs/2026-07-18-openai-native-host.md).
+
+    Derives the >272K long-context determination INTERNALLY from the raw
+    `billed_prompt_tokens` wire count — callers never decide the threshold —
+    and gates the rate on the ECHOED `service_tier` when the host's profile
+    declares a requested tier (`expects_tier_echo=True`). Tier-less hosts
+    (Anthropic, the GLM hosts) pass neither kwarg and price flat, byte-identical
+    to the pre-v7 behavior. Raises `KeyError` on an unpriced `(profile_id,
+    model)` (coverage bug, same as always); returns `Unpriced(reason)` for the
+    documented-but-unpriceable echoes rather than fabricating a cost.
+    """
+    import decimal
+
+    if profile_id is None:
+        raise ValueError(
+            f"compute_cost_outcome requires a host-qualified profile_id to price "
+            f"model {model!r}; got None. A real provider stamps the host-identity "
+            f"triad (DECISIONS.md#056), so an unqualified response reaching pricing "
+            f"is a provider/fixture bug, not a billable call."
+        )
+    key = pricing_key(profile_id, model)
+    rates = RATE_TABLE[key]  # KeyError on unpriced model — intentional, pre-tier.
+
+    tier_mult = Decimal("1")
+    if expects_tier_echo:
+        if not service_tier:
+            return Unpriced(CostUnpricedReason.ABSENT_TIER)
+        if service_tier == "auto":
+            return Unpriced(CostUnpricedReason.AUTO_TIER)
+        if service_tier == "scale":
+            return Unpriced(CostUnpricedReason.SCALE_TIER)
+        if service_tier not in SERVICE_TIER_MULTIPLIERS:
+            return Unpriced(CostUnpricedReason.NOVEL_TIER)
+        tier_mult = SERVICE_TIER_MULTIPLIERS[service_tier]
+
+    candidate = LONG_CONTEXT_POLICY.get(key)
+    long_policy: LongContextPolicy | None = None
+    if (
+        candidate is not None
+        and billed_prompt_tokens is not None
+        and billed_prompt_tokens > candidate.threshold_tokens
+    ):
+        long_policy = candidate
+    if long_policy is not None and expects_tier_echo and service_tier == "priority":
+        return Unpriced(CostUnpricedReason.PRIORITY_LONG_CONTEXT)
+
+    with decimal.localcontext() as ctx:
+        ctx.prec = 28  # Python's documented default; insulates against caller mutations.
+        if long_policy is not None:
+            cost = (
+                rates.in_per_token * long_policy.in_mult * input_tokens
+                + rates.cache_write_per_token * long_policy.cache_write_mult * cache_write_tokens
+                + rates.cache_read_per_token * long_policy.cache_read_mult * cache_read_tokens
+                + rates.out_per_token * long_policy.out_mult * output_tokens
+            )
+        else:
+            cost = (
+                rates.in_per_token * input_tokens
+                + rates.cache_write_per_token * cache_write_tokens
+                + rates.cache_read_per_token * cache_read_tokens
+                + rates.out_per_token * output_tokens
+            )
+        return Priced(cost * tier_mult)
+
+
 def compute_cost_usd(
     profile_id: str | None,
     model: str,
@@ -320,6 +528,9 @@ def compute_cost_usd(
     cache_write_tokens: int,
     cache_read_tokens: int,
     output_tokens: int,
+    billed_prompt_tokens: int | None = None,
+    service_tier: str | None = None,
+    expects_tier_echo: bool = False,
 ) -> Decimal:
     """Compute total cost in USD for one LLM call on `(profile_id, model)`.
 
@@ -357,8 +568,6 @@ def compute_cost_usd(
     Python's documented default (28) inside the local context produces
     deterministic 28-digit results regardless of caller state.
     """
-    import decimal
-
     if profile_id is None:
         raise ValueError(
             f"compute_cost_usd requires a host-qualified profile_id to price "
@@ -366,12 +575,26 @@ def compute_cost_usd(
             f"triad (DECISIONS.md#056), so an unqualified response reaching pricing "
             f"is a provider/fixture bug, not a billable call."
         )
-    with decimal.localcontext() as ctx:
-        ctx.prec = 28  # Python's documented default; insulates against caller mutations.
-        rates = RATE_TABLE[pricing_key(profile_id, model)]
-        return (
-            rates.in_per_token * input_tokens
-            + rates.cache_write_per_token * cache_write_tokens
-            + rates.cache_read_per_token * cache_read_tokens
-            + rates.out_per_token * output_tokens
+    # Thin wrapper over the canonical authority (v7): flat/long/tier math lives in
+    # `compute_cost_outcome` exactly once. Callers that can legitimately receive an
+    # `Unpriced` outcome (the tier-echoing OpenAI path, the persister guard) consume
+    # `compute_cost_outcome` directly; reaching an Unpriced result THROUGH this
+    # wrapper is a programming error, not a billing state.
+    outcome = compute_cost_outcome(
+        profile_id,
+        model,
+        input_tokens=input_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cache_read_tokens=cache_read_tokens,
+        output_tokens=output_tokens,
+        billed_prompt_tokens=billed_prompt_tokens,
+        service_tier=service_tier,
+        expects_tier_echo=expects_tier_echo,
+    )
+    if isinstance(outcome, Unpriced):
+        raise ValueError(
+            f"compute_cost_usd cannot return a cost for an unpriceable outcome "
+            f"({outcome.reason.value!r} on {model!r}); use compute_cost_outcome at "
+            f"call sites that handle Unpriced."
         )
+    return outcome.cost_usd
