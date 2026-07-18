@@ -65,8 +65,12 @@ export function HeroChart({
   const xTickLabels = thinLabels(labels, 7);
 
   // null on an all-zero window (peakIndex -1) → the legend omits "on <day>" rather than
-  // claiming a peak day that didn't happen (honest-zeros).
-  const peakDay = stats.peakIndex >= 0 ? (labels[stats.peakIndex] ?? null) : null;
+  // claiming a peak day that didn't happen (honest-zeros). ALSO null whenever any
+  // bucket is incomplete: the largest KNOWN subtotal need not belong to the true peak
+  // bucket, so naming a day would state a fact the data cannot support — the ≥ bound
+  // on the value stays, the attribution goes.
+  const peakDay =
+    stats.peakIndex >= 0 && complete.every(Boolean) ? (labels[stats.peakIndex] ?? null) : null;
 
   return (
     <div className="panel hero-chart">
