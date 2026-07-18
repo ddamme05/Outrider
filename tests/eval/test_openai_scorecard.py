@@ -215,7 +215,7 @@ async def test_gpt56_vs_anthropic_scorecard() -> None:
                     fixture_path,
                     ground_truth,
                     # Column-qualified so an ERRORED gate entry names WHICH
-                    # candidate's scenario needs the rerun (Codex round-8 #5).
+                    # candidate's scenario needs the rerun.
                     f"recall:{candidate_model}",
                     candidate_model=candidate_model,
                     baseline_model=baseline_model,
@@ -290,7 +290,7 @@ async def test_gpt56_vs_anthropic_scorecard() -> None:
                 # The FULL gate table — ERRORED rows included, column-qualified —
                 # persists alongside the scorecard so transiently errored
                 # scenarios survive into the adjudication artifact instead of
-                # existing only in stdout (Codex round-8 #5).
+                # existing only in stdout.
                 (report_dir / "openai-gpt56-gates.json").write_text(
                     json.dumps(
                         [
@@ -323,8 +323,8 @@ async def test_gpt56_vs_anthropic_scorecard() -> None:
 
     # Completion pin: EXACTLY one gate entry per scheduled (scenario, column) —
     # a completed comparison and a transient ERRORED each append one, so any
-    # shortfall means a scenario was silently dropped (Codex round-8 #5). The
-    # old `rows or gate_results` truthiness passed on a 1-of-64 run.
+    # shortfall means a scenario was silently dropped (a bare truthiness check
+    # would pass on a 1-of-64 run).
     assert len(gate_results) == scheduled, (
         f"scorecard incomplete: {len(gate_results)} gate entries for {scheduled} "
         f"scheduled (scenario, column) pairs — see reports/scorecard/openai-gpt56-gates.json"
