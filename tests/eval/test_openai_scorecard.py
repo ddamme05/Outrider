@@ -32,11 +32,14 @@ gate per model; extra rows rejected; bare path-safe filenames only), each
 fixture's sha256, the cold/warm conservation BOUNDS recomputed from fixture
 bytes, and — because bounds cannot choose between the spec's two accounting
 equations — the operator's sanitized billing-adjudication ARTIFACT
-(`billing_adjudication.json`; raw exports stay local/gitignored), which must
-be BOUND to this capture (exact response IDs, a bounded window covering the
-fixtures' `created` stamps, billed class counts consistent with the wire) and
-must match the equation `read_usage()` ships. A conformance surprise is caught
-on the probe's cheap capture, never on this ~128-call run.
+(`billing_adjudication.json`; raw exports stay local/gitignored, but the raw
+export must EXIST under fixtures/raw/ and hash-match the artifact at
+admission), which is closed-key at every level (extra keys refuse — that is
+what keeps the sole committable file sanitized) and must be BOUND to this
+capture (exact response IDs, a bounded window covering the fixtures'
+`created` stamps, billed class counts consistent with the wire) and must
+match the equation `read_usage()` ships. A conformance surprise is caught on
+the probe's cheap capture, never on this ~128-call run.
 
 Run (keys resolve from .env via 1Password):
   OUTRIDER_EVAL_REAL_MODELS=1 op run --env-file=.env -- \
@@ -95,15 +98,60 @@ _EXPECTED_PROBE_ROWS: frozenset[str] = frozenset(
 # matrix, or predicates) or manifest shape must not admit, exactly as a
 # stale profile digest must not.
 _EXPECTED_PROBE_CONTRACT_VERSION = 1
-_EXPECTED_MANIFEST_SCHEMA_VERSION = 2
+_EXPECTED_MANIFEST_SCHEMA_VERSION = 3
 
 # The operator-authored, sanitized billing-adjudication artifact (raw exports
 # stay local/gitignored). A sha256 match proves INTEGRITY; the schema +
 # capture-binding checks below prove RELEVANCE — response IDs, a bounded
 # billing window covering the fixtures' `created` stamps, and billed class
 # counts cross-checked against the wire under the adjudicated equation.
-_EXPECTED_ADJUDICATION_SCHEMA_VERSION = 1
+# v2: adjudicated_by narrowed to a bounded single-line string;
+# count_reconciliation narrowed from free-form to a per-model mapping of
+# evidence-derived closed cause codes — v1 named the permissive contract.
+_EXPECTED_ADJUDICATION_SCHEMA_VERSION = 2
 _MAX_ADJUDICATION_WINDOW_SECONDS = 86_400
+
+# CLOSED key sets for the committable artifact, enforced as set EQUALITY at
+# every object level. The artifact is the ONLY capture file .gitignore lets
+# into the repo, and "sanitized" is a gate property, not a docstring claim:
+# an extra key — a project/org/key identifier, a dollar amount, an embedded
+# raw export — refuses admission instead of riding into git.
+_ARTIFACT_KEYS = frozenset(
+    {
+        "adjudication_schema_version",
+        "equation",
+        "adjudicated_by",
+        "count_reconciliation",
+        "raw_export_sha256",
+        "window_utc",
+        "models",
+    }
+)
+_WINDOW_KEYS = frozenset({"start_epoch", "end_epoch"})
+_BINDING_KEYS = frozenset(
+    {
+        "cold_response_id",
+        "warm_response_id",
+        "billed_fresh_input_tokens",
+        "billed_cache_write_tokens",
+    }
+)
+
+# Closed keys are not enough — approved keys must also carry BOUNDED, TYPED
+# values, or an entire raw export can ride in nested under `adjudicated_by`.
+_MAX_ADJUDICATED_BY_CHARS = 120
+# The closed indeterminate-CAUSE vocabulary, one code per branch of
+# _supported_by_counts. Reconciliation is EVIDENCE-DERIVED, not merely
+# allowlisted: the artifact must map exactly the indeterminate models to
+# exactly their derived causes (acknowledgment semantics — the operator types
+# what the evidence shows), and must be null when every model is determinate.
+_INDETERMINATE_CAUSES = frozenset(
+    {
+        "wire_omitted_total_tokens",  # total/completion operand absent or non-int
+        "cold_warm_pair_incoherent",  # prompt counts differ across the pair
+        "total_matches_neither_equation",  # coherent ints, neither identity holds
+    }
+)
 
 
 def _is_bare_filename(name: object) -> bool:
@@ -132,32 +180,38 @@ _READ_USAGE_PINNED_EQUATION = "prompt_minus_cached"
 _KNOWN_EQUATIONS = ("prompt_minus_cached", "prompt_minus_cached_minus_writes")
 
 
-def _supported_by_counts(cold_usage: dict[str, object], warm_usage: dict[str, object]) -> str:
-    """Which equation a model's hash-verified cold/warm fixture usage supports.
-    Deliberately re-implements the probe's characterization (spikes/ is not
-    importable from tests; independent recomputation is the point — the gate
-    must not trust the manifest's own conservation_facts block). total_tokens
-    is the disambiguator: == prompt + completion means writes ride INSIDE
-    prompt_tokens (input must subtract them); == prompt + write + completion
-    means writes are an additive class. Anything else — including an
-    incoherent cold/warm prompt pair — is indeterminate, never a guess."""
+def _supported_by_counts(
+    cold_usage: dict[str, object], warm_usage: dict[str, object]
+) -> tuple[str, str | None]:
+    """Which equation a model's hash-verified cold/warm fixture usage supports,
+    as `(support, indeterminate_cause)` — support is an equation or
+    "indeterminate", and the cause is the TYPED reason (one of
+    `_INDETERMINATE_CAUSES`) or None for determinate evidence, so the
+    reconciliation can be required to match the evidence rather than merely
+    name an allowlisted code. Deliberately re-implements the probe's
+    characterization (spikes/ is not importable from tests; independent
+    recomputation is the point — the gate must not trust the manifest's own
+    conservation_facts block). total_tokens is the disambiguator:
+    == prompt + completion means writes ride INSIDE prompt_tokens (input must
+    subtract them); == prompt + write + completion means writes are an
+    additive class."""
     prompt = cold_usage.get("prompt_tokens")
     completion = cold_usage.get("completion_tokens")
     total = cold_usage.get("total_tokens")
     ptd = cold_usage.get("prompt_tokens_details")
     write = ptd.get("cache_write_tokens") if isinstance(ptd, dict) else None
-    if (
-        not all(isinstance(v, int) for v in (prompt, completion, total, write))
-        or not write
-        or warm_usage.get("prompt_tokens") != prompt
-    ):
-        return "indeterminate"
+    if not all(isinstance(v, int) for v in (prompt, completion, total, write)) or not write:
+        # prompt/write are pre-guaranteed by the bounds loop on real captures;
+        # the realistic holes are total_tokens / completion_tokens.
+        return ("indeterminate", "wire_omitted_total_tokens")
+    if warm_usage.get("prompt_tokens") != prompt:
+        return ("indeterminate", "cold_warm_pair_incoherent")
     assert isinstance(prompt, int) and isinstance(completion, int)  # narrowed above
     if total == prompt + completion:
-        return "prompt_minus_cached_minus_writes"
+        return ("prompt_minus_cached_minus_writes", None)
     if total == prompt + write + completion:
-        return "prompt_minus_cached"
-    return "indeterminate"
+        return ("prompt_minus_cached", None)
+    return ("indeterminate", "total_matches_neither_equation")
 
 
 def _require_probe_manifest() -> None:
@@ -169,15 +223,19 @@ def _require_probe_manifest() -> None:
     bare filenames, each fixture's existence + sha256, the cold/warm
     conservation bounds recomputed FROM THE FIXTURE BYTES, and the sanitized
     billing-adjudication ARTIFACT bound to THIS capture: its own schema
-    version, the fixtures' exact response IDs, a bounded billing window
+    version, CLOSED key sets at every object level (sanitization is enforced,
+    not asserted), the fixtures' exact response IDs, a bounded billing window
     covering their `created` stamps, billed fresh/write class counts
-    cross-checked against the wire under the adjudicated equation, per-model
-    count support recomputed from fixture bytes (contrary counts refuse
-    outright; indeterminate counts need an explicit reconciliation), and
-    equality with read_usage()'s shipped equation. A hash proves integrity;
-    the binding proves relevance. (A determined forger can fabricate all of it
-    together; the gate's job is stale/partial/accidental artifacts, not
-    adversarial operators — the operator IS the trust anchor.)"""
+    cross-checked against the wire under the adjudicated equation, the LOCAL
+    raw export located under fixtures/raw/ and hashed byte-for-byte against
+    raw_export_sha256 (the independent billing source must exist, not merely
+    be claimed), per-model count support recomputed from fixture bytes
+    (contrary counts refuse outright; indeterminate counts need an explicit
+    reconciliation), and equality with read_usage()'s shipped equation. A
+    hash proves integrity; the binding proves relevance. (A determined forger
+    can fabricate all of it together; the gate's job is
+    stale/partial/accidental artifacts, not adversarial operators — the
+    operator IS the trust anchor.)"""
     from outrider.llm.host_profiles import OPENAI_PROFILE  # noqa: PLC0415
 
     def _fail(reason: str) -> NoReturn:
@@ -290,6 +348,22 @@ def _require_probe_manifest() -> None:
             f"(adjudication_schema_version != {_EXPECTED_ADJUDICATION_SCHEMA_VERSION}) — "
             "a hash match proves integrity, not relevance"
         )
+
+    def _require_exact_keys(obj: object, allowed: frozenset[str], where: str) -> None:
+        """Closed-set EQUALITY: the artifact is the only committable capture
+        file, so 'sanitized' is enforced, not asserted — an extra key (org/key
+        identifier, dollar amount, embedded export) refuses admission."""
+        if not isinstance(obj, dict):
+            _fail(f"{where} must be a JSON object")
+        extra = sorted(set(obj) - allowed)
+        absent = sorted(allowed - set(obj))
+        if extra or absent:
+            _fail(
+                f"{where} key set must be exactly {sorted(allowed)} — "
+                f"extra={extra} missing={absent}; sanitization violation"
+            )
+
+    _require_exact_keys(artifact, _ARTIFACT_KEYS, "adjudication artifact")
     equation = artifact.get("equation")
     if equation not in _KNOWN_EQUATIONS:
         _fail(f"unknown conservation equation {equation!r} (expected one of {_KNOWN_EQUATIONS})")
@@ -299,15 +373,50 @@ def _require_probe_manifest() -> None:
             f"{_READ_USAGE_PINNED_EQUATION!r} — the shipped accounting disagrees with "
             "the wire; change read_usage + pricing first, then update this pin"
         )
-    if not artifact.get("adjudicated_by"):
-        _fail("adjudication artifact must carry non-empty adjudicated_by")
+    adjudicated_by = artifact.get("adjudicated_by")
+    if not (
+        isinstance(adjudicated_by, str)
+        and 0 < len(adjudicated_by) <= _MAX_ADJUDICATED_BY_CHARS
+        and "\n" not in adjudicated_by
+    ):
+        _fail(
+            f"adjudicated_by must be a non-empty single-line string of at most "
+            f"{_MAX_ADJUDICATED_BY_CHARS} chars — bulk or nested content under an "
+            "approved key is a sanitization violation"
+        )
+    reconciliation = artifact.get("count_reconciliation")
     raw_sha = artifact.get("raw_export_sha256")
     if not (isinstance(raw_sha, str) and re.fullmatch(r"[0-9a-f]{64}", raw_sha)):
         _fail(
             "raw_export_sha256 must be the sha256 hex of the LOCAL raw billing export "
             "(kept under fixtures/raw/, never committed)"
         )
-    window = artifact.get("window_utc") or {}
+    # The independent billing source must EXIST, not merely be claimed: the
+    # (local, gitignored) manifest names the raw export's path confined
+    # beneath fixtures/raw/, and the gate hashes those ACTUAL bytes against
+    # the artifact's raw_export_sha256. Without this, the "independent
+    # source" collapses to a self-consistent operator-authored artifact.
+    raw_file = adjudication.get("raw_export_file")
+    raw_parts = str(raw_file).split("/") if isinstance(raw_file, str) else []
+    if len(raw_parts) != 2 or raw_parts[0] != "raw" or not _is_bare_filename(raw_parts[1]):
+        _fail(
+            f"raw_export_file {raw_file!r} must name the local raw billing export as "
+            "'raw/<filename>' (confined beneath the capture dir's raw/ subdirectory)"
+        )
+    raw_path = _PROBE_MANIFEST.parent / "raw" / raw_parts[1]
+    if not raw_path.exists():
+        _fail(
+            f"raw billing export {raw_file!r} is missing — the independent billing "
+            "source must exist locally at admission (gitignored, never committed)"
+        )
+    if hashlib.sha256(raw_path.read_bytes()).hexdigest() != raw_sha:
+        _fail(
+            f"raw billing export {raw_file!r} bytes do not match the artifact's "
+            "raw_export_sha256 — the adjudication does not describe this export"
+        )
+    window = artifact.get("window_utc")
+    _require_exact_keys(window, _WINDOW_KEYS, "window_utc")
+    assert isinstance(window, dict)  # narrowed: _require_exact_keys raises otherwise
     start, end = window.get("start_epoch"), window.get("end_epoch")
     if not (isinstance(start, int) and isinstance(end, int) and 0 < start < end):
         _fail("window_utc must carry integer epochs with start_epoch < end_epoch")
@@ -317,11 +426,17 @@ def _require_probe_manifest() -> None:
             f"{_MAX_ADJUDICATION_WINDOW_SECONDS}s) — a broad window cannot bind "
             "evidence to THIS capture"
         )
-    bindings = artifact.get("models") or {}
+    bindings = artifact.get("models")
+    if not isinstance(bindings, dict) or set(bindings) != {_SOL, _LUNA}:
+        _fail(
+            f"artifact models must carry exactly the two full-matrix entries "
+            f"{sorted((_SOL, _LUNA))} — extra or missing model blocks are a "
+            "sanitization/coverage violation"
+        )
     for model in (_SOL, _LUNA):
         binding = bindings.get(model)
-        if not isinstance(binding, dict):
-            _fail(f"adjudication artifact carries no capture binding for {model}")
+        _require_exact_keys(binding, _BINDING_KEYS, f"models[{model}]")
+        assert isinstance(binding, dict)  # narrowed: _require_exact_keys raises otherwise
         cold_doc = fixture_doc_by_row.get(f"{model}:cold") or {}
         warm_doc = fixture_doc_by_row.get(f"{model}:warm") or {}
         for kind, doc in (("cold", cold_doc), ("warm", warm_doc)):
@@ -365,20 +480,43 @@ def _require_probe_manifest() -> None:
         )
         for model in (_SOL, _LUNA)
     }
-    contrary = {m: s for m, s in support_by_model.items() if s not in ("indeterminate", equation)}
+    contrary = {
+        m: s for m, (s, _cause) in support_by_model.items() if s not in ("indeterminate", equation)
+    }
     if contrary:
         _fail(
             f"fixture counts CONTRADICT the adjudicated equation {equation!r}: {contrary} — "
             "billed evidence and wire counts disagree; re-probe or re-adjudicate before "
             "any scorecard run"
         )
-    indeterminate = sorted(m for m, s in support_by_model.items() if s == "indeterminate")
-    if indeterminate and not artifact.get("count_reconciliation"):
-        _fail(
-            f"count support is indeterminate for {indeterminate} and the artifact's "
-            "count_reconciliation is empty — state why the billing evidence alone "
-            "settles the equation for these models"
-        )
+    # Reconciliation is EVIDENCE-DERIVED, per model: null is REQUIRED when
+    # every model's counts are determinate (a reconciliation without an
+    # indeterminacy is unearned), and otherwise the artifact must map EXACTLY
+    # the indeterminate models to EXACTLY their derived causes — Sol and Luna
+    # can differ, so a single global scalar cannot express the evidence.
+    indeterminate_causes = {
+        m: cause for m, (s, cause) in support_by_model.items() if s == "indeterminate"
+    }
+    if not indeterminate_causes:
+        if reconciliation is not None:
+            _fail(
+                "count_reconciliation must be null when count support is determinate "
+                "for every model — a reconciliation without an indeterminacy is unearned"
+            )
+    else:
+        if not isinstance(reconciliation, dict) or set(reconciliation) != set(indeterminate_causes):
+            _fail(
+                f"count_reconciliation must be an object mapping EXACTLY the "
+                f"indeterminate models {sorted(indeterminate_causes)} to their "
+                "evidence-derived cause codes"
+            )
+        for m, cause in sorted(indeterminate_causes.items()):
+            if reconciliation.get(m) != cause:
+                _fail(
+                    f"count_reconciliation[{m!r}] must equal the evidence-derived "
+                    f"cause {cause!r} (got {reconciliation.get(m)!r}) — the operator "
+                    "acknowledges what the fixture bytes show, not a chosen code"
+                )
 
 
 # Fixed, deterministic capture epoch for the zero-spend pins.
@@ -420,12 +558,17 @@ def _write_valid_capture(capture_dir: Path) -> dict[str, object]:
             "fixture": fixture_name,
             "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
         }
+    # A real (fake-content) raw export on disk: the gate hashes these ACTUAL
+    # bytes — "0"*64 with no file was exactly the round-13 bypass.
+    (capture_dir / "raw").mkdir(exist_ok=True)
+    raw_export_payload = json.dumps({"pin": "raw usage export stand-in"}, indent=2)
+    (capture_dir / "raw" / "usage_export.json").write_text(raw_export_payload, encoding="utf-8")
     artifact: dict[str, object] = {
         "adjudication_schema_version": _EXPECTED_ADJUDICATION_SCHEMA_VERSION,
         "equation": _READ_USAGE_PINNED_EQUATION,
         "adjudicated_by": "test",
         "count_reconciliation": None,
-        "raw_export_sha256": "0" * 64,
+        "raw_export_sha256": hashlib.sha256(raw_export_payload.encode("utf-8")).hexdigest(),
         "window_utc": dict(_PIN_WINDOW),
         "models": {
             model: {
@@ -446,7 +589,10 @@ def _write_valid_capture(capture_dir: Path) -> dict[str, object]:
         "results": results,
         "missing_rows": [],
         "all_required_passed": True,
-        "conservation_adjudication": {"adjudication_file": "billing_adjudication.json"},
+        "conservation_adjudication": {
+            "adjudication_file": "billing_adjudication.json",
+            "raw_export_file": "raw/usage_export.json",
+        },
     }
     _rewrite_artifact(capture_dir, manifest, artifact)
     return {"manifest": manifest, "artifact": artifact}
@@ -480,10 +626,15 @@ def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyP
     violation, an unadjudicated / mismatched equation, a missing / tampered /
     generic-unbound adjudication artifact, a wrong response ID, billed class
     counts that disagree with the wire, a window that misses the capture or is
-    unboundedly wide, fixture counts that CONTRADICT the verdict, and
-    indeterminate counts without reconciliation each FAIL (reconciled
-    indeterminate admits). Fail (not skip) because the operator explicitly
-    opted into spend — a silent skip would read as a clean run."""
+    unboundedly wide, a missing / unconfined / tampered RAW export (the
+    independent billing source must exist and be the hashed bytes), a
+    sensitive extra key at any artifact level (closed-set sanitization),
+    nested/bulk content under an APPROVED key (typed bounded scalars only), a
+    free-form reconciliation (closed reason codes only), an extra model
+    block, fixture counts that CONTRADICT the verdict, and indeterminate
+    counts without reconciliation each FAIL (code-reconciled indeterminate
+    admits). Fail (not skip) because the operator explicitly opted into
+    spend — a silent skip would read as a clean run."""
     import copy  # noqa: PLC0415
     import sys  # noqa: PLC0415
 
@@ -503,7 +654,9 @@ def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyP
         return copy.deepcopy(valid["artifact"])  # type: ignore[arg-type]
 
     def _restore_valid() -> None:
-        _rewrite_artifact(tmp_path, _perturbed_manifest(), _perturbed_artifact())
+        # Full re-write (fixtures + raw export + artifact + manifest): pins
+        # may have perturbed fixture FILES, not just the manifest/artifact.
+        _write_valid_capture(tmp_path)
 
     broken = _perturbed_manifest()
     broken["all_required_passed"] = False
@@ -617,6 +770,84 @@ def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyP
     with pytest.raises(pytest.fail.Exception, match="raw_export_sha256"):
         _require_probe_manifest()
 
+    # The independent billing source must EXIST and be the hashed bytes — a
+    # well-formed sha256 with no raw export (or the wrong one) must not admit.
+    _restore_valid()
+    broken = _perturbed_manifest()
+    broken["conservation_adjudication"]["raw_export_file"] = None  # type: ignore[index, call-overload]
+    _rewrite_manifest(tmp_path, broken)
+    with pytest.raises(pytest.fail.Exception, match="raw/<filename>"):
+        _require_probe_manifest()
+
+    broken = _perturbed_manifest()
+    broken["conservation_adjudication"]["raw_export_file"] = "raw/../../etc/hostname"  # type: ignore[index, call-overload]
+    _rewrite_manifest(tmp_path, broken)
+    with pytest.raises(pytest.fail.Exception, match="raw/<filename>"):
+        _require_probe_manifest()
+
+    _rewrite_manifest(tmp_path, _perturbed_manifest())
+    raw_export = tmp_path / "raw" / "usage_export.json"
+    raw_original = raw_export.read_text(encoding="utf-8")
+    raw_export.unlink()
+    with pytest.raises(pytest.fail.Exception, match="raw billing export.*is missing"):
+        _require_probe_manifest()
+    raw_export.write_text(raw_original + " ", encoding="utf-8")
+    with pytest.raises(pytest.fail.Exception, match="does not describe this export"):
+        _require_probe_manifest()
+    raw_export.write_text(raw_original, encoding="utf-8")
+    _require_probe_manifest()  # restored raw export admits again
+
+    # Closed key sets at every artifact level: a representative sensitive
+    # extra (org identifier, dollar amount, embedded export) refuses
+    # admission instead of riding into the sole committable file.
+    perturbed = _perturbed_artifact()
+    perturbed["organization_id"] = "org-abc123"
+    _rewrite_artifact(tmp_path, _perturbed_manifest(), perturbed)
+    with pytest.raises(pytest.fail.Exception, match="sanitization violation"):
+        _require_probe_manifest()
+
+    # Closed KEYS are not enough — approved keys must carry bounded scalars.
+    # An entire raw export nested under adjudicated_by must refuse.
+    perturbed = _perturbed_artifact()
+    perturbed["adjudicated_by"] = {"raw_export": {"project_id": "proj_secret", "rows": [1, 2]}}
+    _rewrite_artifact(tmp_path, _perturbed_manifest(), perturbed)
+    with pytest.raises(pytest.fail.Exception, match="single-line string"):
+        _require_probe_manifest()
+
+    perturbed = _perturbed_artifact()
+    perturbed["adjudicated_by"] = "x" * 500  # bulk content under an approved key
+    _rewrite_artifact(tmp_path, _perturbed_manifest(), perturbed)
+    with pytest.raises(pytest.fail.Exception, match="single-line string"):
+        _require_probe_manifest()
+
+    # A reconciliation code on fully DETERMINATE evidence is unearned — null
+    # is required when the counts already settle every model.
+    perturbed = _perturbed_artifact()
+    perturbed["count_reconciliation"] = {_SOL: "wire_omitted_total_tokens"}
+    _rewrite_artifact(tmp_path, _perturbed_manifest(), perturbed)
+    with pytest.raises(pytest.fail.Exception, match="unearned"):
+        _require_probe_manifest()
+
+    perturbed = _perturbed_artifact()
+    perturbed["window_utc"]["project_id"] = "proj_secret"  # type: ignore[index, call-overload]
+    _rewrite_artifact(tmp_path, _perturbed_manifest(), perturbed)
+    with pytest.raises(pytest.fail.Exception, match="sanitization violation"):
+        _require_probe_manifest()
+
+    perturbed = _perturbed_artifact()
+    perturbed["models"][_SOL]["amount_usd"] = 0.42  # type: ignore[index, call-overload]
+    _rewrite_artifact(tmp_path, _perturbed_manifest(), perturbed)
+    with pytest.raises(pytest.fail.Exception, match="sanitization violation"):
+        _require_probe_manifest()
+
+    perturbed = _perturbed_artifact()
+    perturbed["models"]["gpt-5.6-terra"] = dict(  # type: ignore[index, call-overload, arg-type]
+        perturbed["models"][_SOL]  # type: ignore[index, call-overload, arg-type]
+    )
+    _rewrite_artifact(tmp_path, _perturbed_manifest(), perturbed)
+    with pytest.raises(pytest.fail.Exception, match="exactly the two full-matrix entries"):
+        _require_probe_manifest()
+
     # Capture binding: a wrong response ID is an export for some OTHER run.
     perturbed = _perturbed_artifact()
     perturbed["models"][_SOL]["cold_response_id"] = "chatcmpl-other-run"  # type: ignore[index, call-overload]
@@ -699,30 +930,63 @@ def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyP
     with pytest.raises(pytest.fail.Exception, match="CONTRADICT the adjudicated equation"):
         _require_probe_manifest()
 
-    # Indeterminate counts (no total_tokens on the wire) demand an explicit
-    # reconciliation naming why billing evidence alone settles it; with the
-    # reconciliation present, the capture admits.
+    # Indeterminate counts (no total_tokens on the wire) demand an
+    # EVIDENCE-DERIVED, per-model reconciliation: null fails, a global scalar
+    # fails, an allowlisted-but-wrong cause fails; only the mapping that
+    # acknowledges exactly what the fixture bytes show admits.
     _restore_valid()
+    no_total_usage = {
+        "prompt_tokens": 2000,
+        "completion_tokens": 50,
+        "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 1500},
+    }
     broken = _perturbed_manifest()
     for model in (_SOL, _LUNA):
-        _set_cold_usage(
-            broken,
-            model,
-            {
-                "prompt_tokens": 2000,
-                "completion_tokens": 50,
-                "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 1500},
-            },
-        )
+        _set_cold_usage(broken, model, dict(no_total_usage))
     _rewrite_manifest(tmp_path, broken)
-    with pytest.raises(pytest.fail.Exception, match="count_reconciliation is empty"):
+    with pytest.raises(pytest.fail.Exception, match="mapping EXACTLY the indeterminate"):
         _require_probe_manifest()
+
     reconciled = _perturbed_artifact()
-    reconciled["count_reconciliation"] = (
-        "wire omitted total_tokens; billed class breakdown alone supports the verdict"
-    )
+    reconciled["count_reconciliation"] = "wire_omitted_total_tokens"  # global scalar
     _rewrite_artifact(tmp_path, broken, reconciled)
-    _require_probe_manifest()  # reconciled indeterminate capture admits
+    with pytest.raises(pytest.fail.Exception, match="mapping EXACTLY the indeterminate"):
+        _require_probe_manifest()
+
+    reconciled = _perturbed_artifact()
+    reconciled["count_reconciliation"] = {  # allowlisted codes, wrong causes
+        _SOL: "cold_warm_pair_incoherent",
+        _LUNA: "cold_warm_pair_incoherent",
+    }
+    _rewrite_artifact(tmp_path, broken, reconciled)
+    with pytest.raises(pytest.fail.Exception, match="evidence-derived"):
+        _require_probe_manifest()
+
+    reconciled = _perturbed_artifact()
+    reconciled["count_reconciliation"] = {
+        _SOL: "wire_omitted_total_tokens",
+        _LUNA: "wire_omitted_total_tokens",
+    }
+    _rewrite_artifact(tmp_path, broken, reconciled)
+    _require_probe_manifest()  # matching per-model acknowledgment admits
+
+    # Mixed determinacy: only Sol indeterminate — the mapping must cover Sol
+    # alone (a code for determinate Luna is an extra key), and the Sol-only
+    # mapping admits. Per-model semantics, not one global verdict.
+    _restore_valid()
+    broken = _perturbed_manifest()
+    _set_cold_usage(broken, _SOL, dict(no_total_usage))
+    reconciled = _perturbed_artifact()
+    reconciled["count_reconciliation"] = {
+        _SOL: "wire_omitted_total_tokens",
+        _LUNA: "wire_omitted_total_tokens",
+    }
+    _rewrite_artifact(tmp_path, broken, reconciled)
+    with pytest.raises(pytest.fail.Exception, match="mapping EXACTLY the indeterminate"):
+        _require_probe_manifest()
+    reconciled["count_reconciliation"] = {_SOL: "wire_omitted_total_tokens"}
+    _rewrite_artifact(tmp_path, broken, reconciled)
+    _require_probe_manifest()  # Sol-only, evidence-matching reconciliation admits
 
 
 @pytest.mark.skipif(
