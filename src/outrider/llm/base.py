@@ -73,6 +73,7 @@ __all__ = [
     "LLMMissingAPIKeyError",
     "LLMPersisterError",
     "LLMPersisterNotWiredError",
+    "LLMPricingContractError",
     "LLMPricingMissingError",
     "LLMProvider",
     "LLMProviderError",
@@ -472,6 +473,24 @@ class LLMPricingMissingError(LLMProviderError):
         super().__init__(*args)
 
 
+class LLMPricingContractError(LLMProviderError):
+    """A COMPLETED, billed exchange deviated from the flat-rate pricing
+    contract (specs/2026-07-18-openai-native-host.md): billed prompt tokens
+    over the profile's flat-rate ceiling, an echoed service tier differing
+    from the requested one, or an unpriceable echoed tier.
+
+    Raised AFTER the exchange is persisted (correctly costed or
+    provenance-marked — the FUP-205 persist-before-raise shape under #016).
+    Terminal by contract: retrying would bill a SECOND paid request for a
+    deviation that will recur, so exactly one SDK invocation and one
+    persisted `LLMCallEvent` exist per outcome. Distinct from
+    `LLMInvalidResponseError`, which covers genuinely malformed wire and
+    aborts BEFORE persist.
+    """
+
+    retry_at_layer: ClassVar[RetryLayer] = "none"
+
+
 # ---------------------------------------------------------------------------
 # Pydantic schemas — typed call surface.
 # ---------------------------------------------------------------------------
@@ -830,6 +849,16 @@ class LLMResponse(BaseModel):
     # rejects a malformed digest before the persister cross-checks response-vs-event, and a future
     # tightening of the canonical pattern can't drift LLMResponse from the audit events.
     profile_contract_digest: str | None = Field(default=None, pattern=SHA256_HEX_PATTERN)
+    # Pricing context (specs/2026-07-18-openai-native-host.md): the raw billed prompt-token
+    # wire count and the echoed service tier. NOT reconstructible from the normalized
+    # input/cache_read split once a host reports cache writes as a distinct class, so the
+    # provider carries both here for the persister's recomputation; `pricing.py` derives
+    # the >272K long-context determination from `billed_prompt_tokens` internally.
+    # None on hosts without the concept (Anthropic, GLM hosts). The tier is a BOUNDED raw
+    # string for forensic fidelity — a novel echo is preserved verbatim, never collapsed
+    # into `CostUnpricedReason`.
+    billed_prompt_tokens: int | None = Field(default=None, ge=0)
+    service_tier_actual: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def _enforce_triad_coherence(self) -> Self:
