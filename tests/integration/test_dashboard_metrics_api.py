@@ -362,7 +362,14 @@ async def test_empty_window_renders_all_zeros(empty_metrics_client: TestClient) 
     assert resp.status_code == 200, resp.text
     body = resp.json()
     # Zero-row safety: .one()/.scalar_one()/empty-dict-comprehension paths all degrade to zeros.
-    assert body["deltas"]["current"] == {"reviews": 0, "cost_usd": 0.0, "findings": 0, "failed": 0}
+    assert body["deltas"]["current"] == {
+        "reviews": 0,
+        "cost_usd": 0.0,
+        "unpriced_calls": 0,
+        "cost_complete": True,
+        "findings": 0,
+        "failed": 0,
+    }
     assert body["deltas"]["previous"]["findings"] == 0
     assert all(v == 0 for v in body["severity_distribution"].values())
     assert all(v == 0 for v in body["evidence_tier_distribution"].values())

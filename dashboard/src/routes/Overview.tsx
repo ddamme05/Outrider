@@ -145,7 +145,9 @@ export function Overview() {
                   </span>
                   <span className="nd-tally">
                     <StatusPill status={r.status} />
-                    <span className="nd-cost">${r.metrics.total_cost_usd.toFixed(2)}</span>
+                    <span className="nd-cost">
+                      {`${r.metrics.cost_complete === false ? "\u2265" : ""}$${r.metrics.total_cost_usd.toFixed(2)}`}
+                    </span>
                   </span>
                 </Link>
               ))}
@@ -174,6 +176,9 @@ function Analytics({
   const sev = data.severity_distribution;
   const buckets = data.buckets;
   const avgCost = cur.reviews > 0 ? cur.cost_usd / cur.reviews : 0;
+  // Explicit-false semantics: pre-field payloads (no completeness key) render
+  // exactly as before — only a stated false marks the lower bound.
+  const costComplete = cur.cost_complete !== false;
   // Demo-snapshot anchoring (#039-honest label): when the backend anchored the
   // window to the seeded data's latest instant, every window caption says so —
   // "7d ending <date>" — instead of implying live recency with "last 7d".
@@ -221,9 +226,18 @@ function Analytics({
         />
         <MetricCard
           label="Cost"
-          value={`$${cur.cost_usd.toFixed(2)}`}
-          cap={`$${avgCost.toFixed(2)} avg / review`}
-          delta={deltaInfo(cur.cost_usd, prev.cost_usd, "up-bad")}
+          value={`${costComplete ? "" : "\u2265"}$${cur.cost_usd.toFixed(2)}`}
+          cap={`${costComplete ? "" : "\u2265"}$${avgCost.toFixed(2)} avg / review${
+            costComplete ? "" : " \u00b7 incomplete"
+          }`}
+          delta={
+            // A delta between two incomplete lower bounds is not a valid lower
+            // bound — suppress it whenever EITHER period is incomplete
+            // (openai-native-host arc).
+            costComplete && prev.cost_complete !== false
+              ? deltaInfo(cur.cost_usd, prev.cost_usd, "up-bad")
+              : { cls: "flat", glyph: "\u2014", label: "n/a \u00b7 incomplete" }
+          }
           spark={buckets.map((b) => b.cost_usd)}
           sparkVariant="neg"
         />

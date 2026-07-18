@@ -25,3 +25,20 @@ describe("prettyModel", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// GPT-5.6 family (openai-native-host spec) — each admitted slug pinned
+// individually; the bare alias and foreign shapes fall through verbatim.
+// ---------------------------------------------------------------------------
+
+test("GPT-5.6 explicit slugs humanize per tier", () => {
+  expect(prettyModel("gpt-5.6-sol")).toBe("GPT-5.6 Sol");
+  expect(prettyModel("gpt-5.6-terra")).toBe("GPT-5.6 Terra");
+  expect(prettyModel("gpt-5.6-luna")).toBe("GPT-5.6 Luna");
+});
+
+test("non-family gpt shapes fall through verbatim (no lossy guess)", () => {
+  expect(prettyModel("gpt-5.6")).toBe("gpt-5.6"); // alias never reaches the stream
+  expect(prettyModel("gpt-5.6-mini")).toBe("gpt-5.6-mini");
+  expect(prettyModel("gpt-4o")).toBe("gpt-4o");
+});

@@ -80,6 +80,10 @@ class MetricBucket(BaseModel):
     bucket: AwareDatetime
     reviews: int = Field(ge=0)
     cost_usd: float = Field(ge=0)
+    # openai-native-host arc: False when this bucket contains unpriceable completed
+    # calls (null cost, typed reason) — its cost_usd is then a LOWER BOUND and the
+    # chart/tooltip must mark or gap the bucket, never render it as exact.
+    cost_complete: bool = True
     findings: int = Field(ge=0)
     failed: int = Field(ge=0)
 
@@ -89,6 +93,11 @@ class PeriodTotals(BaseModel):
 
     reviews: int = Field(ge=0)
     cost_usd: float = Field(ge=0)
+    # Period-level completeness: a delta between two incomplete lower bounds is not
+    # a valid lower bound, so the frontend SUPPRESSES the cost delta when either
+    # period has cost_complete=False (openai-native-host arc).
+    unpriced_calls: int = Field(default=0, ge=0)
+    cost_complete: bool = True
     findings: int = Field(ge=0)
     failed: int = Field(ge=0)
 
@@ -338,7 +347,9 @@ async def _reviews_failed_by_bucket(
 
 async def _cost_by_bucket(
     session: AsyncSession, start: datetime, end: datetime, granularity: str, *, include_eval: bool
-) -> dict[datetime, float]:
+) -> dict[datetime, tuple[float, int]]:
+    """Per bucket: (known cost subtotal, unpriced call count). SUM skips the null
+    costs of unpriceable calls; the count keeps the gap visible per bucket."""
     bucket = func.date_trunc(granularity, AuditEvent.timestamp, "UTC").label("bucket")
     # is_eval via the joined REVIEW with the FUP-130 equality predicate — see
     # `_finding_representatives`. The reviews/failed series is reviews-table-only (no event join).
@@ -348,6 +359,9 @@ async def _cost_by_bucket(
             func.coalesce(func.sum(cast(AuditEvent.payload["cost_usd"].astext, Numeric)), 0).label(
                 "cost"
             ),
+            func.coalesce(
+                func.sum(case((AuditEvent.payload["cost_usd"].astext.is_(None), 1), else_=0)), 0
+            ).label("unpriced"),
         )
         .join(Review, Review.id == AuditEvent.review_id)
         .where(
@@ -359,13 +373,16 @@ async def _cost_by_bucket(
         )
         .group_by(bucket)
     )
-    return {r.bucket.astimezone(UTC): float(r.cost) for r in (await session.execute(stmt)).all()}
+    return {
+        r.bucket.astimezone(UTC): (float(r.cost), int(r.unpriced))
+        for r in (await session.execute(stmt)).all()
+    }
 
 
 async def _review_cost_totals(
     session: AsyncSession, start: datetime, end: datetime, *, include_eval: bool
-) -> tuple[int, int, float]:
-    """(reviews, failed, cost) over [start, end) — used for the PREVIOUS window only.
+) -> tuple[int, int, float, int]:
+    """(reviews, failed, cost, unpriced_calls) over [start, end) — PREVIOUS window only.
 
     The current window's totals are derived in Python from the already-fetched buckets + reps,
     so they cannot drift from the rendered series.
@@ -380,7 +397,12 @@ async def _review_cost_totals(
     )
     rrow = (await session.execute(rstmt)).one()
     cstmt = (
-        select(func.coalesce(func.sum(cast(AuditEvent.payload["cost_usd"].astext, Numeric)), 0))
+        select(
+            func.coalesce(func.sum(cast(AuditEvent.payload["cost_usd"].astext, Numeric)), 0),
+            func.coalesce(
+                func.sum(case((AuditEvent.payload["cost_usd"].astext.is_(None), 1), else_=0)), 0
+            ),
+        )
         .join(Review, Review.id == AuditEvent.review_id)
         .where(
             AuditEvent.event_type == _LLM_CALL,
@@ -390,8 +412,8 @@ async def _review_cost_totals(
             *_not_eval(Review.is_eval, include_eval),
         )
     )
-    cost = float((await session.execute(cstmt)).scalar_one())
-    return int(rrow.reviews), int(rrow.failed), cost
+    crow = (await session.execute(cstmt)).one()
+    return int(rrow.reviews), int(rrow.failed), float(crow[0]), int(crow[1])
 
 
 @router.get("", response_model=DashboardMetricsResponse)
@@ -417,7 +439,7 @@ async def get_metrics(
         )
         cost = await _cost_by_bucket(session, start, end, granularity, include_eval=include_eval)
         reps = await _representatives(session, start, end, include_eval=include_eval)
-        prev_reviews, prev_failed, prev_cost = await _review_cost_totals(
+        prev_reviews, prev_failed, prev_cost, prev_unpriced = await _review_cost_totals(
             session, prev_start, start, include_eval=include_eval
         )
         prev_reps = await _representatives(session, prev_start, start, include_eval=include_eval)
@@ -431,21 +453,30 @@ async def get_metrics(
             bucket=b,
             reviews=rf.get(b, (0, 0))[0],
             failed=rf.get(b, (0, 0))[1],
-            cost_usd=cost.get(b, 0.0),
+            cost_usd=cost.get(b, (0.0, 0))[0],
+            cost_complete=cost.get(b, (0.0, 0))[1] == 0,
             findings=findings_by_bucket.get(b, 0),
         )
         for b in _bucket_starts(start, end, granularity)
     )
     # `current` derived from the rendered series (cannot drift from the buckets); only
     # `previous` needs its own queries.
+    current_unpriced = sum(unpriced for _, unpriced in cost.values())
     current = PeriodTotals(
         reviews=sum(b.reviews for b in buckets),
         failed=sum(b.failed for b in buckets),
         cost_usd=sum(b.cost_usd for b in buckets),
+        unpriced_calls=current_unpriced,
+        cost_complete=current_unpriced == 0,
         findings=len(reps),
     )
     previous = PeriodTotals(
-        reviews=prev_reviews, failed=prev_failed, cost_usd=prev_cost, findings=len(prev_reps)
+        reviews=prev_reviews,
+        failed=prev_failed,
+        cost_usd=prev_cost,
+        unpriced_calls=prev_unpriced,
+        cost_complete=prev_unpriced == 0,
+        findings=len(prev_reps),
     )
     return DashboardMetricsResponse(
         window=window,

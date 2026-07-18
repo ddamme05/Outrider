@@ -71,7 +71,8 @@ function flatBody(e: AuditEvent): ReactNode {
     case "llm_call":
       return (
         <>
-          <b>{prettyModel(e.model)}</b> · ${e.cost_usd.toFixed(2)} ·{" "}
+          <b>{prettyModel(e.model)}</b> ·{" "}
+          {e.cost_usd == null ? "unpriced" : `$${e.cost_usd.toFixed(2)}`} ·{" "}
           <span className="mono">{e.input_tokens}</span> in /{" "}
           <span className="mono">{e.output_tokens}</span> out
         </>

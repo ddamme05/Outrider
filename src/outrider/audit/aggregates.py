@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID  # noqa: TC003  (runtime: function param type)
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Integer, Numeric, cast, func, select
+from sqlalchemy import Integer, Numeric, case, cast, func, select
 
 from outrider.audit.events import LLMCallEvent
 from outrider.db.models.audit_events import AuditEvent
@@ -48,7 +48,14 @@ _LLM_CALL_EVENT_TYPE: str = LLMCallEvent.model_fields["event_type"].default
 
 
 class ReviewLLMAggregates(BaseModel):
-    """A review's LLM-call totals, summed from its `LLMCallEvent` audit rows."""
+    """A review's LLM-call totals, summed from its `LLMCallEvent` audit rows.
+
+    Completeness-aware since the openai-native-host arc: `cost_usd` is nullable
+    on genuinely unpriceable completed calls (typed-reason coupled), SQL `SUM`
+    skips those NULLs, so `total_cost_usd` is the KNOWN SUBTOTAL — a lower
+    bound whenever `cost_complete` is False. Consumers must render "at least
+    $X" / "incomplete" from these two fields rather than presenting the
+    subtotal as exact (#016/#039 honest data)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -56,6 +63,8 @@ class ReviewLLMAggregates(BaseModel):
     total_input_tokens: int = Field(ge=0)
     total_output_tokens: int = Field(ge=0)
     total_cost_usd: float = Field(ge=0)
+    unpriced_call_count: int = Field(default=0, ge=0)
+    cost_complete: bool = True
 
 
 async def aggregate_review_llm_metrics(
@@ -83,6 +92,12 @@ async def aggregate_review_llm_metrics(
         func.coalesce(func.sum(cast(AuditEvent.payload["cost_usd"].astext, Numeric)), 0).label(
             "cost_usd"
         ),
+        # Unpriced rows carry payload cost_usd=null (typed-reason coupled; pre-field
+        # historical rows are always numeric) — SUM above skips them, this counts them
+        # so the subtotal is never silently presented as complete.
+        func.coalesce(
+            func.sum(case((AuditEvent.payload["cost_usd"].astext.is_(None), 1), else_=0)), 0
+        ).label("unpriced_calls"),
     ).where(
         AuditEvent.review_id == review_id,
         AuditEvent.is_eval == is_eval,
@@ -94,4 +109,6 @@ async def aggregate_review_llm_metrics(
         total_input_tokens=row.input_tokens,
         total_output_tokens=row.output_tokens,
         total_cost_usd=float(row.cost_usd),
+        unpriced_call_count=row.unpriced_calls,
+        cost_complete=row.unpriced_calls == 0,
     )

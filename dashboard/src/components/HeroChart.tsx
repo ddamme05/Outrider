@@ -34,6 +34,9 @@ export function HeroChart({
   const [hover, setHover] = useState<number | null>(null);
 
   const values = buckets.map((b) => (series === "cost" ? b.cost_usd : b.reviews));
+  // Per-bucket completeness (openai-native-host arc): an incomplete cost bucket is a
+  // LOWER BOUND — mark it in the tooltip/aria rather than rendering it as exact.
+  const complete = buckets.map((b) => (series === "cost" ? b.cost_complete !== false : true));
   const labels = buckets.map((b) => formatBucketLabel(b.bucket, granularity));
   const stats = seriesStats(values);
   const n = values.length;
@@ -156,7 +159,7 @@ export function HeroChart({
                 className="chart-hit"
                 tabIndex={0}
                 role="button"
-                aria-label={`${labels[i]}: ${fmt(v)}`}
+                aria-label={`${labels[i]}: ${complete[i] ? "" : "\u2265"}${fmt(v)}`}
                 onMouseEnter={() => setHover(i)}
                 onMouseLeave={() => setHover(null)}
                 onFocus={() => setHover(i)}
@@ -172,7 +175,10 @@ export function HeroChart({
             style={{ left: `${(x(hover) / VB_W) * 100}%` }}
             role="status"
           >
-            <span className="tip-val">{fmt(values[hover] ?? 0)}</span>
+            <span className="tip-val">
+              {complete[hover] ? "" : "\u2265"}
+              {fmt(values[hover] ?? 0)}
+            </span>
             <span className="tip-day">{labels[hover] ?? ""}</span>
           </div>
         ) : null}
@@ -180,7 +186,11 @@ export function HeroChart({
 
       <div className="chart-legend">
         <span>
-          <b>{fmt(stats.total)}</b> total
+          <b>
+            {complete.every(Boolean) ? "" : "\u2265"}
+            {fmt(stats.total)}
+          </b>{" "}
+          total
         </span>
         <span>
           <b>{fmt(stats.avg)}</b> avg/{granularity === "hour" ? "hr" : "day"}

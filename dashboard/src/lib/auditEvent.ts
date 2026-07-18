@@ -10,8 +10,12 @@ export type AuditEvent = components["schemas"]["ReviewEventsResponse"]["events"]
 // Display-only — values shown as audited, no recomputation (DECISIONS#014/#016 metadata).
 export function summarizeEvent(e: AuditEvent): string {
   switch (e.event_type) {
-    case "llm_call":
-      return `${prettyModel(e.model)} · $${e.cost_usd.toFixed(2)} · ${e.input_tokens}+${e.output_tokens} tok`;
+    case "llm_call": {
+      // Nullable cost (openai-native-host arc): an unpriceable completed call carries a
+      // typed reason and NO number — render the fact, never a fabricated $0.00.
+      const cost = e.cost_usd == null ? "unpriced" : `$${e.cost_usd.toFixed(2)}`;
+      return `${prettyModel(e.model)} · ${cost} · ${e.input_tokens}+${e.output_tokens} tok`;
+    }
     case "finding":
       return `${e.finding_type} · ${e.severity} · ${e.file_path}`;
     case "review_phase":
