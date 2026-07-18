@@ -117,6 +117,15 @@ spikes/fireworks/fixtures/*
 !spikes/fireworks/fixtures/cache_probe_result.json
 spikes/glm/
 
+# OpenAI GPT-5.6 wire-probe capture (openai-native-host arc) — same policy as Fireworks:
+# raw wire responses, the manifest, and ESPECIALLY raw billing exports (project/key
+# identifiers, financial usage) stay local; the only committable evidence file is the
+# operator-authored, exact-key sanitized billing_adjudication.json (response IDs + token
+# class counts + window + verdict — no project/org/key identifiers, no dollar amounts).
+# Wire-shape regression pinning goes through unit-test fixtures, not by committing raws.
+spikes/openai/fixtures/*
+!spikes/openai/fixtures/billing_adjudication.json
+
 # --- Local dashboard feature write-ups (not a project artifact) ---
 stuff/
 
