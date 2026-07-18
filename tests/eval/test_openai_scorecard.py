@@ -105,17 +105,48 @@ _READ_USAGE_PINNED_EQUATION = "prompt_minus_cached"
 _KNOWN_EQUATIONS = ("prompt_minus_cached", "prompt_minus_cached_minus_writes")
 
 
+def _supported_by_counts(cold_usage: dict[str, object], warm_usage: dict[str, object]) -> str:
+    """Which equation a model's hash-verified cold/warm fixture usage supports.
+    Deliberately re-implements the probe's characterization (spikes/ is not
+    importable from tests; independent recomputation is the point — the gate
+    must not trust the manifest's own conservation_facts block). total_tokens
+    is the disambiguator: == prompt + completion means writes ride INSIDE
+    prompt_tokens (input must subtract them); == prompt + write + completion
+    means writes are an additive class. Anything else — including an
+    incoherent cold/warm prompt pair — is indeterminate, never a guess."""
+    prompt = cold_usage.get("prompt_tokens")
+    completion = cold_usage.get("completion_tokens")
+    total = cold_usage.get("total_tokens")
+    ptd = cold_usage.get("prompt_tokens_details")
+    write = ptd.get("cache_write_tokens") if isinstance(ptd, dict) else None
+    if (
+        not all(isinstance(v, int) for v in (prompt, completion, total, write))
+        or not write
+        or warm_usage.get("prompt_tokens") != prompt
+    ):
+        return "indeterminate"
+    assert isinstance(prompt, int) and isinstance(completion, int)  # narrowed above
+    if total == prompt + completion:
+        return "prompt_minus_cached_minus_writes"
+    if total == prompt + write + completion:
+        return "prompt_minus_cached"
+    return "indeterminate"
+
+
 def _require_probe_manifest() -> None:
     """FAIL (not skip) without a passing, coherent, CURRENT probe capture: the
     operator has explicitly opted into real spend, so a silent skip would read
     as a clean run. Beyond the probe's own verdict boolean, the gate verifies
-    the capture's provenance (canonical base_url + the profile contract digest,
-    so a profile change stales the capture), the full expected row set, each
-    fixture's existence + sha256, and the cold/warm conservation inequalities
-    recomputed FROM THE FIXTURE BYTES — so a minimal, stale, or hand-edited
-    manifest cannot admit a ~128-call run. (A determined forger can fabricate
-    fixtures and hashes together; the gate's job is stale/partial/accidental
-    artifacts, not adversarial operators — the operator IS the trust anchor.)"""
+    the capture's provenance (canonical base_url; profile digest + probe
+    procedure/manifest versions), the EXACT expected row set, each fixture's
+    existence + sha256, the cold/warm conservation bounds recomputed FROM THE
+    FIXTURE BYTES, and the conservation adjudication BOUND to its evidence: a
+    hash-pinned billing-export file, per-model count support recomputed from
+    fixture bytes (contrary counts refuse outright; indeterminate counts need
+    an explicit reconciliation), and equality with read_usage()'s shipped
+    equation. (A determined forger can fabricate fixtures and hashes together;
+    the gate's job is stale/partial/accidental artifacts, not adversarial
+    operators — the operator IS the trust anchor.)"""
     from outrider.llm.host_profiles import OPENAI_PROFILE  # noqa: PLC0415
 
     def _fail(reason: str) -> NoReturn:
@@ -158,6 +189,10 @@ def _require_probe_manifest() -> None:
             f"unexpected result rows {extra_rows} — the row set is exact; extras mean "
             "probe-procedure drift or a hand-edited manifest"
         )
+    # Hash-verified usage stash for the post-loop equation recomputation: the
+    # adjudication is judged against fixture BYTES, never against the
+    # manifest's own (independently editable) conservation_facts block.
+    usage_by_row: dict[str, dict[str, object]] = {}
     for tag in sorted(_EXPECTED_PROBE_ROWS):
         row = results.get(tag)
         if not isinstance(row, dict):
@@ -177,6 +212,7 @@ def _require_probe_manifest() -> None:
         kind = tag.rsplit(":", 1)[1]
         if kind in ("cold", "warm"):
             usage = json.loads(fixture_bytes.decode("utf-8")).get("usage") or {}
+            usage_by_row[tag] = usage
             prompt = usage.get("prompt_tokens")
             ptd = usage.get("prompt_tokens_details") or {}
             side = "cache_write_tokens" if kind == "cold" else "cached_tokens"
@@ -190,14 +226,17 @@ def _require_probe_manifest() -> None:
                 )
     # The bounds above catch malformed wire; they CANNOT choose between the
     # spec's two accounting equations. Admission requires the operator's
-    # billing-verified adjudication, and it must match what read_usage() ships.
+    # billing-verified adjudication, BOUND to its evidence three ways: a
+    # hash-pinned billing-export file, per-model count support recomputed from
+    # the (hash-verified) fixture bytes, and an explicit reconciliation when
+    # any model's counts are indeterminate. Contrary counts refuse outright.
     adjudication = manifest.get("conservation_adjudication") or {}
     equation = adjudication.get("equation")
     if equation is None:
         _fail(
             "conservation equation not adjudicated — read conservation_facts, "
             "cross-check billed usage, and fill conservation_adjudication "
-            "(equation/evidence/adjudicated_by) in the manifest"
+            "(equation/evidence_file/evidence_sha256/adjudicated_by) in the manifest"
         )
     if equation not in _KNOWN_EQUATIONS:
         _fail(f"unknown conservation equation {equation!r} (expected one of {_KNOWN_EQUATIONS})")
@@ -207,8 +246,39 @@ def _require_probe_manifest() -> None:
             f"{_READ_USAGE_PINNED_EQUATION!r} — the shipped accounting disagrees with "
             "the wire; change read_usage + pricing first, then update this pin"
         )
-    if not adjudication.get("evidence") or not adjudication.get("adjudicated_by"):
-        _fail("conservation_adjudication must carry non-empty evidence and adjudicated_by")
+    evidence_file = adjudication.get("evidence_file")
+    if not evidence_file or not adjudication.get("adjudicated_by"):
+        _fail(
+            "conservation_adjudication must carry non-empty evidence_file and "
+            "adjudicated_by — a bare assertion is not billing evidence"
+        )
+    evidence_path = _PROBE_MANIFEST.parent / str(evidence_file)
+    if not evidence_path.exists():
+        _fail(f"billing-evidence file {evidence_file!r} is missing from the capture dir")
+    if hashlib.sha256(evidence_path.read_bytes()).hexdigest() != adjudication.get(
+        "evidence_sha256"
+    ):
+        _fail(f"billing-evidence file {evidence_file!r} bytes do not match evidence_sha256")
+    support_by_model = {
+        model: _supported_by_counts(
+            usage_by_row.get(f"{model}:cold") or {}, usage_by_row.get(f"{model}:warm") or {}
+        )
+        for model in (_SOL, _LUNA)
+    }
+    contrary = {m: s for m, s in support_by_model.items() if s not in ("indeterminate", equation)}
+    if contrary:
+        _fail(
+            f"fixture counts CONTRADICT the adjudicated equation {equation!r}: {contrary} — "
+            "billed evidence and wire counts disagree; re-probe or re-adjudicate before "
+            "any scorecard run"
+        )
+    indeterminate = sorted(m for m, s in support_by_model.items() if s == "indeterminate")
+    if indeterminate and not adjudication.get("count_reconciliation"):
+        _fail(
+            f"count support is indeterminate for {indeterminate} and "
+            "conservation_adjudication.count_reconciliation is empty — state why the "
+            "billing evidence alone settles the equation for these models"
+        )
 
 
 def _write_valid_capture(capture_dir: Path) -> dict[str, object]:
@@ -224,8 +294,12 @@ def _write_valid_capture(capture_dir: Path) -> dict[str, object]:
         usage: dict[str, object] = {"prompt_tokens": 2000, "completion_tokens": 50}
         if kind == "cold":
             usage["prompt_tokens_details"] = {"cached_tokens": 0, "cache_write_tokens": 1500}
+            # total = prompt + write + completion: the additive shape, which
+            # supports read_usage's pinned prompt_minus_cached equation.
+            usage["total_tokens"] = 2000 + 1500 + 50
         elif kind == "warm":
             usage["prompt_tokens_details"] = {"cached_tokens": 1500, "cache_write_tokens": 0}
+            usage["total_tokens"] = 2050
         payload = json.dumps({"usage": usage}, indent=2)
         fixture_name = tag.replace(":", "_") + ".json"
         (capture_dir / fixture_name).write_text(payload, encoding="utf-8")
@@ -236,6 +310,11 @@ def _write_valid_capture(capture_dir: Path) -> dict[str, object]:
             "fixture": fixture_name,
             "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
         }
+    evidence_payload = json.dumps(
+        {"source": "zero-spend pin", "billed_input_class_tokens": {"fresh": 500, "write": 1500}},
+        indent=2,
+    )
+    (capture_dir / "billing_evidence.json").write_text(evidence_payload, encoding="utf-8")
     manifest: dict[str, object] = {
         "schema_version": _EXPECTED_MANIFEST_SCHEMA_VERSION,
         "probe_contract_version": _EXPECTED_PROBE_CONTRACT_VERSION,
@@ -246,8 +325,10 @@ def _write_valid_capture(capture_dir: Path) -> dict[str, object]:
         "all_required_passed": True,
         "conservation_adjudication": {
             "equation": _READ_USAGE_PINNED_EQUATION,
-            "evidence": "zero-spend pin fixture",
+            "evidence_file": "billing_evidence.json",
+            "evidence_sha256": hashlib.sha256(evidence_payload.encode("utf-8")).hexdigest(),
             "adjudicated_by": "test",
+            "count_reconciliation": None,
         },
     }
     (capture_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -264,9 +345,12 @@ def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyP
     manifest shape, stale probe-procedure version, wrong host, stale profile
     digest, a dropped required row (refusal included — the pre-ship gate), a
     non-passing row, an EXTRA row, a missing/tampered fixture, a conservation
-    bounds violation, and an unadjudicated / mismatched / evidence-less
-    conservation equation each FAIL. Fail (not skip) because the operator
-    explicitly opted into spend — a silent skip would read as a clean run."""
+    bounds violation, an unadjudicated / mismatched equation, a missing /
+    tampered / assertion-only billing-evidence file, fixture counts that
+    CONTRADICT the verdict, and indeterminate counts without reconciliation
+    each FAIL (reconciled indeterminate admits). Fail (not skip) because the
+    operator explicitly opted into spend — a silent skip would read as a clean
+    run."""
     import copy  # noqa: PLC0415
     import sys  # noqa: PLC0415
 
@@ -345,11 +429,26 @@ def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyP
     with pytest.raises(pytest.fail.Exception, match="shipped accounting disagrees"):
         _require_probe_manifest()
 
+    # The adjudication is BOUND to a durable, hash-pinned billing-evidence
+    # file: a bare assertion string, a missing file, and tampered bytes all
+    # refuse admission.
     broken = copy.deepcopy(valid)
-    broken["conservation_adjudication"]["evidence"] = ""  # type: ignore[index, call-overload]
+    broken["conservation_adjudication"]["evidence_file"] = ""  # type: ignore[index, call-overload]
     _rewrite_manifest(tmp_path, broken)
-    with pytest.raises(pytest.fail.Exception, match="non-empty evidence"):
+    with pytest.raises(pytest.fail.Exception, match="non-empty evidence_file"):
         _require_probe_manifest()
+
+    _rewrite_manifest(tmp_path, valid)
+    evidence_file = tmp_path / "billing_evidence.json"
+    evidence_original = evidence_file.read_text(encoding="utf-8")
+    evidence_file.unlink()
+    with pytest.raises(pytest.fail.Exception, match="billing-evidence file.*is missing"):
+        _require_probe_manifest()
+    evidence_file.write_text(evidence_original + " ", encoding="utf-8")
+    with pytest.raises(pytest.fail.Exception, match="do not match evidence_sha256"):
+        _require_probe_manifest()
+    evidence_file.write_text(evidence_original, encoding="utf-8")
+    _require_probe_manifest()  # restored evidence admits again
 
     _rewrite_manifest(tmp_path, valid)
     envelope_fixture = tmp_path / (f"{_SOL}:envelope".replace(":", "_") + ".json")
@@ -363,19 +462,66 @@ def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyP
     envelope_fixture.write_text(original, encoding="utf-8")
     _require_probe_manifest()  # restored capture admits again
 
-    cold_fixture = tmp_path / (f"{_SOL}:cold".replace(":", "_") + ".json")
-    bad_usage = json.dumps(
-        {"usage": {"prompt_tokens": 100, "prompt_tokens_details": {"cache_write_tokens": 1500}}},
-        indent=2,
+    def _set_cold_usage(manifest: dict[str, object], model: str, usage: dict[str, object]) -> None:
+        payload = json.dumps({"usage": usage}, indent=2)
+        (tmp_path / (f"{model}:cold".replace(":", "_") + ".json")).write_text(
+            payload, encoding="utf-8"
+        )
+        manifest["results"][f"{model}:cold"]["sha256"] = hashlib.sha256(  # type: ignore[index, call-overload]
+            payload.encode("utf-8")
+        ).hexdigest()
+
+    broken = copy.deepcopy(valid)
+    _set_cold_usage(
+        broken,
+        _SOL,
+        {"prompt_tokens": 100, "prompt_tokens_details": {"cache_write_tokens": 1500}},
     )
-    cold_fixture.write_text(bad_usage, encoding="utf-8")
-    fixed = copy.deepcopy(valid)
-    fixed["results"][f"{_SOL}:cold"]["sha256"] = hashlib.sha256(  # type: ignore[index, call-overload]
-        bad_usage.encode("utf-8")
-    ).hexdigest()
-    _rewrite_manifest(tmp_path, fixed)
+    _rewrite_manifest(tmp_path, broken)
     with pytest.raises(pytest.fail.Exception, match="conservation violated"):
         _require_probe_manifest()
+
+    # Counts that CONTRADICT the adjudicated equation refuse outright — the
+    # writes-inside shape (total == prompt + completion) against the pinned
+    # prompt_minus_cached verdict is exactly the billed-vs-wire disagreement
+    # that must stop a paid run.
+    broken = copy.deepcopy(valid)
+    _set_cold_usage(
+        broken,
+        _SOL,
+        {
+            "prompt_tokens": 2000,
+            "completion_tokens": 50,
+            "total_tokens": 2050,
+            "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 1500},
+        },
+    )
+    _rewrite_manifest(tmp_path, broken)
+    with pytest.raises(pytest.fail.Exception, match="CONTRADICT the adjudicated equation"):
+        _require_probe_manifest()
+
+    # Indeterminate counts (no total_tokens on the wire) demand an explicit
+    # reconciliation naming why billing evidence alone settles it; with the
+    # reconciliation present, the capture admits.
+    broken = copy.deepcopy(valid)
+    for model in (_SOL, _LUNA):
+        _set_cold_usage(
+            broken,
+            model,
+            {
+                "prompt_tokens": 2000,
+                "completion_tokens": 50,
+                "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 1500},
+            },
+        )
+    _rewrite_manifest(tmp_path, broken)
+    with pytest.raises(pytest.fail.Exception, match="count_reconciliation is empty"):
+        _require_probe_manifest()
+    broken["conservation_adjudication"]["count_reconciliation"] = (  # type: ignore[index, call-overload]
+        "wire omitted total_tokens; billed class breakdown alone supports the verdict"
+    )
+    _rewrite_manifest(tmp_path, broken)
+    _require_probe_manifest()  # reconciled indeterminate capture admits
 
 
 @pytest.mark.skipif(

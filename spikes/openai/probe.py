@@ -25,8 +25,13 @@ Evidence-integrity rules:
     conservation inequalities FROM THE FIXTURE BYTES.
   - The conservation EQUATION (writes inside prompt_tokens or additive — the
     spec's [probe] item) is count-characterized by the probe but adjudicated
-    by the OPERATOR against billed usage; the scorecard refuses to admit until
-    the manifest's adjudication matches what read_usage() implements.
+    by the OPERATOR against billed usage. The adjudication is BOUND to its
+    evidence: the billing export is saved as a hash-pinned file next to the
+    fixtures, and the scorecard gate recomputes per-model count support from
+    the fixture bytes — it refuses admission on a missing/tampered evidence
+    file, counts that CONTRADICT the verdict, indeterminate counts without an
+    explicit reconciliation, or a verdict that differs from what read_usage()
+    implements.
 
 Capture matrix — Sol + Luna full; Terra the cheap reasoning row (a Terra tier
 swap later inherits the FULL matrix before serving, per the spec). ALL rows
@@ -311,13 +316,18 @@ async def _run_paid() -> int:
             "conservation_facts": _conservation_facts(results),
             # The equation choice is a BILLING fact the counts alone cannot
             # certify (spec: [probe] classification). The OPERATOR adjudicates
-            # against billed usage and fills equation/evidence/adjudicated_by
-            # by hand; the scorecard gate refuses to admit while equation is
-            # null or differs from what read_usage() implements.
+            # against billed usage: save the billing export (usage/costs API
+            # response or dashboard export) INTO the fixtures dir, then fill
+            # equation + evidence_file + evidence_sha256 + adjudicated_by by
+            # hand. count_reconciliation is required ONLY when a model's
+            # recomputed counts are indeterminate (the gate recomputes support
+            # from fixture bytes and refuses contrary counts outright).
             "conservation_adjudication": {
                 "equation": None,
-                "evidence": None,
+                "evidence_file": None,
+                "evidence_sha256": None,
                 "adjudicated_by": None,
+                "count_reconciliation": None,
             },
         }
         _MANIFEST.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -329,10 +339,14 @@ async def _run_paid() -> int:
         "all required rows passed. BEFORE the scorecard: adjudicate the conservation\n"
         "equation — read conservation_facts (supported_by_counts + the cold/warm\n"
         "triples), cross-check the billed input classes for this window in the OpenAI\n"
-        "usage dashboard, then fill conservation_adjudication.equation\n"
-        "('prompt_minus_cached' or 'prompt_minus_cached_minus_writes'), .evidence, and\n"
-        ".adjudicated_by in the manifest. If the verdict is minus_writes, read_usage()\n"
-        "must change BEFORE any scorecard run — the gate enforces the match."
+        "usage dashboard, SAVE the billing export (usage/costs API response or CSV)\n"
+        f"into {_FIXTURE_DIR}/, then fill conservation_adjudication in the manifest:\n"
+        "equation ('prompt_minus_cached' or 'prompt_minus_cached_minus_writes'),\n"
+        "evidence_file (the saved export's filename), evidence_sha256 (its hash),\n"
+        "adjudicated_by, and count_reconciliation ONLY if some model's counts are\n"
+        "indeterminate. The gate recomputes per-model count support from fixture\n"
+        "bytes: contrary counts refuse admission outright. If the verdict is\n"
+        "minus_writes, read_usage() must change BEFORE any scorecard run."
     )
     return 0
 
