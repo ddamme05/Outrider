@@ -20,7 +20,9 @@ from uuid import uuid4
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from outrider.audit.events import AnalyzeCompletedEvent
     from outrider.llm.base import LLMProvider
+    from outrider.policy.findings import ReviewFinding
 
 import pytest
 
@@ -1937,10 +1939,12 @@ async def test_analyze_recomputation_rejects_contextless_openai_response() -> No
 
 async def _run_analyze_capture_round(
     state: ReviewState, *, provider: LLMProvider, model: str
-) -> tuple:
+) -> tuple[tuple[ReviewFinding, ...], AnalyzeCompletedEvent | None]:
     """Test-local mirror of `run_analyze_under_model` that ALSO returns the
-    aggregate `AnalysisRound` — the round-5 closure needs the aggregate cost,
-    which the shared runner deliberately discards."""
+    emitted `AnalyzeCompletedEvent` (via a capture sink) — the round-5 closure
+    needs the aggregate cost, which lives on that event (`AnalysisRound`
+    carries no cost field) and which the shared runner deliberately
+    discards."""
     from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze, analyze_file
     from outrider.agent.nodes.analyze_aggregate import analyze_aggregate
 
@@ -2006,9 +2010,9 @@ async def test_openai_analyze_aggregate_cost_and_context_spy(
 ) -> None:
     """Round-5 closures 1+2: the ordinary analyze pricing call receives BOTH
     context arguments (spied at the call site — omitting billed alone would
-    otherwise still price flat and stay green), and the resulting
-    AnalysisRound.total_cost_usd equals an INDEPENDENTLY computed figure from
-    the raw RATE_TABLE rates."""
+    otherwise still price flat and stay green), and the emitted
+    AnalyzeCompletedEvent.total_cost_usd equals an INDEPENDENTLY computed
+    figure from the raw RATE_TABLE rates."""
     import outrider.agent.nodes.analyze as analyze_mod
     from outrider.llm.pricing import RATE_TABLE
 
