@@ -56,7 +56,8 @@ def test_llm_provider_declares_exact_method_set() -> None:
     assert actual == expected, (
         f"LLMProvider method set drift: missing={expected - actual}, "
         f"extra={actual - expected}. Update this pin AND every provider impl "
-        f"(AnthropicProvider, V1.5 OpenAIProvider) if adding a method."
+        f"(AnthropicProvider, OpenAICompatibleProvider, the eval doubles) "
+        f"if adding a method."
     )
 
 
