@@ -15,10 +15,14 @@ export function Sparkline({
   values,
   variant,
   label,
+  incomplete,
 }: {
   values: number[];
   variant: SparkVariant;
   label?: string;
+  /** Per-point lower-bound flags (openai-native-host arc): a true entry marks the
+   * point with a dashed ring — its value is a known subtotal, not an exact figure. */
+  incomplete?: boolean[];
 }) {
   if (values.length === 0) return null;
 
@@ -28,14 +32,13 @@ export function Sparkline({
   const innerW = W - PAD_X * 2;
   const denom = values.length > 1 ? values.length - 1 : 1;
 
-  const points = values
-    .map((v, i) => {
-      const x = PAD_X + (i / denom) * innerW;
-      // Flat series (span 0) sits on the midline; otherwise scale into [TOP,BOTTOM].
-      const y = span === 0 ? (TOP + BOTTOM) / 2 : BOTTOM - ((v - min) / span) * (BOTTOM - TOP);
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
+  const xy = values.map((v, i) => {
+    const x = PAD_X + (i / denom) * innerW;
+    // Flat series (span 0) sits on the midline; otherwise scale into [TOP,BOTTOM].
+    const y = span === 0 ? (TOP + BOTTOM) / 2 : BOTTOM - ((v - min) / span) * (BOTTOM - TOP);
+    return [x, y] as const;
+  });
+  const points = xy.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
 
   return (
     <svg
@@ -53,6 +56,22 @@ export function Sparkline({
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+      {incomplete
+        ? xy.map(([x, y], i) =>
+            incomplete[i] ? (
+              <circle
+                key={i}
+                cx={x}
+                cy={y}
+                r={1.8}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="0.8"
+                strokeDasharray="1.5 1"
+              />
+            ) : null,
+          )
+        : null}
     </svg>
   );
 }

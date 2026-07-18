@@ -240,6 +240,7 @@ function Analytics({
           }
           spark={buckets.map((b) => b.cost_usd)}
           sparkVariant="neg"
+          sparkIncomplete={buckets.map((b) => b.cost_complete === false)}
         />
         <MetricCard
           label="Findings"

@@ -14,6 +14,7 @@ export function MetricCard({
   delta,
   spark,
   sparkVariant,
+  sparkIncomplete,
 }: {
   label: string;
   value: ReactNode;
@@ -21,6 +22,7 @@ export function MetricCard({
   delta: DeltaInfo;
   spark: number[];
   sparkVariant: SparkVariant;
+  sparkIncomplete?: boolean[];
 }) {
   return (
     <div className="card stat-card metric-card">
@@ -31,7 +33,12 @@ export function MetricCard({
         <span aria-hidden="true">{delta.glyph}</span>
         <span className="num">{delta.label}</span>
       </div>
-      <Sparkline values={spark} variant={sparkVariant} label={`${label} trend`} />
+      <Sparkline
+        values={spark}
+        variant={sparkVariant}
+        label={`${label} trend`}
+        incomplete={sparkIncomplete}
+      />
     </div>
   );
 }
