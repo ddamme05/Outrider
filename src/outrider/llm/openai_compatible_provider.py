@@ -29,12 +29,15 @@ the installed openai==2.44.0):
     reliable cost key. The live probe returned `response.model` populated with
     the slug, but Baseten's GLM library example shows it can echo `""` — keying
     on the request side is correct regardless of what `response.model` carries.
-  - Caching: automatic prefix caching, no `cache_control` marker and no
-    cache-write token class → `cache_write_tokens=0`. The Anthropic
-    silently-disabled-cache diagnostic does not apply.
-  - Structured output: `response_format={"type":"json_schema",
+  - Caching: automatic prefix caching, no `cache_control` marker. GLM hosts
+    have no cache-write token class → `cache_write_tokens=0`; 5.6+ hosts report
+    writes distinctly (`prompt_tokens_details.cache_write_tokens`, validated
+    extras-read) and the openai profile sends `prompt_cache_key`. The Anthropic
+    silently-disabled-cache diagnostic does not apply (FUP-237).
+  - Structured output: schema modes send `response_format={"type":"json_schema",
     "json_schema":{"name",strict:true,"schema"}}` (name required), not
-    Anthropic's `output_config.format`. NOTE: GLM wraps the JSON in a markdown
+    Anthropic's `output_config.format`; the JSON_OBJECT mode (openai host)
+    sends `{"type":"json_object"}` instead. NOTE: GLM wraps the JSON in a markdown
     code fence even under strict mode (confirmed live) — the wrapper returns the
     raw text and the node parsers strip it via `strip_outer_json_fence` (same as
     Anthropic's occasional fences). Schema CONFORMANCE inside the fence is a yield
@@ -54,9 +57,13 @@ the installed openai==2.44.0):
   4. extract assistant text (exactly one choice, non-empty content).
   5. normalize usage (§8a cached subtraction) → LLMResponse + latency.
   6. compute prompt/system hashes.
-  7. compute cost_usd (keyed on the request model id).
-  8. build LLMCallEvent; await persister.persist(); wrap failures.
-  9. return LLMResponse.
+  7. canonical pricing outcome (compute_cost_outcome — tier + >272K derived in
+     pricing.py from the response's billed count and echoed service tier).
+  8. build LLMCallEvent (nullable cost + typed unpriced reason + pricing
+     context); await persister.persist(); wrap failures.
+  9. post-persist pricing-contract raise (terminal LLMPricingContractError) on
+     an over-ceiling / tier-deviation / unpriceable outcome — persist-first.
+  10. return LLMResponse.
 """
 
 import asyncio
@@ -80,6 +87,7 @@ from outrider.llm.base import (
     LLMMissingAPIKeyError,
     LLMPersisterError,
     LLMPersisterNotWiredError,
+    LLMPricingContractError,
     LLMPricingMissingError,
     LLMProviderError,
     LLMRateLimitError,
@@ -92,11 +100,19 @@ from outrider.llm.base import (
     _canonical_prompt_hash,
     _canonical_system_prompt_hash,
 )
-from outrider.llm.host_profiles import BASETEN_PROFILE, HostProfile, JsonMode, read_usage
+from outrider.llm.host_profiles import (
+    BASETEN_PROFILE,
+    HostProfile,
+    JsonMode,
+    TokenAccounting,
+    read_usage,
+)
 from outrider.llm.pricing import (
     PRICING_VERSION,
     RATE_TABLE,
-    compute_cost_usd,
+    Priced,
+    Unpriced,
+    compute_cost_outcome,
     pricing_key,
 )
 
@@ -111,10 +127,22 @@ GLM_MODEL_ID: Final[str] = "zai-org/GLM-5.2"
 
 # json_mode values whose request wire is the `response_format.json_schema` envelope this
 # provider builds. STRICT_JSON_SCHEMA and SOFT_FENCED differ in how the HOST enforces the
-# schema (constrained decoding vs soft/fenced), not in the request shape. JSON_OBJECT needs
-# a different `response_format` wire and is rejected at construction until implemented
-# (DECISIONS.md#056) — fail closed rather than send the wrong shape to a future host.
+# schema (constrained decoding vs soft/fenced), not in the request shape. JSON_OBJECT
+# (the openai host) sends `response_format={"type":"json_object"}` instead — OpenAI's
+# genuinely-enforcing strict compiler would 400 the raw partial-required analyze schema,
+# and required-completion is the #056(b)-rejected shape.
 _JSON_SCHEMA_MODES: Final = frozenset({JsonMode.STRICT_JSON_SCHEMA, JsonMode.SOFT_FENCED})
+_BUILDABLE_JSON_MODES: Final = _JSON_SCHEMA_MODES | {JsonMode.JSON_OBJECT}
+
+# Pre-flight framing allowance for the flat-rate input ceiling (openai-native-host
+# spec). Soundness of the byte bound: byte-fallback BPE emits at most ~1 token per
+# input byte, so UTF-8 prompt bytes bound prompt tokens; JSON_OBJECT mode transmits
+# no schema, and `response_format`/`reasoning_effort`/`service_tier`/
+# `prompt_cache_key` add no billed input tokens — so message bytes + chat framing
+# are the whole billed input. Actual framing is ≈4–8 tokens per message × 2
+# messages + ~3 reply-priming (~20 tokens); 1_024 is a ~50× margin. Boundary
+# tests pin at/under/over.
+OPENAI_FRAMING_TOKEN_ALLOWANCE: Final[int] = 1_024
 
 
 _PRIVACY_NOTICE_LOGGER = logging.getLogger("outrider.llm.privacy_notice")
@@ -169,15 +197,16 @@ class OpenAICompatibleProvider:
                 f"to construct OpenAICompatibleProvider (no blanket override — DECISIONS.md#056)."
             )
 
-        # Structured-output wire: only the json_schema envelope is built (see
-        # `_JSON_SCHEMA_MODES`). A JSON_OBJECT host needs a different `response_format`
-        # shape that isn't wired yet — fail closed at construction rather than silently
-        # send the wrong wire on the first schema-bearing call (DECISIONS.md#056).
-        if profile.json_mode not in _JSON_SCHEMA_MODES:
+        # Structured-output wire totality check: every JsonMode this provider can be
+        # handed must have a request shape in `_build_sdk_kwargs` (json_schema envelope
+        # for the schema modes; bare json_object for the openai host). A future enum
+        # member without a builder branch fails closed here rather than silently
+        # sending the wrong wire on the first schema-bearing call (DECISIONS.md#056).
+        if profile.json_mode not in _BUILDABLE_JSON_MODES:
             raise LLMInvalidRequestError(
                 f"host {profile.host_id!r} declares json_mode={profile.json_mode.value!r}, "
-                f"which OpenAICompatibleProvider does not yet build a request shape for "
-                f"(only the json_schema envelope is implemented). DECISIONS.md#056."
+                f"which OpenAICompatibleProvider does not build a request shape for. "
+                f"DECISIONS.md#056."
             )
 
         # Restrict configured models to the host's slug family BEFORE the pricing check.
@@ -325,6 +354,28 @@ class OpenAICompatibleProvider:
                 f"model in `models`."
             )
 
+        # Step 1c: flat-rate ceiling pre-flight (openai-native-host spec) — the
+        # LOAD-BEARING guard. >272K reprices the FULL request, which the flat
+        # RATE_TABLE rows cannot represent; reject BEFORE the paid call when the
+        # conservative byte bound (tokens ≤ prompt bytes + framing allowance —
+        # see OPENAI_FRAMING_TOKEN_ALLOWANCE) could cross the boundary. The
+        # post-call billed check below is defense-in-depth, persist-first.
+        ceiling = self._profile.flat_rate_input_ceiling_tokens
+        if ceiling is not None:
+            byte_bound = (
+                len(request.system_prompt.encode("utf-8"))
+                + len(request.user_prompt.encode("utf-8"))
+                + OPENAI_FRAMING_TOKEN_ALLOWANCE
+            )
+            if byte_bound > ceiling:
+                raise LLMInvalidRequestError(
+                    f"request's conservative input bound ({byte_bound} tokens ≤ prompt "
+                    f"bytes + framing) exceeds host {self._profile.host_id!r}'s flat-rate "
+                    f"ceiling ({ceiling}); refusing the paid call — above the boundary "
+                    f"the FULL request reprices and the flat rates would be wrong "
+                    f"(specs/2026-07-18-openai-native-host.md)."
+                )
+
         # Step 2: translate request → SDK kwargs.
         sdk_kwargs = _build_sdk_kwargs(request, profile=self._profile)
 
@@ -364,6 +415,13 @@ class OpenAICompatibleProvider:
             raise LLMInvalidResponseError()
         ptd = usage.prompt_tokens_details
         raw_cached = (ptd.cached_tokens or 0) if ptd is not None else 0
+        # 5.6+ hosts report cache WRITES as a distinct billed class. The pinned SDK
+        # (openai==2.44.0) does not type `cache_write_tokens` on PromptTokensDetails,
+        # but its models preserve unknown extras — validated read, wire-fixture-pinned
+        # (openai-native-host spec). Only consulted for the writes-reported accounting.
+        raw_cache_write = 0
+        if self._profile.token_accounting is TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED:
+            raw_cache_write = _read_cache_write_tokens(ptd)
         # `read_usage` applies the host's includes/excludes-cached rule (Baseten INCLUDES
         # cached → subtract, capping at prompt_tokens so a malformed cached can't drive
         # input negative or break input+cache_read==prompt) and rejects negative components.
@@ -372,6 +430,7 @@ class OpenAICompatibleProvider:
             raw_cached_tokens=raw_cached,
             completion_tokens=usage.completion_tokens,
             accounting=self._profile.token_accounting,
+            raw_cache_write_tokens=raw_cache_write,
         )
 
         # Model identity: key cost + the audit event on the REQUEST model id, not
@@ -397,6 +456,11 @@ class OpenAICompatibleProvider:
             profile_id=self._profile.host_id,
             reasoning_enabled=self._reasoning_enabled,
             profile_contract_digest=self._profile_contract_digest,
+            # Pricing context (openai-native-host spec): the raw wire facts, stamped for
+            # EVERY compatible host (truthful for GLM too) — pricing.py derives tier +
+            # >272K internally from these; the persister recomputes from the same.
+            billed_prompt_tokens=usage.prompt_tokens,
+            service_tier_actual=getattr(sdk_response, "service_tier", None),
         )
 
         # Step 6: hash the prompts.
@@ -405,20 +469,27 @@ class OpenAICompatibleProvider:
         )
         system_prompt_hash = _canonical_system_prompt_hash(request.system_prompt)
 
-        # Step 7: compute cost_usd. KeyError is unreachable given the eager
+        # Step 7: canonical pricing outcome. KeyError is unreachable given the eager
         # constructor check (request.model is one of the validated models in
         # the eval/spike path), but keep the loud fallback for safety.
+        expects_tier_echo = self._profile.requested_service_tier is not None
         try:
-            # Single source of truth: cost reads the same token counts the
+            # Single source of truth: pricing reads the same wire facts the
             # LLMResponse + the audit event carry (response.*), not the raw
             # locals — so the billed counts can't drift from the audited ones.
-            cost_decimal = compute_cost_usd(
+            # pricing.py derives the >272K determination and the tier rate
+            # INTERNALLY (openai-native-host spec); no threshold or multiplier
+            # lives in this provider.
+            outcome = compute_cost_outcome(
                 self._profile.host_id,
                 model_id,
                 input_tokens=response.input_tokens,
                 cache_write_tokens=response.cache_write_tokens,
                 cache_read_tokens=response.cache_read_tokens,
                 output_tokens=response.output_tokens,
+                billed_prompt_tokens=response.billed_prompt_tokens,
+                service_tier=response.service_tier_actual,
+                expects_tier_echo=expects_tier_echo,
             )
         except KeyError as exc:
             missing_key = pricing_key(self._profile.host_id, model_id)
@@ -428,6 +499,25 @@ class OpenAICompatibleProvider:
                 f"to RATE_TABLE + bump PRICING_VERSION to fix.",
                 missing_models=[str(missing_key)],
             ) from exc
+
+        # Pricing-contract deviation detection (openai-native-host spec): a
+        # completed HTTP-200 that either crossed the flat-rate ceiling, echoed a
+        # tier we did not request, or echoed an unpriceable tier. Every such
+        # exchange PERSISTS FIRST (correctly costed or provenance-marked — the
+        # FUP-205 persist-before-raise shape under #016), then raises the
+        # terminal LLMPricingContractError so no retry can bill a second call.
+        billed = response.billed_prompt_tokens
+        over_ceiling = ceiling is not None and billed is not None and billed > ceiling
+        tier_deviated = (
+            expects_tier_echo
+            and response.service_tier_actual != self._profile.requested_service_tier
+        )
+        if isinstance(outcome, Priced):
+            event_cost: float | None = float(outcome.cost_usd)
+            unpriced_reason = None
+        else:
+            event_cost = None
+            unpriced_reason = outcome.reason
 
         # Step 8: build LLMCallEvent + persist.
         event = LLMCallEvent(
@@ -442,7 +532,8 @@ class OpenAICompatibleProvider:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cached_tokens=cached_tokens,
-            cost_usd=float(cost_decimal),
+            cost_usd=event_cost,
+            cost_unpriced_reason=unpriced_reason,
             pricing_version=PRICING_VERSION,
             latency_ms=response.latency_ms,
             prompt_hash=prompt_hash,
@@ -459,6 +550,11 @@ class OpenAICompatibleProvider:
             profile_id=response.profile_id,
             reasoning_enabled=response.reasoning_enabled,
             profile_contract_digest=response.profile_contract_digest,
+            # Pricing context mirrored from the response (single source) — the
+            # persister's fresh guard verifies the mirror.
+            service_tier=response.service_tier_actual,
+            billed_prompt_tokens=response.billed_prompt_tokens,
+            cache_write_tokens=response.cache_write_tokens,
         )
         try:
             await self._persister.persist(event, request, response)
@@ -481,7 +577,22 @@ class OpenAICompatibleProvider:
                 f"The audit row did not land; calling node halts the review."
             ) from None
 
-        # Step 9: return.
+        # Step 9: post-persist pricing-contract raise (exchange + exactly one
+        # LLMCallEvent are durable; the error is terminal so the node cannot
+        # re-invoke and bill a second call).
+        if isinstance(outcome, Unpriced) or over_ceiling or tier_deviated:
+            raise LLMPricingContractError(
+                f"completed exchange deviated from host {self._profile.host_id!r}'s "
+                f"flat-rate pricing contract: "
+                f"unpriced_reason={unpriced_reason.value if unpriced_reason else None!r}, "
+                f"over_ceiling={over_ceiling}, echoed_tier="
+                f"{response.service_tier_actual!r} vs requested="
+                f"{self._profile.requested_service_tier!r}. The exchange and its "
+                f"LLMCallEvent persisted first (correctly costed or provenance-marked); "
+                f"terminal by contract (specs/2026-07-18-openai-native-host.md)."
+            )
+
+        # Step 10: return.
         return response
 
     async def aclose(self) -> None:
@@ -575,17 +686,38 @@ def _build_sdk_kwargs(request: LLMRequest, *, profile: HostProfile) -> dict[str,
     }
     # Reasoning off per the host's mechanism (a no-op for a host with no off-switch).
     profile.apply_reasoning_off(kwargs)
+    # Requested tier is host DATA (digest-folded), never a builder constant: an
+    # omitted tier behaves as `auto` and can select a Project-configured tier,
+    # silently changing billing (openai-native-host spec). Sent verbatim.
+    if profile.requested_service_tier is not None:
+        kwargs["service_tier"] = profile.requested_service_tier
+    # GPT-5.6+ requires prompt_cache_key for reliable implicit/explicit cache
+    # matching. Stable per (profile contract, prompt version) so the #042
+    # stable-prefix packing keeps paying; ~15 RPM per key is ample at review
+    # volumes.
+    if profile.sends_prompt_cache_key:
+        kwargs["prompt_cache_key"] = (
+            f"outrider:{profile.profile_contract_digest[:16]}:{request.prompt_template_version}"
+        )
     if request.response_schema_json is not None:
-        kwargs["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {
-                # Stable per-node name (required by the json_schema surface).
-                "name": f"outrider_{request.node_id}",
-                # const-true on Baseten's JsonSchema; the only accepted value.
-                "strict": True,
-                "schema": json.loads(request.response_schema_json),
-            },
-        }
+        if profile.json_mode is JsonMode.JSON_OBJECT:
+            # OpenAI enforces strict all-required (+ additionalProperties:false) —
+            # the #056(b)-rejected required-completion shape — so the openai host
+            # gets the syntactic-JSON guarantee instead; the schema is expressed
+            # through the prompt (which names every field, the #059 conformance
+            # driver) and Pydantic remains the enforcement layer.
+            kwargs["response_format"] = {"type": "json_object"}
+        else:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    # Stable per-node name (required by the json_schema surface).
+                    "name": f"outrider_{request.node_id}",
+                    # const-true on Baseten's JsonSchema; the only accepted value.
+                    "strict": True,
+                    "schema": json.loads(request.response_schema_json),
+                },
+            }
     return kwargs
 
 
@@ -603,6 +735,27 @@ _FINISH_REASON_MAP: Final[dict[str, str]] = {
     "content_filter": "refusal",
     "function_call": "tool_use",  # deprecated openai alias
 }
+
+
+def _read_cache_write_tokens(ptd: Any) -> int:
+    """Validated extras-read of `prompt_tokens_details.cache_write_tokens` (5.6+).
+
+    The pinned SDK (openai==2.44.0) does not type the field; its pydantic models
+    preserve unknown extras as attributes, so the wrapper reads it defensively —
+    absent/None → 0 (no writes), any non-int is malformed wire (never coerced);
+    negatives are rejected downstream by `read_usage`'s negative-component guard.
+    Wire-fixture-pinned per the openai-native-host spec."""
+    if ptd is None:
+        return 0
+    value = getattr(ptd, "cache_write_tokens", None)
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise LLMInvalidResponseError(
+            f"prompt_tokens_details.cache_write_tokens has non-int type "
+            f"<{type(value).__name__}>: malformed usage payload"
+        )
+    return int(value)
 
 
 def _normalize_finish_reason(value: str | None) -> str:
@@ -627,13 +780,19 @@ def _extract_assistant_text(response: Any) -> tuple[str, str]:
     downstream parser + the normalized finish_reason (`max_tokens` → the analyze
     truncation diagnostic) degrade that file gracefully — for the truncation /
     empty-content case this mirrors `AnthropicProvider`'s single-empty-`TextBlock`
-    path (both return ""). NOTE the refusal divergence (post Sonnet 5 migration):
-    `AnthropicProvider` now HARD-HALTS on `stop_reason="refusal"` (raises
-    `LLMRefusalError`), whereas a `content_filter` here normalizes to
-    `finish_reason="refusal"` and still degrades the single file — a deliberate
-    graceful-degradation choice for this provider, but a cross-provider refusal
-    asymmetry tracked for reconciliation (FUP-203). Only an unexpected CHOICE
-    count fails loud.
+    path (both return ""). Only an unexpected CHOICE count fails loud.
+
+    **Cross-provider refusal contract (FUP-203, adjudicated by the
+    openai-native-host spec, 2026-07-18).** `AnthropicProvider` HARD-HALTS on
+    `stop_reason="refusal"` (raises `LLMRefusalError` — output-boundary #6
+    posture for its production path). This provider deliberately DEGRADES the
+    single file instead: a refusal — whether signalled by
+    `finish_reason="content_filter"` OR by a non-empty structured
+    `message.refusal` field (which OpenAI can send with `finish_reason="stop"`)
+    — normalizes to `finish_reason="refusal"` with empty content, the review
+    continues, and the refusal is visible on the audit row. That deliberate
+    degradation IS the recorded cross-provider contract (the second horn of
+    FUP-203's exit rule), not an oversight.
     """
     choices = response.choices
     if len(choices) != 1:
@@ -643,7 +802,14 @@ def _extract_assistant_text(response: Any) -> tuple[str, str]:
             f"(not supported in V1) or an SDK shape change.",
             actual_block_types=[f"choices={len(choices)}"],
         )
-    content = choices[0].message.content or ""
+    message = choices[0].message
+    refusal = getattr(message, "refusal", None)
+    if refusal:
+        # A structured refusal outranks whatever finish_reason came with it — a
+        # refusal echoed under "stop" must not masquerade as an empty end_turn
+        # (vendor-payloads-normalized-at-boundary).
+        return "", "refusal"
+    content = message.content or ""
     finish_reason = _normalize_finish_reason(choices[0].finish_reason)
     return content, finish_reason
 

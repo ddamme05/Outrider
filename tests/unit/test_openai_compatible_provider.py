@@ -964,17 +964,25 @@ async def test_trains_on_inputs_profile_fails_closed() -> None:
         )
 
 
-def test_json_object_profile_rejected_at_construction() -> None:
-    """A JSON_OBJECT host needs a `response_format` wire that isn't built yet — construction
-    fails closed rather than send a json_schema envelope to it (DECISIONS.md#056)."""
+def test_json_object_profile_constructs_and_sends_json_object_wire() -> None:
+    """JSON_OBJECT became a buildable mode with the openai host
+    (specs/2026-07-18-openai-native-host.md): construction succeeds and a
+    schema-bearing request sends `response_format={"type":"json_object"}` — never
+    the json_schema envelope OpenAI's enforcing strict compiler would 400."""
+    from outrider.llm.openai_compatible_provider import _build_sdk_kwargs
+
     json_object_host = _synthetic_profile().model_copy(update={"json_mode": JsonMode.JSON_OBJECT})
-    with pytest.raises(LLMInvalidRequestError, match="json_mode='json_object'"):
-        OpenAICompatibleProvider(
-            api_key=_api_key(),
-            profile=json_object_host,
-            persister=_RecordingPersister(),
-            models=(GLM_MODEL_ID,),
-        )
+    provider = OpenAICompatibleProvider(
+        api_key=_api_key(),
+        profile=json_object_host,
+        persister=_RecordingPersister(),
+        models=(GLM_MODEL_ID,),
+    )
+    assert provider._profile.json_mode is JsonMode.JSON_OBJECT  # noqa: SLF001
+    kwargs = _build_sdk_kwargs(
+        _request(response_schema_json='{"type":"object"}'), profile=json_object_host
+    )
+    assert kwargs["response_format"] == {"type": "json_object"}
 
 
 def test_glm_alias_binds_baseten_profile() -> None:
@@ -1139,3 +1147,266 @@ def test_none_mechanism_host_forces_reasoning_enabled_true() -> None:
         reasoning=False,
     )
     assert provider._reasoning_enabled is True  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# OpenAI native host (specs/2026-07-18-openai-native-host.md): request wire,
+# refusal normalization, ceiling pre-flight, persist-then-raise outcomes.
+# ---------------------------------------------------------------------------
+
+
+def _openai_provider(persister: _RecordingPersister | None = None) -> OpenAICompatibleProvider:
+    from outrider.llm.host_profiles import OPENAI_PROFILE
+
+    return OpenAICompatibleProvider(
+        api_key=_api_key(),
+        profile=OPENAI_PROFILE,
+        persister=persister if persister is not None else _RecordingPersister(),
+        models=("gpt-5.6-sol", "gpt-5.6-luna"),
+    )
+
+
+def _openai_usage(*, prompt_tokens: int = 2000, cached: int = 0, write: int | None = None) -> Any:
+    from openai.types.completion_usage import CompletionUsage, PromptTokensDetails
+
+    ptd_kwargs: dict[str, Any] = {"cached_tokens": cached}
+    if write is not None:
+        ptd_kwargs["cache_write_tokens"] = write  # untyped extra — SDK preserves it
+    return CompletionUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=50,
+        total_tokens=prompt_tokens + 50,
+        prompt_tokens_details=PromptTokensDetails(**ptd_kwargs),
+    )
+
+
+def _openai_completion(
+    *,
+    service_tier: str | None = "default",
+    usage: Any = None,
+    refusal: str | None = None,
+    finish_reason: str = "stop",
+) -> ChatCompletion:
+    msg_kwargs: dict[str, Any] = {"role": "assistant", "content": "{}"}
+    if refusal is not None:
+        msg_kwargs = {"role": "assistant", "content": None, "refusal": refusal}
+    completion = _chat_completion(
+        model="gpt-5.6-sol",
+        usage=usage if usage is not None else _openai_usage(),
+        choices=[
+            Choice(
+                index=0,
+                finish_reason=finish_reason,  # type: ignore[arg-type]
+                message=ChatCompletionMessage(**msg_kwargs),
+            )
+        ],
+    )
+    return completion.model_copy(update={"service_tier": service_tier})
+
+
+def _expected_outcome_cost(response_usage: Any, *, service_tier: str | None) -> float:
+    from outrider.llm.pricing import Priced as _Priced
+    from outrider.llm.pricing import compute_cost_outcome as _outcome
+
+    ptd = response_usage.prompt_tokens_details
+    cached = ptd.cached_tokens or 0
+    write = getattr(ptd, "cache_write_tokens", 0) or 0
+    outcome = _outcome(
+        "openai",
+        "gpt-5.6-sol",
+        input_tokens=response_usage.prompt_tokens - cached,
+        cache_write_tokens=write,
+        cache_read_tokens=cached,
+        output_tokens=response_usage.completion_tokens,
+        billed_prompt_tokens=response_usage.prompt_tokens,
+        service_tier=service_tier,
+        expects_tier_echo=True,
+    )
+    assert isinstance(outcome, _Priced)
+    return float(outcome.cost_usd)
+
+
+@pytest.mark.asyncio
+async def test_openai_request_wire_pins_tier_cache_key_reasoning_json_object() -> None:
+    """The four openai-host request behaviors, pinned individually on one wire:
+    verbatim requested tier, stable prompt_cache_key, top-level
+    reasoning_effort=none, json_object response_format."""
+    persister = _RecordingPersister()
+    provider = _openai_provider(persister)
+    request = _request(model="gpt-5.6-sol", response_schema_json='{"type":"object"}')
+    with _patched_create(return_value=_openai_completion()) as mock:
+        await provider.complete(request)
+    kwargs = mock.call_args.kwargs
+    assert kwargs["service_tier"] == "default"
+    assert kwargs["reasoning_effort"] == "none"
+    assert kwargs["response_format"] == {"type": "json_object"}
+    from outrider.llm.host_profiles import OPENAI_PROFILE
+
+    assert kwargs["prompt_cache_key"] == (
+        f"outrider:{OPENAI_PROFILE.profile_contract_digest[:16]}:analyze@1.0.0"
+    )
+    assert "store" not in kwargs  # never opt into response storage
+    assert len(persister.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_refusal_field_normalizes_even_under_stop_and_degrades() -> None:
+    """FUP-203 contract: a structured message.refusal under finish_reason='stop'
+    normalizes to 'refusal' + empty content, persists, and does NOT raise —
+    the deliberate single-file degradation, never an empty end_turn."""
+    persister = _RecordingPersister()
+    provider = _openai_provider(persister)
+    completion = _openai_completion(refusal="I can't help with that.", finish_reason="stop")
+    with _patched_create(return_value=completion):
+        response = await provider.complete(_request(model="gpt-5.6-sol"))
+    assert response.text == ""
+    assert response.finish_reason == "refusal"
+    assert len(persister.calls) == 1
+    event, _req, _resp = persister.calls[0]
+    assert event.finish_reason == "refusal"
+
+
+@pytest.mark.asyncio
+async def test_preflight_ceiling_rejects_before_any_paid_call() -> None:
+    """Over the byte bound: LLMInvalidRequestError BEFORE the SDK — zero calls,
+    zero events."""
+    persister = _RecordingPersister()
+    provider = _openai_provider(persister)
+    huge = _request(model="gpt-5.6-sol", user_prompt="x" * 272_000)
+    with (
+        _patched_create(return_value=_openai_completion()) as mock,
+        pytest.raises(LLMInvalidRequestError, match="flat-rate"),
+    ):
+        await provider.complete(huge)
+    mock.assert_not_called()
+    assert persister.calls == []
+
+
+@pytest.mark.asyncio
+async def test_preflight_ceiling_boundary_exact_passes_one_over_rejects() -> None:
+    """bound == ceiling proceeds; bound == ceiling+1 rejects (strict >)."""
+    from outrider.llm.openai_compatible_provider import OPENAI_FRAMING_TOKEN_ALLOWANCE
+
+    persister = _RecordingPersister()
+    provider = _openai_provider(persister)
+    system = "You are a code reviewer."
+    room = 272_000 - OPENAI_FRAMING_TOKEN_ALLOWANCE - len(system.encode("utf-8"))
+    at_boundary = _request(model="gpt-5.6-sol", system_prompt=system, user_prompt="x" * room)
+    with _patched_create(return_value=_openai_completion()):
+        await provider.complete(at_boundary)  # no raise
+    over = _request(model="gpt-5.6-sol", system_prompt=system, user_prompt="x" * (room + 1))
+    with (
+        _patched_create(return_value=_openai_completion()) as mock,
+        pytest.raises(LLMInvalidRequestError, match="flat-rate"),
+    ):
+        await provider.complete(over)
+    mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_over_ceiling_billed_persists_long_policy_cost_then_raises() -> None:
+    """Post-call defense-in-depth: billed prompt over 272K persists FIRST with
+    the versioned long-context policy cost (never flat, never ad-hoc), then
+    raises the terminal contract error. Exactly one SDK call, one event."""
+    from outrider.llm.base import LLMPricingContractError
+
+    persister = _RecordingPersister()
+    provider = _openai_provider(persister)
+    usage = _openai_usage(prompt_tokens=300_000, cached=0, write=0)
+    with (
+        _patched_create(return_value=_openai_completion(usage=usage)) as mock,
+        pytest.raises(LLMPricingContractError, match="over_ceiling=True"),
+    ):
+        await provider.complete(_request(model="gpt-5.6-sol"))
+    assert mock.call_count == 1
+    assert len(persister.calls) == 1
+    event, _req, _resp = persister.calls[0]
+    assert event.billed_prompt_tokens == 300_000
+    assert event.cost_usd == _expected_outcome_cost(usage, service_tier="default")
+    assert event.cost_unpriced_reason is None
+    assert LLMPricingContractError.retry_at_layer == "none"
+
+
+@pytest.mark.asyncio
+async def test_flex_echo_persists_half_cost_then_raises() -> None:
+    """Costable tier mismatch: flex echo persists the 0.5x policy cost, then
+    raises terminally."""
+    from outrider.llm.base import LLMPricingContractError
+
+    persister = _RecordingPersister()
+    provider = _openai_provider(persister)
+    usage = _openai_usage()
+    with (
+        _patched_create(return_value=_openai_completion(service_tier="flex", usage=usage)) as mock,
+        pytest.raises(LLMPricingContractError, match="'flex'"),
+    ):
+        await provider.complete(_request(model="gpt-5.6-sol"))
+    assert mock.call_count == 1
+    assert len(persister.calls) == 1
+    event, _req, _resp = persister.calls[0]
+    assert event.service_tier == "flex"
+    assert event.cost_usd == _expected_outcome_cost(usage, service_tier="flex")
+
+
+@pytest.mark.asyncio
+async def test_unpriceable_echo_persists_null_cost_typed_reason_then_raises() -> None:
+    """Unpriceable echoes (scale; absent) persist cost_usd=None + the typed
+    reason, then raise terminally — never 0.0, never a dropped exchange."""
+    from outrider.llm.base import LLMPricingContractError
+    from outrider.llm.pricing import CostUnpricedReason
+
+    cases = (
+        ("scale", CostUnpricedReason.SCALE_TIER),
+        (None, CostUnpricedReason.ABSENT_TIER),
+    )
+    for echo, reason in cases:
+        persister = _RecordingPersister()
+        provider = _openai_provider(persister)
+        with (
+            _patched_create(return_value=_openai_completion(service_tier=echo)) as mock,
+            pytest.raises(LLMPricingContractError),
+        ):
+            await provider.complete(_request(model="gpt-5.6-sol"))
+        assert mock.call_count == 1, echo
+        assert len(persister.calls) == 1, echo
+        event, _req, _resp = persister.calls[0]
+        assert event.cost_usd is None, echo
+        assert event.cost_unpriced_reason is reason, echo
+
+
+@pytest.mark.asyncio
+async def test_cache_write_extras_flow_into_response_event_and_cost() -> None:
+    """The untyped cache_write_tokens extra flows: validated read → LLMResponse →
+    event mirror → the write class priced at 1.25x input inside the outcome."""
+    persister = _RecordingPersister()
+    provider = _openai_provider(persister)
+    usage = _openai_usage(prompt_tokens=2000, cached=1500, write=400)
+    with _patched_create(return_value=_openai_completion(usage=usage)):
+        response = await provider.complete(_request(model="gpt-5.6-sol"))
+    assert response.cache_write_tokens == 400
+    assert response.cache_read_tokens == 1500
+    assert response.input_tokens == 500
+    assert response.billed_prompt_tokens == 2000
+    assert response.service_tier_actual == "default"
+    event, _req, _resp = persister.calls[0]
+    assert event.cache_write_tokens == 400
+    assert event.billed_prompt_tokens == 2000
+    assert event.service_tier == "default"
+    assert event.cost_usd == _expected_outcome_cost(usage, service_tier="default")
+
+
+@pytest.mark.asyncio
+async def test_malformed_cache_write_extra_rejects_before_persist() -> None:
+    """A non-int cache_write_tokens extra is malformed wire: LLMInvalidResponseError
+    BEFORE any persist (the pre-persist malformed class, distinct from the
+    post-persist contract error)."""
+    persister = _RecordingPersister()
+    provider = _openai_provider(persister)
+    usage = _openai_usage(prompt_tokens=2000, cached=0)
+    object.__setattr__(usage.prompt_tokens_details, "cache_write_tokens", "seven")
+    with (
+        _patched_create(return_value=_openai_completion(usage=usage)),
+        pytest.raises(LLMInvalidResponseError, match="non-int"),
+    ):
+        await provider.complete(_request(model="gpt-5.6-sol"))
+    assert persister.calls == []

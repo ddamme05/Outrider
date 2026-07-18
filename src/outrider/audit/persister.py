@@ -661,7 +661,12 @@ class AuditPersisterEventResponseFieldMismatchError(ValueError, metaclass=_Froze
     """
 
     _FROZEN_ALLOWLIST_NAMES: ClassVar[frozenset[str]] = frozenset(
-        {"_CHECKED_FIELDS", "_CANONICAL_RECOMPUTATION_FIELDS", "_FROZEN_ALLOWLIST_NAMES"}
+        {
+            "_CHECKED_FIELDS",
+            "_CANONICAL_RECOMPUTATION_FIELDS",
+            "_PRE_TX_EXEMPT_FIELDS",
+            "_FROZEN_ALLOWLIST_NAMES",
+        }
     )
 
     _CHECKED_FIELDS: ClassVar[frozenset[str]] = frozenset(
@@ -705,9 +710,22 @@ class AuditPersisterEventResponseFieldMismatchError(ValueError, metaclass=_Froze
         {"cost_usd", "pricing_version", "cost_unpriced_reason"}
     )
 
+    # Pricing-context mirror fields checked in the FRESH-insert guard
+    # (`_assert_fresh_pricing_context`) rather than the pre-tx strict loop:
+    # the response side is renamed (`service_tier_actual`) and pre-field
+    # re-emits legitimately carry None where the response carries a value —
+    # the same old-re-emit argument that keeps pricing drift out of pre-tx.
+    _PRE_TX_EXEMPT_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"service_tier", "billed_prompt_tokens", "cache_write_tokens"}
+    )
+
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        forbidden = {"_CHECKED_FIELDS", "_CANONICAL_RECOMPUTATION_FIELDS"}
+        forbidden = {
+            "_CHECKED_FIELDS",
+            "_CANONICAL_RECOMPUTATION_FIELDS",
+            "_PRE_TX_EXEMPT_FIELDS",
+        }
         for name in forbidden:
             if name in cls.__dict__:
                 raise TypeError(
@@ -1928,6 +1946,7 @@ class AuditPersister:
         _stable_response_fields = (
             AuditPersisterEventResponseFieldMismatchError._CHECKED_FIELDS
             - AuditPersisterEventResponseFieldMismatchError._CANONICAL_RECOMPUTATION_FIELDS
+            - AuditPersisterEventResponseFieldMismatchError._PRE_TX_EXEMPT_FIELDS
         )
         _response_value_for = {
             "model": response.model,
