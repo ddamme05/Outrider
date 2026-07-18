@@ -39,6 +39,7 @@ from typing import Final, NamedTuple
 
 __all__ = [
     "LONG_CONTEXT_POLICY",
+    "TIER_ECHO_EXPECTED_PROFILE_IDS",
     "MIN_CACHEABLE_TOKENS",
     "PRICING_VERSION",
     "RATE_TABLE",
@@ -158,7 +159,8 @@ version-keyed cost aggregation.
 #   writes are 1.25× input across the family) — PLUS the versioned long-context/tier
 #   policy (LONG_CONTEXT_POLICY: >272K reprices the FULL request 2×/2×/2×/1.5×;
 #   SERVICE_TIER_MULTIPLIERS: flex 0.5×, priority 2× short-context-only) and the
-#   CostUnpricedReason classification, all folded into the widened v7 digest.
+#   CostUnpricedReason classification AND the tier-echo-expecting profile set
+#   (TIER_ECHO_EXPECTED_PROFILE_IDS — openai), all folded into the widened v7 digest.
 #   No prior rate VALUES changed. The Sonnet 5 standard-rate bump (FUP-201) now
 #   targets v8.
 PRICING_VERSION: Final[str] = "v7"
@@ -430,6 +432,14 @@ LONG_CONTEXT_POLICY: Final[Mapping[tuple[str, str], LongContextPolicy]] = Mappin
         )
     }
 )
+
+# Which profile ids EXPECT a service-tier echo (an absent echo is then
+# Unpriced(absent_tier) rather than priced-as-default). Part of the VERSIONED pricing
+# policy — folded into the v7 digest — so historical pricing semantics stay derivable
+# from this module's record alone: a future HostProfile change (or removal) cannot
+# reinterpret how a v7-era event was classified. `HostProfile.requested_service_tier`
+# must agree with membership here; a unit test pins the coherence.
+TIER_ECHO_EXPECTED_PROFILE_IDS: Final[frozenset[str]] = frozenset({"openai"})
 
 # Echoed-service-tier multipliers over the corresponding default-tier rate
 # (mirror pricing tables, snapshot 2026-07-18: Flex = 0.5× Standard short AND

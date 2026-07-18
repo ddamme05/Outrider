@@ -22,6 +22,7 @@ from outrider.llm.pricing import (
     PRICING_VERSION,
     RATE_TABLE,
     SERVICE_TIER_MULTIPLIERS,
+    TIER_ECHO_EXPECTED_PROFILE_IDS,
     CostUnpricedReason,
     ModelPricing,
     Priced,
@@ -267,7 +268,8 @@ def _compute_rate_table_digest() -> str:
     long_context = sorted(LONG_CONTEXT_POLICY.items())
     tiers = sorted(SERVICE_TIER_MULTIPLIERS.items())
     reasons = [reason.value for reason in CostUnpricedReason]
-    serialized = repr((items, long_context, tiers, reasons)).encode("utf-8")
+    echo_expecting = sorted(TIER_ECHO_EXPECTED_PROFILE_IDS)
+    serialized = repr((items, long_context, tiers, reasons, echo_expecting)).encode("utf-8")
     return hashlib.sha256(serialized).hexdigest()[:16]
 
 
@@ -288,9 +290,11 @@ EXPECTED_PRICING_DIGEST: dict[str, str] = {
     "v6": "ff3388e38abc33f2",
     # v7 (openai-native-host spec): added the three ("openai", gpt-5.6-*) rows
     # (mirror snapshot 2026-07-18) AND widened the hash itself to cover the
-    # long-context/tier policy + unpriced-reason classification. No prior rate
-    # VALUES changed; the digest function changed shape at this version.
-    "v7": "7ff2da7b81f1e5f5",
+    # long-context/tier policy, unpriced-reason classification, and the
+    # tier-echo-expecting profile set. No prior rate VALUES changed; the digest
+    # function changed shape at this (unreleased) version — re-pinned in-arc
+    # when the audit fold moved tier-echo expectation into the versioned policy.
+    "v7": "79d520e08eb10701",
 }
 
 
@@ -642,3 +646,16 @@ def test_compute_cost_usd_wrapper_refuses_unpriced() -> None:
     """The legacy Decimal wrapper cannot silently swallow an Unpriced outcome."""
     with pytest.raises(ValueError, match="compute_cost_outcome"):
         compute_cost_usd(*_SOL_KEY, service_tier="scale", expects_tier_echo=True, **_TOKENS)
+
+
+def test_tier_echo_policy_coherent_with_profiles() -> None:
+    """The VERSIONED echo-expectation record (this module) and the live profile
+    field must agree — the persister prices from the former, the provider from
+    the latter; drift would split their classifications."""
+    from outrider.llm.host_profiles import HOST_PROFILES
+
+    for host_id, profile in HOST_PROFILES.items():
+        assert (profile.requested_service_tier is not None) == (
+            host_id in TIER_ECHO_EXPECTED_PROFILE_IDS
+        ), host_id
+    assert "anthropic" not in TIER_ECHO_EXPECTED_PROFILE_IDS

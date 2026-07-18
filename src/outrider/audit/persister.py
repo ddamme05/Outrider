@@ -1581,17 +1581,16 @@ def _assert_fresh_triad_qualified(event: object) -> None:
 
 
 def _profile_expects_tier_echo(profile_id: str | None) -> bool:
-    """True iff the host's profile declares a `requested_service_tier` — an echo is
-    then EXPECTED, and an absent echoed tier is Unpriced(absent_tier) rather than
-    priced-as-default (specs/2026-07-18-openai-native-host.md). The anthropic native
-    path has no profile and no tier concept, so it can never return True. Lazy import
-    mirrors `_assert_fresh_triad_qualified`."""
-    from outrider.llm.host_profiles import HOST_PROFILES
+    """True iff the host EXPECTS a service-tier echo (an absent echo is then
+    Unpriced(absent_tier) rather than priced-as-default). Sourced from the
+    VERSIONED pricing policy (`TIER_ECHO_EXPECTED_PROFILE_IDS`, digest-folded),
+    NOT the live HostProfile registry — a future profile change must not
+    reinterpret how a v7-era event was classified. The provider derives its own
+    expectation from `profile.requested_service_tier`; a unit test pins the two
+    sources coherent. Lazy import mirrors `_assert_fresh_triad_qualified`."""
+    from outrider.llm.pricing import TIER_ECHO_EXPECTED_PROFILE_IDS
 
-    if profile_id is None:
-        return False
-    profile = HOST_PROFILES.get(profile_id)
-    return profile is not None and profile.requested_service_tier is not None
+    return profile_id is not None and profile_id in TIER_ECHO_EXPECTED_PROFILE_IDS
 
 
 def _assert_fresh_pricing_context(

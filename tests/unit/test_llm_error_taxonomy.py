@@ -63,6 +63,7 @@ def test_concrete_subclasses_are_instantiable() -> None:
         LLMPersisterNotWiredError,
         LLMPersisterError,
         LLMPricingMissingError,
+        LLMPricingContractError,
     ):
         # Should not raise.
         instance = cls("test message")
