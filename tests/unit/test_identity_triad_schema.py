@@ -133,3 +133,49 @@ def test_llm_response_digest_rejects_non_sha256() -> None:
         _llm_response(
             profile_id="baseten", reasoning_enabled=False, profile_contract_digest="not-a-sha256"
         )
+
+
+# ---------------------------------------------------------------------------
+# Pricing context + nullable-cost coupling (specs/2026-07-18-openai-native-host.md).
+# ---------------------------------------------------------------------------
+
+
+def test_llm_call_event_pricing_context_defaults_none() -> None:
+    """Additive-optional: historical (pre-field) rows and every existing
+    constructor stay legal; all four default None."""
+    e = _llm_call_event()
+    assert (e.service_tier, e.billed_prompt_tokens, e.cache_write_tokens) == (None, None, None)
+    assert e.cost_unpriced_reason is None
+
+
+def test_llm_call_event_priced_row_rejects_reason() -> None:
+    from outrider.llm.pricing import CostUnpricedReason
+
+    with pytest.raises(ValidationError, match="coupling"):
+        _llm_call_event(cost_unpriced_reason=CostUnpricedReason.SCALE_TIER)
+
+
+def test_llm_call_event_unpriced_row_requires_reason_and_forbids_cost() -> None:
+    from outrider.llm.pricing import CostUnpricedReason
+
+    with pytest.raises(ValidationError, match="coupling"):
+        _llm_call_event(cost_usd=None)
+    e = _llm_call_event(
+        cost_usd=None,
+        cost_unpriced_reason=CostUnpricedReason.SCALE_TIER,
+        service_tier="scale",
+        billed_prompt_tokens=1000,
+        cache_write_tokens=0,
+    )
+    assert e.cost_usd is None
+    assert e.cost_unpriced_reason is CostUnpricedReason.SCALE_TIER
+
+
+def test_llm_call_event_pricing_context_constraints_mirror_response() -> None:
+    """Class-3 mirror discipline: bounds match LLMResponse (tier max 64; counts ge=0)."""
+    with pytest.raises(ValidationError):
+        _llm_call_event(service_tier="x" * 65)
+    with pytest.raises(ValidationError):
+        _llm_call_event(billed_prompt_tokens=-1)
+    with pytest.raises(ValidationError):
+        _llm_call_event(cache_write_tokens=-1)

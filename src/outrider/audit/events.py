@@ -119,7 +119,7 @@ from pydantic import (
 
 from outrider.ast_facts.models import SkipReason, TrivialityReason
 from outrider.coordinates import is_valid_trace_import_string, validate_diff_path
-from outrider.llm.pricing import PRICING_VERSION_PATTERN
+from outrider.llm.pricing import PRICING_VERSION_PATTERN, CostUnpricedReason
 from outrider.policy import (
     EvidenceTier,
     FindingSeverity,
@@ -421,6 +421,9 @@ class LLMCallEvent(AuditEventBase):
     Token / cost / latency fields carry `ge=0` constraints so the cost-budget
     anomaly (V1 sums LLMCallEvent.cost_usd, V1.5 estimates pre-flight) can't
     be poisoned by a malformed negative-cost event understating review cost.
+    `cost_usd` is nullable ONLY under the typed-reason coupling below; consumers
+    sum the priced subset and surface completeness (`unpriced_call_count` /
+    `cost_complete`) rather than reading a null as free.
 
     `pricing_version` records the `llm.pricing.PRICING_VERSION` value the
     wrapper used to compute `cost_usd`, per DECISIONS.md#016 Amended
@@ -452,7 +455,12 @@ class LLMCallEvent(AuditEventBase):
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     cached_tokens: int = Field(ge=0)
-    cost_usd: float = Field(ge=0)
+    # Nullable per specs/2026-07-18-openai-native-host.md: None ONLY for a genuinely
+    # unpriceable completed exchange, coupled to `cost_unpriced_reason` below (priced ⇔
+    # reason absent). NEVER 0.0 as a sentinel — aggregates sum this field unconditionally
+    # and a zero would render as a real price (#016/#039 honest data). SQL SUM skips
+    # NULLs; completeness is surfaced via unpriced_call_count/cost_complete aggregates.
+    cost_usd: float | None = Field(ge=0)
     pricing_version: str = Field(pattern=PRICING_VERSION_PATTERN)
     latency_ms: int = Field(ge=0)
     prompt_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
@@ -492,6 +500,35 @@ class LLMCallEvent(AuditEventBase):
     profile_id: str | None = None
     reasoning_enabled: bool | None = None
     profile_contract_digest: str | None = Field(default=None, pattern=_SHA256_HEX_PATTERN)
+    # Closed pricing context (specs/2026-07-18-openai-native-host.md), additive + nullable
+    # like the triad: the event ALONE must reproduce the v7 cost from its recorded
+    # pricing_version after the ephemeral LLMResponse is gone. `service_tier` is the
+    # ACTUAL echoed tier (it selected the rate; bounded raw string, novel echoes preserved
+    # verbatim — mirrors LLMResponse.service_tier_actual, max 64). `billed_prompt_tokens`
+    # is the raw wire count (short/long rate selection). `cache_write_tokens` is the
+    # per-call separately-billed write class (5.6+); the pass-level rollup cannot repair
+    # per-call recomputation. `cost_unpriced_reason` is pricing.py's closed enum, coupled
+    # to a null cost_usd by the validator below. Historical reads default all four to
+    # None; fresh-write completeness is enforced by the persister's fresh-insert guard,
+    # never by this validator (which cannot know fresh-from-historical).
+    service_tier: str | None = Field(default=None, max_length=64)
+    billed_prompt_tokens: int | None = Field(default=None, ge=0)
+    cache_write_tokens: int | None = Field(default=None, ge=0)
+    cost_unpriced_reason: CostUnpricedReason | None = None
+
+    @model_validator(mode="after")
+    def _enforce_cost_unpriced_coupling(self) -> Self:
+        """priced ⇔ reason absent: `cost_usd=None` requires a typed reason and a typed
+        reason forbids a cost — a zero-or-missing cost can never masquerade as priced,
+        and a reasoned row can never carry a fabricated number."""
+        if (self.cost_usd is None) != (self.cost_unpriced_reason is not None):
+            raise ValueError(
+                f"cost_usd/cost_unpriced_reason coupling violated: cost_usd="
+                f"{self.cost_usd!r}, cost_unpriced_reason={self.cost_unpriced_reason!r}. "
+                f"Priced rows carry a cost and no reason; unpriced rows carry a reason "
+                f"and no cost (specs/2026-07-18-openai-native-host.md)."
+            )
+        return self
 
     @model_validator(mode="after")
     def _enforce_triad_coherence(self) -> Self:
@@ -2735,11 +2772,12 @@ class AnalyzeCompletedEvent(AuditEventBase):
     """Sum of `LLMResponse.cache_write_tokens` across this pass's LLM calls.
     Cache writes bill at 1.25× the base input rate. Separate from reads
     because the 12.5× cost differential is material — combining them
-    obscures the cost driver. NOT mirrored on `LLMCallEvent` (which
-    carries only `cached_tokens=reads`); `total_cache_write_tokens` is
-    aggregate-event-only and the divergence is intentional, surfaced
-    here so a reader doesn't expect `sum(LLMCallEvent.cached_tokens) ==
-    total_cache_read_tokens + total_cache_write_tokens`."""
+    obscures the cost driver. Since the openai-native-host arc,
+    `LLMCallEvent.cache_write_tokens` also carries the PER-CALL write count
+    (additive optional; None on pre-field and no-write-class rows) while
+    `cached_tokens` stays reads-only — so a reader still must not expect
+    `sum(LLMCallEvent.cached_tokens) == total_cache_read_tokens +
+    total_cache_write_tokens`."""
     total_output_tokens: int = Field(ge=0)
     # le=100.0 matches SynthesizeCompletedEvent.total_cost_usd + ReviewMetrics.total_cost_usd —
     # a float('inf') / JSONB-poisoning upper bound (real V1 reviews land well under $1).

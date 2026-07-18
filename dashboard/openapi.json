@@ -1751,6 +1751,18 @@
         "title": "ContextManifestEntry",
         "description": "One scope-unit entry inside `LLMCallEvent.context_summary`.\n\nFrozen + extra=forbid because the outer event's `frozen=True` does\nnot propagate to nested Pydantic models. Without this, an entry\ncould be mutated post-construction (`entry.file_path = \"...\"`) even\nwhen the containing event is frozen and the tuple is immutable."
       },
+      "CostUnpricedReason": {
+        "type": "string",
+        "enum": [
+          "absent_tier",
+          "auto_tier",
+          "scale_tier",
+          "novel_tier",
+          "priority_long_context"
+        ],
+        "title": "CostUnpricedReason",
+        "description": "Closed reasons a COMPLETED, billed exchange cannot be honestly priced.\n\nRides `LLMCallEvent.cost_unpriced_reason`, coupled to a null `cost_usd`\n(priced \u21d4 reason absent). The actual vendor tier echo is preserved\nseparately as a bounded raw string \u2014 a novel echo is never collapsed\ninto this enum. Absent-echo fires only for profiles that DECLARE a\n`requested_service_tier` (specs/2026-07-18-openai-native-host.md)."
+      },
       "DashboardMetricsResponse": {
         "properties": {
           "window": {
@@ -2817,8 +2829,15 @@
             "title": "Cached Tokens"
           },
           "cost_usd": {
-            "type": "number",
-            "minimum": 0.0,
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Cost Usd"
           },
           "pricing_version": {
@@ -2915,6 +2934,52 @@
               }
             ],
             "title": "Profile Contract Digest"
+          },
+          "service_tier": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Tier"
+          },
+          "billed_prompt_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Billed Prompt Tokens"
+          },
+          "cache_write_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Write Tokens"
+          },
+          "cost_unpriced_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CostUnpricedReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -2937,7 +3002,7 @@
           "degraded_mode"
         ],
         "title": "LLMCallEvent",
-        "description": "Metadata for one LLM call. Content lives in `llm_call_content` per #016.\n\nToken / cost / latency fields carry `ge=0` constraints so the cost-budget\nanomaly (V1 sums LLMCallEvent.cost_usd, V1.5 estimates pre-flight) can't\nbe poisoned by a malformed negative-cost event understating review cost.\n\n`pricing_version` records the `llm.pricing.PRICING_VERSION` value the\nwrapper used to compute `cost_usd`, per DECISIONS.md#016 Amended\n2026-05-05. Replay reads this field directly so reconstruction never\ndepends on an external version-effective-range map."
+        "description": "Metadata for one LLM call. Content lives in `llm_call_content` per #016.\n\nToken / cost / latency fields carry `ge=0` constraints so the cost-budget\nanomaly (V1 sums LLMCallEvent.cost_usd, V1.5 estimates pre-flight) can't\nbe poisoned by a malformed negative-cost event understating review cost.\n`cost_usd` is nullable ONLY under the typed-reason coupling below; consumers\nsum the priced subset and surface completeness (`unpriced_call_count` /\n`cost_complete`) rather than reading a null as free.\n\n`pricing_version` records the `llm.pricing.PRICING_VERSION` value the\nwrapper used to compute `cost_usd`, per DECISIONS.md#016 Amended\n2026-05-05. Replay reads this field directly so reconstruction never\ndepends on an external version-effective-range map."
       },
       "MetaResponse": {
         "properties": {
