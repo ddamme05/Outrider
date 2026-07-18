@@ -488,6 +488,13 @@ h1 {
   background: var(--accent);
   flex: 0 0 auto;
 }
+/* Demo-deployment brand tag, inline after OUTRIDER in the kicker. Accent-colored and
+   divided so it reads as a distinct label, not part of the product name. */
+.tb-demo {
+  color: var(--accent);
+  padding-left: 6px;
+  border-left: 1px solid var(--line2);
+}
 .topbar-right {
   margin-left: auto;
   display: flex;

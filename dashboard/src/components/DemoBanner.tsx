@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+
 import { useDemoStatus } from "../lib/demo";
 
 // Full-width read-only-demo strip, rendered ABOVE the token gate (main.tsx) so a
@@ -7,6 +9,14 @@ import { useDemoStatus } from "../lib/demo";
 // flashes a demo strip.
 export function DemoBanner() {
   const status = useDemoStatus();
+  // Brand the browser tab too, so the demo reads as a demo before auth and in the
+  // tab strip. One-way set on a confirmed demo (the flag never flips without a
+  // reload, staleTime Infinity); production keeps index.html's default title.
+  useEffect(() => {
+    if (status === "demo") {
+      document.title = "Outrider — Read-Only Demo";
+    }
+  }, [status]);
   if (status !== "demo") {
     return null;
   }

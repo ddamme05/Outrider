@@ -1,6 +1,7 @@
 import { useLocation } from "react-router";
 
 import { $api } from "../api/client";
+import { useDemoStatus } from "../lib/demo";
 import { replayRate } from "../lib/metrics";
 import { useFilters } from "../state/filters";
 import { useNav } from "../state/nav";
@@ -21,6 +22,10 @@ export function Topbar() {
   const setSearch = useFilters((s) => s.setSearch);
   const navOpen = useNav((s) => s.open);
   const toggleNav = useNav((s) => s.toggle);
+  // Brand the header on a confirmed demo deployment (fails to no-tag while loading/
+  // erroring, so a production box never flashes the demo label). Same "demo"-only
+  // discipline the read-only banner uses.
+  const isDemo = useDemoStatus() === "demo";
 
   // Global replay-equivalence health pill: 30d production scope, slow poll (it's on
   // every screen and the verdict stream changes slowly). Fails CLOSED — no pill while
@@ -63,6 +68,7 @@ export function Topbar() {
         <span className="tb-kicker">
           <span className="tb-tick" aria-hidden="true" />
           OUTRIDER
+          {isDemo ? <span className="tb-demo">read-only demo</span> : null}
         </span>
         <h1>{screenTitle(pathname)}</h1>
       </div>

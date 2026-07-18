@@ -72,6 +72,19 @@ test("no pill when no reviews are verdicted (total 0) — honest, never 0%", asy
   expect(screen.queryByText(/replay/)).toBeNull();
 });
 
+test("brands the header 'read-only demo' on a confirmed demo deployment", async () => {
+  server.use(http.get("http://localhost/api/meta", () => HttpResponse.json({ demo_mode: true })));
+  mount();
+  expect(await screen.findByText(/read-only demo/i)).toBeInTheDocument();
+});
+
+test("no demo tag on a production deployment (fails to no-tag)", async () => {
+  // The default /api/meta handler is production; the tag must never flash there.
+  mount();
+  expect(await screen.findByPlaceholderText("filter reviews…")).toBeInTheDocument();
+  expect(screen.queryByText(/read-only demo/i)).toBeNull();
+});
+
 test("the hamburger toggles the mobile nav drawer open via the store", async () => {
   mount();
   const toggle = screen.getByLabelText("Open navigation");

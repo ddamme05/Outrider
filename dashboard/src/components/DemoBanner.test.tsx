@@ -23,6 +23,17 @@ test("renders on a confirmed demo deployment", async () => {
   expect(await screen.findByText(BANNER)).toBeInTheDocument();
 });
 
+test("brands the browser tab on a confirmed demo", async () => {
+  const original = document.title;
+  try {
+    mount(() => HttpResponse.json({ demo_mode: true }));
+    await screen.findByText(BANNER); // wait for the demo status to resolve
+    expect(document.title).toBe("Outrider — Read-Only Demo");
+  } finally {
+    document.title = original;
+  }
+});
+
 test("stays hidden on production (fails to no-banner)", async () => {
   mount(() => HttpResponse.json({ demo_mode: false }));
   // Give the query a tick to resolve, then assert absence.
