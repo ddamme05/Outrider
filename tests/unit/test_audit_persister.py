@@ -1175,3 +1175,153 @@ async def test_emit_replay_verdict_renders_literal_on_conflict_where() -> None:
     sql = str(session.statements[0].compile(dialect=postgresql.dialect()))  # type: ignore[attr-defined]
     assert "WHERE event_type = 'replay_verdict'" in sql, sql
     assert "%(event_type_1)s" not in sql, f"predicate rendered as bind param: {sql}"
+
+
+# ---------------------------------------------------------------------------
+# openai-native-host guards (specs/2026-07-18-openai-native-host.md): the
+# absent≡null comparator allowlist, tier-echo expectation, fresh pricing-context
+# mirror. Pure-function coverage; the DB-backed persist-before-raise atomicity
+# lives in tests/integration/test_openai_emergency_persistence.py.
+# ---------------------------------------------------------------------------
+
+
+def _guard_event(**overrides):  # type: ignore[no-untyped-def]
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+    from uuid import uuid4 as _uuid4
+
+    from outrider.audit.events import LLMCallEvent as _LLMCallEvent
+
+    base = {
+        "review_id": _uuid4(),
+        "timestamp": _datetime.now(_UTC),
+        "model": "gpt-5.6-sol",
+        "node_id": "analyze",
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "cached_tokens": 0,
+        "cost_usd": 0.01,
+        "pricing_version": "v7",
+        "latency_ms": 1,
+        "prompt_hash": "a" * 64,
+        "cache_hit": False,
+        "context_summary": (),
+        "prompt_template_version": "analyze@1.0.0",
+        "system_prompt_hash": "b" * 64,
+        "degraded_mode": False,
+    }
+    return _LLMCallEvent(**(base | overrides))
+
+
+def _guard_response(**overrides):  # type: ignore[no-untyped-def]
+    from outrider.llm.base import LLMResponse as _LLMResponse
+
+    base = {
+        "text": "{}",
+        "model": "gpt-5.6-sol",
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "finish_reason": "end_turn",
+        "latency_ms": 1,
+    }
+    return _LLMResponse(**(base | overrides))
+
+
+def test_strip_absent_pricing_context_targets_only_the_allowlist() -> None:
+    """Null-valued allowlisted keys drop for comparison; every other null —
+    including cost_usd, which pre-field rows always carry — is preserved."""
+    from outrider.audit.persister import _strip_absent_pricing_context
+
+    payload = {
+        "service_tier": None,
+        "billed_prompt_tokens": None,
+        "cache_write_tokens": None,
+        "cost_unpriced_reason": None,
+        "cost_usd": None,
+        "degradation_reason": None,
+        "kept": 1,
+    }
+    stripped = _strip_absent_pricing_context(payload)
+    assert stripped == {"cost_usd": None, "degradation_reason": None, "kept": 1}
+    # Non-null allowlisted values are NEVER dropped.
+    assert _strip_absent_pricing_context({"service_tier": "flex"}) == {"service_tier": "flex"}
+
+
+def test_strip_makes_prefield_and_postfield_payloads_compare_equal() -> None:
+    """The checkpoint-resume case: a pre-field stored payload (keys absent) must
+    compare equal to the post-field serialization (keys null)."""
+    from outrider.audit.persister import _strip_absent_pricing_context
+
+    pre_field = {"event_type": "llm_call", "cost_usd": 0.01}
+    post_field = {
+        "event_type": "llm_call",
+        "cost_usd": 0.01,
+        "service_tier": None,
+        "billed_prompt_tokens": None,
+        "cache_write_tokens": None,
+        "cost_unpriced_reason": None,
+    }
+    assert _strip_absent_pricing_context(pre_field) == _strip_absent_pricing_context(post_field)
+
+
+def test_profile_expects_tier_echo_only_for_tier_declaring_profiles() -> None:
+    from outrider.audit.persister import _profile_expects_tier_echo
+
+    assert _profile_expects_tier_echo("openai") is True
+    assert _profile_expects_tier_echo("baseten") is False
+    assert _profile_expects_tier_echo("fireworks") is False
+    assert _profile_expects_tier_echo("anthropic") is False  # native path: no profile
+    assert _profile_expects_tier_echo(None) is False
+
+
+def test_fresh_pricing_context_mirror_and_completeness() -> None:
+    """Echo-expecting host: every field mirrors the response and the counts are
+    complete; each violation raises with the offending field named."""
+    from outrider.audit.persister import (
+        AuditPersisterEventResponseFieldMismatchError,
+        _assert_fresh_pricing_context,
+    )
+
+    response = _guard_response(
+        billed_prompt_tokens=1000, service_tier_actual="default", cache_write_tokens=7
+    )
+    ok = _guard_event(billed_prompt_tokens=1000, service_tier="default", cache_write_tokens=7)
+    _assert_fresh_pricing_context(ok, response, expects_tier_echo=True)  # no raise
+
+    for overrides, field in (
+        ({"service_tier": "flex"}, "service_tier"),
+        ({"billed_prompt_tokens": 999}, "billed_prompt_tokens"),
+        ({"cache_write_tokens": 8}, "cache_write_tokens"),
+        ({"billed_prompt_tokens": None}, "billed_prompt_tokens"),
+        ({"cache_write_tokens": None}, "cache_write_tokens"),
+    ):
+        bad = _guard_event(
+            **{
+                "billed_prompt_tokens": 1000,
+                "service_tier": "default",
+                "cache_write_tokens": 7,
+                **overrides,
+            }
+        )
+        with pytest.raises(AuditPersisterEventResponseFieldMismatchError) as excinfo:
+            _assert_fresh_pricing_context(bad, response, expects_tier_echo=True)
+        assert field in str(excinfo.value), (overrides, field)
+
+
+def test_fresh_pricing_context_tierless_hosts_allow_none_but_not_drift() -> None:
+    """Anthropic/GLM fresh rows: None fields are legal (providers do not stamp
+    them), but a PRESENT field that contradicts the response is still drift."""
+    from outrider.audit.persister import (
+        AuditPersisterEventResponseFieldMismatchError,
+        _assert_fresh_pricing_context,
+    )
+
+    response = _guard_response()  # all pricing-context None / write 0
+    _assert_fresh_pricing_context(_guard_event(), response, expects_tier_echo=False)  # no raise
+
+    with pytest.raises(AuditPersisterEventResponseFieldMismatchError):
+        _assert_fresh_pricing_context(
+            _guard_event(billed_prompt_tokens=5), response, expects_tier_echo=False
+        )
