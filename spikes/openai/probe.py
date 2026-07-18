@@ -8,7 +8,7 @@ SUCCESS MANIFEST to `spikes/openai/fixtures/` — the scorecard REQUIRES that
 manifest (`test_openai_scorecard.py` FAILS without a passing one), so a failed
 capture cannot silently launch an ~128-call scorecard.
 
-Evidence-integrity rules (Codex round-8 fold):
+Evidence-integrity rules:
   - base_url is `OPENAI_PROFILE.base_url` EXACTLY — no env override. An
     alternate host would receive the real key (credential leak) and would
     produce "native OpenAI" evidence from the wrong host.
@@ -193,7 +193,7 @@ async def _run_paid() -> int:
         return 2
     _FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
     # base_url is the PROFILE's, exactly — never an env override (key safety +
-    # evidence provenance; Codex round-8).
+    # evidence provenance).
     client = openai.AsyncOpenAI(api_key=api_key, base_url=OPENAI_PROFILE.base_url, max_retries=0)
     results: dict[str, dict[str, Any]] = {}
     try:

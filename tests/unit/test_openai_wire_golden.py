@@ -1,5 +1,5 @@
 """Full-envelope wire golden for the native `openai` host (DECISIONS.md#056,
-openai-native-host spec; Codex round-8 #2).
+openai-native-host spec).
 
 Freezes the COMPLETE `chat.completions.create` kwargs dict the production
 `OpenAICompatibleProvider(openai)` sends for an analyze-shaped request — not
