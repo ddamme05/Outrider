@@ -116,7 +116,7 @@ from outrider.db.models.findings import Finding
 from outrider.db.models.llm_call_content import LLMCallContent
 from outrider.db.models.reviews import Review
 from outrider.llm.base import _canonical_prompt_hash, _canonical_system_prompt_hash
-from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
+from outrider.llm.pricing import PRICING_VERSION, Priced, compute_cost_outcome
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -684,16 +684,25 @@ class AuditPersisterEventResponseFieldMismatchError(ValueError, metaclass=_Froze
             "profile_id",
             "reasoning_enabled",
             "profile_contract_digest",
+            # Closed pricing context (specs/2026-07-18-openai-native-host.md): mirrored
+            # response↔event (service_tier ↔ service_tier_actual; the two counts verbatim);
+            # `cost_unpriced_reason` is verified against the canonical Priced/Unpriced
+            # outcome, so it sits in the recomputation set below.
+            "service_tier",
+            "billed_prompt_tokens",
+            "cache_write_tokens",
+            "cost_unpriced_reason",
         }
     )
 
     # Fields whose comparison target is a canonical recomputation, not a
     # direct attribute on `LLMResponse`. `cost_usd` derives from the
-    # pricing table + response token counts; `pricing_version` is the
-    # module constant. Included in `_FROZEN_ALLOWLIST_NAMES` so
+    # pricing table + response token counts (the Priced/Unpriced outcome);
+    # `pricing_version` is the module constant; `cost_unpriced_reason` is the
+    # outcome's typed reason. Included in `_FROZEN_ALLOWLIST_NAMES` so
     # parent-class reassignment is blocked by the metaclass.
     _CANONICAL_RECOMPUTATION_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"cost_usd", "pricing_version"}
+        {"cost_usd", "pricing_version", "cost_unpriced_reason"}
     )
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -1510,6 +1519,24 @@ def _payload_identity_subset(event_type: str) -> frozenset[str]:
         ) from None
 
 
+_PRICING_CONTEXT_NULLABLE_KEYS: Final[frozenset[str]] = frozenset(
+    {"service_tier", "billed_prompt_tokens", "cache_write_tokens", "cost_unpriced_reason"}
+)
+
+
+def _strip_absent_pricing_context(payload: dict[str, Any]) -> dict[str, Any]:
+    """key-absent ≡ null for EXACTLY the openai-native-host additive LLMCallEvent
+    fields: pre-field historical rows lack the keys entirely, while post-field
+    `model_dump(mode="json")` serialization emits them as nulls — exact payload
+    equality would spuriously conflict on a checkpoint-resume re-emit across the
+    upgrade boundary. Targeted allowlist, deliberately NOT a global
+    exclude_none/exclude_unset (which would alter unrelated event identities);
+    used for COMPARISON only — stored bytes are untouched."""
+    return {
+        k: v for k, v in payload.items() if not (k in _PRICING_CONTEXT_NULLABLE_KEYS and v is None)
+    }
+
+
 def _assert_fresh_triad_qualified(event: object) -> None:
     """Fail closed on a fresh, unqualified triad-bearing write (DECISIONS.md#056).
 
@@ -1533,6 +1560,51 @@ def _assert_fresh_triad_qualified(event: object) -> None:
         or event.profile_contract_digest is None
     ):
         raise AuditPersisterUnqualifiedFreshWriteError(event_type=type(event).__name__)
+
+
+def _profile_expects_tier_echo(profile_id: str | None) -> bool:
+    """True iff the host's profile declares a `requested_service_tier` — an echo is
+    then EXPECTED, and an absent echoed tier is Unpriced(absent_tier) rather than
+    priced-as-default (specs/2026-07-18-openai-native-host.md). The anthropic native
+    path has no profile and no tier concept, so it can never return True. Lazy import
+    mirrors `_assert_fresh_triad_qualified`."""
+    from outrider.llm.host_profiles import HOST_PROFILES
+
+    if profile_id is None:
+        return False
+    profile = HOST_PROFILES.get(profile_id)
+    return profile is not None and profile.requested_service_tier is not None
+
+
+def _assert_fresh_pricing_context(
+    event: LLMCallEvent, response: LLMResponse, *, expects_tier_echo: bool
+) -> None:
+    """Fresh-insert pricing-context guard (specs/2026-07-18-openai-native-host.md).
+
+    Reachable only on the freshly-inserted audit branch (never on idempotent
+    re-emit), like the triad guard above — so pre-field historical rows stay
+    legal. For an echo-expecting host the event must carry the COMPLETE context
+    (all-optional fields would otherwise validate while omitting it) and every
+    field must mirror the response; for tier-less hosts the fields may be None
+    but must mirror when present. `service_tier` may be legitimately None on an
+    absent echo — the priced/unpriced outcome check above already couples that
+    case to `cost_unpriced_reason=absent_tier`."""
+    checks: tuple[tuple[str, object, object], ...] = (
+        ("service_tier", event.service_tier, response.service_tier_actual),
+        ("billed_prompt_tokens", event.billed_prompt_tokens, response.billed_prompt_tokens),
+        ("cache_write_tokens", event.cache_write_tokens, response.cache_write_tokens),
+    )
+    for field_name, event_value, response_value in checks:
+        if expects_tier_echo:
+            if event_value != response_value:
+                raise AuditPersisterEventResponseFieldMismatchError(field_name=field_name)
+        elif event_value is not None and event_value != response_value:
+            raise AuditPersisterEventResponseFieldMismatchError(field_name=field_name)
+    if expects_tier_echo:
+        if event.billed_prompt_tokens is None:
+            raise AuditPersisterEventResponseFieldMismatchError(field_name="billed_prompt_tokens")
+        if event.cache_write_tokens is None:
+            raise AuditPersisterEventResponseFieldMismatchError(field_name="cache_write_tokens")
 
 
 def _serialize_event_payload(
@@ -1950,11 +2022,13 @@ class AuditPersister:
                         event_id=event.event_id,
                         invariant="audit_events.payload NOT NULL",
                     )
-                if existing_payload != payload:
+                existing_cmp = _strip_absent_pricing_context(existing_payload)
+                new_cmp = _strip_absent_pricing_context(payload)
+                if existing_cmp != new_cmp:
                     raise AuditPersisterIdempotencyConflict(
                         event_id=event.event_id,
-                        mismatched_fields=_diff_field_names(existing_payload, payload),
-                        field_digests=_compute_field_digests(existing_payload, payload),
+                        mismatched_fields=_diff_field_names(existing_cmp, new_cmp),
+                        field_digests=_compute_field_digests(existing_cmp, new_cmp),
                     )
 
                 # Audit payload matches. Now check content: if absent
@@ -2026,20 +2100,38 @@ class AuditPersister:
             # case. Pre-tx pricing checks would block such re-emits.
             # Brand-new events MUST use the current pricing snapshot;
             # raising here rolls back the freshly-inserted audit row.
-            canonical_cost_usd = float(
-                compute_cost_usd(
-                    response.profile_id,
-                    response.model,
-                    input_tokens=response.input_tokens,
-                    cache_write_tokens=response.cache_write_tokens,
-                    cache_read_tokens=response.cache_read_tokens,
-                    output_tokens=response.output_tokens,
-                )
+            expects_tier_echo = _profile_expects_tier_echo(response.profile_id)
+            outcome = compute_cost_outcome(
+                response.profile_id,
+                response.model,
+                input_tokens=response.input_tokens,
+                cache_write_tokens=response.cache_write_tokens,
+                cache_read_tokens=response.cache_read_tokens,
+                output_tokens=response.output_tokens,
+                billed_prompt_tokens=response.billed_prompt_tokens,
+                service_tier=response.service_tier_actual,
+                expects_tier_echo=expects_tier_echo,
             )
-            if event.cost_usd != canonical_cost_usd:
-                raise AuditPersisterEventResponseFieldMismatchError(field_name="cost_usd")
+            if isinstance(outcome, Priced):
+                if event.cost_usd != float(outcome.cost_usd):
+                    raise AuditPersisterEventResponseFieldMismatchError(field_name="cost_usd")
+                if event.cost_unpriced_reason is not None:
+                    raise AuditPersisterEventResponseFieldMismatchError(
+                        field_name="cost_unpriced_reason"
+                    )
+            else:
+                # Unpriced: the event must carry NO cost and the SAME typed reason the
+                # canonical authority derives — a fabricated number and a mis-classified
+                # reason are both mismatches (specs/2026-07-18-openai-native-host.md).
+                if event.cost_usd is not None:
+                    raise AuditPersisterEventResponseFieldMismatchError(field_name="cost_usd")
+                if event.cost_unpriced_reason is not outcome.reason:
+                    raise AuditPersisterEventResponseFieldMismatchError(
+                        field_name="cost_unpriced_reason"
+                    )
             if event.pricing_version != PRICING_VERSION:
                 raise AuditPersisterEventResponseFieldMismatchError(field_name="pricing_version")
+            _assert_fresh_pricing_context(event, response, expects_tier_echo=expects_tier_echo)
 
             # Fresh-write fail-closed: a brand-new LLMCallEvent must be host-qualified
             # (DECISIONS.md#056). Reachable only on the freshly-inserted audit branch,
