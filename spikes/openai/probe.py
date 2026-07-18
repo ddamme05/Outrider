@@ -16,22 +16,29 @@ Evidence-integrity rules:
     `LLMRequest` — including the production-derived `prompt_cache_key` — so
     the capture exercises the wire the provider actually sends. The frozen
     envelope pin lives in `tests/unit/test_openai_wire_golden.py`.
-  - Each row has a REQUIRED success predicate; the run exits non-zero and the
+  - Every row has a REQUIRED success predicate; the run exits non-zero and the
     manifest records `all_required_passed: false` if any required row fails.
-    The refusal row is best-effort (recorded, never required — models may
-    comply-with-caveats instead of refusing).
+  - The manifest records the capture's provenance (base_url + the profile
+    contract digest, so a profile change stales the capture) and each
+    fixture's sha256, and the scorecard gate re-verifies all of it plus the
+    cold/warm conservation inequalities FROM THE FIXTURE BYTES.
 
 Capture matrix — Sol + Luna full; Terra the cheap reasoning row (a Terra tier
-swap later inherits the FULL matrix before serving, per the spec):
+swap later inherits the FULL matrix before serving, per the spec). ALL rows
+are REQUIRED — the refusal-normalization fixture is a PRE-SHIP gate (spec
+"Gates before any production-shaped use") and wire admission is PER MODEL, so
+a refusal fixture is required per full-matrix model, not best-effort:
 
   envelope  json_object on the analyze-style prompt: default tier echoed AND
-            output conforms to AnalyzeResponseRaw (fence-stripped).  REQUIRED
+            output conforms to AnalyzeResponseRaw (fence-stripped).
   cold      >=1024-token stable prefix, cold cache: cache_write_tokens > 0
             reported; the (prompt, cached, write) triple is RECORDED so the
-            conservation equation can be pinned from the fixture.     REQUIRED
-  warm      immediate same-prefix repeat: cached_tokens > 0.          REQUIRED
-  refusal   best-effort message.refusal elicitation.                  RECORDED
-  reasoning (Terra) reasoning_effort="none" accepted, tier echoed.    REQUIRED
+            conservation equation can be pinned from the fixture.
+  warm      immediate same-prefix repeat: cached_tokens > 0.
+  refusal   message.refusal POPULATED. A comply-with-caveats response fails
+            the row honestly — iterate the elicitation prompt and rerun (the
+            probe is 9 cheap calls); never soften the gate instead.
+  reasoning (Terra) reasoning_effort="none" accepted, tier echoed.
 
 Run (PAID):  op run --env-file=.env -- uv run --no-sync python spikes/openai/probe.py
 Dry  (free): uv run --no-sync python spikes/openai/probe.py --dry-run
@@ -41,6 +48,7 @@ rest are small. 401/402 on the first call means fix the key, nothing spent.
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -116,13 +124,17 @@ def _kwargs(model: str, *, system: str, user: str) -> dict[str, Any]:
 
 
 def _plan() -> list[tuple[str, bool, dict[str, Any]]]:
-    """(tag, required, kwargs) rows."""
+    """(tag, required, kwargs) rows. ALL rows required — the refusal fixture is
+    a pre-ship gate per model (spec: wire admission is PER MODEL), so nothing
+    here is best-effort. The scorecard gate hardcodes this exact tag set
+    (`_EXPECTED_PROBE_ROWS`); a matrix change without a gate update fails loud
+    there, which is the intended sync mechanism."""
     rows: list[tuple[str, bool, dict[str, Any]]] = []
     for model in FULL_MODELS:
         rows.append((f"{model}:envelope", True, _kwargs(model, system=_SYS, user=_USER)))
         rows.append((f"{model}:cold", True, _kwargs(model, system=_STABLE_PREFIX, user=_USER)))
         rows.append((f"{model}:warm", True, _kwargs(model, system=_STABLE_PREFIX, user=_USER)))
-        rows.append((f"{model}:refusal", False, _kwargs(model, system=_SYS, user=_REFUSAL_USER)))
+        rows.append((f"{model}:refusal", True, _kwargs(model, system=_SYS, user=_REFUSAL_USER)))
     rows.append((f"{CHEAP_MODEL}:reasoning", True, _kwargs(CHEAP_MODEL, system=_SYS, user=_USER)))
     return rows
 
@@ -180,9 +192,12 @@ def _evaluate(tag: str, response: Any) -> tuple[bool, str]:
         return True, "reasoning_effort=none accepted (no 400) + default tier"
     if kind == "refusal":
         refusal = getattr(choice.message, "refusal", None)
-        return True, (
-            f"refusal populated: {refusal[:80]!r}" if refusal else "refusal NOT elicited (ok)"
-        )
+        if not refusal:
+            return False, (
+                "message.refusal NOT populated (comply-with-caveats?) — the refusal "
+                "fixture is a pre-ship gate; adjust the elicitation prompt and rerun"
+            )
+        return True, f"refusal populated: {refusal[:80]!r}"
     return False, f"unknown row kind {kind!r}"
 
 
@@ -215,9 +230,8 @@ async def _run_paid() -> int:
                 )
                 print(f"  {tag}: FAIL — {note}")
                 continue
-            (_FIXTURE_DIR / f"{fixture_name}.json").write_text(
-                response.model_dump_json(indent=2), encoding="utf-8"
-            )
+            payload = response.model_dump_json(indent=2)
+            (_FIXTURE_DIR / f"{fixture_name}.json").write_text(payload, encoding="utf-8")
             ok, note = _evaluate(tag, response)
             results[tag] = {
                 "ok": ok,
@@ -225,6 +239,10 @@ async def _run_paid() -> int:
                 "note": note,
                 "usage": _usage_triple(response.usage),
                 "service_tier": response.service_tier,
+                # Hash pins the fixture the verdict was computed FROM; the
+                # scorecard gate re-verifies fixture bytes against this.
+                "fixture": f"{fixture_name}.json",
+                "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
             }
             print(f"  {tag}: {'PASS' if ok else 'FAIL'} — {note}")
     finally:
@@ -233,6 +251,7 @@ async def _run_paid() -> int:
         planned = {tag for tag, _req, _kw in _plan()}
         missing = sorted(planned - set(results))
         manifest = {
+            "schema_version": 1,
             "generated_by": "spikes/openai/probe.py",
             "base_url": OPENAI_PROFILE.base_url,
             "profile_contract_digest": OPENAI_PROFILE.profile_contract_digest,

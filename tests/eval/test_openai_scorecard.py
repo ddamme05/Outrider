@@ -21,10 +21,15 @@ tier's incumbent. A miss on either swaps THAT field to `gpt-5.6-terra` and
 reruns this scorecard — never a silent fallback — and a Terra swap first
 inherits the full paid-wire probe matrix (spikes/openai/probe.py).
 
-PRECONDITION (enforced, not advisory): the probe's success manifest
-(`spikes/openai/fixtures/manifest.json` with `all_required_passed: true`) is
-REQUIRED — this test FAILS without it, so a conformance surprise is caught on
-the probe's one-call capture, never on this ~128-call run.
+PRECONDITION (enforced, not advisory): a passing, coherent, CURRENT probe
+capture (`spikes/openai/fixtures/manifest.json`) is REQUIRED — this test FAILS
+without it. The gate verifies the verdict boolean AND the capture's provenance
+(canonical base_url, the profile contract digest — a wire-affecting profile
+change stales the capture), the full expected row set (refusal rows included:
+the refusal-normalization fixture is a pre-ship gate per model), each
+fixture's sha256, and the cold/warm conservation inequalities recomputed from
+fixture bytes — so a conformance surprise is caught on the probe's cheap
+capture, never on this ~128-call run.
 
 Run (keys resolve from .env via 1Password):
   OUTRIDER_EVAL_REAL_MODELS=1 op run --env-file=.env -- \
@@ -38,10 +43,11 @@ analyze calls.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import pytest
 
@@ -67,46 +73,200 @@ _PROBE_MANIFEST = (
     Path(__file__).resolve().parents[2] / "spikes" / "openai" / "fixtures" / "manifest.json"
 )
 
+# The probe matrix's tag set, hardcoded HERE deliberately (spikes/ is not
+# importable from tests): a probe-matrix change without a gate update fails
+# loud, which is the intended sync mechanism. Refusal rows are in the required
+# set — the refusal-normalization fixture is a PRE-SHIP gate per model (spec
+# "Gates before any production-shaped use"; wire admission is PER MODEL).
+_EXPECTED_PROBE_ROWS: frozenset[str] = frozenset(
+    f"{model}:{kind}" for model in (_SOL, _LUNA) for kind in ("envelope", "cold", "warm", "refusal")
+) | {"gpt-5.6-terra:reasoning"}
+
 
 def _require_probe_manifest() -> None:
-    """FAIL (not skip) without a passing probe manifest: the operator has
-    explicitly opted into real spend, so a silent skip would read as a clean
-    run. The probe is the cheap capture; this run is the expensive one."""
-    if not _PROBE_MANIFEST.exists():
+    """FAIL (not skip) without a passing, coherent, CURRENT probe capture: the
+    operator has explicitly opted into real spend, so a silent skip would read
+    as a clean run. Beyond the probe's own verdict boolean, the gate verifies
+    the capture's provenance (canonical base_url + the profile contract digest,
+    so a profile change stales the capture), the full expected row set, each
+    fixture's existence + sha256, and the cold/warm conservation inequalities
+    recomputed FROM THE FIXTURE BYTES — so a minimal, stale, or hand-edited
+    manifest cannot admit a ~128-call run. (A determined forger can fabricate
+    fixtures and hashes together; the gate's job is stale/partial/accidental
+    artifacts, not adversarial operators — the operator IS the trust anchor.)"""
+    from outrider.llm.host_profiles import OPENAI_PROFILE  # noqa: PLC0415
+
+    def _fail(reason: str) -> NoReturn:
         pytest.fail(
-            f"probe success manifest missing at {_PROBE_MANIFEST} — run the paid wire "
-            "probe first: op run --env-file=.env -- uv run python spikes/openai/probe.py"
+            f"probe capture gate: {reason} — rerun the paid wire probe "
+            "(op run --env-file=.env -- uv run python spikes/openai/probe.py) "
+            f"and see {_PROBE_MANIFEST}"
         )
+
+    if not _PROBE_MANIFEST.exists():
+        _fail(f"success manifest missing at {_PROBE_MANIFEST}")
     manifest = json.loads(_PROBE_MANIFEST.read_text(encoding="utf-8"))
     if manifest.get("all_required_passed") is not True:
-        pytest.fail(
-            "probe manifest exists but all_required_passed is not true — fix the failed "
-            f"probe rows before the scorecard (see {_PROBE_MANIFEST})"
+        _fail("all_required_passed is not true")
+    if manifest.get("base_url") != OPENAI_PROFILE.base_url:
+        _fail(
+            f"manifest base_url {manifest.get('base_url')!r} is not the canonical "
+            f"{OPENAI_PROFILE.base_url!r} — wrong-host evidence"
         )
+    if manifest.get("profile_contract_digest") != OPENAI_PROFILE.profile_contract_digest:
+        _fail(
+            "manifest profile_contract_digest does not match the CURRENT profile — "
+            "the capture predates a wire-affecting profile change (stale evidence)"
+        )
+    results = manifest.get("results") or {}
+    for tag in sorted(_EXPECTED_PROBE_ROWS):
+        row = results.get(tag)
+        if not isinstance(row, dict):
+            _fail(f"expected probe row {tag!r} absent from manifest")
+        if row.get("required") is not True or row.get("ok") is not True:
+            _fail(f"probe row {tag!r} is not a passing required row: {row}")
+        fixture_name = row.get("fixture")
+        recorded_sha = row.get("sha256")
+        if not fixture_name or not recorded_sha:
+            _fail(f"probe row {tag!r} carries no fixture/sha256 provenance")
+        fixture_path = _PROBE_MANIFEST.parent / str(fixture_name)
+        if not fixture_path.exists():
+            _fail(f"fixture {fixture_name!r} for row {tag!r} is missing")
+        fixture_bytes = fixture_path.read_bytes()
+        if hashlib.sha256(fixture_bytes).hexdigest() != recorded_sha:
+            _fail(f"fixture {fixture_name!r} bytes do not match the manifest sha256")
+        kind = tag.rsplit(":", 1)[1]
+        if kind in ("cold", "warm"):
+            usage = json.loads(fixture_bytes.decode("utf-8")).get("usage") or {}
+            prompt = usage.get("prompt_tokens")
+            ptd = usage.get("prompt_tokens_details") or {}
+            side = "cache_write_tokens" if kind == "cold" else "cached_tokens"
+            value = ptd.get(side)
+            if not isinstance(prompt, int) or not isinstance(value, int):
+                _fail(f"fixture {fixture_name!r} lacks integer usage for {side}")
+            if not (0 < value <= prompt):
+                _fail(
+                    f"conservation violated in {fixture_name!r}: {side}={value} "
+                    f"vs prompt_tokens={prompt} (expected 0 < {side} <= prompt)"
+                )
+
+
+def _write_valid_capture(capture_dir: Path) -> dict[str, object]:
+    """A coherent fake capture for the zero-spend pins: full expected row set,
+    real sha256 over on-disk fixture bytes, conservation-consistent cold/warm
+    usage, CURRENT profile provenance. Returns the manifest dict (also written)
+    so tests can perturb one dimension at a time."""
+    from outrider.llm.host_profiles import OPENAI_PROFILE  # noqa: PLC0415
+
+    results: dict[str, dict[str, object]] = {}
+    for tag in sorted(_EXPECTED_PROBE_ROWS):
+        kind = tag.rsplit(":", 1)[1]
+        usage: dict[str, object] = {"prompt_tokens": 2000, "completion_tokens": 50}
+        if kind == "cold":
+            usage["prompt_tokens_details"] = {"cached_tokens": 0, "cache_write_tokens": 1500}
+        elif kind == "warm":
+            usage["prompt_tokens_details"] = {"cached_tokens": 1500, "cache_write_tokens": 0}
+        payload = json.dumps({"usage": usage}, indent=2)
+        fixture_name = tag.replace(":", "_") + ".json"
+        (capture_dir / fixture_name).write_text(payload, encoding="utf-8")
+        results[tag] = {
+            "ok": True,
+            "required": True,
+            "note": "pin",
+            "fixture": fixture_name,
+            "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+        }
+    manifest: dict[str, object] = {
+        "schema_version": 1,
+        "base_url": OPENAI_PROFILE.base_url,
+        "profile_contract_digest": OPENAI_PROFILE.profile_contract_digest,
+        "results": results,
+        "missing_rows": [],
+        "all_required_passed": True,
+    }
+    (capture_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return manifest
+
+
+def _rewrite_manifest(capture_dir: Path, manifest: dict[str, object]) -> None:
+    (capture_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
 def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Zero-spend pin for the paid-run gate: missing manifest FAILS, a manifest
-    with failed required rows FAILS, a passing manifest admits. Fail (not skip)
-    because the operator explicitly opted into spend — a silent skip would read
-    as a clean run."""
+    """Zero-spend pins for the paid-run gate, one per admission dimension: a
+    coherent CURRENT capture admits; missing manifest, failed verdict, wrong
+    host, stale profile digest, a dropped required row (refusal included — the
+    pre-ship gate), a non-passing row, a missing/tampered fixture, and a
+    conservation violation each FAIL. Fail (not skip) because the operator
+    explicitly opted into spend — a silent skip would read as a clean run."""
+    import copy  # noqa: PLC0415
     import sys  # noqa: PLC0415
 
     mod = sys.modules[_require_probe_manifest.__module__]
     monkeypatch.setattr(mod, "_PROBE_MANIFEST", tmp_path / "manifest.json")
+
     with pytest.raises(pytest.fail.Exception, match="manifest missing"):
         _require_probe_manifest()
 
-    (tmp_path / "manifest.json").write_text(
-        json.dumps({"all_required_passed": False}), encoding="utf-8"
-    )
+    valid = _write_valid_capture(tmp_path)
+    _require_probe_manifest()  # the coherent capture admits
+
+    broken = copy.deepcopy(valid)
+    broken["all_required_passed"] = False
+    _rewrite_manifest(tmp_path, broken)
     with pytest.raises(pytest.fail.Exception, match="all_required_passed is not true"):
         _require_probe_manifest()
 
-    (tmp_path / "manifest.json").write_text(
-        json.dumps({"all_required_passed": True}), encoding="utf-8"
+    broken = copy.deepcopy(valid)
+    broken["base_url"] = "https://evil.example/v1"
+    _rewrite_manifest(tmp_path, broken)
+    with pytest.raises(pytest.fail.Exception, match="wrong-host evidence"):
+        _require_probe_manifest()
+
+    broken = copy.deepcopy(valid)
+    broken["profile_contract_digest"] = "0" * 64
+    _rewrite_manifest(tmp_path, broken)
+    with pytest.raises(pytest.fail.Exception, match="stale evidence"):
+        _require_probe_manifest()
+
+    # Refusal is a REQUIRED row: a capture missing it must not admit.
+    broken = copy.deepcopy(valid)
+    del broken["results"][f"{_SOL}:refusal"]  # type: ignore[index, arg-type]
+    _rewrite_manifest(tmp_path, broken)
+    with pytest.raises(pytest.fail.Exception, match="refusal.*absent from manifest"):
+        _require_probe_manifest()
+
+    broken = copy.deepcopy(valid)
+    broken["results"][f"{_LUNA}:refusal"]["ok"] = False  # type: ignore[index, call-overload]
+    _rewrite_manifest(tmp_path, broken)
+    with pytest.raises(pytest.fail.Exception, match="not a passing required row"):
+        _require_probe_manifest()
+
+    _rewrite_manifest(tmp_path, valid)
+    envelope_fixture = tmp_path / (f"{_SOL}:envelope".replace(":", "_") + ".json")
+    original = envelope_fixture.read_text(encoding="utf-8")
+    envelope_fixture.unlink()
+    with pytest.raises(pytest.fail.Exception, match="is missing"):
+        _require_probe_manifest()
+    envelope_fixture.write_text(original + " ", encoding="utf-8")  # tampered bytes
+    with pytest.raises(pytest.fail.Exception, match="do not match the manifest sha256"):
+        _require_probe_manifest()
+    envelope_fixture.write_text(original, encoding="utf-8")
+    _require_probe_manifest()  # restored capture admits again
+
+    cold_fixture = tmp_path / (f"{_SOL}:cold".replace(":", "_") + ".json")
+    bad_usage = json.dumps(
+        {"usage": {"prompt_tokens": 100, "prompt_tokens_details": {"cache_write_tokens": 1500}}},
+        indent=2,
     )
-    _require_probe_manifest()  # admits without raising
+    cold_fixture.write_text(bad_usage, encoding="utf-8")
+    fixed = copy.deepcopy(valid)
+    fixed["results"][f"{_SOL}:cold"]["sha256"] = hashlib.sha256(  # type: ignore[index, call-overload]
+        bad_usage.encode("utf-8")
+    ).hexdigest()
+    _rewrite_manifest(tmp_path, fixed)
+    with pytest.raises(pytest.fail.Exception, match="conservation violated"):
+        _require_probe_manifest()
 
 
 @pytest.mark.skipif(
