@@ -85,18 +85,22 @@ from outrider.schemas.llm.analyze import (
 _FIXTURE_DIR = Path(__file__).parent / "fixtures"
 _MANIFEST = _FIXTURE_DIR / "manifest.json"
 
-# The probe PROCEDURE's contract version. Folds the evidentiary identity of a
-# capture: the prompts (_SYS/_USER/_REFUSAL_USER/_STABLE_PREFIX), the schema
-# bytes riding response_schema_json, the plan's tag matrix, the per-row success
-# predicates in _evaluate, and the manifest field shape (MANIFEST_SCHEMA_VERSION
-# below). Bump on ANY change to those — a manifest captured under an older
-# procedure must not admit a scorecard run. The scorecard pins the expected
-# value (test_openai_scorecard._EXPECTED_PROBE_CONTRACT_VERSION); the pair
-# failing loud on drift is the sync mechanism.
+# The probe PROCEDURE's contract version. Folds the CAPTURE procedure's
+# evidentiary identity: the prompts (_SYS/_USER/_REFUSAL_USER/_STABLE_PREFIX),
+# the schema bytes riding response_schema_json, the plan's tag matrix, and the
+# per-row success predicates in _evaluate. The MANIFEST's field shape is NOT
+# this token's scope — it has its own (MANIFEST_SCHEMA_VERSION below); one
+# token per shape, no double coverage. Bump on ANY procedure change — a
+# capture from an older procedure must not admit a scorecard run. The
+# scorecard pins the expected value
+# (test_openai_scorecard._EXPECTED_PROBE_CONTRACT_VERSION); the pair failing
+# loud on drift is the sync mechanism.
 PROBE_CONTRACT_VERSION: Final[int] = 1
 # v2: conservation_adjudication became a pointer to the operator-authored,
 # sanitized billing_adjudication.json artifact (equation/evidence moved there).
-MANIFEST_SCHEMA_VERSION: Final[int] = 2
+# v3: the pointer block gained raw_export_file (the local raw export the gate
+# hashes at admission) — every manifest-shape change rotates this token.
+MANIFEST_SCHEMA_VERSION: Final[int] = 3
 
 FULL_MODELS = ("gpt-5.6-sol", "gpt-5.6-luna")
 CHEAP_MODEL = "gpt-5.6-terra"
@@ -205,19 +209,28 @@ def _conservation_facts(results: dict[str, dict[str, Any]]) -> dict[str, Any]:
         warm = (results.get(f"{model}:warm") or {}).get("usage") or {}
         prompt, write = cold.get("prompt_tokens"), cold.get("cache_write_tokens")
         completion, total = cold.get("completion_tokens"), cold.get("total_tokens")
-        supported = "indeterminate"
-        if all(isinstance(v, int) for v in (prompt, write, completion, total)) and write:
-            if total == prompt + completion:
-                # writes ride INSIDE prompt_tokens -> one billing class per
-                # token -> normalized input must subtract them.
-                supported = "prompt_minus_cached_minus_writes"
-            elif total == prompt + write + completion:
-                supported = "prompt_minus_cached"
+        # Mirrors the gate's typed characterization (support + indeterminate
+        # cause) so the operator can copy the printed cause codes into the
+        # artifact's per-model count_reconciliation when needed.
+        supported, cause = "indeterminate", None
+        if not all(isinstance(v, int) for v in (prompt, write, completion, total)) or not write:
+            cause = "wire_omitted_total_tokens"
+        elif cold.get("prompt_tokens") != warm.get("prompt_tokens"):
+            cause = "cold_warm_pair_incoherent"
+        elif total == prompt + completion:
+            # writes ride INSIDE prompt_tokens -> one billing class per
+            # token -> normalized input must subtract them.
+            supported = "prompt_minus_cached_minus_writes"
+        elif total == prompt + write + completion:
+            supported = "prompt_minus_cached"
+        else:
+            cause = "total_matches_neither_equation"
         facts[model] = {
             "cold": cold,
             "warm": warm,
             "prompt_equal_across_pair": cold.get("prompt_tokens") == warm.get("prompt_tokens"),
             "supported_by_counts": supported,
+            "indeterminate_cause": cause,
         }
     return facts
 
@@ -325,12 +338,18 @@ async def _run_paid() -> int:
             # against billed usage and authors the SANITIZED
             # billing_adjudication.json artifact (see the success instructions
             # below — raw exports stay local/gitignored); this block only
-            # POINTS at that artifact. The scorecard gate hash-checks the
-            # artifact and validates its capture binding (response IDs, billed
-            # class counts, window) against the fixture bytes.
+            # POINTS at that artifact and at the LOCAL raw export
+            # (raw_export_file, confined beneath fixtures/raw/ — the gate
+            # hashes those actual bytes against the artifact's
+            # raw_export_sha256, so the independent billing source must EXIST
+            # at admission, not merely be claimed). The gate also hash-checks
+            # the artifact, enforces its closed key set, and validates its
+            # capture binding (response IDs, billed class counts, window)
+            # against the fixture bytes.
             "conservation_adjudication": {
                 "adjudication_file": None,
                 "adjudication_sha256": None,
+                "raw_export_file": None,
             },
         }
         _MANIFEST.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -345,17 +364,28 @@ async def _run_paid() -> int:
         f"     {_FIXTURE_DIR}/raw/ — gitignored; it carries project/key identifiers\n"
         "     and financial usage and must NEVER be committed.\n"
         "  2. Author the SANITIZED billing_adjudication.json next to the manifest —\n"
-        "     exact keys only: adjudication_schema_version=1, equation\n"
-        "     ('prompt_minus_cached' or 'prompt_minus_cached_minus_writes'),\n"
-        "     adjudicated_by, count_reconciliation (null unless some model's counts\n"
-        "     are indeterminate), raw_export_sha256 (hash of the local raw export),\n"
+        "     the gate enforces this key set EXACTLY (extra keys refuse admission —\n"
+        "     that's how the sanitization claim stays true): adjudication_schema_\n"
+        "     version=2, equation ('prompt_minus_cached' or\n"
+        "     'prompt_minus_cached_minus_writes'), adjudicated_by (short\n"
+        "     single-line string), count_reconciliation (null when every model's\n"
+        "     counts are determinate — REQUIRED null; otherwise an object mapping\n"
+        "     EXACTLY the indeterminate models to their cause codes as printed in\n"
+        "     conservation_facts: 'wire_omitted_total_tokens' /\n"
+        "     'cold_warm_pair_incoherent' / 'total_matches_neither_equation' —\n"
+        "     the gate re-derives the causes from fixture bytes and requires the\n"
+        "     mapping to match), raw_export_sha256 (hash of the local raw export),\n"
         "     window_utc {start_epoch, end_epoch} covering this capture (<=24h), and\n"
-        "     per-model blocks {cold_response_id, warm_response_id,\n"
-        "     billed_fresh_input_tokens, billed_cache_write_tokens} — response IDs\n"
-        "     from the fixtures, billed counts from the export. No project/org/key\n"
-        "     identifiers, no dollar amounts.\n"
-        "  3. Fill manifest.conservation_adjudication with adjudication_file +\n"
-        "     adjudication_sha256.\n"
+        "     models with EXACTLY the two full-matrix entries, each\n"
+        "     {cold_response_id, warm_response_id, billed_fresh_input_tokens,\n"
+        "     billed_cache_write_tokens} — response IDs from the fixtures, billed\n"
+        "     counts from the export. No project/org/key identifiers, no dollar\n"
+        "     amounts.\n"
+        "  3. Fill manifest.conservation_adjudication with adjudication_file,\n"
+        "     adjudication_sha256, AND raw_export_file ('raw/<filename>' of the\n"
+        "     step-1 export) — the gate hashes the raw export's ACTUAL bytes\n"
+        "     against the artifact's raw_export_sha256, so the export must exist\n"
+        "     locally at admission.\n"
         "The gate re-verifies everything against fixture bytes (response IDs, window\n"
         "vs created, billed classes vs wire counts under the adjudicated equation) and\n"
         "recomputes count support: contrary counts refuse admission outright. If the\n"
