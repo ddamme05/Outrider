@@ -2825,6 +2825,14 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         cache_write_tokens=response.cache_write_tokens,
         cache_read_tokens=response.cache_read_tokens,
         output_tokens=response.output_tokens,
+        # Response-derived pricing context (openai-native-host spec): tier-echo
+        # expectation derives INSIDE pricing.py from profile_id, so an
+        # echo-expecting host priced without these would classify absent_tier
+        # and raise AFTER the billed call. A deviant response never reaches
+        # this site — the provider raises the terminal contract error first —
+        # so the default-tier context here always prices flat/long.
+        billed_prompt_tokens=response.billed_prompt_tokens,
+        service_tier=response.service_tier_actual,
     )
 
     # FUP-138: deterministic degraded context (the addable-diff byte ranges a
@@ -3412,6 +3420,14 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         cache_write_tokens=response.cache_write_tokens,
         cache_read_tokens=response.cache_read_tokens,
         output_tokens=response.output_tokens,
+        # Response-derived pricing context (openai-native-host spec): tier-echo
+        # expectation derives INSIDE pricing.py from profile_id, so an
+        # echo-expecting host priced without these would classify absent_tier
+        # and raise AFTER the billed call. A deviant response never reaches
+        # this site — the provider raises the terminal contract error first —
+        # so the default-tier context here always prices flat/long.
+        billed_prompt_tokens=response.billed_prompt_tokens,
+        service_tier=response.service_tier_actual,
     )
 
     # Deterministic-proof set for INFERRED admission per the

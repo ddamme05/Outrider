@@ -651,3 +651,45 @@ def test_tier_echo_policy_coherent_with_profiles() -> None:
             host_id in TIER_ECHO_EXPECTED_PROFILE_IDS
         ), host_id
     assert "anthropic" not in TIER_ECHO_EXPECTED_PROFILE_IDS
+
+
+def test_default_tier_context_prices_flat_across_response_derived_callers() -> None:
+    """The cross-caller regression the Codex round-3 finding demanded: a
+    response-derived caller (analyze aggregate, eval double) passing the full
+    default-tier context gets EXACTLY the flat Priced figure — while the same
+    call WITHOUT the context on an echo-expecting host raises through the
+    wrapper (absent_tier), which after a billed call would be the
+    persisted-then-crashed shape the sweep exists to prevent."""
+    tokens = dict(
+        input_tokens=500, cache_write_tokens=400, cache_read_tokens=1500, output_tokens=50
+    )
+    with_context = compute_cost_usd(
+        "openai",
+        "gpt-5.6-sol",
+        billed_prompt_tokens=2000,
+        service_tier="default",
+        **tokens,
+    )
+    outcome = compute_cost_outcome(
+        "openai",
+        "gpt-5.6-sol",
+        billed_prompt_tokens=2000,
+        service_tier="default",
+        **tokens,
+    )
+    assert isinstance(outcome, Priced)
+    rates = RATE_TABLE[_SOL_KEY]
+    independent_flat = (
+        rates.in_per_token * 500
+        + rates.cache_write_per_token * 400
+        + rates.cache_read_per_token * 1500
+        + rates.out_per_token * 50
+    )
+    assert with_context == outcome.cost_usd == independent_flat
+    # Context-less call on the echo-expecting host: absent_tier through the wrapper.
+    with pytest.raises(ValueError, match="absent_tier"):
+        compute_cost_usd("openai", "gpt-5.6-sol", **tokens)
+    # Tier-less hosts keep pricing flat without any context — byte-identical pre-v7.
+    assert compute_cost_usd("anthropic", "claude-haiku-4-5", **tokens) == compute_cost_usd(
+        "anthropic", "claude-haiku-4-5", billed_prompt_tokens=2000, service_tier=None, **tokens
+    )

@@ -440,8 +440,10 @@ class _FixtureScriptedProvider:
             _canonical_prompt_hash,
             _canonical_system_prompt_hash,
         )
+        from outrider.llm.host_profiles import ANTHROPIC_PROFILE_ID as _ANTHROPIC_ID
         from outrider.llm.pricing import (
             PRICING_VERSION,
+            TIER_ECHO_EXPECTED_PROFILE_IDS,
             compute_cost_usd,
             min_cacheable_tokens,
         )
@@ -549,6 +551,13 @@ class _FixtureScriptedProvider:
                 input_tokens = _combined_estimate()
         else:
             input_tokens, output_tokens = 100, 50
+        # Echo-expecting hosts (the versioned TIER_ECHO_EXPECTED_PROFILE_IDS set —
+        # openai) get the deterministic default-tier pricing context: the fresh
+        # persister guard requires the COMPLETE context on such hosts, and pricing
+        # derives the tier expectation from profile_id, so a context-less response
+        # would classify absent_tier. Billed count mirrors the writes-not-subtracted
+        # §8a arm (input + cache_read). Tier-less hosts stay byte-identical (None).
+        expects_tier_echo = self._profile_id in TIER_ECHO_EXPECTED_PROFILE_IDS
         response = LLMResponse(
             text=text_out,
             model=request.model,
@@ -561,6 +570,8 @@ class _FixtureScriptedProvider:
             profile_id=self._profile_id,
             reasoning_enabled=self._reasoning_enabled,
             profile_contract_digest=self._profile_contract_digest,
+            billed_prompt_tokens=(input_tokens + cache_read_tokens) if expects_tier_echo else None,
+            service_tier_actual="default" if expects_tier_echo else None,
         )
         # Emit LLMCallEvent + llm_call_content BEFORE returning, exactly as the real
         # LLMProvider contract requires (mirrors AnthropicProvider Step 9). FUP-093:
@@ -577,6 +588,8 @@ class _FixtureScriptedProvider:
                 cache_write_tokens=response.cache_write_tokens,
                 cache_read_tokens=response.cache_read_tokens,
                 output_tokens=response.output_tokens,
+                billed_prompt_tokens=response.billed_prompt_tokens,
+                service_tier=response.service_tier_actual,
             )
         except KeyError as exc:
             # Mirror the real provider's named pricing error (it raises
@@ -635,6 +648,16 @@ class _FixtureScriptedProvider:
             profile_id=response.profile_id,
             reasoning_enabled=response.reasoning_enabled,
             profile_contract_digest=response.profile_contract_digest,
+            # Pricing context mirrored from response.* (openai-native-host spec),
+            # matching each modeled provider's REAL event shape: the anthropic
+            # native path stamps none of these (its provider is unchanged), the
+            # compat path mirrors them — the persister's fresh guard verifies the
+            # mirror on echo-expecting hosts and mirror-if-present elsewhere.
+            service_tier=response.service_tier_actual,
+            billed_prompt_tokens=response.billed_prompt_tokens,
+            cache_write_tokens=(
+                None if self._profile_id == _ANTHROPIC_ID else response.cache_write_tokens
+            ),
         )
         await self._persister.persist(event, request, response)
         if pending_cache_entry is not None and self._probe is not None:
