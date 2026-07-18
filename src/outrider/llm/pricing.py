@@ -243,8 +243,9 @@ RATE_TABLE: Final[Mapping[tuple[str, str], ModelPricing]] = MappingProxyType(
         # GLM 5.2 on Baseten (PRICING_VERSION v3 added the rates; v4 host-qualified
         # the key). Per-MTok figures confirmed against baseten.co/pricing (not in the
         # docs mirror — re-verify live on a rate change). cache_write_per_token=0:
-        # Baseten automatic prefix caching has no cache-write/creation token class, and
-        # the provider always sets cache_write_tokens=0, so the write term is inert.
+        # Baseten automatic prefix caching has no cache-write/creation token class;
+        # read_usage's PROMPT_INCLUDES_CACHED arm returns cache_write=0, so the write
+        # term is inert for this host.
         ("baseten", "zai-org/GLM-5.2"): ModelPricing(
             in_per_token=Decimal("0.0000014"),  # 1.40/MTok
             cache_write_per_token=Decimal("0"),  # no Baseten cache-write class

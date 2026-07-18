@@ -925,8 +925,10 @@ class LLMExchangePersister(Protocol):
 @runtime_checkable
 class LLMProvider(Protocol):
     """Transport-layer Protocol; agent nodes consume this, never concrete
-    SDKs. V1 ships `AnthropicProvider`; V1.5 adds `OpenAIProvider` behind
-    the same Protocol."""
+    SDKs. Two concrete providers ship behind it: `AnthropicProvider` (native)
+    and `OpenAICompatibleProvider`, parameterized by a `HostProfile` per
+    DECISIONS.md#056 — which superseded the earlier V1.5 `OpenAIProvider`
+    naming; api.openai.com is the `openai` host profile, not a third class."""
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         """Send `request` to the LLM, return the typed response.
