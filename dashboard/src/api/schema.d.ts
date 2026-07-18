@@ -956,6 +956,18 @@ export interface components {
              */
             inclusion_reason: "changed_scope" | "same_file_context" | "trace_expansion";
         };
+        /**
+         * CostUnpricedReason
+         * @description Closed reasons a COMPLETED, billed exchange cannot be honestly priced.
+         *
+         *     Rides `LLMCallEvent.cost_unpriced_reason`, coupled to a null `cost_usd`
+         *     (priced ⇔ reason absent). The actual vendor tier echo is preserved
+         *     separately as a bounded raw string — a novel echo is never collapsed
+         *     into this enum. Absent-echo fires only for profiles that DECLARE a
+         *     `requested_service_tier` (specs/2026-07-18-openai-native-host.md).
+         * @enum {string}
+         */
+        CostUnpricedReason: "absent_tier" | "auto_tier" | "scale_tier" | "novel_tier" | "priority_long_context";
         /** DashboardMetricsResponse */
         DashboardMetricsResponse: {
             /**
@@ -1501,6 +1513,9 @@ export interface components {
          *     Token / cost / latency fields carry `ge=0` constraints so the cost-budget
          *     anomaly (V1 sums LLMCallEvent.cost_usd, V1.5 estimates pre-flight) can't
          *     be poisoned by a malformed negative-cost event understating review cost.
+         *     `cost_usd` is nullable ONLY under the typed-reason coupling below; consumers
+         *     sum the priced subset and surface completeness (`unpriced_call_count` /
+         *     `cost_complete`) rather than reading a null as free.
          *
          *     `pricing_version` records the `llm.pricing.PRICING_VERSION` value the
          *     wrapper used to compute `cost_usd`, per DECISIONS.md#016 Amended
@@ -1556,7 +1571,7 @@ export interface components {
             /** Cached Tokens */
             cached_tokens: number;
             /** Cost Usd */
-            cost_usd: number;
+            cost_usd: number | null;
             /** Pricing Version */
             pricing_version: string;
             /** Latency Ms */
@@ -1582,6 +1597,13 @@ export interface components {
             reasoning_enabled?: boolean | null;
             /** Profile Contract Digest */
             profile_contract_digest?: string | null;
+            /** Service Tier */
+            service_tier?: string | null;
+            /** Billed Prompt Tokens */
+            billed_prompt_tokens?: number | null;
+            /** Cache Write Tokens */
+            cache_write_tokens?: number | null;
+            cost_unpriced_reason?: components["schemas"]["CostUnpricedReason"] | null;
         };
         /** MetaResponse */
         MetaResponse: {
