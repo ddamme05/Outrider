@@ -507,7 +507,20 @@ class _FixtureScriptedProvider:
                 # Deterministic cache model (see CostProbe docstring): system
                 # prompt is the single V1 cacheable block; the accounting
                 # identity `total_input = cache_read + cache_creation +
-                # input_tokens` holds by construction.
+                # input_tokens` holds by construction. That identity is
+                # ANTHROPIC accounting (write outside input) — on a
+                # writes-reported host the cold-call system prefix stays INSIDE
+                # billed input, so modeling it here would underprice every cold
+                # call. Fail closed rather than silently mis-account
+                # (openai-native-host spec, Codex round-4 finding).
+                if self._profile_id != _ANTHROPIC_ID:
+                    raise EvalDriverError(
+                        f"CostProbe(model_cache=True) models ANTHROPIC cache accounting "
+                        f"only; host {self._profile_id!r} has host-specific cache "
+                        f"accounting (auto-prefix / writes-reported) this double does "
+                        f"not model. Run the probe cache-off for this host, or extend "
+                        f"the cache model per-host first."
+                    )
                 system_tokens = probe.token_estimator(request.system_prompt)
                 try:
                     floor = min_cacheable_tokens(self._profile_id, request.model)
@@ -551,12 +564,16 @@ class _FixtureScriptedProvider:
                 input_tokens = _combined_estimate()
         else:
             input_tokens, output_tokens = 100, 50
-        # Echo-expecting hosts (the versioned TIER_ECHO_EXPECTED_PROFILE_IDS set —
-        # openai) get the deterministic default-tier pricing context: the fresh
-        # persister guard requires the COMPLETE context on such hosts, and pricing
-        # derives the tier expectation from profile_id, so a context-less response
-        # would classify absent_tier. Billed count mirrors the writes-not-subtracted
-        # §8a arm (input + cache_read). Tier-less hosts stay byte-identical (None).
+        # Pricing-context shape derives from the modeled provider FAMILY (matching
+        # each real provider's response shape): the anthropic native path stamps
+        # neither field; EVERY compat-modeled host records the billed prompt count
+        # (the real OpenAICompatibleProvider stamps usage.prompt_tokens for all its
+        # hosts — GLM included), computed as input + cache_read per the
+        # includes-cached §8a arms (exact here: the Anthropic-only cache model above
+        # never runs for compat hosts, so no writes-subtraction ambiguity exists).
+        # The tier echo is "default" only for echo-expecting hosts (the versioned
+        # set); GLM hosts realistically echo nothing.
+        is_compat_host = self._profile_id != _ANTHROPIC_ID
         expects_tier_echo = self._profile_id in TIER_ECHO_EXPECTED_PROFILE_IDS
         response = LLMResponse(
             text=text_out,
@@ -570,7 +587,7 @@ class _FixtureScriptedProvider:
             profile_id=self._profile_id,
             reasoning_enabled=self._reasoning_enabled,
             profile_contract_digest=self._profile_contract_digest,
-            billed_prompt_tokens=(input_tokens + cache_read_tokens) if expects_tier_echo else None,
+            billed_prompt_tokens=(input_tokens + cache_read_tokens) if is_compat_host else None,
             service_tier_actual="default" if expects_tier_echo else None,
         )
         # Emit LLMCallEvent + llm_call_content BEFORE returning, exactly as the real
