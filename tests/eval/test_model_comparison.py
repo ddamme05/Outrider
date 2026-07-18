@@ -1933,3 +1933,168 @@ async def test_analyze_recomputation_rejects_contextless_openai_response() -> No
             provider=_OpenAIContextScriptedProvider(_FINDS_RESPONSE, include_pricing_context=False),
             model="gpt-5.6-sol",
         )
+
+
+async def _run_analyze_capture_round(
+    state: ReviewState, *, provider: LLMProvider, model: str
+) -> tuple:
+    """Test-local mirror of `run_analyze_under_model` that ALSO returns the
+    aggregate `AnalysisRound` — the round-5 closure needs the aggregate cost,
+    which the shared runner deliberately discards."""
+    from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS, analyze, analyze_file
+    from outrider.agent.nodes.analyze_aggregate import analyze_aggregate
+
+    from .model_comparison import _NoOpImportPathResolver, _NullSink
+
+    class _CompletedCapturingSink(_NullSink):
+        def __init__(self) -> None:
+            super().__init__()
+            self.completed_events: list = []
+
+        async def emit_analyze_completed(self, event) -> None:  # type: ignore[no-untyped-def]
+            self.completed_events.append(event)
+
+    sink = _CompletedCapturingSink()
+    resolver = _NoOpImportPathResolver()
+    cmd = await analyze(
+        state,
+        provider=provider,
+        analyze_model=model,
+        standard_analyze_model=model,
+        phase_event_sink=sink,
+        file_examination_sink=sink,
+        analyze_event_sink=sink,
+        anomaly_sink=sink,
+        import_path_resolver=resolver,
+    )
+    outcomes = []
+    for send in cmd.goto if isinstance(cmd.goto, list) else []:
+        worker_update = await analyze_file(
+            send.arg,
+            provider=provider,
+            analyze_model=model,
+            standard_analyze_model=model,
+            import_path_resolver=resolver,
+            phase_event_sink=sink,
+            file_examination_sink=sink,
+            analyze_event_sink=sink,
+        )
+        outcomes.extend(worker_update["analyze_worker_outcomes"])
+    state_after = state.model_copy(
+        update={
+            "analyze_worker_outcomes": [*state.analyze_worker_outcomes, *outcomes],
+            "analyze_pass_started_at": (cmd.update or {})["analyze_pass_started_at"],
+        }
+    )
+    result = await analyze_aggregate(
+        state_after,
+        analyze_event_sink=sink,
+        phase_event_sink=sink,
+        anomaly_sink=sink,
+        analyze_model=model,
+        standard_analyze_model=model,
+        total_review_budget_tokens=DEFAULT_REVIEW_BUDGET_TOKENS,
+    )
+    rounds = result["analysis_rounds"]
+    completed = sink.completed_events[-1] if sink.completed_events else None
+    return (tuple(rounds[0].findings) if rounds else (), completed)
+
+
+@pytest.mark.asyncio
+async def test_openai_analyze_aggregate_cost_and_context_spy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round-5 closures 1+2: the ordinary analyze pricing call receives BOTH
+    context arguments (spied at the call site — omitting billed alone would
+    otherwise still price flat and stay green), and the resulting
+    AnalysisRound.total_cost_usd equals an INDEPENDENTLY computed figure from
+    the raw RATE_TABLE rates."""
+    import outrider.agent.nodes.analyze as analyze_mod
+    from outrider.llm.pricing import RATE_TABLE
+
+    recorded: list[tuple[str, str, dict[str, object]]] = []
+    real_compute = analyze_mod.compute_cost_usd
+
+    def spy(profile_id: str, model: str, **kwargs: object):  # type: ignore[no-untyped-def]
+        recorded.append((profile_id, model, kwargs))
+        return real_compute(profile_id, model, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(analyze_mod, "compute_cost_usd", spy)
+    finds, completed_event = await _run_analyze_capture_round(
+        _build_state(),
+        provider=_OpenAIContextScriptedProvider(_FINDS_RESPONSE),
+        model="gpt-5.6-sol",
+    )
+    assert len(finds) >= 1
+    assert completed_event is not None
+
+    openai_calls = [(p, m, k) for (p, m, k) in recorded if p == "openai"]
+    assert len(openai_calls) == 1
+    _, _, kwargs = openai_calls[0]
+    assert kwargs["billed_prompt_tokens"] == 100
+    assert kwargs["service_tier"] == "default"
+
+    rates = RATE_TABLE[("openai", "gpt-5.6-sol")]
+    independent = float(rates.in_per_token * 100 + rates.out_per_token * 50)
+    assert completed_event.total_cost_usd == pytest.approx(independent)
+
+
+@pytest.mark.asyncio
+async def test_openai_trace_expansion_recomputation_passes_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round-5 closure 3: the trace-expansion recomputation
+    (`_process_one_trace_fetched_file`, analyze.py's SECOND compute_cost_usd
+    site) forwards the complete pricing context — spied at the call site while
+    driving the real pass-1 function."""
+    from uuid import uuid4 as _uuid4
+
+    import outrider.agent.nodes.analyze as analyze_mod
+    from outrider.agent.nodes.analyze import _process_one_trace_fetched_file
+    from outrider.schemas.trace_fetched_file import TraceFetchedFile
+
+    from .model_comparison import _NoOpImportPathResolver, _NullSink
+
+    # A source finding from a real scripted pass-0 run (no hand-built proof fields).
+    finds, _ = await _run_analyze_capture_round(
+        _build_state(),
+        provider=_OpenAIContextScriptedProvider(_FINDS_RESPONSE),
+        model="gpt-5.6-sol",
+    )
+    assert finds, "pass-0 fixture must admit a source finding"
+
+    recorded: list[tuple[str, str, dict[str, object]]] = []
+    real_compute = analyze_mod.compute_cost_usd
+
+    def spy(profile_id: str, model: str, **kwargs: object):  # type: ignore[no-untyped-def]
+        recorded.append((profile_id, model, kwargs))
+        return real_compute(profile_id, model, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(analyze_mod, "compute_cost_usd", spy)
+    sink = _NullSink()
+    outcome = await _process_one_trace_fetched_file(
+        fetched_file=TraceFetchedFile(
+            path="src/traced.py",
+            content_head="def traced():\n    return 1\n",
+            source_finding_id=finds[0].finding_id,
+        ),
+        source_finding=finds[0],
+        review_id=_uuid4(),
+        installation_id=1,
+        is_eval=True,
+        provider=_OpenAIContextScriptedProvider(_MISSES_RESPONSE),
+        analyze_model="gpt-5.6-sol",
+        import_path_resolver=_NoOpImportPathResolver(),
+        file_examination_sink=sink,
+        analyze_event_sink=sink,
+        active_policy_version=ACTIVE_POLICY_VERSION,
+        pass_index=1,
+        per_file_cap_tokens=100_000,
+        remaining_budget_tokens=100_000,
+    )
+    assert outcome is not None
+    openai_calls = [(p, m, k) for (p, m, k) in recorded if p == "openai"]
+    assert len(openai_calls) == 1, "the trace-expansion site must price exactly one call"
+    _, _, kwargs = openai_calls[0]
+    assert kwargs["billed_prompt_tokens"] == 100
+    assert kwargs["service_tier"] == "default"
