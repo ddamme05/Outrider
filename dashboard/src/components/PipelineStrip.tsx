@@ -69,7 +69,7 @@ export function PipelineStrip({
       phasesFor(node).map((p) => ({ start: p.start?.timestamp, end: p.end?.timestamp })),
     );
 
-  const llmFor = (node: NodeName): { model: string; cost: number } | null => {
+  const llmFor = (node: NodeName): { model: string; cost: number; costComplete: boolean } | null => {
     const calls = eventsIn(node).filter((e): e is LLMCall => e.event_type === "llm_call");
     if (calls.length === 0) return null;
     // A node can call MORE than one model in a single review: analyze routes DEEP-tier files
@@ -78,9 +78,14 @@ export function PipelineStrip({
     // label — fan-out completion order is nondeterministic, so keying off the last (or first)
     // call would flip the label run to run. Cost still sums across all calls.
     const models = [...new Set(calls.map((c) => prettyModel(c.model)))].sort();
+    // Nullable cost (openai-native-host arc): JS would coerce null to 0 in a plain
+    // reduce — the false-free bug client-side. Sum the PRICED subset and mark the
+    // rollup incomplete so the label renders a lower bound, never an exact fake.
+    const priced = calls.map((c) => c.cost_usd).filter((c): c is number => c != null);
     return {
       model: models.join(" + "),
-      cost: calls.reduce((s, c) => s + c.cost_usd, 0),
+      cost: priced.reduce((s, c) => s + c, 0),
+      costComplete: priced.length === calls.length,
     };
   };
 
@@ -131,8 +136,8 @@ export function PipelineStrip({
       const n = eventsIn("intake").filter((e) => e.event_type === "file_examination").length;
       if (n > 0) parts.push(`${n} files`);
     } else {
-      const cost = llmFor(node)?.cost;
-      if (cost !== undefined) parts.push(`$${cost.toFixed(2)}`);
+      const llm = llmFor(node);
+      if (llm) parts.push(`${llm.costComplete ? "" : "\u2265"}$${llm.cost.toFixed(2)}`);
       if (node === "trace") {
         const traces = eventsIn("trace").filter(
           (e): e is TraceDec => e.event_type === "trace_decision",

@@ -330,7 +330,15 @@ export function ReviewDetail() {
       <div className="metrics-strip">
         <div className="ms-card">
           <div className="lab">Total cost</div>
-          <div className="ms-val">${m.total_cost_usd.toFixed(2)}</div>
+          <div className="ms-val">
+            {`${m.cost_complete === false ? "\u2265" : ""}$${m.total_cost_usd.toFixed(2)}`}
+            {m.cost_complete !== false ? null : (
+              <span style={{ color: "var(--faint)", fontSize: 12 }}>
+                {" "}
+                incomplete — {m.unpriced_call_count} unpriced call(s)
+              </span>
+            )}
+          </div>
           <div className="ms-sub">
             {d.policy_version ? `policy ${d.policy_version} · ` : ""}
             {findingCountLabel} findings

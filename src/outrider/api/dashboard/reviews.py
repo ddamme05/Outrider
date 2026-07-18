@@ -106,6 +106,12 @@ class ReviewMetricsView(BaseModel):
     total_input_tokens: int
     total_output_tokens: int
     total_cost_usd: float
+    # Completeness (openai-native-host arc): `total_cost_usd` is the KNOWN SUBTOTAL —
+    # a lower bound when `cost_complete` is False (unpriceable completed calls carry a
+    # null cost with a typed reason). The SPA renders "at least $X" / "incomplete"
+    # from these; defaults keep pre-field clients and fixtures byte-compatible.
+    unpriced_call_count: int = 0
+    cost_complete: bool = True
     files_examined: int | None
     files_traced_beyond_diff: int | None
     wall_clock_seconds: float | None
@@ -493,6 +499,8 @@ async def _aggregate_metrics(
         total_input_tokens=agg.total_input_tokens,
         total_output_tokens=agg.total_output_tokens,
         total_cost_usd=agg.total_cost_usd,
+        unpriced_call_count=agg.unpriced_call_count,
+        cost_complete=agg.cost_complete,
         files_examined=files_examined,
         files_traced_beyond_diff=files_traced_beyond_diff,
         wall_clock_seconds=(None if wall_clock_seconds is None else float(wall_clock_seconds)),

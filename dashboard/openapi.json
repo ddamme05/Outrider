@@ -3035,6 +3035,11 @@
             "minimum": 0.0,
             "title": "Cost Usd"
           },
+          "cost_complete": {
+            "type": "boolean",
+            "title": "Cost Complete",
+            "default": true
+          },
           "findings": {
             "type": "integer",
             "minimum": 0.0,
@@ -3410,6 +3415,17 @@
             "type": "number",
             "minimum": 0.0,
             "title": "Cost Usd"
+          },
+          "unpriced_calls": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Unpriced Calls",
+            "default": 0
+          },
+          "cost_complete": {
+            "type": "boolean",
+            "title": "Cost Complete",
+            "default": true
           },
           "findings": {
             "type": "integer",
@@ -5086,6 +5102,16 @@
           "total_cost_usd": {
             "type": "number",
             "title": "Total Cost Usd"
+          },
+          "unpriced_call_count": {
+            "type": "integer",
+            "title": "Unpriced Call Count",
+            "default": 0
+          },
+          "cost_complete": {
+            "type": "boolean",
+            "title": "Cost Complete",
+            "default": true
           },
           "files_examined": {
             "anyOf": [

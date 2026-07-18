@@ -8,6 +8,13 @@ export function prettyModel(model: string): string {
   if (l.includes("haiku")) return "Haiku";
   if (l.includes("sonnet")) return "Sonnet";
   if (l.includes("opus")) return "Opus";
+  // GPT-5.6 family (openai host; explicit slugs only — the bare "gpt-5.6" alias is
+  // rejected by the host profile, so only suffixed slugs reach the audit stream).
+  const gpt = l.match(/^gpt-(\d+)\.(\d+)-(sol|terra|luna)$/);
+  if (gpt?.[1] && gpt[2] && gpt[3]) {
+    const tier = gpt[3];
+    return `GPT-${gpt[1]}.${gpt[2]} ${tier.charAt(0).toUpperCase()}${tier.slice(1)}`;
+  }
   // GLM slugs differ by host: Baseten renders "zai-org/GLM-5.2", Fireworks renders the
   // version dot as `p` → "accounts/fireworks/models/glm-5p2". Normalize both shapes to
   // "GLM-<major>.<minor>".

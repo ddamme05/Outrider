@@ -204,7 +204,9 @@ export function Reviews() {
                   <td>
                     <SeverityTally counts={review.severity_counts} />
                   </td>
-                  <td className="row-cost">${review.metrics.total_cost_usd.toFixed(2)}</td>
+                  <td className="row-cost">
+                    {`${review.metrics.cost_complete === false ? "\u2265" : ""}$${review.metrics.total_cost_usd.toFixed(2)}`}
+                  </td>
                   <td className="row-lat">{formatLatency(review.metrics.wall_clock_seconds)}</td>
                 </tr>
               ))}

@@ -1624,6 +1624,11 @@ export interface components {
             reviews: number;
             /** Cost Usd */
             cost_usd: number;
+            /**
+             * Cost Complete
+             * @default true
+             */
+            cost_complete: boolean;
             /** Findings */
             findings: number;
             /** Failed */
@@ -1866,6 +1871,16 @@ export interface components {
             reviews: number;
             /** Cost Usd */
             cost_usd: number;
+            /**
+             * Unpriced Calls
+             * @default 0
+             */
+            unpriced_calls: number;
+            /**
+             * Cost Complete
+             * @default true
+             */
+            cost_complete: boolean;
             /** Findings */
             findings: number;
             /** Failed */
@@ -2529,6 +2544,16 @@ export interface components {
             total_output_tokens: number;
             /** Total Cost Usd */
             total_cost_usd: number;
+            /**
+             * Unpriced Call Count
+             * @default 0
+             */
+            unpriced_call_count: number;
+            /**
+             * Cost Complete
+             * @default true
+             */
+            cost_complete: boolean;
             /** Files Examined */
             files_examined: number | null;
             /** Files Traced Beyond Diff */
