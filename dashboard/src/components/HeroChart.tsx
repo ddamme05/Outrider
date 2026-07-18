@@ -134,6 +134,7 @@ export function HeroChart({
                 width={barW}
                 height={Math.max(0, BASELINE - y(v))}
                 className="chart-bar"
+                fillOpacity={complete[i] ? undefined : 0.45}
               />
             ))
           )}
@@ -147,9 +148,22 @@ export function HeroChart({
             ) : null,
           )}
 
-          {/* focusable hit areas + hover/focus markers */}
+          {/* focusable hit areas + hover/focus markers; incomplete cost buckets get an
+              always-visible dashed ring — their value is a lower bound, never exact */}
           {values.map((v, i) => (
             <g key={i}>
+              {!complete[i] ? (
+                <circle
+                  cx={x(i)}
+                  cy={y(v)}
+                  r={2.5}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1"
+                  strokeDasharray="2 1.5"
+                  className="chart-incomplete"
+                />
+              ) : null}
               {hover === i ? <circle cx={x(i)} cy={y(v)} r={3.5} className="chart-marker" /> : null}
               <rect
                 x={x(i) - (n > 1 ? PLOT_W / n / 2 : PLOT_W / 2)}
@@ -193,10 +207,18 @@ export function HeroChart({
           total
         </span>
         <span>
-          <b>{fmt(stats.avg)}</b> avg/{granularity === "hour" ? "hr" : "day"}
+          <b>
+            {complete.every(Boolean) ? "" : "\u2265"}
+            {fmt(stats.avg)}
+          </b>{" "}
+          avg/{granularity === "hour" ? "hr" : "day"}
         </span>
         <span>
-          peak <b>{fmt(stats.peak)}</b>
+          peak{" "}
+          <b>
+            {complete.every(Boolean) ? "" : "\u2265"}
+            {fmt(stats.peak)}
+          </b>
           {peakDay ? ` on ${peakDay}` : ""}
         </span>
       </div>
