@@ -4,7 +4,7 @@ Covers:
   - Direct instantiation of `LLMProviderError` raises (abstract-by-construction)
   - `__init_subclass__` enforces `retry_at_layer` presence at class-def
   - `__init_subclass__` enforces `retry_at_layer` value membership
-  - All 14 concrete subclasses have correct `retry_at_layer`
+  - All 15 concrete subclasses have correct `retry_at_layer`
     (round-21 added `LLMConflictError` for 409, in the SDK's
     default-retry set alongside 408/429/5xx; the Sonnet 5 migration
     added `LLMRefusalError` for stop_reason="refusal" — terminal)
@@ -24,6 +24,7 @@ from outrider.llm.base import (
     LLMMissingAPIKeyError,
     LLMPersisterError,
     LLMPersisterNotWiredError,
+    LLMPricingContractError,
     LLMPricingMissingError,
     LLMProviderError,
     LLMRateLimitError,
@@ -130,6 +131,9 @@ def test_subclass_with_wrong_case_retry_at_layer_value_raises() -> None:
         (LLMPersisterNotWiredError, "none"),
         (LLMPersisterError, "none"),
         (LLMPricingMissingError, "none"),
+        # openai-native-host spec: post-completion pricing-contract deviation —
+        # persisted first, then raised; terminal so retry can't bill a second call.
+        (LLMPricingContractError, "none"),
     ],
 )
 def test_retry_at_layer_per_subclass(cls: type[LLMProviderError], expected_layer: str) -> None:

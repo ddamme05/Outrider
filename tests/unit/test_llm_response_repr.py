@@ -162,3 +162,39 @@ def test_message_all_three_paths_redact() -> None:
     msg = LLMMessage(role="user", content=SECRET)
     for rendered in (repr(msg), str(msg), f"{msg}"):
         assert SECRET not in rendered, f"leak in: {rendered!r}"
+
+
+# ---------------------------------------------------------------------------
+# Pricing context fields (specs/2026-07-18-openai-native-host.md).
+# ---------------------------------------------------------------------------
+
+
+def test_pricing_context_fields_default_none() -> None:
+    """Additive fields: every pre-existing constructor stays legal; hosts
+    without the concept (Anthropic, GLM) leave both None."""
+    resp = _build_response()
+    assert resp.billed_prompt_tokens is None
+    assert resp.service_tier_actual is None
+
+
+def test_pricing_context_fields_validate() -> None:
+    import pydantic
+    import pytest
+
+    kwargs = dict(
+        text="x",
+        model="gpt-5.6-sol",
+        input_tokens=1,
+        output_tokens=1,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        finish_reason="end_turn",
+        latency_ms=1,
+    )
+    ok = LLMResponse(**kwargs, billed_prompt_tokens=272_001, service_tier_actual="default")
+    assert ok.billed_prompt_tokens == 272_001
+    assert ok.service_tier_actual == "default"
+    with pytest.raises(pydantic.ValidationError):
+        LLMResponse(**kwargs, billed_prompt_tokens=-1)
+    with pytest.raises(pydantic.ValidationError):
+        LLMResponse(**kwargs, service_tier_actual="x" * 65)
