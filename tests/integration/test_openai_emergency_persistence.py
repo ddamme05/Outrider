@@ -359,3 +359,66 @@ async def test_prefield_row_reemit_passes_absent_vs_null_normalization(migrated_
         await _make_persister(engine).persist(event, _request(review_id), response)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_eval_double_openai_host_persists_through_the_real_guard(migrated_db: str) -> None:
+    """Caller-level chain regression (Codex round 4): the scripted eval double
+    modeling the openai host must construct a response+event whose pricing
+    context satisfies the REAL persister's fresh-insert guard and outcome
+    verification end-to-end — pinning the double's host fidelity where it
+    matters, not at the pricing functions."""
+    from outrider.agent.eval_driver import _FixtureScriptedProvider
+    from outrider.llm.pricing import compute_cost_outcome as _outcome
+
+    engine = create_async_engine(migrated_db, hide_parameters=True)
+    try:
+        review_id = await _seed_installation_and_review(engine)
+        provider = _FixtureScriptedProvider(
+            {"triage": ['{"ok": true}']},
+            persister=_make_persister(engine),
+            host="openai",
+        )
+        request = LLMRequest(
+            system_prompt=_SYSTEM,
+            user_prompt=_USER,
+            model="gpt-5.6-luna",
+            max_tokens=100,
+            temperature=0.0,
+            review_id=UUID(review_id),
+            node_id="triage",
+            prompt_template_version="triage:1",
+            degraded_mode=False,
+            is_eval=False,
+        )
+        response = await provider.complete(request)
+        assert response.billed_prompt_tokens == 100  # input 100 + cache_read 0
+        assert response.service_tier_actual == "default"
+
+        async with engine.connect() as conn:
+            payload = (
+                await conn.execute(
+                    text(
+                        "SELECT payload FROM audit_events WHERE review_id = :r "
+                        "AND event_type = 'llm_call'"
+                    ),
+                    {"r": UUID(review_id)},
+                )
+            ).scalar_one()
+        expected = _outcome(
+            "openai",
+            "gpt-5.6-luna",
+            input_tokens=100,
+            cache_write_tokens=0,
+            cache_read_tokens=0,
+            output_tokens=50,
+            billed_prompt_tokens=100,
+            service_tier="default",
+        )
+        assert isinstance(expected, Priced)
+        assert payload["cost_usd"] == pytest.approx(float(expected.cost_usd))
+        assert payload["service_tier"] == "default"
+        assert payload["billed_prompt_tokens"] == 100
+        assert payload["cache_write_tokens"] == 0
+    finally:
+        await engine.dispose()

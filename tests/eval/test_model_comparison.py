@@ -1865,3 +1865,71 @@ async def test_real_sonnet5_migration_evidence() -> None:
         )
     finally:
         await provider.aclose()
+
+
+# ---------------------------------------------------------------------------
+# openai-host caller-level regression (openai-native-host spec, Codex round 4):
+# the analyze aggregate recomputation must survive an openai-context response —
+# and must FAIL exactly when the context is omitted (the revert-the-fold twin).
+# ---------------------------------------------------------------------------
+
+
+class _OpenAIContextScriptedProvider(_ScriptedProvider):
+    """`_ScriptedProvider` stamping the openai triad + FULL pricing context —
+    the shape the real OpenAICompatibleProvider returns for a default-tier
+    5.6 call. `include_pricing_context=False` reproduces the pre-sweep bug
+    shape (context-less openai response) for the negative twin."""
+
+    def __init__(self, response_text: str, *, include_pricing_context: bool = True) -> None:
+        super().__init__(response_text)
+        self._include_pricing_context = include_pricing_context
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        from outrider.llm.host_profiles import OPENAI_PROFILE
+
+        self.calls.append(request)
+        return LLMResponse(
+            text=self.response_text,
+            model=request.model,
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            finish_reason="end_turn",
+            latency_ms=10,
+            profile_id=OPENAI_PROFILE.host_id,
+            reasoning_enabled=False,
+            profile_contract_digest=OPENAI_PROFILE.profile_contract_digest,
+            billed_prompt_tokens=100 if self._include_pricing_context else None,
+            service_tier_actual="default" if self._include_pricing_context else None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_analyze_recomputation_survives_openai_context_response() -> None:
+    """The REAL analyze caller (run_analyze_under_model drives analyze →
+    analyze_file → analyze_aggregate, whose cost recomputation is
+    analyze.py's compute_cost_usd site) prices an openai default-tier
+    response without raising."""
+    finds, n_rejected = await run_analyze_under_model(
+        _build_state(),
+        provider=_OpenAIContextScriptedProvider(_FINDS_RESPONSE),
+        model="gpt-5.6-sol",
+    )
+    assert len(finds) >= 1
+    assert n_rejected == 0
+
+
+@pytest.mark.asyncio
+async def test_analyze_recomputation_rejects_contextless_openai_response() -> None:
+    """Revert-the-fold twin: a context-less openai response (the exact
+    pre-sweep provider shape) makes the analyze recomputation classify
+    absent_tier and raise — proving THIS caller consumes the context, so the
+    round-3 omission cannot silently recur while pricing-level tests stay
+    green."""
+    with pytest.raises(ValueError, match="absent_tier"):
+        await run_analyze_under_model(
+            _build_state(),
+            provider=_OpenAIContextScriptedProvider(_FINDS_RESPONSE, include_pricing_context=False),
+            model="gpt-5.6-sol",
+        )
