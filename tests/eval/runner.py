@@ -602,6 +602,52 @@ async def _gather_triage_quality(
     return out
 
 
+def triage_preflight(
+    specs: Sequence[TriageScenarioSpec],
+    candidate_models: Sequence[str],
+    *,
+    validate_candidate_model: Callable[[str], None] | None = None,
+) -> None:
+    """Every zero-spend validation the triage matrix runs BEFORE paid work, in
+    one callable so a paid runner can execute it BEFORE constructing providers
+    (a raise inside `build_triage_scorecard` happens after the caller built
+    providers, where `close_providers` cannot reach them — deterministic
+    input problems must surface before any resource exists). Checks: unique
+    scenario labels + candidate models (result-key collisions), per-candidate
+    model-id validation, and exact ground-truth coverage of each spec's
+    changed files.
+
+    `validate_candidate_model` is the HOST-AWARE seam: None (the default)
+    validates via the Anthropic `ModelConfig` field-validator
+    (`_cost_model_config` — the historical behavior, unchanged for existing
+    callers); a host-admission runner passes its host's validator (e.g. a
+    closure over `OPENAI_PROFILE.validate_model_slug` + pricing coverage) so
+    native non-Anthropic slugs validate against their own catalog instead of
+    being rejected by the claude-family regex."""
+    scenario_labels = [spec.scenario for spec in specs]
+    if len(set(scenario_labels)) != len(scenario_labels):
+        raise ValueError(
+            f"TriageScenarioSpec labels must be unique; got duplicates in {scenario_labels}"
+        )
+    if len(set(candidate_models)) != len(candidate_models):
+        raise ValueError(f"candidate_models must be unique; got {list(candidate_models)}")
+    for model in candidate_models:
+        if validate_candidate_model is not None:
+            validate_candidate_model(model)
+        else:
+            # ModelConfig's field-validator (discard the config — triage has
+            # no cost pass).
+            _cost_model_config(model)
+    # Each spec's ground truth must cover exactly its changed files, else a missing
+    # key silently drops a file from the grade + the safety gate. Fail fast, no spend.
+    for spec in specs:
+        require_expected_coverage(
+            spec.expected,
+            {cf.path for cf in spec.state.pr_context.changed_files},
+            scenario=spec.scenario,
+        )
+
+
 def build_triage_scorecard(
     specs: Sequence[TriageScenarioSpec],
     *,
@@ -614,6 +660,7 @@ def build_triage_scorecard(
     dimension_recall_tolerance: float = 0.0,
     close_providers: bool = False,
     prompt_template_version: str | None = None,
+    validate_candidate_model: Callable[[str], None] | None = None,
 ) -> Scorecard:
     """Drive the `(scenario × candidate-model)` TRIAGE matrix into a
     `Scorecard.triage_rows`. The analyze `rows` stay empty — the sibling
@@ -627,8 +674,13 @@ def build_triage_scorecard(
 
     Rejects duplicate scenario labels / candidate models up front (they collide on
     the result key), and validates every candidate model string before any paid
-    triage work — reusing `ModelConfig`'s field-validator, exactly as
-    `build_scorecard` does (the config itself is discarded; triage has no cost pass).
+    triage work — via `triage_preflight`, whose `validate_candidate_model` seam
+    defaults to `ModelConfig`'s Anthropic field-validator (exactly as
+    `build_scorecard` does; the config itself is discarded — triage has no cost
+    pass) and accepts a host-native validator for non-Anthropic admission runners.
+    Paid callers should run `triage_preflight` themselves BEFORE constructing
+    providers: a preflight raise in here is after construction, out of
+    `close_providers`' reach.
 
     Failure handling mirrors `build_scorecard` for TRANSIENT provider errors (→ a
     `_CellError` errored row). It DIVERGES for a triage POLICY violation: a candidate
@@ -639,25 +691,8 @@ def build_triage_scorecard(
 
     `close_providers` — same loop-bound close semantics as `build_scorecard`.
     """
+    triage_preflight(specs, candidate_models, validate_candidate_model=validate_candidate_model)
     scenario_labels = [spec.scenario for spec in specs]
-    if len(set(scenario_labels)) != len(scenario_labels):
-        raise ValueError(
-            f"TriageScenarioSpec labels must be unique; got duplicates in {scenario_labels}"
-        )
-    if len(set(candidate_models)) != len(candidate_models):
-        raise ValueError(f"candidate_models must be unique; got {list(candidate_models)}")
-    # Validate every candidate model id BEFORE the (paid) triage pass via
-    # ModelConfig's field-validator (discard the config — triage has no cost pass).
-    for model in candidate_models:
-        _cost_model_config(model)
-    # Each spec's ground truth must cover exactly its changed files, else a missing
-    # key silently drops a file from the grade + the safety gate. Fail fast, no spend.
-    for spec in specs:
-        require_expected_coverage(
-            spec.expected,
-            {cf.path for cf in spec.state.pr_context.changed_files},
-            scenario=spec.scenario,
-        )
 
     # Stamp provenance BEFORE the (paid) matrix runs (see build_scorecard).
     provenance = build_provenance(
