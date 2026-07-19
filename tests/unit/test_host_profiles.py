@@ -21,6 +21,7 @@ from outrider.llm.host_profiles import (
     JsonMode,
     ReasoningMechanism,
     TokenAccounting,
+    TokenLimitParam,
     read_usage,
     resolve_host_profile,
 )
@@ -35,6 +36,8 @@ def test_baseten_profile_reproduces_the_spike_constants() -> None:
     assert p.json_mode is JsonMode.SOFT_FENCED  # Baseten shared API is soft (FUP-196).
     assert p.token_accounting is TokenAccounting.PROMPT_INCLUDES_CACHED  # §8a.
     assert p.reasoning_mechanism is ReasoningMechanism.CHAT_TEMPLATE_ARGS
+    # The GLM hosts' verified wire takes `max_tokens` — the SHAPER v3 default holds.
+    assert p.token_limit_param is TokenLimitParam.MAX_TOKENS
 
 
 def test_baseten_privacy_carries_retention_and_no_training() -> None:
@@ -136,6 +139,11 @@ def test_profile_contract_digest_is_deterministic_and_rotates_on_wire_change() -
         update={"reasoning_mechanism": ReasoningMechanism.THINKING_DISABLED}
     )
     assert moved.profile_contract_digest != base
+    # The token-ceiling kwarg name is wire-affecting (SHAPER v3): flipping it rotates.
+    relimit = BASETEN_PROFILE.model_copy(
+        update={"token_limit_param": TokenLimitParam.MAX_COMPLETION_TOKENS}
+    )
+    assert relimit.profile_contract_digest != base
     # A NON-wire field (privacy provenance) does NOT rotate it.
     reprivacy = BASETEN_PROFILE.model_copy(
         update={
@@ -188,6 +196,7 @@ def test_fireworks_profile_is_wire_verified() -> None:
     assert p.json_mode is JsonMode.STRICT_JSON_SCHEMA  # raw schema accepted, no adapter
     assert p.token_accounting is TokenAccounting.PROMPT_INCLUDES_CACHED
     assert p.reasoning_mechanism is ReasoningMechanism.REASONING_EFFORT_NONE
+    assert p.token_limit_param is TokenLimitParam.MAX_TOKENS  # verified GLM wire
     assert not p.reasoning_forced_on  # it HAS an off-switch
     assert p.privacy.trains_on_inputs is False  # hard-fail field: confirmed no-training
     assert p.privacy.egress_host == "api.fireworks.ai"
@@ -327,7 +336,9 @@ def test_host_privacy_rejects_malformed_provenance(field: str, bad: str) -> None
 def test_openai_profile_wire_contract() -> None:
     """The profile encodes the mirror-verified 5.6 contract: JSON_OBJECT (strict
     would 400 the partial-required analyze schema), writes-reported accounting,
-    top-level reasoning_effort=none, and the three digest-folded behaviors."""
+    top-level reasoning_effort=none, and the four digest-folded behaviors —
+    including the wire-captured `max_completion_tokens` requirement (the 5.6
+    family 400s on `max_tokens`; paid probe, 13/13 rows)."""
     p = OPENAI_PROFILE
     assert p.host_id == "openai"
     assert p.base_url == "https://api.openai.com/v1"
@@ -338,6 +349,7 @@ def test_openai_profile_wire_contract() -> None:
     assert p.flat_rate_input_ceiling_tokens == 272_000
     assert p.sends_prompt_cache_key is True
     assert p.requested_service_tier == "default"
+    assert p.token_limit_param is TokenLimitParam.MAX_COMPLETION_TOKENS
     assert p.privacy.trains_on_inputs is False
     assert p.reasoning_forced_on is False
 
