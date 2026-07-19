@@ -40,7 +40,12 @@ if TYPE_CHECKING:
 # (JSON_OBJECT), message.refusal normalization, and three new digest-folded profile
 # fields (flat-rate ceiling, prompt_cache_key, requested_service_tier). Rotates every
 # profile's contract digest; GLM-host analyze cache rows re-key by design (#056).
-SHAPER_CONTRACT_VERSION: Final[str] = "v2"
+# v3: `token_limit_param` — the kwargs builder sends the completion-token ceiling under
+# a profile-declared parameter name. Wire-driven (#056 captured-evidence rule): the paid
+# probe's 13-row capture returned HTTP 400 "Unsupported parameter: 'max_tokens' ... Use
+# 'max_completion_tokens' instead" on every GPT-5.6 call; GLM hosts keep the verified
+# `max_tokens` wire via the field default.
+SHAPER_CONTRACT_VERSION: Final[str] = "v3"
 
 
 class ReasoningMechanism(StrEnum):
@@ -79,6 +84,17 @@ class JsonMode(StrEnum):
     STRICT_JSON_SCHEMA = "strict_json_schema"  # Fireworks/DeepInfra: constrained decoding
     SOFT_FENCED = "soft_fenced"  # Baseten: soft/fenced (FUP-196; fence-strip backstop)
     JSON_OBJECT = "json_object"  # Z.ai: json_object only, no schema
+
+
+class TokenLimitParam(StrEnum):
+    """Which chat-completions kwarg carries the completion-token ceiling. The values ARE
+    the wire parameter names — the kwargs builder sends `request.max_tokens` under this
+    key verbatim."""
+
+    MAX_TOKENS = "max_tokens"  # legacy chat-completions param; GLM hosts' verified wire
+    # Native OpenAI: the GPT-5.6 family 400s on `max_tokens` ("Unsupported parameter:
+    # ... Use 'max_completion_tokens' instead" — paid probe capture, 13/13 rows).
+    MAX_COMPLETION_TOKENS = "max_completion_tokens"
 
 
 # --- reasoning-off shapers (the one procedural axis; mutate create-kwargs in place) ---
@@ -229,7 +245,7 @@ class HostProfile(BaseModel):
     token_accounting: TokenAccounting
     reasoning_mechanism: ReasoningMechanism
     privacy: HostPrivacy
-    # openai-native-host spec (2026-07-18) — three digest-folded behaviors:
+    # openai-native-host spec (2026-07-18) — four digest-folded behaviors:
     # (1) flat-rate input ceiling: billed prompt tokens above this reprice the FULL
     #     request (pricing.LONG_CONTEXT_POLICY), so the provider rejects pre-flight on a
     #     conservative byte bound and post-checks the billed count. None = no documented
@@ -243,6 +259,9 @@ class HostProfile(BaseModel):
     #     constant). Declaring it means an echo is EXPECTED — an absent echoed tier
     #     becomes Unpriced(absent_tier); tier-less hosts (None) can never produce it.
     requested_service_tier: Literal["default"] | None = None
+    # (4) completion-token-ceiling kwarg name (SHAPER v3, wire-driven): GPT-5.6 rejects
+    #     `max_tokens` outright; the default keeps every GLM host's verified wire.
+    token_limit_param: TokenLimitParam = TokenLimitParam.MAX_TOKENS
 
     @property
     def profile_contract_digest(self) -> str:
@@ -259,6 +278,7 @@ class HostProfile(BaseModel):
                 str(self.flat_rate_input_ceiling_tokens),
                 str(self.sends_prompt_cache_key),
                 str(self.requested_service_tier),
+                self.token_limit_param.value,
                 SHAPER_CONTRACT_VERSION,
             )
         )
@@ -375,6 +395,7 @@ OPENAI_PROFILE: Final[HostProfile] = HostProfile(
     flat_rate_input_ceiling_tokens=272_000,
     sends_prompt_cache_key=True,
     requested_service_tier="default",
+    token_limit_param=TokenLimitParam.MAX_COMPLETION_TOKENS,
     privacy=HostPrivacy(
         egress_host="api.openai.com",
         model_origin="openai",

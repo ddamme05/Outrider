@@ -668,6 +668,10 @@ def _build_sdk_kwargs(request: LLMRequest, *, profile: HostProfile) -> dict[str,
       - `system_prompt` → a `{"role":"system"}` message (not the SDK
         `system` kwarg); `user_prompt` → a `{"role":"user"}` message.
       - NO `cache_control` marker — OpenAI-compatible hosts cache automatically.
+      - the completion-token ceiling rides under the PROFILE-declared kwarg name
+        (`token_limit_param`, SHAPER v3): `max_completion_tokens` on the native
+        openai host (the GPT-5.6 wire 400s on `max_tokens`), `max_tokens` on the
+        GLM hosts' verified wire.
       - reasoning OFF via the host's `apply_reasoning_off` shaper (V1 runs reasoning
         off on every call; operator-controlled reasoning is the step-4 substrate).
       - `response_schema_json` → `response_format.json_schema` (name
@@ -676,7 +680,7 @@ def _build_sdk_kwargs(request: LLMRequest, *, profile: HostProfile) -> dict[str,
     """
     kwargs: dict[str, Any] = {
         "model": request.model,
-        "max_tokens": request.max_tokens,
+        profile.token_limit_param.value: request.max_tokens,
         "temperature": request.temperature,
         "messages": [
             {"role": "system", "content": request.system_prompt},

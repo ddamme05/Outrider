@@ -41,7 +41,9 @@ from outrider.schemas.llm.analyze import ANALYZE_RESPONSE_SCHEMA_JSON
 # envelope's job is to prove no json_schema block leaks in.
 GOLDEN_KWARGS: dict[str, Any] = {
     "model": "gpt-5.6-sol",
-    "max_tokens": 100,
+    # SHAPER v3: the 5.6 wire 400s on `max_tokens` (paid probe capture) — the
+    # ceiling rides under the profile-declared `max_completion_tokens`.
+    "max_completion_tokens": 100,
     "temperature": 0.0,
     "messages": [
         {"role": "system", "content": "You are a code reviewer."},
@@ -49,7 +51,8 @@ GOLDEN_KWARGS: dict[str, Any] = {
     ],
     "reasoning_effort": "none",
     "service_tier": "default",
-    "prompt_cache_key": "outrider:75d0f47f4fad36f0:analyze@1.0.0",
+    # Digest prefix re-pinned for the SHAPER v3 + token_limit_param rotation.
+    "prompt_cache_key": "outrider:e397406ea91794b0:analyze@1.0.0",
     "response_format": {"type": "json_object"},
 }
 # §8a writes-reported: prompt(100) INCLUDES cached(30) → input=70; writes(20)
