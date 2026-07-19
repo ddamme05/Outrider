@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -50,6 +49,7 @@ from outrider.schemas.pr_context import ChangedFile, PRContext
 from outrider.schemas.review_state import ReviewState
 
 from .test_model_comparison import _ScriptedProvider
+from .test_openai_scorecard import _PROBE_MANIFEST, verified_capture_fixture
 
 # --- The deterministic admission scenario (duplicated in the probe) ---------
 # yaml.load -> yaml.safe_load: a real HIGH finding with an unambiguous,
@@ -70,13 +70,23 @@ _LOADER_CONTENT = (
     "    return yaml.load(stream)\n"
 )
 
-_PATCH_FIXTURE = (
-    Path(__file__).resolve().parents[2]
-    / "spikes"
-    / "openai"
-    / "fixtures"
-    / "gpt-5.6-luna_patch.json"
-)
+# The scenario-specific SEMANTIC predicate: `apply_patch_batch` proves a
+# patch is safe and anchored, not that it FIXES anything — a wrong-but-safe
+# line (yaml.dump) or a composite that ALSO invokes an unsafe loader
+# (`safe_load(stream) and unsafe_load(stream)`) survives it, and substring
+# regexes proved gameable against exactly that composite. The fixture has ONE
+# unambiguous fix, so remediation is a CLOSED set of reviewed replacements —
+# extended consciously by a human, never pattern-matched.
+_REVIEWED_FIXES = frozenset({_EXPECTED_REPLACEMENT})
+
+
+def _is_remediation(replacement: str) -> bool:
+    return replacement in _REVIEWED_FIXES
+
+
+# Models whose captures this instrument grades when present in the verified
+# manifest (Terra appears only when a swap capture declares it).
+_NODE_MODELS = ("gpt-5.6-luna", "gpt-5.6-terra")
 
 
 def _admission_finding() -> ReviewFinding:
@@ -239,6 +249,26 @@ def test_grader_negative_twins() -> None:
     noop = apply_patch_batch(_batch_json(_TARGET_LINE, _TARGET_LINE), eligible, targets)
     assert noop == {}
 
+    # WRONG-BUT-SAFE: yaml.dump survives every structural rule (echoed
+    # anchor, single line, safe, changed) — proving apply_patch_batch alone
+    # cannot certify remediation — and the SEMANTIC predicate catches it.
+    wrong_but_safe = "    return yaml.dump(stream)"
+    survived = apply_patch_batch(_batch_json(_TARGET_LINE, wrong_but_safe), eligible, targets)
+    assert survived == {_FINDING_ID: wrong_but_safe}  # structural layer admits it...
+    assert not _is_remediation(wrong_but_safe)  # ...the semantic layer refuses
+    assert _is_remediation(_EXPECTED_REPLACEMENT)
+
+    # COMPOSITE-UNSAFE: the exact regex-defeating line from review — contains
+    # the safe call yet still invokes an unsafe loader. The structural layer
+    # admits it; only closed-set equality refuses it.
+    composite = "    return yaml.safe_load(stream) and yaml.unsafe_load(stream)"
+    survived = apply_patch_batch(_batch_json(_TARGET_LINE, composite), eligible, targets)
+    assert survived == {_FINDING_ID: composite}
+    assert not _is_remediation(composite)
+    # Other near-miss shapes fail closed-set equality too.
+    assert not _is_remediation("    return yaml.safe_load(stream) or yaml.load(stream)")
+    assert not _is_remediation("    return  yaml.safe_load(stream)")  # not the reviewed bytes
+
     # Unknown finding: a patch for a finding we never asked about is dropped.
     stray = json.dumps(
         {
@@ -266,29 +296,43 @@ def test_rejected_vs_parsed_classification() -> None:
 
 
 def test_captured_paid_fixture_passes_frozen_predicate() -> None:
-    """Grade the probe's captured paid row OFFLINE against the frozen
-    predicate. Skips until the capture exists; once it does, a miss FAILS —
-    the spec's rule is a Terra swap + rerun, never a softened gate."""
-    if not _PATCH_FIXTURE.exists():
+    """Grade every node-capable model's captured patch row OFFLINE, resolved
+    through the VERIFIED manifest (versions, hashes, row verdicts,
+    adjudication — a stale fixture left by a failed rerun cannot grade).
+    Skips until a capture exists; once it does, a miss FAILS — the spec's
+    rule is a Terra swap + rerun, never a softened gate. The predicate is
+    structural AND semantic: survives apply_patch_batch AND actually
+    remediates the scenario."""
+    if not _PROBE_MANIFEST.exists():
         pytest.skip(
-            "paid patch capture absent — run the wire probe first "
+            "paid probe capture absent — run the wire probe first "
             "(op run --env-file=.env -- uv run python spikes/openai/probe.py)"
         )
-    doc = json.loads(_PATCH_FIXTURE.read_text(encoding="utf-8"))
-    message = doc["choices"][0]["message"]
-    assert not message.get("refusal"), "patch row returned a refusal — not gradeable"
-    text = message.get("content") or ""
-    assert _classify_batch(text) == "parsed", (
-        "patch response REJECTED (schema/JSON failure) — the zero-rejected-responses "
-        "predicate fails"
-    )
-    patches = apply_patch_batch(text, (_admission_finding(),), _target_lines())
-    replacement = patches.get(_FINDING_ID)
-    assert replacement, (
-        "no valid, anchored, single-line patch survived the production rules — "
-        "the applies/target-span/no-out-of-scope predicate fails"
-    )
-    print(  # noqa: T201 — operator verdict line
-        f"\n[patch admission: PASS — gpt-5.6-luna produced {replacement!r} "
-        f"for {_FILE_PATH}:{_TARGET_LINE_NO}]"
-    )
+    graded = []
+    for model in _NODE_MODELS:
+        data = verified_capture_fixture(f"{model}:patch")
+        if data is None:
+            continue  # model not in the declared capture matrix
+        message = json.loads(data.decode("utf-8"))["choices"][0]["message"]
+        assert not message.get("refusal"), f"{model} patch row returned a refusal"
+        text = str(message.get("content") or "")
+        assert _classify_batch(text) == "parsed", (
+            f"{model} patch response REJECTED (schema/JSON failure) — the "
+            "zero-rejected-responses predicate fails"
+        )
+        patches = apply_patch_batch(text, (_admission_finding(),), _target_lines())
+        replacement = patches.get(_FINDING_ID)
+        assert replacement, (
+            f"{model}: no valid, anchored, single-line patch survived the production "
+            "rules — the applies/target-span/no-out-of-scope predicate fails"
+        )
+        assert _is_remediation(replacement), (
+            f"{model} produced a structurally safe but NON-REMEDIATING line "
+            f"{replacement!r} — the scenario's fix is yaml.safe_load(stream)"
+        )
+        graded.append(model)
+        print(  # noqa: T201 — operator verdict line
+            f"\n[patch admission: PASS — {model} produced {replacement!r} "
+            f"for {_FILE_PATH}:{_TARGET_LINE_NO}]"
+        )
+    assert graded, "verified manifest carried no node-model patch rows"

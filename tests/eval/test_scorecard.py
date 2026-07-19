@@ -34,6 +34,7 @@ from .metrics import (
     LatencyPerReview,
     SeverityAccuracy,
 )
+from .runner import TriageScenarioSpec
 from .scorecard import GateVerdict, RowDiagnostics, Scorecard, ScorecardProvenance, ScorecardRow
 from .test_model_comparison import (
     _GROUND_TRUTH_BY_FIXTURE,
@@ -909,71 +910,22 @@ def test_real_scorecard_evidence() -> None:
     assert len(card.rows) == len(specs)
 
 
-@pytest.mark.skipif(
-    os.environ.get("OUTRIDER_EVAL_REAL_MODELS") != "1",
-    reason="real-model triage scorecard spends API tokens; set OUTRIDER_EVAL_REAL_MODELS=1 to run",
-)
-def test_real_triage_scorecard_evidence() -> None:
-    """OPT-IN real API spend — emits the TRIAGE scorecard artifact (Sonnet vs Haiku
-    triage over the known-vuln fixtures).
-
-    REPORT-ONLY, BY DESIGN: asserts only that the run COMPLETED (a triage row per
-    spec). The verdict is the JSON + HTML written to
-    `reports/scorecard/triage-scorecard.{json,html}`, read by a human — the runner is
-    report-only. Quality (tier accuracy / drop-from-analysis / dimension recall /
-    under-risking / gate) is REAL spend through the real triage node; there is NO
-    cost pass (triage rows are quality-only per the spec).
-
-    Self-contained: its own provider, closed inside `build_triage_scorecard`'s event
-    loop. It does NOT share the analyze entrypoint's client — each `asyncio.run`
-    binds the httpx client to its own loop, and a real client can't be reused across
-    loops. Sync test for the same reason as `test_real_scorecard_evidence`.
-
-    Ground truth is hand-authored (per spec, no `--regenerate-expected`): each
-    fixture's single changed file gets the tier/risk/dimension a human reviewer would
-    assign. If the baseline (Sonnet) under-tiers or under-risks against this opinion,
-    `baseline_valid` is False and the candidate's hold reads vacuous — that's the
-    signal to revisit either the model or the ground truth, surfaced in the artifact.
-    """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        pytest.skip("ANTHROPIC_API_KEY is required for the real-model triage scorecard")
-
-    from pydantic import SecretStr  # noqa: PLC0415
-
-    from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: PLC0415
-    from outrider.llm.config import ModelConfig  # noqa: PLC0415
-    from outrider.llm.pricing import normalize_to_pricing_key  # noqa: PLC0415
-    from outrider.prompts.triage import VERSION as TRIAGE_PROMPT_VERSION  # noqa: PLC0415
+def _triage_admission_specs() -> list[TriageScenarioSpec]:
+    """The hand-authored triage ground truth, shared by BOTH triage evidence
+    instruments — the historical Sonnet-vs-Haiku flip runner below and the
+    OpenAI node-admission runner (`test_openai_node_admission.py`).
+    Single-sourced so the two instruments grade the same frozen expectations
+    and cannot drift. One changed file per fixture; the vuln files warrant
+    DEEP + a security lens, the quality/perf changes STANDARD, and the clean
+    billing refactor STANDARD-LOW (totals math is worth a cheap pass even
+    when the diff looks safe)."""
     from outrider.schemas.triage_result import (  # noqa: PLC0415
         ReviewDimension,
         ReviewTier,
         RiskLevel,
     )
 
-    from .runner import TriageScenarioSpec, build_triage_scorecard  # noqa: PLC0415
     from .triage_grading import ExpectedTriage  # noqa: PLC0415
-
-    class _NoOpExchangePersister:
-        """No-op `LLMExchangePersister`: the triage node's `provider.complete()` is
-        fail-closed on `persister=None`; the grader reads the `TriageResult` off the
-        node return, so the exchange persist is discarded (no audit events)."""
-
-        async def persist(self, event: object, request: object, response: object) -> None:  # noqa: ARG002
-            return None
-
-    cfg = ModelConfig()
-    baseline_model = cfg.analyze_model  # Sonnet — the strong reference tier
-    candidate_model = "claude-haiku-4-5"  # the cheap tier under test for triage
-    if normalize_to_pricing_key(baseline_model) == normalize_to_pricing_key(candidate_model):
-        pytest.fail(
-            f"baseline ({baseline_model}) and candidate ({candidate_model}) normalize to the "
-            "same model — the triage scorecard would prove nothing about Sonnet-vs-Haiku. Point "
-            "OUTRIDER_MODEL_ANALYZE_MODEL at Sonnet (or unset it) for the evidence run."
-        )
-    provider = AnthropicProvider(
-        api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
-    )
 
     mock = Path("tests/eval/fixtures/mock_github")
 
@@ -984,10 +936,7 @@ def test_real_triage_scorecard_evidence() -> None:
             expected_file_tiers={path: tier}, overall_risk=risk, relevant_dimensions=(dimension,)
         )
 
-    # One changed file per fixture; the vuln files warrant DEEP + a security lens,
-    # the quality/perf changes STANDARD, and the clean billing refactor STANDARD-LOW
-    # (totals math is worth a cheap pass even when the diff looks safe).
-    specs = [
+    return [
         TriageScenarioSpec.from_fixture(
             "pygoat_sql_injection",
             str(mock / "pygoat_sql_injection.json"),
@@ -1039,6 +988,69 @@ def test_real_triage_scorecard_evidence() -> None:
             ),
         ),
     ]
+
+
+@pytest.mark.skipif(
+    os.environ.get("OUTRIDER_EVAL_REAL_MODELS") != "1",
+    reason="real-model triage scorecard spends API tokens; set OUTRIDER_EVAL_REAL_MODELS=1 to run",
+)
+def test_real_triage_scorecard_evidence() -> None:
+    """OPT-IN real API spend — emits the TRIAGE scorecard artifact (Sonnet vs Haiku
+    triage over the known-vuln fixtures).
+
+    REPORT-ONLY, BY DESIGN: asserts only that the run COMPLETED (a triage row per
+    spec). The verdict is the JSON + HTML written to
+    `reports/scorecard/triage-scorecard.{json,html}`, read by a human — the runner is
+    report-only. Quality (tier accuracy / drop-from-analysis / dimension recall /
+    under-risking / gate) is REAL spend through the real triage node; there is NO
+    cost pass (triage rows are quality-only per the spec).
+
+    Self-contained: its own provider, closed inside `build_triage_scorecard`'s event
+    loop. It does NOT share the analyze entrypoint's client — each `asyncio.run`
+    binds the httpx client to its own loop, and a real client can't be reused across
+    loops. Sync test for the same reason as `test_real_scorecard_evidence`.
+
+    Ground truth is hand-authored (per spec, no `--regenerate-expected`): each
+    fixture's single changed file gets the tier/risk/dimension a human reviewer would
+    assign. If the baseline (Sonnet) under-tiers or under-risks against this opinion,
+    `baseline_valid` is False and the candidate's hold reads vacuous — that's the
+    signal to revisit either the model or the ground truth, surfaced in the artifact.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        pytest.skip("ANTHROPIC_API_KEY is required for the real-model triage scorecard")
+
+    from pydantic import SecretStr  # noqa: PLC0415
+
+    from outrider.llm.anthropic_provider import AnthropicProvider  # noqa: PLC0415
+    from outrider.llm.config import ModelConfig  # noqa: PLC0415
+    from outrider.llm.pricing import normalize_to_pricing_key  # noqa: PLC0415
+    from outrider.prompts.triage import VERSION as TRIAGE_PROMPT_VERSION  # noqa: PLC0415
+
+    from .runner import build_triage_scorecard  # noqa: PLC0415
+
+    class _NoOpExchangePersister:
+        """No-op `LLMExchangePersister`: the triage node's `provider.complete()` is
+        fail-closed on `persister=None`; the grader reads the `TriageResult` off the
+        node return, so the exchange persist is discarded (no audit events)."""
+
+        async def persist(self, event: object, request: object, response: object) -> None:  # noqa: ARG002
+            return None
+
+    cfg = ModelConfig()
+    baseline_model = cfg.analyze_model  # Sonnet — the strong reference tier
+    candidate_model = "claude-haiku-4-5"  # the cheap tier under test for triage
+    if normalize_to_pricing_key(baseline_model) == normalize_to_pricing_key(candidate_model):
+        pytest.fail(
+            f"baseline ({baseline_model}) and candidate ({candidate_model}) normalize to the "
+            "same model — the triage scorecard would prove nothing about Sonnet-vs-Haiku. Point "
+            "OUTRIDER_MODEL_ANALYZE_MODEL at Sonnet (or unset it) for the evidence run."
+        )
+    provider = AnthropicProvider(
+        api_key=SecretStr(api_key), model_config=cfg, persister=_NoOpExchangePersister()
+    )
+
+    specs = _triage_admission_specs()
 
     card = build_triage_scorecard(
         specs,
