@@ -427,7 +427,13 @@ OPENAI_PROFILE: Final[HostProfile] = HostProfile(
 #      and register it in HOST_PROFILES; add a HOST_DEFAULT_MODELS[host_id] row (all six
 #      _MODEL_FIELDS). If the host needs a reasoning-off shape not already in
 #      ReasoningMechanism, add the enum value + a shaper + a _SHAPER_REGISTRY entry + bump
-#      SHAPER_CONTRACT_VERSION.
+#      SHAPER_CONTRACT_VERSION. DECIDE the four optional digest-folded wire behaviors
+#      EXPLICITLY — never inherit them silently: flat_rate_input_ceiling_tokens (documented
+#      repricing boundary?), sends_prompt_cache_key (host needs a cache key?),
+#      requested_service_tier (tiered billing? declaring one makes the tier echo REQUIRED),
+#      and token_limit_param (which kwarg carries the completion ceiling — the GPT-5.6 wire
+#      400s on the `max_tokens` default, and a wrong inherit surfaces only on the first
+#      paid probe row).
 #   2. pricing.py: add the RATE_TABLE (host_id, model) row + a MIN_CACHEABLE_TOKENS row
 #      (None = unknown floor, 0 = documented no-floor), bump PRICING_VERSION, update the
 #      pricing-digest test.
