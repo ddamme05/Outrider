@@ -5,7 +5,8 @@ request rather than the production candidate: a different token-limit kwarg, a
 dropped `prompt_cache_key`, a different service tier, and the paid row would
 answer a question nobody asked.
 
-Also pins Gate 1: paid mode is EXECUTABLE-refused, not documented-refused.
+Also pins the Gate-2 spend gate: `--paid` is EXECUTABLE-refused without the literal
+authorization token, not documented-refused.
 
 See `specs/2026-07-20-arc2-strict-schema-feasibility.md`.
 """
@@ -277,14 +278,27 @@ def test_probe_dry_run_makes_no_network_call(tmp_path: Any) -> None:
     assert events == [], f"--dry-run attempted network activity: {events}"
 
 
-def test_placeholder_dry_run_is_preview_only_and_gate2_ineligible(tmp_path: Any) -> None:
+def test_placeholder_dry_run_is_preview_only_and_gate2_ineligible(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A dry run over PLACEHOLDER prompts must not be usable as a Gate-2 source.
 
     It measures prompts that will not be the ones sent, so caps derived from it
     would describe a different experiment. The artifact says so mechanically
     rather than relying on the operator noticing.
+
+    The placeholders are RE-INSTATED here rather than assumed: the real
+    elicitations were frozen 2026-07-20, so a test that depended on the module's
+    ambient state would have started passing vacuously (or failing) on the freeze.
+    The mechanism it guards still matters — a future re-freeze must not be able to
+    produce a Gate-2-eligible artifact from placeholder text.
     """
-    assert plan.refusal_freeze_error() is not None  # placeholders still in place
+    monkeypatch.setattr(
+        plan,
+        "_REFUSAL_ELICITATIONS",
+        dict.fromkeys(ROW_ORDER[2:], plan._REFUSAL_PLACEHOLDER),
+    )
+    assert plan.refusal_freeze_error() is not None
     with patch.object(probe, "_OUT_DIR", tmp_path):
         probe.run_dry()
 
@@ -296,41 +310,59 @@ def test_placeholder_dry_run_is_preview_only_and_gate2_ineligible(tmp_path: Any)
     assert not list(tmp_path.glob("dry_run_[0-9a-f]*.json"))
 
 
-def test_paid_mode_is_an_unconditional_stub_at_gate_one() -> None:
-    """`run_paid()` refuses unconditionally and consumes no contract. Both halves.
+def test_paid_run_refuses_without_explicit_spend_authorization(tmp_path: Any) -> None:
+    """Gate 2: a reviewed contract is not an instruction to buy.
 
-    The gate at Gate 1 is a STUB, not a contract check — the earlier name of this
-    test ("requires a reviewed contract, not a flag") claimed a mechanism the
-    function does not implement: it accepts no contract and loads none. What is
-    true is that no paid runner exists, so nothing can spend.
+    This test replaced `test_paid_mode_is_an_unconditional_stub_at_gate_one`, which
+    asserted `run_paid` took no parameters — true while it was a stub, false once
+    the runner landed. It failed on the Gate-2 change, which is what it was for.
 
-    The absence assertions remain meaningful for a different reason: they pin that
-    the superseded flag-shaped design (`PAID_MODE_UNLOCKED` plus nullable
-    `FROZEN_*` caps) has not crept back as an alternative unlock path.
+    A well-formed contract says the experiment is sound; it says nothing about
+    whether now is the moment to spend. So the runner demands a literal token that
+    shows up verbatim in the shell history of whoever authorized it, and refuses
+    before touching the network without it.
     """
     import inspect
 
+    from outrider.llm.raw_openai_capture import RawOpenAICaptureClient
+
+    def _explode(*_a: object, **_k: object) -> None:
+        raise AssertionError("a client was constructed on an unauthorized paid run")
+
+    # Every parameter is keyword-only: `run_paid(True)` cannot authorize by accident.
+    assert all(
+        p.kind is inspect.Parameter.KEYWORD_ONLY
+        for p in inspect.signature(probe.run_paid).parameters.values()
+    )
+
+    with patch.object(RawOpenAICaptureClient, "__init__", _explode):
+        assert probe.run_paid(out_dir=tmp_path) == 2  # no token
+        assert probe.run_paid(confirm="yes", out_dir=tmp_path) == 2  # wrong token
+        assert probe.run_paid(confirm="--i-authorize-spend ", out_dir=tmp_path) == 2  # near-miss
+
+    # The superseded flag-shaped unlock has not crept back as an alternative path.
     assert not hasattr(probe, "PAID_MODE_UNLOCKED")
     assert not hasattr(probe, "FROZEN_MAX_COMPLETION_TOKENS")
     assert not hasattr(probe, "FROZEN_PER_ROW_PROMPT_BYTE_CAP")
 
-    # Takes no arguments: there is no contract to pass, by construction.
-    assert not inspect.signature(probe.run_paid).parameters
-    assert probe.run_paid() == 2
-    # And refuses irrespective of the freeze state — the refusal is unconditional,
-    # not a consequence of the placeholder elicitations.
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            plan,
-            "_REFUSAL_ELICITATIONS",
-            {
-                RowId.REFUSAL_1: "frozen one",
-                RowId.REFUSAL_2: "frozen two",
-                RowId.REFUSAL_3: "frozen three",
-            },
-        )
-        assert plan.refusal_freeze_error() is None  # freeze satisfied...
-        assert probe.run_paid() == 2  # ...and it still refuses
+
+def test_authorized_paid_run_still_refuses_without_a_reviewed_manifest(tmp_path: Any) -> None:
+    """Authorization is necessary, not sufficient. No manifest, no session.
+
+    Ambiguity about WHICH manifest was reviewed is not resolvable by picking one,
+    so zero manifests and two manifests are both refusals — and both land before a
+    client exists.
+    """
+    from outrider.llm.raw_openai_capture import RawOpenAICaptureClient
+
+    def _explode(*_a: object, **_k: object) -> None:
+        raise AssertionError("a client was constructed with no reviewed manifest")
+
+    with patch.object(RawOpenAICaptureClient, "__init__", _explode):
+        assert probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path) == 2
+        (tmp_path / "dry_run_aaaa1111.json").write_text("{}")
+        (tmp_path / "dry_run_bbbb2222.json").write_text("{}")
+        assert probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path) == 2
 
 
 def test_completion_limit_is_single_sourced_onto_the_wire() -> None:
@@ -344,7 +376,9 @@ def test_completion_limit_is_single_sourced_onto_the_wire() -> None:
     assert kwargs["max_completion_tokens"] == plan.MAX_COMPLETION_TOKENS
 
 
-def test_locked_contract_is_unbuildable_while_prompts_are_placeholders() -> None:
+def test_locked_contract_is_unbuildable_while_prompts_are_placeholders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The identity contract itself refuses placeholder prompts.
 
     All three placeholders are the same string, and identical elicitations are ONE
@@ -354,6 +388,11 @@ def test_locked_contract_is_unbuildable_while_prompts_are_placeholders() -> None
     """
     from pydantic import ValidationError
 
+    monkeypatch.setattr(
+        plan,
+        "_REFUSAL_ELICITATIONS",
+        dict.fromkeys(ROW_ORDER[2:], plan._REFUSAL_PLACEHOLDER),
+    )
     assert plan.refusal_freeze_error() is not None
     with pytest.raises(ValidationError, match="not distinct"):
         plan.registered_locked_contract()
@@ -490,3 +529,30 @@ def test_prompt_and_context_entry_use_the_scenario_range() -> None:
     # will validate the answer against.
     assert s.source.splitlines()[s.defect_line - 1].strip() in user_prompt
     assert f"@@ -0,0 +{s.scope_line_start},{s.scope_line_end} @@" in user_prompt
+
+
+def test_frozen_elicitations_are_byte_identical_to_the_discovery_candidates() -> None:
+    """The frozen Arc 2 prompts must be the EXACT strings the baseline runs used.
+
+    The comparison this arc rests on is `json_object` (no refusal channel observed)
+    versus strict `json_schema`. That only holds if the prompt is the controlled
+    variable — reworded text would change the independent variable and make a
+    `PARK` or `GO` unattributable to the schema.
+
+    Two copies exist to keep the registered Arc 2 plan independent of the discovery
+    runner — `plan.py` is the frozen experiment, `refusal_discovery.py` is a
+    separate tool with its own lifecycle. (Neither owns the openai SDK; both reach
+    the wire through `outrider.llm.raw_openai_capture`, which is the only sanctioned
+    import site per trust boundary #8.) This test is what keeps the copies honest:
+    edit either and it fails, rather than the arc silently measuring a prompt the
+    baseline never covered.
+    """
+    from spikes.openai.refusal_discovery import _PROMPT_BY_NAME
+
+    assert {
+        RowId.REFUSAL_1: _PROMPT_BY_NAME["defamation"],
+        RowId.REFUSAL_2: _PROMPT_BY_NAME["harassment"],
+        RowId.REFUSAL_3: _PROMPT_BY_NAME["self_harm"],
+    } == plan._REFUSAL_ELICITATIONS
+    # And they are distinct, so three rows are three observations.
+    assert len(set(plan._REFUSAL_ELICITATIONS.values())) == 3

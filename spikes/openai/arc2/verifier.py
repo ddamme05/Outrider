@@ -69,6 +69,13 @@ class VerifiedSession:
     contract_digest: str
     evaluation_digest: str
     attempts_replayed: int
+    #: Why the session ended, or None if more rows are legitimately reachable.
+    #:
+    #: Exposed so the RUNNER can stop for exactly the reason replay would refuse a
+    #: later attempt, instead of carrying its own copy of the automaton. Two copies
+    #: of a stopping rule is the same defect shape as two copies of a response
+    #: fact: they agree until they do not, and the disagreement costs a paid call.
+    terminal_reason: str | None
 
 
 class ParserAdapter:
@@ -418,4 +425,5 @@ def verify_and_derive(
         contract_digest=contract.digest,
         evaluation_digest=evaluation.digest,
         attempts_replayed=len(ledger.refs),
+        terminal_reason=terminal,
     )
