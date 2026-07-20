@@ -67,12 +67,19 @@ __all__ = [
 #: v3 (2026-07-20): the whole owner model changed — three closed contracts, a
 #: discriminated attempt union, and verifier-derived verdicts replacing
 #: `ResourceContract` / `PAID_MODE_UNLOCKED` / stored-verdict authority.
-STRICT_PROBE_CONTRACT_VERSION: Final[ContractVersion] = "arc2-strict-schema:3"
+#:
+#: v4 (2026-07-20): the paid runner exists. That is a PROCEDURE change — there is
+#: now a defined sequence of wire calls with a preflight, an abort rule, and a
+#: shared terminality authority, where before there was a stub. Deliberately NOT
+#: rotated for the cap VALUES chosen in the same change: values are bound by the
+#: `PaidProbeContract` digest already, and rotating on them would make every
+#: re-measurement look like a procedure change.
+STRICT_PROBE_CONTRACT_VERSION: Final[ContractVersion] = "arc2-strict-schema:4"
 
 #: The version is a LITERAL on every artifact, not a free string: an artifact
 #: carrying an unrecognised version must fail to LOAD, not merely compare unequal
 #: to whatever the reader expected.
-ContractVersion = Literal["arc2-strict-schema:3"]
+ContractVersion = Literal["arc2-strict-schema:4"]
 
 # Length is pinned alongside the pattern: pydantic-core's Rust regex has no
 # `\A`/`\Z`, and `$` can admit a trailing newline, so the bound is what makes

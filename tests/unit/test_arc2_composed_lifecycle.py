@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path  # noqa: TC003 - runtime fixture type
-from typing import Any
+from typing import Any, ClassVar
+from unittest.mock import patch
 
 import pytest
 from spikes.openai.arc2 import plan
@@ -978,3 +980,455 @@ def test_hashes_bind_evidence_to_the_ledger_not_to_its_origin(tmp_path: Path) ->
         "true, the arc has gained an origin-authenticity guarantee it never claimed, "
         "and the claim should be documented rather than discovered"
     )
+
+
+def _scripted_capture(content: str | None, refusal: str | None = None) -> RawCapture:
+    return _raw_capture(content=content, refusal=refusal, finish_reason="stop", model=_MODEL)
+
+
+class _FakeClient:
+    """Records what a real client would have been asked to do — including closure.
+
+    `close` exists because the runner must call it: an `AsyncOpenAI` left open leaks
+    its connection pool, and the earlier runner never closed one. A fake without a
+    `close` made that omission invisible, so the attribute is part of the contract
+    this double asserts.
+    """
+
+    instances: ClassVar[list[_FakeClient]] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        self.max_retries = kwargs.get("max_retries")
+        self.calls: list[dict[str, object]] = []
+        self.closed = False
+        self.script: list[object] = []
+        _FakeClient.instances.append(self)
+
+    async def capture(self, **kwargs: object) -> RawCapture:
+        self.calls.append(kwargs)
+        nxt = self.script[len(self.calls) - 1]
+        if isinstance(nxt, Exception):
+            raise nxt
+        assert isinstance(nxt, RawCapture)
+        return nxt
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _install_fake(monkeypatch: pytest.MonkeyPatch, script: list[object]) -> None:
+    from spikes.openai import strict_schema_probe as probe
+
+    _FakeClient.instances.clear()
+
+    def _factory(**kwargs: object) -> _FakeClient:
+        c = _FakeClient(**kwargs)
+        c.script = script
+        return c
+
+    monkeypatch.setattr(probe, "RawOpenAICaptureClient", _factory)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+
+
+def _write_reviewed_manifest(d: Path) -> None:
+    """A manifest for the CURRENT plan, where the runner looks for it."""
+    locked = plan.registered_locked_contract()
+    dry = DryRunManifest(
+        contract_version=STRICT_PROBE_CONTRACT_VERSION,
+        locked_contract_digest=locked.digest,
+        measurements=plan.registered_measurements(),
+    )
+    (d / f"dry_run_{dry.digest[:16]}.json").write_text(dry.model_dump_json())
+
+
+def test_the_spend_token_is_the_only_thing_standing_between_review_and_a_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Proves the token is LOAD-BEARING, not merely present.
+
+    The first version of this test ran against an empty directory, so `run_paid`
+    returned 2 at the "no reviewed manifest" check and the assertion passed even
+    with the token check deleted — a mutation confirmed it. Passing for the wrong
+    reason is indistinguishable from passing.
+
+    Here everything else is satisfied: frozen prompts, a valid reviewed manifest,
+    a passing preflight. Without the token the run must refuse before a client
+    exists; WITH it, execution must reach client construction — which the patched
+    constructor turns into a loud failure. That asymmetry is the proof.
+    """
+    from spikes.openai import strict_schema_probe as probe
+
+    from outrider.llm.raw_openai_capture import RawOpenAICaptureClient
+
+    _write_reviewed_manifest(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+
+    def _explode(*_a: object, **_k: object) -> None:
+        raise AssertionError("client was constructed")
+
+    with patch.object(RawOpenAICaptureClient, "__init__", _explode):
+        assert probe.run_paid(out_dir=tmp_path) == 2
+        assert probe.run_paid(confirm="yes", out_dir=tmp_path) == 2
+        # With the token, and only with it, control reaches the wire.
+        with pytest.raises(AssertionError, match="client was constructed"):
+            probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path)
+
+
+def test_preflight_refuses_drift_and_over_cap_rows_at_zero_spend(tmp_path: Path) -> None:
+    """Preflight is the zero-spend guard; a no-op version must fail a test.
+
+    Both checks are exercised independently because they are independent
+    statements: the digest catches any drift at all, the cap is a cruder ceiling
+    that still holds if the digest comparison were wrong. A mutation making
+    `_preflight` return no violations went unnoticed before this existed.
+    """
+    from spikes.openai import strict_schema_probe as probe
+
+    locked = plan.registered_locked_contract()
+    real = plan.registered_measurements()
+    rows = probe.build_rows()
+
+    # Sanity: the honest contract passes, so a failure below is the mutation, not the fixture.
+    honest = PaidProbeContract.from_reviewed(
+        locked=locked,
+        dry=DryRunManifest(
+            contract_version=STRICT_PROBE_CONTRACT_VERSION,
+            locked_contract_digest=locked.digest,
+            measurements=real,
+        ),
+        caps=dict(plan.REVIEWED_CAPS),
+    )
+    assert probe._preflight(honest, rows) == []
+
+    # (a) A drifted request body: the reviewed digest no longer describes what
+    #     would be sent. Built by hand because making the plan actually drift would
+    #     invalidate the contract earlier, at the measurement comparison.
+    drifted = honest.model_copy(
+        update={
+            "measurements": (
+                real[0].model_copy(update={"request_body_digest": _h(b"a body never built")}),
+                *real[1:],
+            )
+        }
+    )
+    violations = probe._preflight(drifted, rows)
+    assert len(violations) == 1
+    assert "the prompt drifted since review" in violations[0]
+
+    # (b) An over-cap row: the body is correct but larger than what was authorized.
+    capped = honest.model_copy(
+        update={"per_row_prompt_byte_cap": {**honest.per_row_prompt_byte_cap, ROW_ORDER[0]: 10}}
+    )
+    violations = probe._preflight(capped, rows)
+    assert len(violations) == 1
+    assert "exceeds reviewed cap" in violations[0]
+
+
+def test_paid_rehearsal_refusal_stops_at_three_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GO path: a demonstrated refusal is terminal, so rows 4 and 5 are never bought."""
+    from spikes.openai import strict_schema_probe as probe
+
+    _write_reviewed_manifest(tmp_path)
+    _install_fake(
+        monkeypatch,
+        [
+            _scripted_capture(_EMPTY),
+            _scripted_capture(_finding_body()),
+            _scripted_capture(None, refusal="I can't help with that."),
+        ],
+    )
+    assert probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path) == 0
+
+    client = _FakeClient.instances[-1]
+    assert len(client.calls) == 3, "must stop at the refusal, not spend all five"
+    assert client.closed is True
+    assert client.max_retries == 0, "no-retry must be explicit, not an inherited default"
+
+    run_dir = next(tmp_path.glob("capture_*"))
+    ledger = AttemptLedger.model_validate_json((run_dir / "attempt_ledger.json").read_bytes())
+    assert len(ledger.refs) == 3
+    assert (run_dir / "paid_contract.json").is_file()
+
+
+def test_paid_rehearsal_transport_failure_aborts_and_persists_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transport error ends the session — and is KEPT, because it is evidence.
+
+    I told the reviewer this path was reachable only live. It is not: the failure
+    enters through the project-owned error type, which a fake raises as easily as a
+    socket does. Calling a behavior untestable is how it stays untested.
+    """
+    from spikes.openai import strict_schema_probe as probe
+
+    from outrider.llm.raw_openai_capture import RawOpenAICaptureError
+
+    _write_reviewed_manifest(tmp_path)
+    _install_fake(
+        monkeypatch,
+        [
+            _scripted_capture(_EMPTY),
+            RawOpenAICaptureError(status=503, request_id="req_x", message="upstream down"),
+            _scripted_capture(_EMPTY),  # must never be reached
+        ],
+    )
+    probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path)
+
+    client = _FakeClient.instances[-1]
+    assert len(client.calls) == 2, "no call may follow a transport failure; no retries"
+    assert client.closed is True, "the client is closed even on the abort path"
+
+    run_dir = next(tmp_path.glob("capture_*"))
+    ledger = AttemptLedger.model_validate_json((run_dir / "attempt_ledger.json").read_bytes())
+    assert len(ledger.refs) == 2
+    failed = ATTEMPT_ADAPTER.validate_json((run_dir / "01_acceptance_finding.json").read_bytes())
+    assert isinstance(failed, TransportFailure)
+    assert (failed.status, failed.request_id) == (503, "req_x")
+
+
+def test_paid_rehearsal_five_valid_negatives_parks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The full-spend path: nothing refuses, all five run, verdict is PARK.
+
+    The outcome the arc most expects given the json_object baseline, and the only
+    scenario exercising the five-call ceiling against calls MADE.
+    """
+    from spikes.openai import strict_schema_probe as probe
+
+    _write_reviewed_manifest(tmp_path)
+    _install_fake(
+        monkeypatch,
+        [
+            _scripted_capture(_EMPTY),
+            _scripted_capture(_finding_body()),
+            _scripted_capture(_EMPTY),
+            _scripted_capture(_EMPTY),
+            _scripted_capture(_EMPTY),
+        ],
+    )
+    assert probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path) == 0
+
+    client = _FakeClient.instances[-1]
+    assert len(client.calls) == 5
+    assert client.closed is True
+
+    run_dir = next(tmp_path.glob("capture_*"))
+    ledger = AttemptLedger.model_validate_json((run_dir / "attempt_ledger.json").read_bytes())
+    assert len(ledger.refs) == 5
+    assert ledger.rows == ROW_ORDER
+
+    contract = probe.reviewed_paid_contract(next(tmp_path.glob("dry_run_*.json")))
+    session = verify_and_derive(
+        contract=contract,
+        evaluation=_evaluation(),
+        scenario_source=_SOURCE,
+        ledger=ledger,
+        fixture_dir=run_dir,
+    )
+    assert session.verdict.verdict is Verdict.PARK
+
+
+def test_a_rerun_never_overwrites_existing_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Evidence is never merged into. A collision is the operator's call.
+
+    `exist_ok=True` let a shorter second session leave the first session's later
+    fixtures behind, so a replay would read a prefix no single session produced.
+    """
+    from spikes.openai import strict_schema_probe as probe
+
+    _write_reviewed_manifest(tmp_path)
+    script: list[object] = [
+        _scripted_capture(_EMPTY),
+        _scripted_capture(_finding_body()),
+        _scripted_capture(None, refusal="I can't."),
+    ]
+    _install_fake(monkeypatch, script)
+    assert probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path) == 0
+
+    _install_fake(monkeypatch, script)
+    assert probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path) == 2
+    assert _FakeClient.instances == [], "the rerun must refuse before a client exists"
+
+
+def test_abbreviated_spend_flag_is_rejected_through_main() -> None:
+    """`--i` must not authorize. `allow_abbrev` defeats the literal-token rationale.
+
+    The token is a literal precisely so the authorization appears verbatim in the
+    shell history of whoever spent the money; argparse's prefix matching accepted
+    `--i` for it, which makes that claim false.
+    """
+    from spikes.openai import strict_schema_probe as probe
+
+    with pytest.raises(SystemExit) as exc:
+        probe.main(["--paid", "--i"])
+    assert exc.value.code != 0
+
+
+def test_the_graded_contract_is_the_one_read_back_from_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Persist -> re-read -> decode -> compare, then grade the DECODED instance.
+
+    The ledger already worked this way; the contract was written and then the
+    in-memory object was graded, with a test asserting only that the file existed.
+    A serialization or write regression could therefore report `GO` beside a
+    durable artifact nobody can replay — "grade one copy, preserve another", one
+    sibling over from where it was last fixed.
+    """
+    from spikes.openai import strict_schema_probe as probe
+
+    _write_reviewed_manifest(tmp_path)
+    _install_fake(
+        monkeypatch,
+        [
+            _scripted_capture(_EMPTY),
+            _scripted_capture(_finding_body()),
+            _scripted_capture(None, refusal="I can't."),
+        ],
+    )
+    assert probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path) == 0
+
+    run_dir = next(tmp_path.glob("capture_*"))
+    persisted = PaidProbeContract.model_validate_json((run_dir / "paid_contract.json").read_bytes())
+    intended = probe.reviewed_paid_contract(next(tmp_path.glob("dry_run_*.json")))
+    assert persisted == intended
+    # And the whole session replays against the PERSISTED contract, not a rebuilt one.
+    ledger = AttemptLedger.model_validate_json((run_dir / "attempt_ledger.json").read_bytes())
+    session = verify_and_derive(
+        contract=persisted,
+        evaluation=_evaluation(),
+        scenario_source=_SOURCE,
+        ledger=ledger,
+        fixture_dir=run_dir,
+    )
+    assert session.verdict.verdict is Verdict.GO
+
+
+def test_a_contract_that_cannot_round_trip_aborts_before_any_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A durable artifact that does not decode back is a refusal, not a warning."""
+    from spikes.openai import strict_schema_probe as probe
+
+    _write_reviewed_manifest(tmp_path)
+    _install_fake(monkeypatch, [_scripted_capture(_EMPTY)])
+
+    _real_write = probe._write_atomic
+
+    def _corrupt(path: Path, payload: bytes) -> None:
+        _real_write(path, b"{}" if path.name == "paid_contract.json" else payload)
+
+    monkeypatch.setattr(probe, "_write_atomic", _corrupt)
+    assert probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path) == 2
+    assert _FakeClient.instances == [], "no client may be built for an unreplayable contract"
+
+    # Setup happens in staging, so a setup FAILURE must leave the final evidence
+    # name unclaimed. Asserting only "no client was built" missed this: the
+    # directory already existed by then, and a permanently-poisoned deterministic
+    # name makes every healthy rerun collide — the operator's reward for fixing the
+    # bug would have been a fresh failure.
+    assert list(tmp_path.glob("capture_*")) == []
+    assert list(tmp_path.glob(".setup_*")) == [], "staging is discarded, not accumulated"
+
+    # And with the healthy writer, the very next run succeeds. Restoring only the
+    # writer — `monkeypatch.undo()` would also revert the autouse elicitation
+    # fixture and every other patch, which is not what "healthy writer" means.
+    monkeypatch.setattr(probe, "_write_atomic", _real_write)
+    _install_fake(
+        monkeypatch,
+        [
+            _scripted_capture(_EMPTY),
+            _scripted_capture(_finding_body()),
+            _scripted_capture(None, refusal="I can't."),
+        ],
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+    assert probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path) == 0
+    assert len(list(tmp_path.glob("capture_*"))) == 1
+
+
+@pytest.mark.parametrize("bad_key", ["", "   ", "op://vault/openai/key"])
+def test_a_bad_credential_leaves_no_poisoned_evidence_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_key: str
+) -> None:
+    """Credentials are checked BEFORE the run directory is claimed.
+
+    Validating inside the session spent nothing but still created
+    `capture_<digest>` — holding no replayable ledger, and, because the name is
+    deterministic, causing the correctly-wrapped rerun to refuse as a collision.
+    The operator's reward for fixing their environment was a second failure.
+
+    `op://` is called out because this repo runs under `op run`: a forgotten
+    wrapper leaves the literal reference in the environment, non-empty enough to
+    pass a truthiness check and guaranteed to 401.
+    """
+    from spikes.openai import strict_schema_probe as probe
+
+    _write_reviewed_manifest(tmp_path)
+    _install_fake(monkeypatch, [_scripted_capture(_EMPTY)])
+    monkeypatch.setenv("OPENAI_API_KEY", bad_key)
+
+    assert probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path) == 2
+    assert _FakeClient.instances == []
+    assert list(tmp_path.glob("capture_*")) == [], "the filesystem is left as it was found"
+
+    # And the corrected rerun then succeeds — the point of not poisoning the dir.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+    _install_fake(
+        monkeypatch,
+        [
+            _scripted_capture(_EMPTY),
+            _scripted_capture(_finding_body()),
+            _scripted_capture(None, refusal="I can't."),
+        ],
+    )
+    assert probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path) == 0
+
+
+def test_setup_never_claims_the_final_evidence_name(tmp_path: Path) -> None:
+    """The final name comes into existence only at promotion — a CRASH-safety claim.
+
+    Discarding staging on failure covers the exception path, but not a kill between
+    `mkdir` and validation: nothing runs to clean up then, and because the name is
+    deterministic the operator is left with a permanent collision. A mutation that
+    reserved the final directory up front passed every other test in this file,
+    because they all exercise the exception path where cleanup still happens. This
+    asserts the invariant instead of the outcome, which is the only way to tell the
+    two designs apart.
+    """
+    from spikes.openai import strict_schema_probe as probe
+
+    contract = probe.reviewed_paid_contract(_write_manifest_returning_path(tmp_path))
+    final = tmp_path / f"capture_{contract.digest[:16]}"
+
+    staging = probe._reserve_staging_dir(tmp_path, contract)
+    try:
+        assert staging != final
+        assert staging.is_dir()
+        assert not final.exists(), (
+            "the final evidence name must not exist during setup — a crash here would "
+            "poison it permanently"
+        )
+        promoted = probe._promote(staging, tmp_path, contract)
+        assert promoted == final
+        assert final.is_dir()
+    finally:
+        shutil.rmtree(final, ignore_errors=True)
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _write_manifest_returning_path(d: Path) -> Path:
+    locked = plan.registered_locked_contract()
+    dry = DryRunManifest(
+        contract_version=STRICT_PROBE_CONTRACT_VERSION,
+        locked_contract_digest=locked.digest,
+        measurements=plan.registered_measurements(),
+    )
+    path = d / f"dry_run_{dry.digest[:16]}.json"
+    path.write_text(dry.model_dump_json())
+    return path
