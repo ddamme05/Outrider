@@ -17,6 +17,7 @@ import pytest
 
 from outrider.llm.config import ModelConfig
 from outrider.llm.pricing import (
+    COST_UNADJUDICATED_PROFILE_IDS,
     LONG_CONTEXT_POLICY,
     MIN_CACHEABLE_TOKENS,
     PRICING_VERSION,
@@ -269,7 +270,10 @@ def _compute_rate_table_digest() -> str:
     tiers = sorted(SERVICE_TIER_MULTIPLIERS.items())
     reasons = [reason.value for reason in CostUnpricedReason]
     echo_expecting = sorted(TIER_ECHO_EXPECTED_PROFILE_IDS)
-    serialized = repr((items, long_context, tiers, reasons, echo_expecting)).encode("utf-8")
+    unadjudicated = sorted(COST_UNADJUDICATED_PROFILE_IDS)
+    serialized = repr((items, long_context, tiers, reasons, echo_expecting, unadjudicated)).encode(
+        "utf-8"
+    )
     return hashlib.sha256(serialized).hexdigest()[:16]
 
 
@@ -294,7 +298,10 @@ EXPECTED_PRICING_DIGEST: dict[str, str] = {
     # tier-echo-expecting profile set. No prior rate VALUES changed; the digest
     # function changed shape at this (unreleased) version — re-pinned in-arc
     # when the audit fold moved tier-echo expectation into the versioned policy.
-    "v7": "79d520e08eb10701",
+    # Re-pinned again at closeout: the `openai` host's cost is Unpriced(BILLING_PENDING)
+    # (COST_UNADJUDICATED_PROFILE_IDS + the BILLING_PENDING reason folded into the digest)
+    # until the SHAPER-v4 billing adjudication lands (FUP-247). Still unreleased (main=v6).
+    "v7": "b0f7e1b3c1dfe405",
 }
 
 
@@ -536,7 +543,32 @@ def test_every_gpt56_model_has_long_context_policy() -> None:
         assert policy.out_mult == Decimal("1.5")
 
 
-def test_long_context_reprices_full_request_per_model() -> None:
+@pytest.fixture
+def _adjudicate_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Temporarily treat openai as billing-ADJUDICATED (empty COST_UNADJUDICATED_PROFILE_IDS)
+    so the long-context/tier multiplier APPLICATION math below stays covered while openai is
+    the only host carrying that policy. These are PURE-FUNCTION pricing tests — they call
+    compute_cost_outcome/compute_cost_usd directly with no provider, no LLMCallEvent, and no
+    persister, so this fixture does NOT create the counterfactual numeric per-call event Codex
+    warned against; it only un-gates openai-only multiplier math (LONG_CONTEXT_POLICY /
+    SERVICE_TIER_MULTIPLIERS have no other host). The real default — openai cost is
+    Unpriced(BILLING_PENDING) — is pinned by test_billing_unadjudicated_host_is_unpriced.
+    Drop the fixture (and restore direct pricing) when FUP-247 confirms v4."""
+    monkeypatch.setattr("outrider.llm.pricing.COST_UNADJUDICATED_PROFILE_IDS", frozenset())
+
+
+def test_billing_unadjudicated_host_is_unpriced() -> None:
+    """The openai host's cost is withheld — Unpriced(BILLING_PENDING) — until the SHAPER-v4
+    billing adjudication lands (FUP-247), even with a valid tier and a normal request. The
+    tier/long-context CLASSIFICATION still precedes it (a tier problem is surfaced first)."""
+    priced_shape = compute_cost_outcome(*_SOL_KEY, **_TOKENS, service_tier="default")
+    assert priced_shape == Unpriced(CostUnpricedReason.BILLING_PENDING)
+    # a tier problem is still classified as such (billing gate is downstream of tier logic)
+    absent = compute_cost_outcome(*_SOL_KEY, **_TOKENS, service_tier=None)
+    assert absent == Unpriced(CostUnpricedReason.ABSENT_TIER)
+
+
+def test_long_context_reprices_full_request_per_model(_adjudicate_openai: None) -> None:
     """Above the threshold, every token class of the FULL request reprices —
     pinned per model, not via a union assertion."""
     for key in LONG_CONTEXT_POLICY:
@@ -550,7 +582,7 @@ def test_long_context_reprices_full_request_per_model() -> None:
         assert outcome == Priced(_long_cost(key)), key
 
 
-def test_long_context_boundary_is_strictly_greater() -> None:
+def test_long_context_boundary_is_strictly_greater(_adjudicate_openai: None) -> None:
     """272_000 exactly stays flat (docs: '>272K'); 272_001 reprices."""
     at = compute_cost_outcome(
         *_SOL_KEY,
@@ -568,7 +600,7 @@ def test_long_context_boundary_is_strictly_greater() -> None:
     assert over == Priced(_long_cost(_SOL_KEY))
 
 
-def test_flex_is_half_of_default_short_and_long() -> None:
+def test_flex_is_half_of_default_short_and_long(_adjudicate_openai: None) -> None:
     flex_short = compute_cost_outcome(
         *_SOL_KEY,
         billed_prompt_tokens=1_000,
@@ -585,7 +617,7 @@ def test_flex_is_half_of_default_short_and_long() -> None:
     assert flex_long == Priced(_long_cost(_SOL_KEY) * Decimal("0.5"))
 
 
-def test_priority_is_double_short_context_only() -> None:
+def test_priority_is_double_short_context_only(_adjudicate_openai: None) -> None:
     """Priority short = 2x the flat row; priority+long has no published rates
     and is Unpriced(PRIORITY_LONG_CONTEXT), never a guessed cost."""
     prio_short = compute_cost_outcome(
@@ -653,7 +685,9 @@ def test_tier_echo_policy_coherent_with_profiles() -> None:
     assert "anthropic" not in TIER_ECHO_EXPECTED_PROFILE_IDS
 
 
-def test_default_tier_context_prices_flat_across_response_derived_callers() -> None:
+def test_default_tier_context_prices_flat_across_response_derived_callers(
+    _adjudicate_openai: None,
+) -> None:
     """The cross-caller regression the Codex round-3 finding demanded: a
     response-derived caller (analyze aggregate, eval double) passing the full
     default-tier context gets EXACTLY the flat Priced figure — while the same

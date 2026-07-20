@@ -31,6 +31,7 @@ from outrider.audit.events import ContextManifestEntry, LLMCallEvent
 from outrider.llm.base import LLMRequest, LLMResponse
 from outrider.llm.host_profiles import OPENAI_PROFILE
 from outrider.llm.openai_compatible_provider import OpenAICompatibleProvider
+from outrider.llm.pricing import CostUnpricedReason
 from outrider.schemas.llm.analyze import ANALYZE_RESPONSE_SCHEMA_JSON
 
 # The frozen openai request envelope for the production analyze path. The
@@ -41,7 +42,7 @@ from outrider.schemas.llm.analyze import ANALYZE_RESPONSE_SCHEMA_JSON
 # envelope's job is to prove no json_schema block leaks in.
 GOLDEN_KWARGS: dict[str, Any] = {
     "model": "gpt-5.6-sol",
-    # SHAPER v3: the 5.6 wire 400s on `max_tokens` (paid probe capture) — the
+    # The 5.6 wire 400s on `max_tokens` (paid probe capture, SHAPER v3) — the
     # ceiling rides under the profile-declared `max_completion_tokens`.
     "max_completion_tokens": 100,
     "temperature": 0.0,
@@ -51,23 +52,25 @@ GOLDEN_KWARGS: dict[str, Any] = {
     ],
     "reasoning_effort": "none",
     "service_tier": "default",
-    # Digest prefix re-pinned for the SHAPER v3 + token_limit_param rotation.
-    "prompt_cache_key": "outrider:e397406ea91794b0:analyze@1.0.0",
+    # Digest prefix re-pinned for the SHAPER v4 subtractive-accounting rotation.
+    "prompt_cache_key": "outrider:d5bd42623af324b3:analyze@1.0.0",
     "response_format": {"type": "json_object"},
 }
-# §8a writes-reported: prompt(100) INCLUDES cached(30) → input=70; writes(20)
-# are their own billed class, NOT subtracted from input. Nonzero cached AND
-# nonzero writes so both branches of the accounting are exercised at once.
+# §8a writes-reported (SHAPER v4, capture-pinned): prompt(100) INCLUDES both
+# cached(30) AND writes(20) — `total == prompt + completion` on the paid
+# fixture — so input = 100 - 30 - 20 = 50. Nonzero cached AND nonzero writes
+# so both subtractions are exercised at once.
 GOLDEN_RESPONSE_ACCOUNTING: dict[str, int] = {
-    "input_tokens": 70,
+    "input_tokens": 50,
     "cache_read_tokens": 30,
     "cache_write_tokens": 20,
     "output_tokens": 50,
 }
-# cost_usd LITERALLY pinned (never recomputed via compute_cost_outcome, so a
-# rate re-key can't move provider and expectation together): Sol short-context,
-# default tier ×1 — 70·$5 + 20·$6.25 + 30·$0.50 + 50·$30 per MTok = $0.00199.
-GOLDEN_COST_USD: float = 0.00199
+# DOCUMENTED-ONLY (no longer asserted): the $ a subtractive-billing reading WOULD imply —
+# Sol short-context, default tier ×1 — 50·$5 + 20·$6.25 + 30·$0.50 + 50·$30 per MTok =
+# $0.00189. openai cost is Unpriced(BILLING_PENDING) until FUP-247 confirms the equation, so
+# this value is a reference for the eventual adjudication, not a pinned expectation.
+GOLDEN_COST_USD: float = 0.00189
 GOLDEN_PRICING_VERSION = "v7"
 
 _FIXED_REVIEW_ID = UUID("00000000-0000-0000-0000-0000000000ab")
@@ -167,14 +170,17 @@ async def test_openai_wire_golden_request_accounting_and_event() -> None:
     # 3) the persisted LLMCallEvent's cost + pricing-context identity.
     assert len(persister.calls) == 1, "expected exactly one persisted LLMCallEvent"
     event, _req, _resp = persister.calls[0]
-    assert event.input_tokens == 70
+    assert event.input_tokens == 50
     assert event.output_tokens == 50
     assert event.cached_tokens == 30
     assert event.cache_hit is True
     assert event.billed_prompt_tokens == 100
     assert event.cache_write_tokens == 20
     assert event.service_tier == "default"
-    assert event.cost_unpriced_reason is None
     assert event.pricing_version == GOLDEN_PRICING_VERSION
     assert event.model == "gpt-5.6-sol"
-    assert event.cost_usd == pytest.approx(GOLDEN_COST_USD), "openai cost_usd drifted"
+    # openai cost is WITHHELD until the SHAPER-v4 billing adjudication lands (FUP-247):
+    # the token split above is wire-consistent, but the $ is Unpriced(BILLING_PENDING),
+    # NOT the (documented-only) `GOLDEN_COST_USD` that a subtractive-billing reading implies.
+    assert event.cost_usd is None
+    assert event.cost_unpriced_reason == CostUnpricedReason.BILLING_PENDING

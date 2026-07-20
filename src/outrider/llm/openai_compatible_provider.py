@@ -110,6 +110,7 @@ from outrider.llm.host_profiles import (
 from outrider.llm.pricing import (
     PRICING_VERSION,
     RATE_TABLE,
+    CostUnpricedReason,
     Priced,
     Unpriced,
     compute_cost_outcome,
@@ -579,7 +580,19 @@ class OpenAICompatibleProvider:
         # Step 9: post-persist pricing-contract raise (exchange + exactly one
         # LLMCallEvent are durable; the error is terminal so the node cannot
         # re-invoke and bill a second call).
-        if isinstance(outcome, Unpriced) or over_ceiling or tier_deviated:
+        #
+        # BILLING_PENDING is a statically-known policy withholding (the host's
+        # flat rate is not billing-confirmed — DECISIONS.md#056 / FUP-247), NOT a
+        # runtime pricing-contract deviation: the exchange completed cleanly, cost
+        # is honestly recorded as withheld (cost_usd=None), and eval/research
+        # callers must still receive the response. The fail-loud raise stays
+        # reserved for genuine anomalies — a runtime-unpriceable tier echo, an
+        # over-ceiling billed count, or a service tier we did not request.
+        benign_unpriced = (
+            isinstance(outcome, Unpriced) and outcome.reason is CostUnpricedReason.BILLING_PENDING
+        )
+        deviated = (isinstance(outcome, Unpriced) and not benign_unpriced) or over_ceiling
+        if deviated or tier_deviated:
             raise LLMPricingContractError(
                 f"completed exchange deviated from host {self._profile.host_id!r}'s "
                 f"flat-rate pricing contract: "

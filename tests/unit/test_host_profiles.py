@@ -36,7 +36,8 @@ def test_baseten_profile_reproduces_the_spike_constants() -> None:
     assert p.json_mode is JsonMode.SOFT_FENCED  # Baseten shared API is soft (FUP-196).
     assert p.token_accounting is TokenAccounting.PROMPT_INCLUDES_CACHED  # §8a.
     assert p.reasoning_mechanism is ReasoningMechanism.CHAT_TEMPLATE_ARGS
-    # The GLM hosts' verified wire takes `max_tokens` — the SHAPER v3 default holds.
+    # The GLM hosts' verified wire takes `max_tokens` — the `token_limit_param`
+    # field default (introduced SHAPER v3) holds; only OPENAI_PROFILE overrides it.
     assert p.token_limit_param is TokenLimitParam.MAX_TOKENS
 
 
@@ -391,23 +392,43 @@ def test_new_profile_fields_are_digest_folded() -> None:
 
 
 def test_read_usage_writes_reported_arm() -> None:
-    """5.6 accounting: reads subtracted (subset, documented); writes carried as
-    their own class, NOT subtracted (conservation equation is probe-pinned);
-    writes exceeding prompt_tokens is malformed wire."""
+    """5.6 accounting: reads AND writes both subtracted — both ride inside
+    prompt_tokens per the capture-pinned conservation equation
+    (`total == prompt + completion`); `cached + writes > prompt` in any form
+    is malformed wire, rejected rather than min-capped."""
     assert read_usage(
         prompt_tokens=2000,
         raw_cached_tokens=1500,
         completion_tokens=300,
         accounting=TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED,
         raw_cache_write_tokens=400,
-    ) == (500, 1500, 400, 300)
+    ) == (100, 1500, 400, 300)
     with pytest.raises(LLMInvalidResponseError):
+        # writes alone exceed prompt
         read_usage(
             prompt_tokens=100,
             raw_cached_tokens=0,
             completion_tokens=10,
             accounting=TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED,
             raw_cache_write_tokens=101,
+        )
+    with pytest.raises(LLMInvalidResponseError):
+        # neither alone exceeds; the sum does — the case the pre-v4 arm admitted
+        read_usage(
+            prompt_tokens=100,
+            raw_cached_tokens=60,
+            completion_tokens=10,
+            accounting=TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED,
+            raw_cache_write_tokens=50,
+        )
+    with pytest.raises(LLMInvalidResponseError):
+        # cached alone exceeds prompt — this arm rejects instead of min-capping
+        read_usage(
+            prompt_tokens=100,
+            raw_cached_tokens=150,
+            completion_tokens=10,
+            accounting=TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED,
+            raw_cache_write_tokens=0,
         )
     with pytest.raises(LLMInvalidResponseError):
         read_usage(

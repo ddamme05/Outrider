@@ -38,6 +38,7 @@ from types import MappingProxyType
 from typing import Final, NamedTuple
 
 __all__ = [
+    "COST_UNADJUDICATED_PROFILE_IDS",
     "LONG_CONTEXT_POLICY",
     "TIER_ECHO_EXPECTED_PROFILE_IDS",
     "MIN_CACHEABLE_TOKENS",
@@ -381,6 +382,13 @@ class CostUnpricedReason(StrEnum):
     SCALE_TIER = "scale_tier"
     NOVEL_TIER = "novel_tier"
     PRIORITY_LONG_CONTEXT = "priority_long_context"
+    # A host whose token→billing-class mapping is NOT yet adjudicated against the
+    # provider's real billing export. Pricing REFUSES to fabricate a dollar cost from a
+    # merely wire-consistent normalization (GPT-5.6 SHAPER v4: writes-inside-prompt is the
+    # wire envelope, not billing-confirmed — FUP-247). Cleared per host by removing it from
+    # `COST_UNADJUDICATED_PROFILE_IDS` (a versioned change — bump PRICING_VERSION) once the
+    # billing artifact confirms/corrects the equation.
+    BILLING_PENDING = "billing_pending"
 
 
 class Priced(NamedTuple):
@@ -440,6 +448,14 @@ LONG_CONTEXT_POLICY: Final[Mapping[tuple[str, str], LongContextPolicy]] = Mappin
 # reinterpret how a v7-era event was classified. `HostProfile.requested_service_tier`
 # must agree with membership here; a unit test pins the coherence.
 TIER_ECHO_EXPECTED_PROFILE_IDS: Final[frozenset[str]] = frozenset({"openai"})
+
+# Which profile ids have a NOT-yet-billing-adjudicated token→class mapping. Their cost is
+# Unpriced(BILLING_PENDING) — pricing refuses to fabricate a dollar figure from a merely
+# wire-consistent normalization (GPT-5.6 SHAPER v4; FUP-247). VERSIONED policy (folded into
+# the v7 digest, same as the tier-echo set): a v7-era event's Unpriced classification stays
+# derivable from this module. Removing a host here is a re-admission of its cost — a
+# PRICING_VERSION bump — done only once the billing artifact confirms the equation.
+COST_UNADJUDICATED_PROFILE_IDS: Final[frozenset[str]] = frozenset({"openai"})
 
 # Echoed-service-tier multipliers over the corresponding default-tier rate
 # (mirror pricing tables, snapshot 2026-07-18: Flex = 0.5× Standard short AND
@@ -513,6 +529,14 @@ def compute_cost_outcome(
         long_policy = candidate
     if long_policy is not None and expects_tier_echo and service_tier == "priority":
         return Unpriced(CostUnpricedReason.PRIORITY_LONG_CONTEXT)
+
+    # Billing-unadjudicated host (GPT-5.6 SHAPER v4, FUP-247): the tier/long-context
+    # classification above still fires (that evidence is real), but where a dollar cost
+    # WOULD be computed, refuse — the writes-inside normalization is wire-consistent, not
+    # billing-confirmed. The token split (read_usage) is still recorded; only the $ is
+    # withheld until the billing export lands.
+    if profile_id in COST_UNADJUDICATED_PROFILE_IDS:
+        return Unpriced(CostUnpricedReason.BILLING_PENDING)
 
     with decimal.localcontext() as ctx:
         ctx.prec = 28  # Python's documented default; insulates against caller mutations.

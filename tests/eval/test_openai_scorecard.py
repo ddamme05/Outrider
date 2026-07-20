@@ -145,7 +145,12 @@ def _expected_probe_rows(
 # Procedure v4: the emission request is production-assembled and its
 # predicate graded through the production admission chain — v3-graded
 # evidence is superseded.
-_EXPECTED_PROBE_CONTRACT_VERSION = 4
+# Procedure v5: the emission scenario's verdict genuinely depends on the
+# hidden imported escape_owner (the v4 scenario contradicted the analyze
+# prompt's no-candidates-for-locally-proven rule), and the refusal
+# elicitation is frozen from refusal_discovery.py — v4 evidence is
+# superseded.
+_EXPECTED_PROBE_CONTRACT_VERSION = 5
 # Manifest v4: gained full_matrix_models (the declared capture matrix the
 # expected row set derives from).
 _EXPECTED_MANIFEST_SCHEMA_VERSION = 4
@@ -218,15 +223,16 @@ def _is_bare_filename(name: object) -> bool:
     )
 
 
-# The conservation equation `read_usage()` currently implements for
-# PROMPT_INCLUDES_CACHED_WRITES_REPORTED: input = prompt - cached, writes NOT
-# subtracted (host_profiles.read_usage). The spec classifies the true equation
-# as [probe] — count-undecidable from bounds, adjudicated by the operator
-# against billed usage. If the adjudication lands on
-# "prompt_minus_cached_minus_writes", read_usage + the pricing math change
-# FIRST, then this pin with them — the gate refuses to admit a scorecard while
-# the shipped accounting disagrees with the adjudicated wire.
-_READ_USAGE_PINNED_EQUATION = "prompt_minus_cached"
+# The currently-implemented, WIRE-CONSISTENT provisional equation `read_usage()`
+# uses for PROMPT_INCLUDES_CACHED_WRITES_REPORTED: input = prompt - cached - writes
+# (SHAPER v4). It is wire-consistent from the paid cold/warm capture — both models
+# reported `total_tokens == prompt + completion` with nonzero writes, so the counts
+# support writes riding INSIDE prompt_tokens — but NOT billing-adjudicated: "adjudicated"
+# is reserved for the response-ID-bound billing artifact that would permit removing
+# openai from COST_UNADJUDICATED_PROFILE_IDS (FUP-247). The gate refuses to admit a
+# scorecard while the shipped accounting disagrees with the captured wire; any future
+# flip changes read_usage + pricing FIRST, then this pin with them.
+_READ_USAGE_PINNED_EQUATION = "prompt_minus_cached_minus_writes"
 _KNOWN_EQUATIONS = ("prompt_minus_cached", "prompt_minus_cached_minus_writes")
 
 
@@ -651,6 +657,56 @@ def _require_approved_baselines(deep_baseline: str, standard_baseline: str) -> N
         )
 
 
+def _require_openai_billing_adjudicated() -> None:
+    """Pre-spend billing preflight for the paid GPT-5.6 scorecard (FUP-247).
+
+    The scorecard cannot produce evidence while openai cost is WITHHELD — analyze's
+    `compute_cost_usd` sites (analyze.py:2821/3416) RAISE on `Unpriced(BILLING_PENDING)`
+    AFTER the billed provider call, and that `ValueError` is not an `LLMProviderError`
+    so the runner's transient isolation does not demote it — the run would spend, then
+    abort. The caller has explicitly opted into real spend (the `OUTRIDER_EVAL_REAL_MODELS`
+    skipif gates ordinary CI), so a missing prerequisite FAILS, never skips — a silent
+    skip would read as a clean run (mirrors `_require_probe_manifest`). A LIVE module
+    read, so billing adjudication (removing `"openai"` from the set) re-enables the run
+    without touching this preflight; module-level so the zero-spend pins drive the exact
+    branch the paid test uses."""
+    import outrider.llm.pricing as _pricing_mod  # noqa: PLC0415
+
+    if "openai" in _pricing_mod.COST_UNADJUDICATED_PROFILE_IDS:
+        pytest.fail(
+            "openai billing is unadjudicated (FUP-247) — the analyze compute_cost_usd "
+            "sites raise Unpriced(BILLING_PENDING) after the paid call, so this scorecard "
+            "cannot produce evidence. Bless the SHAPER v4 equation via a billing export "
+            "and remove 'openai' from COST_UNADJUDICATED_PROFILE_IDS to enable it."
+        )
+
+
+def _require_openai_admission_credentials() -> tuple[str, str]:
+    """Shared pre-spend credential preflight for ALL THREE OpenAI admission runners — the
+    analyze scorecard here PLUS the triage/synthesize node-admission instruments in
+    `test_openai_node_admission.py`. Returns the validated, whitespace-stripped
+    `(anthropic_key, openai_key)`.
+
+    The caller has opted into real spend (the `OUTRIDER_EVAL_REAL_MODELS` skipif gates
+    ordinary CI), so a missing OR unresolved (`op://`) key for EITHER vendor FAILS, never
+    skips — a skip on an opted-in run would read as a clean run that never happened
+    (mirrors `_require_probe_manifest` / `_require_openai_billing_adjudicated`). Both keys
+    are required BEFORE provider construction so no partial run can start."""
+
+    def _resolved(name: str, purpose: str) -> str:
+        value = (os.environ.get(name) or "").strip()
+        if not value or value.startswith("op://"):
+            pytest.fail(
+                f"{name} (resolved — not empty, not an op:// ref) is required for {purpose}; "
+                "run under `op run --env-file=.env -- ...`"
+            )
+        return value
+
+    anthropic_key = _resolved("ANTHROPIC_API_KEY", "the Anthropic baseline")
+    openai_key = _resolved("OPENAI_API_KEY", "the GPT-5.6 candidate")
+    return anthropic_key, openai_key
+
+
 def _require_candidates_wire_admitted(
     capture_manifest: dict[str, object], deep_candidate: str, standard_candidate: str
 ) -> None:
@@ -772,9 +828,10 @@ def _write_valid_capture(
         usage: dict[str, object] = {"prompt_tokens": 2000, "completion_tokens": 50}
         if kind == "cold":
             usage["prompt_tokens_details"] = {"cached_tokens": 0, "cache_write_tokens": 1500}
-            # total = prompt + write + completion: the additive shape, which
-            # supports read_usage's pinned prompt_minus_cached equation.
-            usage["total_tokens"] = 2000 + 1500 + 50
+            # total = prompt + completion: the writes-inside shape, which
+            # supports read_usage's pinned prompt_minus_cached_minus_writes
+            # equation (the shape the real capture exhibited).
+            usage["total_tokens"] = 2000 + 50
         elif kind == "warm":
             usage["prompt_tokens_details"] = {"cached_tokens": 1500, "cache_write_tokens": 0}
             usage["total_tokens"] = 2050
@@ -807,8 +864,9 @@ def _write_valid_capture(
             model: {
                 "cold_response_id": f"chatcmpl-pin-{model}:cold",
                 "warm_response_id": f"chatcmpl-pin-{model}:warm",
-                # prompt_minus_cached on the cold call: fresh = 2000 - 0.
-                "billed_fresh_input_tokens": 2000,
+                # prompt_minus_cached_minus_writes on the cold call:
+                # fresh = 2000 - 0 - 1500.
+                "billed_fresh_input_tokens": 500,
                 "billed_cache_write_tokens": 1500,
             }
             for model in full_models
@@ -1069,8 +1127,12 @@ def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyP
     with pytest.raises(pytest.fail.Exception, match="unknown conservation equation"):
         _require_probe_manifest()
 
+    # A KNOWN equation that is NOT the shipped one must be refused before any
+    # spend: the gate's job is to stop a scorecard while read_usage() disagrees
+    # with the adjudicated wire. `prompt_minus_cached` is the pre-v4 arm, now
+    # not shipped (read_usage subtracts writes), so it is the disagreeing case.
     perturbed = _perturbed_artifact()
-    perturbed["equation"] = "prompt_minus_cached_minus_writes"
+    perturbed["equation"] = "prompt_minus_cached"
     _rewrite_artifact(tmp_path, _perturbed_manifest(), perturbed)
     with pytest.raises(pytest.fail.Exception, match="shipped accounting disagrees"):
         _require_probe_manifest()
@@ -1173,8 +1235,11 @@ def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyP
     with pytest.raises(pytest.fail.Exception, match="billed cache-write count"):
         _require_probe_manifest()
 
+    # 2000 is the pre-v4 prompt_minus_cached value (prompt - cached); under the
+    # shipped prompt_minus_cached_minus_writes it must be prompt - cached -
+    # writes = 500, so 2000 is the now-inconsistent case the gate must catch.
     perturbed = _perturbed_artifact()
-    perturbed["models"][_SOL]["billed_fresh_input_tokens"] = 500  # type: ignore[index, call-overload]
+    perturbed["models"][_SOL]["billed_fresh_input_tokens"] = 2000  # type: ignore[index, call-overload]
     _rewrite_artifact(tmp_path, _perturbed_manifest(), perturbed)
     with pytest.raises(pytest.fail.Exception, match="inconsistent with.*adjudicated equation"):
         _require_probe_manifest()
@@ -1222,9 +1287,9 @@ def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyP
         _require_probe_manifest()
 
     # Counts that CONTRADICT the adjudicated equation refuse outright — the
-    # writes-inside shape (total == prompt + completion) against the pinned
-    # prompt_minus_cached verdict is exactly the billed-vs-wire disagreement
-    # that must stop a paid run.
+    # additive shape (total == prompt + write + completion) against the pinned
+    # prompt_minus_cached_minus_writes verdict is exactly the billed-vs-wire
+    # disagreement that must stop a paid run.
     _restore_valid()
     broken = _perturbed_manifest()
     _set_cold_usage(
@@ -1233,7 +1298,7 @@ def test_probe_manifest_precondition(tmp_path: Path, monkeypatch: pytest.MonkeyP
         {
             "prompt_tokens": 2000,
             "completion_tokens": 50,
-            "total_tokens": 2050,
+            "total_tokens": 3550,
             "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 1500},
         },
     )
@@ -1341,6 +1406,60 @@ def test_approved_baselines_binding() -> None:
         _require_approved_baselines("claude-sonnet-4-6", standard_default)
     with pytest.raises(pytest.fail.Exception, match="approved comparison"):
         _require_approved_baselines(deep_default, "claude-sonnet-5")
+
+
+def test_openai_billing_preflight_fails_when_unadjudicated() -> None:
+    """Zero-spend pin (FUP-247): while openai is in COST_UNADJUDICATED_PROFILE_IDS the
+    paid scorecard's pre-spend preflight FAILS (not skips), so an opted-in admission run
+    cannot exit clean without ever producing evidence. Mirrors the manifest gate: once
+    the operator opts into spend, a missing prerequisite fails loud."""
+    import outrider.llm.pricing as _pricing_mod  # noqa: PLC0415
+
+    assert "openai" in _pricing_mod.COST_UNADJUDICATED_PROFILE_IDS  # the current no-ship state
+    with pytest.raises(pytest.fail.Exception, match="billing is unadjudicated"):
+        _require_openai_billing_adjudicated()
+
+
+def test_openai_billing_preflight_passes_when_adjudicated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Zero-spend pin: once billing is adjudicated (openai removed from the set — the
+    FUP-247 exit), the preflight passes and the paid scorecard is re-enabled. A LIVE
+    module read, so no code edit is needed beyond dropping openai from the set."""
+    monkeypatch.setattr("outrider.llm.pricing.COST_UNADJUDICATED_PROFILE_IDS", frozenset())
+    _require_openai_billing_adjudicated()  # no raise
+
+
+def test_openai_admission_credentials_fail_on_missing_or_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero-spend pins for the SHARED preflight all three OpenAI admission runners use.
+    An opted-in run FAILS (not skips) when EITHER vendor's key is absent OR left as an
+    unresolved `op://` reference — the anthropic `op://` case is the round-3 hole (only
+    the openai side rejected it before). Symmetric: both vendors, both failure shapes."""
+    good = "sk-real-key-123456"
+    # ANTHROPIC absent, then unresolved op:// (openai fine) — both FAIL, naming anthropic.
+    monkeypatch.setenv("OPENAI_API_KEY", good)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(pytest.fail.Exception, match="ANTHROPIC_API_KEY"):
+        _require_openai_admission_credentials()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "op://vault/anthropic/key")
+    with pytest.raises(pytest.fail.Exception, match="ANTHROPIC_API_KEY"):
+        _require_openai_admission_credentials()
+    # OPENAI absent, then unresolved op:// (anthropic fine) — both FAIL, naming openai.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", good)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(pytest.fail.Exception, match="OPENAI_API_KEY"):
+        _require_openai_admission_credentials()
+    monkeypatch.setenv("OPENAI_API_KEY", "op://vault/openai/key")
+    with pytest.raises(pytest.fail.Exception, match="OPENAI_API_KEY"):
+        _require_openai_admission_credentials()
+
+
+def test_openai_admission_credentials_pass_and_strip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Zero-spend pin: with both keys resolved the preflight passes AND returns the
+    whitespace-stripped values (surrounding whitespace is a common `op run` artifact)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "  sk-real-anthropic  ")
+    monkeypatch.setenv("OPENAI_API_KEY", "\tsk-real-openai\n")
+    assert _require_openai_admission_credentials() == ("sk-real-anthropic", "sk-real-openai")
 
 
 def test_run_artifacts(tmp_path: Path) -> None:
@@ -1480,15 +1599,11 @@ async def test_gpt56_vs_anthropic_scorecard() -> None:
     response parses to no findings → recall 0, so the recall dimension also
     carries the yield signal.
     """
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    if not anthropic_key:
-        pytest.skip("ANTHROPIC_API_KEY is required for the Anthropic baselines")
-    if not openai_key or openai_key.startswith("op://"):
-        pytest.skip(
-            "OPENAI_API_KEY (resolved, not an op:// ref) is required for the GPT-5.6 "
-            "candidates; run under `op run --env-file=.env -- ...`"
-        )
+    # Pre-spend preflights: the operator opted into real spend (skipif gates ordinary
+    # CI), so every missing prerequisite FAILS here (never skips — a skip would read as a
+    # clean run that never happened) BEFORE any billed call / provider construction.
+    anthropic_key, openai_key = _require_openai_admission_credentials()
+    _require_openai_billing_adjudicated()
     capture_manifest = _require_probe_manifest()
 
     from pydantic import SecretStr  # noqa: PLC0415

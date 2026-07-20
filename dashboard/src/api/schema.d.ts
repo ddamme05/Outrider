@@ -967,7 +967,7 @@ export interface components {
          *     `requested_service_tier` (specs/2026-07-18-openai-native-host.md).
          * @enum {string}
          */
-        CostUnpricedReason: "absent_tier" | "auto_tier" | "scale_tier" | "novel_tier" | "priority_long_context";
+        CostUnpricedReason: "absent_tier" | "auto_tier" | "scale_tier" | "novel_tier" | "priority_long_context" | "billing_pending";
         /** DashboardMetricsResponse */
         DashboardMetricsResponse: {
             /**

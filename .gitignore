@@ -125,6 +125,9 @@ spikes/glm/
 # Wire-shape regression pinning goes through unit-test fixtures, not by committing raws.
 spikes/openai/fixtures/*
 !spikes/openai/fixtures/billing_adjudication.json
+# refusal-elicitation discovery output (raw model responses to disallowed
+# prompts) — never an admission artifact, never committed.
+spikes/openai/refusal_discovery_out/
 
 # --- Local dashboard feature write-ups (not a project artifact) ---
 stuff/

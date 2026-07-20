@@ -29,8 +29,11 @@ the env vars listed below are NOT required in demo mode (only
 
 **Startup failure modes (production mode).** `DATABASE_URL` is always required, as is an LLM
 provider API key — WHICH key depends on `OUTRIDER_LLM_HOST` (default `anthropic` →
-`ANTHROPIC_API_KEY`; any other host → that profile's declared key env, e.g. `FIREWORKS_API_KEY`
-/ `BASETEN_API_KEY`, per `DECISIONS.md#056`).
+`ANTHROPIC_API_KEY`; any other PRODUCTION-ADMITTED host → that profile's declared key env, e.g.
+`FIREWORKS_API_KEY` / `BASETEN_API_KEY`, per `DECISIONS.md#056`). An IMPLEMENTED-but-not-admitted
+host (`OUTRIDER_LLM_HOST=openai`, `host_profiles.PRODUCTION_UNADMITTED_HOSTS`) fails closed at the
+composition root BEFORE its key is read — a `RuntimeError` naming the admission failure, not a
+missing-key error (Arc 0, openai-native-host).
 The GitHub App triad (`OUTRIDER_GITHUB_APP_ID`, `OUTRIDER_GITHUB_APP_PRIVATE_KEY`,
 `OUTRIDER_GITHUB_WEBHOOK_SECRET`) is required only in the DEFAULT `env` credential mode; under
 `OUTRIDER_GITHUB_CREDENTIAL_SOURCE=database` (App-Manifest onboarding, `DECISIONS.md#070`) those

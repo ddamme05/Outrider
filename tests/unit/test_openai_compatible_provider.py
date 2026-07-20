@@ -1204,27 +1204,6 @@ def _openai_completion(
     return completion.model_copy(update={"service_tier": service_tier})
 
 
-def _expected_outcome_cost(response_usage: Any, *, service_tier: str | None) -> float:
-    from outrider.llm.pricing import Priced as _Priced
-    from outrider.llm.pricing import compute_cost_outcome as _outcome
-
-    ptd = response_usage.prompt_tokens_details
-    cached = ptd.cached_tokens or 0
-    write = getattr(ptd, "cache_write_tokens", 0) or 0
-    outcome = _outcome(
-        "openai",
-        "gpt-5.6-sol",
-        input_tokens=response_usage.prompt_tokens - cached,
-        cache_write_tokens=write,
-        cache_read_tokens=cached,
-        output_tokens=response_usage.completion_tokens,
-        billed_prompt_tokens=response_usage.prompt_tokens,
-        service_tier=service_tier,
-    )
-    assert isinstance(outcome, _Priced)
-    return float(outcome.cost_usd)
-
-
 @pytest.mark.asyncio
 async def test_openai_request_wire_pins_tier_cache_key_reasoning_json_object() -> None:
     """The four openai-host request behaviors, pinned individually on one wire:
@@ -1303,11 +1282,15 @@ async def test_preflight_ceiling_boundary_exact_passes_one_over_rejects() -> Non
 
 
 @pytest.mark.asyncio
-async def test_over_ceiling_billed_persists_long_policy_cost_then_raises() -> None:
-    """Post-call defense-in-depth: billed prompt over 272K persists FIRST with
-    the versioned long-context policy cost (never flat, never ad-hoc), then
-    raises the terminal contract error. Exactly one SDK call, one event."""
+async def test_over_ceiling_billed_persists_withheld_cost_then_raises() -> None:
+    """Post-call defense-in-depth: billed prompt over 272K is detected AND persists
+    FIRST, then raises the terminal contract error. Under NO-SHIP the openai cost is
+    WITHHELD (Unpriced(BILLING_PENDING), DECISIONS.md#056 / FUP-247), so the event
+    carries cost_usd=None + the typed reason — over_ceiling still triggers the raise
+    (the anomaly wins over the benign billing withholding). Exactly one SDK call, one
+    event. The long-context multiplier math itself is covered in test_llm_pricing."""
     from outrider.llm.base import LLMPricingContractError
+    from outrider.llm.pricing import CostUnpricedReason
 
     persister = _RecordingPersister()
     provider = _openai_provider(persister)
@@ -1321,16 +1304,20 @@ async def test_over_ceiling_billed_persists_long_policy_cost_then_raises() -> No
     assert len(persister.calls) == 1
     event, _req, _resp = persister.calls[0]
     assert event.billed_prompt_tokens == 300_000
-    assert event.cost_usd == _expected_outcome_cost(usage, service_tier="default")
-    assert event.cost_unpriced_reason is None
+    assert event.cost_usd is None
+    assert event.cost_unpriced_reason is CostUnpricedReason.BILLING_PENDING
     assert LLMPricingContractError.retry_at_layer == "none"
 
 
 @pytest.mark.asyncio
-async def test_flex_echo_persists_half_cost_then_raises() -> None:
-    """Costable tier mismatch: flex echo persists the 0.5x policy cost, then
-    raises terminally."""
+async def test_flex_echo_persists_withheld_cost_then_raises() -> None:
+    """Tier mismatch: a flex echo deviates from the requested default tier, persists
+    FIRST, then raises terminally. Under NO-SHIP the openai cost is WITHHELD
+    (cost_usd=None + BILLING_PENDING) — the tier deviation still triggers the raise
+    (the anomaly wins over the benign billing withholding). The flex 0.5x multiplier
+    math itself is covered in test_llm_pricing."""
     from outrider.llm.base import LLMPricingContractError
+    from outrider.llm.pricing import CostUnpricedReason
 
     persister = _RecordingPersister()
     provider = _openai_provider(persister)
@@ -1344,7 +1331,8 @@ async def test_flex_echo_persists_half_cost_then_raises() -> None:
     assert len(persister.calls) == 1
     event, _req, _resp = persister.calls[0]
     assert event.service_tier == "flex"
-    assert event.cost_usd == _expected_outcome_cost(usage, service_tier="flex")
+    assert event.cost_usd is None
+    assert event.cost_unpriced_reason is CostUnpricedReason.BILLING_PENDING
 
 
 @pytest.mark.asyncio
@@ -1374,9 +1362,14 @@ async def test_unpriceable_echo_persists_null_cost_typed_reason_then_raises() ->
 
 
 @pytest.mark.asyncio
-async def test_cache_write_extras_flow_into_response_event_and_cost() -> None:
+async def test_cache_write_extras_flow_into_response_event_and_withheld_cost() -> None:
     """The untyped cache_write_tokens extra flows: validated read → LLMResponse →
-    event mirror → the write class priced at 1.25x input inside the outcome."""
+    event mirror, with the SHAPER-v4 subtractive input accounting. A clean default-tier
+    openai call does NOT raise (the billing withholding is benign), and the cost is
+    WITHHELD as cost_usd=None + BILLING_PENDING (DECISIONS.md#056 / FUP-247). The write
+    class's 1.25x pricing math is covered in test_llm_pricing."""
+    from outrider.llm.pricing import CostUnpricedReason
+
     persister = _RecordingPersister()
     provider = _openai_provider(persister)
     usage = _openai_usage(prompt_tokens=2000, cached=1500, write=400)
@@ -1384,14 +1377,16 @@ async def test_cache_write_extras_flow_into_response_event_and_cost() -> None:
         response = await provider.complete(_request(model="gpt-5.6-sol"))
     assert response.cache_write_tokens == 400
     assert response.cache_read_tokens == 1500
-    assert response.input_tokens == 500
+    # writes-reported (SHAPER v4): input = prompt - cached - writes = 2000-1500-400.
+    assert response.input_tokens == 100
     assert response.billed_prompt_tokens == 2000
     assert response.service_tier_actual == "default"
     event, _req, _resp = persister.calls[0]
     assert event.cache_write_tokens == 400
     assert event.billed_prompt_tokens == 2000
     assert event.service_tier == "default"
-    assert event.cost_usd == _expected_outcome_cost(usage, service_tier="default")
+    assert event.cost_usd is None
+    assert event.cost_unpriced_reason is CostUnpricedReason.BILLING_PENDING
 
 
 @pytest.mark.asyncio

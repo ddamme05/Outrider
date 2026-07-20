@@ -1758,7 +1758,8 @@
           "auto_tier",
           "scale_tier",
           "novel_tier",
-          "priority_long_context"
+          "priority_long_context",
+          "billing_pending"
         ],
         "title": "CostUnpricedReason",
         "description": "Closed reasons a COMPLETED, billed exchange cannot be honestly priced.\n\nRides `LLMCallEvent.cost_unpriced_reason`, coupled to a null `cost_usd`\n(priced \u21d4 reason absent). The actual vendor tier echo is preserved\nseparately as a bounded raw string \u2014 a novel echo is never collapsed\ninto this enum. Absent-echo fires only for profiles that DECLARE a\n`requested_service_tier` (specs/2026-07-18-openai-native-host.md)."

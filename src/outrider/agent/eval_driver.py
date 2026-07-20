@@ -343,7 +343,7 @@ class CostProbe:
     When attached, `_FixtureScriptedProvider` counts REAL prompt tokens via
     `token_estimator(system_prompt + user_prompt)` instead of the fixed sentinel
     (100/50), so a driven review's cost flows through the production pricing path
-    (`compute_cost_usd` + `LLMCallEvent` + the aggregate SUM) on real prompt sizes.
+    (`compute_cost_outcome` + `LLMCallEvent` + the aggregate SUM) on real prompt sizes.
     `output_tokens` models the response size (NOT measurable without a real
     completion); `None` estimates it from the scripted response text. Each call's
     metrics land in `.calls` for a per-node breakdown. Default OFF — eval
@@ -444,7 +444,8 @@ class _FixtureScriptedProvider:
         from outrider.llm.pricing import (
             PRICING_VERSION,
             TIER_ECHO_EXPECTED_PROFILE_IDS,
-            compute_cost_usd,
+            Priced,
+            compute_cost_outcome,
             min_cacheable_tokens,
         )
 
@@ -598,7 +599,7 @@ class _FixtureScriptedProvider:
         # recomputed cost (in-transaction) — so any drift from the real provider's
         # shape fails loudly here rather than landing a silently-wrong audit row.
         try:
-            cost = compute_cost_usd(
+            outcome = compute_cost_outcome(
                 response.profile_id,
                 response.model,
                 input_tokens=response.input_tokens,
@@ -619,6 +620,16 @@ class _FixtureScriptedProvider:
                 f"not in the pricing RATE_TABLE — the fixture provider mirrors the real "
                 f"provider's cost path. Use a priced model in the eval's ModelConfig."
             ) from exc
+        # Mirror the real provider's Priced/Unpriced split (OpenAICompatibleProvider
+        # Step 8): a billing-unadjudicated host (openai — DECISIONS.md#056 / FUP-247)
+        # yields Unpriced, so cost is honestly withheld as cost_usd=None + the typed
+        # reason. Priced hosts (anthropic, glm) are unaffected.
+        if isinstance(outcome, Priced):
+            cost: float | None = float(outcome.cost_usd)
+            unpriced_reason = None
+        else:
+            cost = None
+            unpriced_reason = outcome.reason
         if self._probe is not None:
             self._probe.calls.append(
                 {
@@ -628,7 +639,7 @@ class _FixtureScriptedProvider:
                     "output_tokens": response.output_tokens,
                     "cache_read_tokens": response.cache_read_tokens,
                     "cache_write_tokens": response.cache_write_tokens,
-                    "cost_usd": float(cost),
+                    "cost_usd": cost,
                 }
             )
         event = LLMCallEvent(
@@ -642,7 +653,8 @@ class _FixtureScriptedProvider:
             input_tokens=response.input_tokens,
             output_tokens=response.output_tokens,
             cached_tokens=response.cache_read_tokens,
-            cost_usd=float(cost),
+            cost_usd=cost,
+            cost_unpriced_reason=unpriced_reason,
             pricing_version=PRICING_VERSION,
             latency_ms=response.latency_ms,
             prompt_hash=_canonical_prompt_hash(

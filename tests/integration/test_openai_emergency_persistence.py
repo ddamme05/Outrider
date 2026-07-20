@@ -200,9 +200,16 @@ async def test_unpriced_exchange_persists_null_cost_typed_reason(migrated_db: st
 
 
 @pytest.mark.asyncio
-async def test_costable_flex_mismatch_persists_policy_cost(migrated_db: str) -> None:
-    """A flex echo persists the 0.5x policy cost (the same figure the canonical
-    outcome derives), JSONB round-tripped."""
+async def test_costable_flex_mismatch_persists_withheld_cost(migrated_db: str) -> None:
+    """A flex echo is a would-be-COSTABLE tier (0.5x), but under NO-SHIP the openai
+    cost is WITHHELD: the billing withholding overrides the priced path, so the
+    canonical outcome is Unpriced(BILLING_PENDING) and the event persists cost_usd=NULL
+    + the typed reason, JSONB round-tripped, through the REAL persister's fresh-write
+    billing cross-check (no monkeypatch — the cross-check runs and agrees, exactly as
+    production would). Distinct from the scale/absent unpriceable-tier test above: this
+    proves a costable tier is still withheld while openai stays unadjudicated
+    (DECISIONS.md#056 / FUP-247). The flex 0.5x math itself is covered in
+    test_llm_pricing."""
     engine = create_async_engine(migrated_db, hide_parameters=True)
     try:
         review_id = await _seed_installation_and_review(engine)
@@ -212,8 +219,8 @@ async def test_costable_flex_mismatch_persists_policy_cost(migrated_db: str) -> 
 
         payload, content_count = await _fetch_payload_and_content(engine, event.event_id)
         assert payload is not None and content_count == 1
-        assert payload["cost_usd"] == pytest.approx(event.cost_usd)
-        assert payload["cost_unpriced_reason"] is None
+        assert payload["cost_usd"] is None
+        assert payload["cost_unpriced_reason"] == CostUnpricedReason.BILLING_PENDING.value
     finally:
         await engine.dispose()
 
@@ -367,8 +374,12 @@ async def test_eval_double_openai_host_persists_through_the_real_guard(migrated_
     modeling the openai host must construct a response+event whose pricing
     context satisfies the REAL persister's fresh-insert guard and outcome
     verification end-to-end — pinning the double's host fidelity where it
-    matters, not at the pricing functions."""
+    matters, not at the pricing functions. openai is billing-unadjudicated
+    (DECISIONS.md#056 / FUP-247), so the eval double persists cost_usd=NULL +
+    the BILLING_PENDING reason through the real guard — the actual eval reality,
+    since eval is where openai runs at all."""
     from outrider.agent.eval_driver import _FixtureScriptedProvider
+    from outrider.llm.pricing import Unpriced
     from outrider.llm.pricing import compute_cost_outcome as _outcome
 
     engine = create_async_engine(migrated_db, hide_parameters=True)
@@ -415,8 +426,10 @@ async def test_eval_double_openai_host_persists_through_the_real_guard(migrated_
             billed_prompt_tokens=100,
             service_tier="default",
         )
-        assert isinstance(expected, Priced)
-        assert payload["cost_usd"] == pytest.approx(float(expected.cost_usd))
+        assert isinstance(expected, Unpriced)
+        assert expected.reason is CostUnpricedReason.BILLING_PENDING
+        assert payload["cost_usd"] is None
+        assert payload["cost_unpriced_reason"] == CostUnpricedReason.BILLING_PENDING.value
         assert payload["service_tier"] == "default"
         assert payload["billed_prompt_tokens"] == 100
         assert payload["cache_write_tokens"] == 0
