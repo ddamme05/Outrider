@@ -1,13 +1,13 @@
 """Raw OpenAI wire-capture transport for evidence spikes — NOT a production provider.
 
 This module exists for one reason: the `spikes/openai/` research probes need to make
-raw `chat.completions.create` calls and preserve the exact wire (that raw wire IS the
-evidence they collect), yet the trust-boundary `#8` invariant forbids `import openai`
-outside `src/outrider/llm/` AND `vendor-payloads-normalized-at-boundary` forbids raw
-vendor SDK objects/exceptions from escaping the wrapper. So the openai SDK — its client,
-its response objects, AND its exception classes — is owned ENTIRELY here: `capture()`
-VALIDATES + normalizes the response into the frozen, strict `RawCapture` DTO (the raw
-serialized JSON is preserved verbatim inside it for evidence), a malformed response shape
+raw `chat.completions.create` calls and keep the response as evidence, yet the
+trust-boundary `#8` invariant forbids `import openai` outside `src/outrider/llm/` AND
+`vendor-payloads-normalized-at-boundary` forbids raw vendor SDK objects/exceptions from
+escaping the wrapper. So the openai SDK — its client, its response objects, AND its
+exception classes — is owned ENTIRELY here: `capture()` VALIDATES + normalizes the
+response into the frozen, strict `RawCapture` DTO (which retains the SDK's
+reserialization of the response as `sdk_response_json`), a malformed response shape
 becomes `RawCaptureShapeError`, and a vendor transport error becomes `RawOpenAICaptureError`.
 After this, no spike file references `openai` — not the import, not a response object, not
 an exception type, and no unvalidated SDK value enters a project DTO.
@@ -58,14 +58,24 @@ class RawUsage(BaseModel):
 
 class RawCapture(BaseModel):
     """Strict, frozen, project-owned normalization of one `chat.completions.create`
-    response. `raw_json` preserves the exact SDK-serialized wire (the evidence fixture
-    bytes) so nothing is lost; every other field is a validated projection of what the
-    spikes read, so no raw SDK object crosses the `llm/` boundary."""
+    response. Every field is a validated projection of what the spikes read, so no raw
+    SDK object crosses the `llm/` boundary.
+
+    `sdk_response_json` is `response.model_dump_json()` — the SDK's RESERIALIZATION of
+    its parsed model, NOT the bytes off the wire. Measured against openai 2.44.0: unknown
+    vendor fields survive, but key order is rewritten to the SDK's field-declaration order.
+    An earlier docstring called this "the exact wire ... preserved verbatim", which is
+    false on precisely the property a probe measuring generative key order depends on.
+    Read it as a faithful record of the response's VALUES, never of its byte layout.
+
+    `response_model` is the model the API said answered — distinct from the model that
+    was requested, and the only field that can tell them apart."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    raw_json: str
+    sdk_response_json: str
     response_id: str | None
+    response_model: str | None
     created: int | None
     content: str | None
     refusal: str | None
@@ -79,14 +89,15 @@ class RawCaptureShapeError(Exception):
     `choices`/`usage`, a non-scalar count, non-string content, etc. Project-owned so no
     builtin or SDK exception escapes the boundary on a malformed response.
 
-    Carries `raw_json`: the response serialized BEFORE projection, so a novel malformed
-    wire shape stays INSPECTABLE as evidence (the spikes persist it) even though it cannot
-    be projected into a `RawCapture` or satisfy admission. `None` only if the object was
-    not even serializable."""
+    Carries `sdk_response_json`: the response serialized BEFORE projection, so a novel
+    malformed shape stays INSPECTABLE as evidence (the spikes persist it) even though it
+    cannot be projected into a `RawCapture` or satisfy admission. `None` only if the
+    object was not even serializable. Same caveat as `RawCapture.sdk_response_json`:
+    values are faithful, byte layout is the SDK's, not the wire's."""
 
-    def __init__(self, *, reason: str, raw_json: str | None) -> None:
+    def __init__(self, *, reason: str, sdk_response_json: str | None) -> None:
         self.reason = reason
-        self.raw_json = raw_json
+        self.sdk_response_json = sdk_response_json
         super().__init__(reason)
 
 
@@ -109,24 +120,34 @@ class RawOpenAICaptureError(Exception):
 def _normalize(response: Any) -> RawCapture:
     """Validate + project the raw SDK response into `RawCapture` — the sole place SDK
     fields are dereferenced. A shape mismatch (missing field, bad count, non-string
-    content) becomes `RawCaptureShapeError`; no builtin/SDK exception escapes. The raw
-    wire is serialized FIRST so a malformed shape still preserves inspectable evidence."""
+    content, not exactly one choice) becomes `RawCaptureShapeError`; no builtin/SDK
+    exception escapes. The response is serialized FIRST so a malformed shape still
+    preserves inspectable evidence."""
     try:
-        raw_json: str | None = response.model_dump_json(indent=2)
+        sdk_response_json: str | None = response.model_dump_json(indent=2)
     except Exception:  # noqa: BLE001 — a non-serializable object leaves no evidence to keep
-        raw_json = None
+        sdk_response_json = None
     try:
-        choice = response.choices[0]
+        # EXACTLY one choice. The spikes never send `n>1`, so a multi-choice response
+        # means the request was not the one under study — and silently grading
+        # `choices[0]` while discarding the rest would hide that. Zero choices is
+        # likewise unprojectable rather than an empty completion.
+        choices = response.choices
+        if len(choices) != 1:
+            msg = f"expected exactly one choice, got {len(choices)}"
+            raise TypeError(msg)
+        choice = choices[0]
         message = choice.message
         usage = response.usage
         ptd = getattr(usage, "prompt_tokens_details", None)
         cached = getattr(ptd, "cached_tokens", None) if ptd is not None else None
         cache_write = getattr(ptd, "cache_write_tokens", None) if ptd is not None else None
-        if raw_json is None:
+        if sdk_response_json is None:
             raise TypeError("response was not serializable to JSON")
         return RawCapture(
-            raw_json=raw_json,
+            sdk_response_json=sdk_response_json,
             response_id=getattr(response, "id", None),
+            response_model=getattr(response, "model", None),
             created=getattr(response, "created", None),
             content=message.content,
             refusal=getattr(message, "refusal", None),
@@ -143,7 +164,7 @@ def _normalize(response: Any) -> RawCapture:
     except (AttributeError, IndexError, TypeError, ValidationError) as exc:
         raise RawCaptureShapeError(
             reason=f"malformed openai response shape: {type(exc).__name__}: {str(exc)[:500]}",
-            raw_json=raw_json,
+            sdk_response_json=sdk_response_json,
         ) from None
 
 

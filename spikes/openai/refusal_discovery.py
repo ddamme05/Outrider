@@ -344,14 +344,14 @@ async def _run_paid(models: tuple[str, ...]) -> int:
                 except RawCaptureShapeError as err:
                     # A novel/malformed wire shape: preserve the raw payload as evidence
                     # and record a FAILED observation (never a clean 'no refusal').
-                    if err.raw_json is not None:
+                    if err.sdk_response_json is not None:
                         (run_dir / f"{tag}.malformed.json").write_text(
-                            err.raw_json, encoding="utf-8"
+                            err.sdk_response_json, encoding="utf-8"
                         )
                     errored[model].append(name)
                     print(f"  {name} / {model}: MALFORMED SHAPE ({err.reason[:80]}) — failed obs")
                     continue
-                (run_dir / f"{tag}.json").write_text(capture.raw_json, encoding="utf-8")
+                (run_dir / f"{tag}.json").write_text(capture.sdk_response_json, encoding="utf-8")
                 ok, note = _classify(model, capture)
                 if ok:
                     winners[model].append(name)
