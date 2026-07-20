@@ -56,6 +56,14 @@ dev = [
     "mypy==1.20.2",
     "ruff==0.15.11",
     "pre-commit==4.5.1",
+    # DEV-ONLY, and deliberately so: the Arc 2 strict-schema probe's proof-boundary
+    # tests assert that wrong-tier shapes are UNREPRESENTABLE. Validating that claim
+    # with a hand-rolled checker would prove nothing (a negative test passing because
+    # our own validator is buggy is worse than no test), so the reference JSON Schema
+    # implementation is the validator. NOT a production dependency: no `src/outrider/`
+    # module imports it, and local validation is NOT proof that OpenAI's strict-subset
+    # validator agrees — that is exactly what the paid probe row exists to check.
+    "jsonschema==4.26.0",
 ]
 
 [build-system]
@@ -69,8 +77,14 @@ packages = ["src/outrider"]
 # `pythonpath = ["src"]` only — `tests/` is NOT importable from `src/` per
 # `docs/conventions.md`. Cross-tier test imports (e.g., harness-internal
 # tests consuming eval-harness factories) live inside `tests/eval/` itself
-# and use relative imports (`from .fixtures import ...`); no widening of
-# the production/test boundary needed.
+# and use relative imports (`from .fixtures import ...`).
+#
+# One deliberate exception, kept OUT of this shared setting: `tests/unit/
+# conftest.py` puts the repo root on `sys.path` so the Arc 2 unit tests can
+# import the `spikes/openai/arc2/` probe modules they verify. It lives in that
+# conftest rather than here so the widening is scoped to the tier that needs
+# it; see that file for why re-implementing the derivation (the `spikes/`
+# duplication pattern used by eval instruments) would not be a valid test.
 pythonpath = ["src"]
 asyncio_mode = "auto"
 testpaths = ["tests"]

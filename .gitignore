@@ -129,6 +129,12 @@ spikes/openai/fixtures/*
 # prompts) — never an admission artifact, never committed.
 spikes/openai/refusal_discovery_out/
 
+# Arc 2 strict-schema probe output — dry-run measurements + (post-Gate-2) raw
+# captures and the run manifest. Same policy as the other probe outputs: the
+# evidence stays operator-local; nothing here is a merge input. The DERIVED
+# schema is reproducible from source, so there is nothing to preserve in git.
+spikes/openai/arc2_out/
+
 # --- Local dashboard feature write-ups (not a project artifact) ---
 stuff/
 
