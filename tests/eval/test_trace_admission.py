@@ -98,29 +98,39 @@ _DISTRACTOR_ID = compute_candidate_id(
 # VISIBILITY: the rendered prompt shows scope bodies + clipped hunks only —
 # the import line and "app.db" are WITHHELD (the probe's dry run pins that),
 # because production prompts don't carry module imports (cache/key.py,
-# `_assemble_scope_unit_context`). Grading runs the PRODUCTION chain
+# `_assemble_scope_unit_context`). The verdict GENUINELY hangs on the hidden
+# imported `escape_owner` (does it escape quotes before the concatenated
+# query?), so the analyze prompt's candidate discipline REQUIRES a candidate
+# — a locally-proven defect would instead instruct an empty array (the
+# probe-v4 scenario's defect). Grading runs the PRODUCTION chain
 # end-to-end (`parse_analyze_response` admission incl. the #024 corrected
 # sibling, join to an ADMITTED finding, deterministic resolution through the
 # real probe ladder); a candidate that neither resolves nor is a visible
 # bare from-import name is fabricated-from-hidden-information — the FUP-236
 # failure — and fails GLOBALLY, because production retains and
 # probe-resolves every admitted candidate.
-_EMISSION_FROM_IMPORTS = {"run_query": "app.db"}
+_EMISSION_FROM_IMPORTS = {"run_query": "app.db", "escape_owner": "app.db"}
 _EMISSION_EXPECTED_TYPE = "sql_injection"
 _EMISSION_TAINT_LINE = 5
 # The scenario's REAL file content (production holds the whole file even
 # though the prompt renders scope bodies + clipped hunks only — the import at
 # line 1 is file-only, never prompt-visible) and the scenario repository the
-# deterministic ladder resolves against.
+# deterministic ladder resolves against. app/db.py carries the UNSAFE
+# escape_owner (strips whitespace, does NOT escape quotes) — what a real
+# trace fetch would reveal.
 _EMISSION_FILE = "app/handlers.py"
 _EMISSION_FILE_CONTENT = (
-    "from app.db import run_query\n"
+    "from app.db import run_query, escape_owner\n"
     "\n"
     "def get_user_orders(request):\n"
-    '    owner = request.GET["owner"]\n'
+    '    owner = escape_owner(request.GET["owner"])\n'
     '    return run_query("SELECT * FROM orders WHERE owner = \'" + owner + "\'")\n'
 )
-_SCENARIO_REPO: dict[str, bytes] = {"app/db.py": b"def run_query(sql):\n    ...\n"}
+_SCENARIO_REPO: dict[str, bytes] = {
+    "app/db.py": (
+        b"def escape_owner(owner):\n    return owner.strip()\n\n\ndef run_query(sql):\n    ...\n"
+    )
+}
 
 
 def _ladder_resolves(import_string: str) -> bool:
@@ -442,11 +452,14 @@ def test_emission_grader_negative_twins() -> None:
     # BARE-SYMBOL pass — the HONEST form under V1 visibility: the model names
     # the visible symbol; production admission adds the #024 corrected
     # sibling app.db, which resolves through the ladder. The joined set shows
-    # both (original retained + sibling).
-    bare = [{"import_string_raw": "run_query", "reason": "taint sink"}]
-    verdict, detail = _grade_emission(_analyze_response([_finding_dict(bare)]))
-    assert verdict == "pass", detail
-    assert "app.db" in detail and "run_query" in detail
+    # both (original retained + sibling). Each mapped symbol is pinned as its
+    # own variant — the load-bearing one (escape_owner, the sanitizer the
+    # verdict hangs on) and the sink (run_query).
+    for symbol in ("escape_owner", "run_query"):
+        bare = [{"import_string_raw": symbol, "reason": "does it sanitize/escape quotes?"}]
+        verdict, detail = _grade_emission(_analyze_response([_finding_dict(bare)]))
+        assert verdict == "pass", f"{symbol}: {detail}"
+        assert "app.db" in detail and symbol in detail
 
     # CONSISTENT SYMBOL-FORM pass: app.db.run_query names no foreign module —
     # the suffix-strip ladder resolves it (level 1 + symbol check) with

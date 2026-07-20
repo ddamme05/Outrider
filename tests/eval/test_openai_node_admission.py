@@ -89,6 +89,7 @@ from .test_openai_scorecard import (
     _LUNA,
     _SOL,
     _TERRA,
+    _require_openai_admission_credentials,
     _require_probe_manifest,
     _with_providers,
     _write_valid_capture,
@@ -527,15 +528,9 @@ def test_gpt56_triage_admission() -> None:
     records the admission decision in the spec's Actual Outcome. Sync test:
     `build_triage_scorecard` owns its own event loop (same reason as the
     historical Claude instrument in test_scorecard.py)."""
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    if not anthropic_key:
-        pytest.skip("ANTHROPIC_API_KEY is required for the Haiku baseline")
-    if not openai_key or openai_key.startswith("op://"):
-        pytest.skip(
-            "OPENAI_API_KEY (resolved, not an op:// ref) is required for the GPT-5.6 "
-            "candidate; run under `op run --env-file=.env -- ...`"
-        )
+    # Opted-in paid runner: every missing/unresolved prerequisite FAILS before spend
+    # (shared preflight — never an inner skip that reads as a clean run).
+    anthropic_key, openai_key = _require_openai_admission_credentials()
     capture_manifest = _require_probe_manifest()
 
     candidate = os.environ.get("OUTRIDER_TRIAGE_CANDIDATE", _LUNA)
@@ -638,15 +633,9 @@ async def test_gpt56_synthesize_admission() -> None:
     the spec's Actual Outcome. A floor FAIL does make admission impossible on
     this evidence (without making pytest red — pytest answers "did the
     evidence run complete?")."""
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    if not anthropic_key:
-        pytest.skip("ANTHROPIC_API_KEY is required for the Haiku baseline")
-    if not openai_key or openai_key.startswith("op://"):
-        pytest.skip(
-            "OPENAI_API_KEY (resolved, not an op:// ref) is required for the GPT-5.6 "
-            "candidate; run under `op run --env-file=.env -- ...`"
-        )
+    # Opted-in paid runner: every missing/unresolved prerequisite FAILS before spend
+    # (shared preflight — never an inner skip that reads as a clean run).
+    anthropic_key, openai_key = _require_openai_admission_credentials()
     capture_manifest = _require_probe_manifest()
 
     candidate = os.environ.get("OUTRIDER_SYNTHESIZE_CANDIDATE", _LUNA)

@@ -104,6 +104,7 @@ from outrider.llm.base import LLMProvider
 from outrider.llm.config import ModelConfig
 from outrider.llm.host_profiles import (
     ANTHROPIC_PROFILE_ID,
+    PRODUCTION_UNADMITTED_HOSTS,
     resolve_host_identity,
     resolve_host_profile,
 )
@@ -661,6 +662,20 @@ def build_lifespan(
             # identity triad — so the model config, the provider's stamp, and
             # build_graph's completion-event closure all derive from one host.
             llm_host = os.environ.get("OUTRIDER_LLM_HOST", ANTHROPIC_PROFILE_ID).strip()
+            # Arc 0 hard gate (openai-native-host): a wire-implemented but NOT
+            # production-admitted host must fail closed HERE — before key lookup,
+            # ModelConfig, or provider construction — so a `WIRE-PENDING` label can
+            # never be the only barrier to production selection. Eval/probe build the
+            # provider directly and bypass this composition root, so they stay usable.
+            if llm_host in PRODUCTION_UNADMITTED_HOSTS:
+                raise RuntimeError(
+                    f"OUTRIDER_LLM_HOST={llm_host!r} is implemented and evaluable but NOT "
+                    "production-admitted: the pre-ship refusal-normalization gate is unmet — "
+                    "in json_object mode its refusal probes return completed empty-result "
+                    "envelopes indistinguishable from a clean review, so no refusal "
+                    "discriminator has been demonstrated. See DECISIONS.md#056. Use 'anthropic' "
+                    "(default) or a GLM host (baseten/fireworks)."
+                )
             llm_reasoning = os.environ.get("OUTRIDER_LLM_REASONING", "").strip().lower() in {
                 "1",
                 "true",

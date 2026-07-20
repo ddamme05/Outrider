@@ -45,7 +45,13 @@ if TYPE_CHECKING:
 # probe's 13-row capture returned HTTP 400 "Unsupported parameter: 'max_tokens' ... Use
 # 'max_completion_tokens' instead" on every GPT-5.6 call; GLM hosts keep the verified
 # `max_tokens` wire via the field default.
-SHAPER_CONTRACT_VERSION: Final[str] = "v3"
+# v4: subtractive write accounting — the paid capture's usage envelope showed
+# `total_tokens == prompt + completion` (writes ride INSIDE prompt_tokens), so
+# `read_usage`'s writes-reported arm subtracts writes from input and rejects
+# `cached + writes > prompt`. WIRE-CONSISTENT, not billing-confirmed: the operator
+# billing adjudication is still owed (scorecard gate blocks until it lands; host is
+# no-ship regardless). Accounting-function change → digest rotates.
+SHAPER_CONTRACT_VERSION: Final[str] = "v4"
 
 
 class ReasoningMechanism(StrEnum):
@@ -72,8 +78,8 @@ class TokenAccounting(StrEnum):
     PROMPT_EXCLUDES_CACHED = "prompt_excludes_cached"  # Anthropic-like
     # OpenAI GPT-5.6+: cached reads ⊂ prompt_tokens AND cache writes reported as a
     # DISTINCT billed class (usage.prompt_tokens_details.cache_write_tokens, 1.25×
-    # input). Whether writes are ALSO inside prompt_tokens is the conservation
-    # equation the cold-write paid fixture pins (openai-native-host spec).
+    # input). The cold-write paid capture pinned `total == prompt + completion`, so
+    # writes ride INSIDE prompt_tokens too — `read_usage` subtracts both (SHAPER v4).
     PROMPT_INCLUDES_CACHED_WRITES_REPORTED = "prompt_includes_cached_writes_reported"
     UNVERIFIED = "unverified"  # never assumed — fail loud if cached actually fires
 
@@ -150,11 +156,16 @@ def read_usage(
     `prompt_includes_cached` (Baseten/DeepInfra): cached is a SUBSET of prompt_tokens, so
     subtract — capping cached at prompt_tokens keeps `input + cache_read == prompt_tokens`
     self-consistent; no write class exists (`cache_write=0`).
-    `prompt_includes_cached_writes_reported` (OpenAI 5.6+): reads as above, writes carried
-    through as their own billed class. The write-vs-prompt conservation equation is
-    pinned by the cold-write paid fixture (openai-native-host spec); until then writes
-    are NOT subtracted from input, and a write count exceeding `prompt_tokens` is
-    rejected as malformed. `prompt_excludes_cached`: prompt_tokens is already the
+    `prompt_includes_cached_writes_reported` (OpenAI 5.6+): the paid capture's usage
+    ENVELOPE showed `total_tokens == prompt + completion` with a separate nonzero write
+    count — i.e. cached reads AND cache writes both ride INSIDE prompt_tokens (writes are
+    not an additive count) — so this arm subtracts BOTH: `input = prompt - cached - writes`,
+    keeping `input + cache_read + cache_write == prompt_tokens`; `cached + writes > prompt`
+    is rejected as malformed (min-capping would hide it). This is the WIRE-CONSISTENT
+    normalization, NOT a billing-confirmed one: the operator billing adjudication (which
+    classes OpenAI actually bills) is the final authority and is still owed — the scorecard
+    gate blocks admission until it lands, and this host is no-ship regardless (Arc 0).
+    `prompt_excludes_cached`: prompt_tokens is already the
     uncached input. `unverified`: NEVER guess — raise if cached or write tokens fire.
 
     A negative usage component is a malformed wire payload (normalized at this boundary per
@@ -175,13 +186,18 @@ def read_usage(
         cache_read = min(raw_cached_tokens, prompt_tokens)
         return prompt_tokens - cache_read, cache_read, 0, completion_tokens
     if accounting is TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED:
-        cache_read = min(raw_cached_tokens, prompt_tokens)
-        if raw_cache_write_tokens > prompt_tokens:
+        if raw_cached_tokens + raw_cache_write_tokens > prompt_tokens:
             raise LLMInvalidResponseError(
-                f"cache_write_tokens={raw_cache_write_tokens} exceeds "
-                f"prompt_tokens={prompt_tokens}: malformed usage payload"
+                f"cached_tokens={raw_cached_tokens} + cache_write_tokens="
+                f"{raw_cache_write_tokens} exceeds prompt_tokens={prompt_tokens}: "
+                f"malformed usage payload"
             )
-        return prompt_tokens - cache_read, cache_read, raw_cache_write_tokens, completion_tokens
+        return (
+            prompt_tokens - raw_cached_tokens - raw_cache_write_tokens,
+            raw_cached_tokens,
+            raw_cache_write_tokens,
+            completion_tokens,
+        )
     if accounting is TokenAccounting.PROMPT_EXCLUDES_CACHED:
         return prompt_tokens, raw_cached_tokens, 0, completion_tokens
     if raw_cached_tokens > 0 or raw_cache_write_tokens > 0:
@@ -372,11 +388,12 @@ FIREWORKS_PROFILE: Final[HostProfile] = HostProfile(
     ),
 )
 
-# OpenAI native (api.openai.com), GPT-5.6 family — specs/2026-07-18-openai-native-host.md.
-# WIRE-PENDING (#056 admission): registered + selectable so the paid probe can exercise
-# the real code path, but NOT production-admitted until the captured wire fixture, the
-# scorecard, and the node-admission instruments land — the Fireworks precedent shipped
-# its profile WITH the fixtures; this one ships ahead of them by design (spec gates).
+# OpenAI native (api.openai.com), GPT-5.6 family (DECISIONS.md#056).
+# Registered so the eval harness + paid probe can construct the provider DIRECTLY;
+# NOT production-admitted — the composition root refuses OUTRIDER_LLM_HOST=openai (see
+# PRODUCTION_UNADMITTED_HOSTS below) because the refusal-normalization gate is UNMET in
+# json_object mode. Reopening is gated on the FUP-246 triggers, not on this profile's
+# mere existence.
 # JSON_OBJECT, not strict: OpenAI's strict json_schema REQUIRES every property in
 # `required` + additionalProperties:false (structured-outputs guide, mirror 2026-07-18) —
 # the required-completion shape #056 amendment (b) rejected as harmful to the proof
@@ -456,6 +473,21 @@ HOST_PROFILES: Final[Mapping[str, HostProfile]] = MappingProxyType(
         OPENAI_PROFILE.host_id: OPENAI_PROFILE,
     }
 )
+
+# Hosts that are IMPLEMENTED + evaluable but NOT production-admitted (Arc 0,
+# openai-native-host). A profile being in HOST_PROFILES makes it resolvable —
+# for the eval harness and the paid probe, which construct providers DIRECTLY.
+# It must NOT make it production-SELECTABLE: the composition root
+# (`api/lifespan.py`) hard-refuses these before any key lookup or provider
+# construction. `openai` has not satisfied the pre-ship refusal-normalization gate in
+# json_object mode (the gate is unmet) — production-shaped refusal-elicitation probes
+# produced completed empty-result envelopes with `message.refusal=null`, a shape
+# INDISTINGUISHABLE from a legitimate zero-finding review, so the required refusal
+# discriminator has not been demonstrated (DECISIONS.md#056; the FUP-246 reopening
+# triggers gate re-admission).
+# Removing an entry here is a DELIBERATE re-admission, gated on a demonstrated wire
+# discriminator (FUP-246 reopening triggers) — never a silent default.
+PRODUCTION_UNADMITTED_HOSTS: Final[frozenset[str]] = frozenset({"openai"})
 
 # Per-host per-node default model slugs (NOT HostProfiles). Anthropic has an entry but no
 # profile (native path). `ModelConfig.for_host` (step 4) merges these BELOW env so

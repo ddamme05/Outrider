@@ -1876,6 +1876,23 @@ async def test_real_sonnet5_migration_evidence() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def _adjudicate_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Treat openai as billing-adjudicated for one eval test so the analyze
+    context-forwarding regression guards (billed_prompt_tokens + service_tier reach
+    the pricing call) keep exercising the openai tier-echo path — a property that is
+    openai-SPECIFIC (glm/anthropic stamp no service_tier) and so cannot move to a
+    priceable host. This does NOT create the counterfactual Codex warned against: the
+    scripted _OpenAIContextScriptedProvider emits NO LLMCallEvent, and the analyze
+    node's in-memory AnalyzeCompletedEvent is captured by a null/capturing sink and
+    never persisted — so no fabricated numeric openai billing RECORD lands anywhere.
+    Production withholds openai's replay-bearing per-call cost as Unpriced(BILLING_PENDING)
+    (DECISIONS.md#056 / FUP-247); the negative twin
+    test_analyze_recomputation_rejects_contextless_openai_response asserts the raise
+    without this fixture."""
+    monkeypatch.setattr("outrider.llm.pricing.COST_UNADJUDICATED_PROFILE_IDS", frozenset())
+
+
 class _OpenAIContextScriptedProvider(_ScriptedProvider):
     """`_ScriptedProvider` stamping the openai triad + FULL pricing context —
     the shape the real OpenAICompatibleProvider returns for a default-tier
@@ -1908,11 +1925,13 @@ class _OpenAIContextScriptedProvider(_ScriptedProvider):
 
 
 @pytest.mark.asyncio
-async def test_analyze_recomputation_survives_openai_context_response() -> None:
+async def test_analyze_recomputation_survives_openai_context_response(
+    _adjudicate_openai: None,
+) -> None:
     """The REAL analyze caller (run_analyze_under_model drives analyze →
     analyze_file → analyze_aggregate, whose cost recomputation is
     analyze.py's compute_cost_usd site) prices an openai default-tier
-    response without raising."""
+    response without raising (priced path under adjudicated billing)."""
     finds, n_rejected = await run_analyze_under_model(
         _build_state(),
         provider=_OpenAIContextScriptedProvider(_FINDS_RESPONSE),
@@ -2007,6 +2026,7 @@ async def _run_analyze_capture_round(
 @pytest.mark.asyncio
 async def test_openai_analyze_aggregate_cost_and_context_spy(
     monkeypatch: pytest.MonkeyPatch,
+    _adjudicate_openai: None,
 ) -> None:
     """Round-5 closures 1+2: the ordinary analyze pricing call receives BOTH
     context arguments (spied at the call site — omitting billed alone would
@@ -2046,6 +2066,7 @@ async def test_openai_analyze_aggregate_cost_and_context_spy(
 @pytest.mark.asyncio
 async def test_openai_trace_expansion_recomputation_passes_context(
     monkeypatch: pytest.MonkeyPatch,
+    _adjudicate_openai: None,
 ) -> None:
     """Round-5 closure 3: the trace-expansion recomputation
     (`_process_one_trace_fetched_file`, analyze.py's SECOND compute_cost_usd
