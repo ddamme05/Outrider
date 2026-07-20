@@ -1,9 +1,9 @@
 # HORIZON ARCS — Multi-Provider and Multi-Model Review
 
-**Status:** Draft architecture report for discussion and later adoption into the Outrider repository  
-**Prepared:** 2026-07-19  
-**Scope:** OpenAI GPT-5.6 compatibility, Claude + GPT routing, independent multi-model review, refusal safety, cost control, and staged delivery  
-**Authority:** Advisory. This document does not amend `DECISIONS.md`, `docs/spec.md`, or an approved feature spec. Accepted changes must follow the repository's normal spec and decision process.
+- **Status:** Advisory architecture roadmap; adoption requires separate specs and decisions.
+- **Prepared:** 2026-07-19
+- **Scope:** OpenAI GPT-5.6 compatibility, Claude + GPT routing, independent multi-model review, refusal safety, cost control, and staged delivery
+- **Authority:** Advisory. This document does not amend `DECISIONS.md`, `docs/spec.md`, or an approved feature spec. Accepted changes must follow the repository's normal spec and decision process.
 
 ---
 

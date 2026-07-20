@@ -483,10 +483,15 @@ HOST_PROFILES: Final[Mapping[str, HostProfile]] = MappingProxyType(
 # json_object mode (the gate is unmet) — production-shaped refusal-elicitation probes
 # produced completed empty-result envelopes with `message.refusal=null`, a shape
 # INDISTINGUISHABLE from a legitimate zero-finding review, so the required refusal
-# discriminator has not been demonstrated (DECISIONS.md#056; the FUP-246 reopening
-# triggers gate re-admission).
-# Removing an entry here is a DELIBERATE re-admission, gated on a demonstrated wire
-# discriminator (FUP-246 reopening triggers) — never a silent default.
+# discriminator has not been demonstrated (DECISIONS.md#056).
+# Removing an entry here is a DELIBERATE re-admission, and an Analyze-level discriminator
+# alone does NOT unlock it: per #056(d), whole-host admission additionally requires
+# operation-specific refusal/no-op evidence for EVERY GPT-served operation (triage, trace,
+# synthesize-summary and patch each have legitimate empty/no-op results that could conceal
+# a refusal) and for every serving model — or, if operation-level routing lands first,
+# admission is scoped to the verified operation and this whole-host selector stays refused.
+# FUP-246 tracks the reopening triggers; FUP-247 separately tracks billing adjudication.
+# Never a silent default.
 PRODUCTION_UNADMITTED_HOSTS: Final[frozenset[str]] = frozenset({"openai"})
 
 # Per-host per-node default model slugs (NOT HostProfiles). Anthropic has an entry but no
