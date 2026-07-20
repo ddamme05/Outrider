@@ -2,7 +2,8 @@
 
 Pins that the helper OWNS the openai SDK end-to-end: it constructs the client, and
 `capture()` normalizes the response into the frozen project-owned `RawCapture` DTO
-(preserving the raw wire as `raw_json`) while a vendor error becomes the project-owned
+(retaining the SDK reserialization as `sdk_response_json`) while a vendor error becomes
+the project-owned
 `RawOpenAICaptureError` — so no SDK object or exception class escapes the boundary
 (`vendor-payloads-normalized-at-boundary`, trust boundary #8). See
 `src/outrider/llm/raw_openai_capture.py`.
@@ -10,6 +11,7 @@ Pins that the helper OWNS the openai SDK end-to-end: it constructs the client, a
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -46,6 +48,10 @@ def _sdk_response() -> SimpleNamespace:
     )
     return SimpleNamespace(
         id="chatcmpl-abc123",
+        # The model the API SAYS answered. Deliberately not the string the tests
+        # request ("gpt-5.6-sol"): the two are distinct facts and only this one is
+        # evidence of who actually answered.
+        model="gpt-5.6-sol-2026-01-31",
         created=1_700_000_000,
         service_tier="default",
         choices=[choice],
@@ -65,16 +71,17 @@ def test_construction_mirrors_the_spikes_prior_direct_usage() -> None:
 
 @pytest.mark.asyncio
 async def test_capture_normalizes_the_response_into_a_project_dto() -> None:
-    """capture() returns a frozen RawCapture — NOT the SDK object — with the raw wire
-    preserved as raw_json and every field the spikes read typed."""
+    """capture() returns a frozen RawCapture — NOT the SDK object — retaining the SDK
+    reserialization as sdk_response_json and every field the spikes read typed."""
     fake_sdk = MagicMock()
     fake_sdk.chat.completions.create = AsyncMock(return_value=_sdk_response())
     with patch("openai.AsyncOpenAI", return_value=fake_sdk):
         client = RawOpenAICaptureClient(api_key="k", base_url="https://api.openai.com/v1")
         capture = await client.capture(model="gpt-5.6-sol", messages=[])
     assert isinstance(capture, RawCapture)
-    assert capture.raw_json == '{"id": "chatcmpl-abc123"}'  # untouched wire preserved
+    assert capture.sdk_response_json == '{"id": "chatcmpl-abc123"}'
     assert capture.response_id == "chatcmpl-abc123"
+    assert capture.response_model == "gpt-5.6-sol-2026-01-31"  # NOT the requested string
     assert capture.created == 1_700_000_000
     assert capture.content == "  {}  "
     assert capture.refusal == "I can't help with that."
@@ -110,7 +117,7 @@ async def test_missing_choices_raises_shape_error_preserving_raw_evidence() -> N
     resp.choices = []
     with pytest.raises(RawCaptureShapeError, match="malformed openai response shape") as excinfo:
         await _capture_with(resp)
-    assert excinfo.value.raw_json == '{"id": "chatcmpl-abc123"}'  # raw wire preserved
+    assert excinfo.value.sdk_response_json == '{"id": "chatcmpl-abc123"}'
     assert excinfo.value.reason  # human-readable reason retained
 
 
@@ -198,3 +205,50 @@ async def test_close_delegates_to_the_sdk_client() -> None:
         client = RawOpenAICaptureClient(api_key="k", base_url="https://api.openai.com/v1")
         await client.close()
     fake_sdk.close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_more_than_one_choice_is_unprojectable() -> None:
+    """`n>1` means the response did not answer the request under study.
+
+    The projection used to read `choices[0]` and discard the rest silently, so a
+    two-choice response was graded as if it were a one-choice response. Existence
+    is not enough — the count is part of the shape."""
+    resp = _sdk_response()
+    resp.choices = [resp.choices[0], resp.choices[0]]
+    with pytest.raises(RawCaptureShapeError, match="expected exactly one choice, got 2"):
+        await _capture_with(resp)
+
+
+def test_sdk_reserialization_does_not_preserve_wire_key_order() -> None:
+    """The caveat `sdk_response_json`'s docstring makes, pinned against the REAL SDK.
+
+    The hand-rolled stub above cannot show this: its `model_dump_json` echoes a
+    literal, so it agreed with the old "exact wire preserved verbatim" claim no
+    matter what the SDK did. A real `ChatCompletion` reorders keys to field-declaration
+    order while retaining unknown vendor fields — so the retained JSON is evidence of
+    VALUES, not of byte layout. An arc that treats generative key order as a signal
+    must read the transport bytes, not this field.
+    """
+    from openai.types.chat import ChatCompletion  # wire-shape fixture, per boundary #8
+
+    wire = json.dumps(
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "x", "refusal": None},
+                }
+            ],
+            "id": "chatcmpl-1",
+            "created": 1,
+            "model": "gpt-5.6",
+            "object": "chat.completion",
+            "vendor_future_field": {"z": 1},
+        }
+    )
+    out = ChatCompletion.model_validate_json(wire).model_dump_json()
+    assert not out.startswith('{"choices"'), "key order would have to be rewritten to fail"
+    assert out.startswith('{"id"'), "reordered to the SDK's field-declaration order"
+    assert "vendor_future_field" in out, "unknown vendor fields DO survive; only order is lost"

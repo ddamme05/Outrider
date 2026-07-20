@@ -895,13 +895,13 @@ async def _run_paid() -> int:
                 # the failure is inspectable, not just "safe"), record a FAILED row.
                 note = f"malformed response shape: {err.reason[:160]}"
                 results[tag] = {"ok": False, "required": required, "note": note}
-                if err.raw_json is not None:
+                if err.sdk_response_json is not None:
                     (_FIXTURE_DIR / f"{fixture_name}.malformed.json").write_text(
-                        err.raw_json, encoding="utf-8"
+                        err.sdk_response_json, encoding="utf-8"
                     )
                 print(f"  {tag}: FAIL — {note}")
                 continue
-            payload = capture.raw_json
+            payload = capture.sdk_response_json
             (_FIXTURE_DIR / f"{fixture_name}.json").write_text(payload, encoding="utf-8")
             ok, note = _evaluate(tag, capture)
             results[tag] = {
