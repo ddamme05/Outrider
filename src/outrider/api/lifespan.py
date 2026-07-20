@@ -661,7 +661,12 @@ def build_lifespan(
             # threaded to ModelConfig.for_host, the provider factory, AND the
             # identity triad — so the model config, the provider's stamp, and
             # build_graph's completion-event closure all derive from one host.
-            llm_host = os.environ.get("OUTRIDER_LLM_HOST", ANTHROPIC_PROFILE_ID).strip()
+            # Case-NORMALIZED at this single-authority read: host ids are canonically
+            # lowercase, and without `.lower()` a casing variant (`OPENAI`) would slip past
+            # the Arc 0 membership check below and die later on an unrelated
+            # "unknown host" ValueError — fail-closed by accident, with the wrong error,
+            # after the gate promised to refuse first.
+            llm_host = os.environ.get("OUTRIDER_LLM_HOST", ANTHROPIC_PROFILE_ID).strip().lower()
             # Arc 0 hard gate (openai-native-host): a wire-implemented but NOT
             # production-admitted host must fail closed HERE — before key lookup,
             # ModelConfig, or provider construction — so a `WIRE-PENDING` label can

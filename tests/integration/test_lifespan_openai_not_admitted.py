@@ -94,6 +94,38 @@ async def test_openai_gate_fires_before_key_lookup(
     assert "OPENAI_API_KEY" not in str(excinfo.value)
 
 
+@pytest.mark.parametrize("spelling", ["OPENAI", "OpenAI", "  openai  "])
+async def test_openai_gate_is_case_and_whitespace_normalized(
+    spelling: str,
+    monkeypatch: pytest.MonkeyPatch,
+    noop_severity_policy_fingerprint_check: object,
+    in_memory_checkpointer_factory: object,
+    github_app_env: None,  # noqa: ARG001
+) -> None:
+    """A casing/whitespace variant must hit the ADMISSION refusal, not slip past the
+    membership check and die later on an unrelated 'unknown host' ValueError. The host
+    id is normalized at the single-authority read, so the gate's promise (refuse BEFORE
+    key lookup / ModelConfig / provider construction) holds for every spelling."""
+    _openai_production_env(monkeypatch)
+    monkeypatch.setenv("OUTRIDER_LLM_HOST", spelling)
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key-must-never-be-reached")
+    engine = _mock_engine()
+
+    lifespan = build_lifespan(
+        engine_factory=lambda: engine,
+        severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,  # type: ignore[arg-type]
+        checkpointer_factory=in_memory_checkpointer_factory,  # type: ignore[arg-type]
+    )
+
+    app = FastAPI()
+    with pytest.raises(RuntimeError, match="production-admitted") as excinfo:
+        async with lifespan(app):
+            pass
+    # the ADMISSION refusal — never the downstream resolve_host_profile ValueError
+    assert "unknown OpenAI-compatible host" not in str(excinfo.value)
+    assert not hasattr(app.state, "provider")
+
+
 async def test_openai_gate_fires_before_provider_construction(
     monkeypatch: pytest.MonkeyPatch,
     noop_severity_policy_fingerprint_check: object,

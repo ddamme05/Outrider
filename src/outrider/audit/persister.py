@@ -1549,7 +1549,17 @@ def _strip_absent_pricing_context(payload: dict[str, Any]) -> dict[str, Any]:
     equality would spuriously conflict on a checkpoint-resume re-emit across the
     upgrade boundary. Targeted allowlist, deliberately NOT a global
     exclude_none/exclude_unset (which would alter unrelated event identities);
-    used for COMPARISON only — stored bytes are untouched."""
+    used for COMPARISON only — stored bytes are untouched.
+
+    SCOPE — this equalizes the NULL case only (`v is None`), never a populated value.
+    A pre-upgrade row lacking a key is NOT equalized against a post-upgrade re-emit that
+    POPULATES it: every OpenAI-compatible host (GLM included) now stamps a non-null
+    `billed_prompt_tokens`, so such a re-emit still conflicts on that key. That is
+    currently harmless only because any change able to populate a previously-absent field
+    also rotates `profile_contract_digest` (the SHAPER contract version), which conflicts
+    first and is the honest signal. A future additive field that can be populated WITHOUT
+    a digest rotation must either bump the digest or be handled here explicitly — do not
+    read this helper as making cross-upgrade re-emits equal in general."""
     return {
         k: v for k, v in payload.items() if not (k in _PRICING_CONTEXT_NULLABLE_KEYS and v is None)
     }
