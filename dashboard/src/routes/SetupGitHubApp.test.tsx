@@ -359,12 +359,18 @@ test("no post-install hint → a single status read, no polling", async () => {
 });
 
 
-test("post-install polling survives StrictMode's double render", async () => {
-  // StrictMode double-invokes the render function and DISCARDS the first render's hook
-  // state, so a hint consumed during render is read once, the URL is scrubbed, and the
-  // surviving render sees a clean URL — recording no hint and never polling. Consuming
-  // the hint in the effect (where refs persist across the mount/unmount/mount cycle)
-  // is what makes this pass. Regression guard: the app mounts under StrictMode.
+test("SMOKE (not a regression guard): post-install polling works under StrictMode", async () => {
+  // NOT a guard against the render-purity bug, despite the wrapper. StrictMode's
+  // double-render is DEV-ONLY, and Vitest runs React's test build: a probe rendering a
+  // component with lazy ref-init under StrictMode counted ONE invocation, so the
+  // discarded-first-pass behavior never occurs here and this test passes against the
+  // broken implementation too.
+  //
+  // The real guard is structural: `consumeInstallHint` runs in the effect, so render
+  // performs no side effect and the mechanism has nothing to act on. If that ever moves
+  // back into render, THIS TEST WILL NOT CATCH IT — review the effect placement instead.
+  // Kept because the app mounts under StrictMode in `main.tsx`, so exercising the same
+  // wrapper is cheap, and it would start biting if React's test build ever double-renders.
   let installed = false;
   server.use(
     http.get(STATUS, () =>

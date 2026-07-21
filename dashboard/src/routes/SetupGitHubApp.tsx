@@ -122,6 +122,8 @@ export function SetupGitHubApp() {
   //   - StrictMode ALSO re-runs effects (setup → cleanup → setup) on the same instance. Refs
   //     survive that, so latching the hint in a ref keeps the second setup from re-reading the
   //     scrubbed URL and skipping the poll the first setup started (then cancelled).
+  // NO TEST WILL CATCH a move back into render: the double-render is dev-only and Vitest runs
+  // React's test build (probed — one invocation, not two). This placement is the whole guard.
   const installHint = useRef<boolean | null>(null);
 
   useEffect(() => {
