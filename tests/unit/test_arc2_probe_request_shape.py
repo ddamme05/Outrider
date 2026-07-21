@@ -556,3 +556,113 @@ def test_frozen_elicitations_are_byte_identical_to_the_discovery_candidates() ->
     } == plan._REFUSAL_ELICITATIONS
     # And they are distinct, so three rows are three observations.
     assert len(set(plan._REFUSAL_ELICITATIONS.values())) == 3
+
+
+def test_reviewed_caps_are_exactly_the_measured_sizes() -> None:
+    """The caps ARE the measurements — no headroom, and no stale drift either.
+
+    Lives HERE, not in the composed-lifecycle file: that file's autouse fixture
+    replaces the refusal elicitations with short test strings, which changes the
+    measured prompt bytes. A cap-vs-measurement equality asserted under it would
+    compare against fixture-perturbed numbers rather than the ones a paid run sends.
+
+    The operator chose exact caps deliberately: each row's request digest is
+    already bound and re-derived, so drift invalidates the contract before a byte
+    cap could matter, and headroom would only loosen a redundant ceiling.
+
+    That choice needs enforcing, because a cap is a MAXIMUM: when the v5 scenario
+    shrank `acceptance_finding` from 32,357 to 32,315 bytes, the stale cap stayed
+    silently permissive by 42 bytes and no check complained. Equality is the
+    invariant the operator actually approved.
+    """
+    measured = {m.row_id: m.prompt_bytes for m in plan.registered_measurements()}
+    assert measured == plan.REVIEWED_CAPS, (
+        "REVIEWED_CAPS drifted from the measured sizes — re-run --dry-run and copy "
+        "the measured column, then have the caps re-reviewed before spending"
+    )
+
+
+def test_the_vulnerable_statement_occupies_exactly_the_declared_defect_line() -> None:
+    """The v5 target is single-line BY CONSTRUCTION, not by assertion in prose.
+
+    The whole point of the reshape is that "narrowest span containing the defect"
+    has one reading. If the scenario ever regains a multi-line vulnerable call, the
+    exact-match predicate becomes ambiguous again and a correct-but-broader answer
+    would grade INCONCLUSIVE for reasons that are the experiment's fault, not the
+    model's. This pins the property the predicate depends on.
+    """
+    s = plan.DEFECT_SCENARIO
+    lines = s.source.splitlines()
+    assert s.defect_line is not None
+    defect = lines[s.defect_line - 1]
+
+    # The complete vulnerable call — receiver, concatenation, and terminating
+    # `)` — all on the declared line.
+    assert "conn.execute(" in defect
+    assert '" + user_id + "' in defect
+    assert defect.rstrip().endswith(").fetchall()")
+    # And nowhere else: no other line carries part of the vulnerable expression.
+    others = [line for i, line in enumerate(lines, 1) if i != s.defect_line]
+    assert not any("execute(" in line or "user_id +" in line for line in others)
+    assert plan.EXPECTED_FINDING.line_start == plan.EXPECTED_FINDING.line_end == s.defect_line
+
+
+def test_a_broader_admitted_span_still_fails_exact_identity() -> None:
+    """The v4 outcome, pinned as a regression: admission is not localization.
+
+    A finding bounded to the whole statement is ADMITTED by the production parser —
+    `line_range_within_scope_unit` only checks the span lands inside an included
+    scope unit and says nothing about narrowness. So parser admission must never be
+    read as evidence the model localized correctly; that inference is what led to
+    proposing containment after the v4 capture.
+
+    The row must therefore route INCONCLUSIVE, not pass.
+    """
+    from spikes.openai.arc2.classifier import (
+        EvaluatedRow,
+        ExpectedFinding,
+        RowId,
+        Verdict,
+        route_finding_assessment,
+    )
+    from spikes.openai.arc2.verifier import ParserAdapter
+
+    broad = json.dumps(
+        {
+            "findings": [
+                {
+                    "finding_type": "sql_injection",
+                    "evidence_tier": "judged",
+                    "query_match_id": None,
+                    "trace_path": None,
+                    "title": "SQL query concatenates untrusted input",
+                    "description": "user_id is concatenated into the SQL passed to execute.",
+                    "evidence": "conn.execute(...)",
+                    "line_start": 1,  # the whole function, not the assembled-query line
+                    "line_end": 3,
+                    "trace_candidates": [],
+                }
+            ]
+        }
+    )
+    outcome = ParserAdapter.for_registered_plan()(broad)
+    assert len(outcome.admitted) == 1, "the parser admits it — that is the trap"
+    assert outcome.rejection_reasons == ()
+
+    ev = plan.registered_evaluation_contract()
+    row = EvaluatedRow(
+        row=RowId.ACCEPTANCE_FINDING,
+        content=broad,
+        finish_reason="stop",
+        parser=outcome,
+        expected_finding=ExpectedFinding(
+            finding_type=ev.expected_finding_type,
+            line_start=ev.expected_line_start,
+            line_end=ev.expected_line_end,
+        ),
+        fired_query_match_ids=frozenset(ev.fired_query_match_ids),
+    )
+    assessment = row.assessment
+    assert assessment is not None
+    assert not assessment.returned_any_finding, "a broader span is not the registered finding"
+    assert route_finding_assessment(assessment) is Verdict.INCONCLUSIVE

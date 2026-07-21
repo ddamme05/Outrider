@@ -74,12 +74,23 @@ __all__ = [
 #: rotated for the cap VALUES chosen in the same change: values are bound by the
 #: `PaidProbeContract` digest already, and rotating on them would make every
 #: re-measurement look like a procedure change.
-STRICT_PROBE_CONTRACT_VERSION: Final[ContractVersion] = "arc2-strict-schema:4"
+#:
+#: v5 (2026-07-20): the defect scenario changed shape. The v4 capture graded
+#: INCONCLUSIVE because the model bounded its finding to the whole `execute(...)`
+#: statement (lines 3-5) while the registered identity required the concatenation
+#: line exactly. The predicate was NOT loosened — the scenario was rewritten so the
+#: vulnerable call occupies one line and "narrowest span containing the defect" has
+#: a single reading. It moves the `acceptance_finding` request body only (the
+#: clean row and the three elicitations are unchanged), but a scenario is part of
+#: evaluation identity, so it rotates the
+#: version and invalidates the v4 capture for grading; `capture_c6ac52a38ed27425`
+#: is preserved unchanged as the v4 partial and is NOT retroactively regraded.
+STRICT_PROBE_CONTRACT_VERSION: Final[ContractVersion] = "arc2-strict-schema:5"
 
 #: The version is a LITERAL on every artifact, not a free string: an artifact
 #: carrying an unrecognised version must fail to LOAD, not merely compare unequal
 #: to whatever the reader expected.
-ContractVersion = Literal["arc2-strict-schema:4"]
+ContractVersion = Literal["arc2-strict-schema:5"]
 
 # Length is pinned alongside the pattern: pydantic-core's Rust regex has no
 # `\A`/`\Z`, and `$` can admit a trailing newline, so the bound is what makes

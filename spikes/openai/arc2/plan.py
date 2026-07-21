@@ -158,8 +158,13 @@ CLEAN_SCENARIO: Final[Scenario] = Scenario(
     expected_finding_type=None,
 )
 
-#: The planted defect is on line 3 — the string-concatenated SQL — and every
+#: The planted defect is on line 4 — the string-concatenated SQL — and every
 #: coordinate below is expressed in this file's own frame.
+#:
+#: The comment previously said line 3 while `defect_line=4` and the concatenation
+#: is physically on line 4. Corrected 2026-07-20 rather than left as a typo: after
+#: the v4 capture returned a 3-5 span, a comment asserting "line 3" was the exact
+#: artifact that could be cited to argue the model had localized correctly.
 DEFECT_SCENARIO: Final[Scenario] = Scenario(
     file_path="app/api/reports.py",
     # The concatenation is the FIRST argument DIRECTLY inside `execute(...)`.
@@ -167,17 +172,30 @@ DEFECT_SCENARIO: Final[Scenario] = Scenario(
     # whose left is a string, as the first argument of an `execute`/`executemany`
     # call — so assigning to a local first and passing the VARIABLE (as an earlier
     # draft did) fires nothing at all.
+    # v5 (2026-07-20): the whole vulnerable `execute(...)` expression is now on ONE
+    # source line. Under v4 it spanned lines 3-5 and the capture answered 3-5, which
+    # VIOLATED the production prompt's narrowest-span rule ("the assembled-query
+    # line, not the whole function" — `prompts/analyze.py`): the concatenation was
+    # on line 4 alone. An understandable answer, but a wrong one, and the exact
+    # (4,4) identity correctly graded it INCONCLUSIVE.
+    #
+    # An earlier draft of this comment called that "two defensible readings". It was
+    # not — that phrasing preserved the excuse for widening the predicate to
+    # containment, which is what talking an experiment into passing looks like. The
+    # predicate is unchanged; the TARGET is now unambiguous, so a model that follows
+    # the rule and a model that does not are distinguishable.
     source=(
         "def run_report(conn, user_id):\n"
         '    """Fetch a user\'s report rows."""\n'
-        "    return conn.execute(\n"
-        '        "SELECT * FROM reports WHERE user_id = \'" + user_id + "\'"\n'
-        "    ).fetchall()\n"
+        # Split across two Python literals purely to keep THIS file under the line
+        # cap; the produced source line is one line, which is the whole point.
+        '    return conn.execute("SELECT * FROM reports WHERE uid = \'"'
+        ' + user_id + "\'").fetchall()\n'
     ),
     scope_name="run_report",
     scope_line_start=1,
-    scope_line_end=5,
-    defect_line=4,
+    scope_line_end=3,
+    defect_line=3,
     expected_finding_type="sql_injection",
 )
 
@@ -601,6 +619,9 @@ def registered_locked_contract() -> LockedProbeContract:
 
 
 #: REVIEWED 2026-07-20 — the EXACT measured per-row prompt sizes, no headroom.
+#: Re-measured for v5: the reshaped defect scenario moved `acceptance_finding`
+#: only. `test_reviewed_caps_are_exactly_the_measured_sizes` pins the equality,
+#: so a scenario change cannot leave a stale permissive cap behind.
 #:
 #: Deliberately exact, and the reasoning is worth keeping because "add headroom"
 #: is the intuitive choice: each row's exact `request_body_digest` is ALREADY bound
@@ -616,7 +637,7 @@ def registered_locked_contract() -> LockedProbeContract:
 #: the session if they do not.
 REVIEWED_CAPS: Final[dict[RowId, int]] = {
     RowId.ACCEPTANCE_CLEAN: 32_493,
-    RowId.ACCEPTANCE_FINDING: 32_357,
+    RowId.ACCEPTANCE_FINDING: 32_315,  # v5: was 32_357 under the v4 scenario
     RowId.REFUSAL_1: 31_384,
     RowId.REFUSAL_2: 31_340,
     RowId.REFUSAL_3: 31_312,
