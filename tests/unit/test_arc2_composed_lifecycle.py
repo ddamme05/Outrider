@@ -60,13 +60,10 @@ from outrider.llm.raw_openai_capture import (
     RawUsage,
 )
 
-_SOURCE = (
-    "def run_report(conn, user_id):\n"
-    '    """Fetch a user\'s report rows."""\n'
-    "    return conn.execute(\n"
-    '        "SELECT * FROM reports WHERE user_id = \'" + user_id + "\'"\n'
-    "    ).fetchall()\n"
-)
+#: DERIVED from the plan, not restated. A hand-copied source and a hand-copied
+#: expected span made this file a second authority on the experiment: when the v5
+#: scenario changed shape, every test here would have kept asserting the v4 one.
+_SOURCE = plan.DEFECT_SCENARIO.source
 _MODEL = "gpt-5.6-sol"
 _SDK_RESPONSE_JSON = '{"note": "reserialized by the SDK; values only, not byte layout"}'
 _EMPTY = '{"findings":[]}'
@@ -85,8 +82,8 @@ def _finding_body(**overrides: Any) -> str:
         "title": "SQL built by concatenation",
         "description": "User input is concatenated into a SQL string.",
         "evidence": "conn.execute(...)",
-        "line_start": 4,
-        "line_end": 4,
+        "line_start": plan.EXPECTED_FINDING.line_start,
+        "line_end": plan.EXPECTED_FINDING.line_end,
         "trace_candidates": [],
     }
     f.update(overrides)
@@ -934,8 +931,14 @@ def test_a_scenario_without_a_planted_defect_cannot_build_a_plan(
     with pytest.raises(ValueError, match="declares no expected finding"):
         _require_expected(crippled)
 
-    # The real scenario still yields the real coordinates — not the old fallback's.
-    assert (plan.EXPECTED_FINDING.line_start, plan.EXPECTED_FINDING.line_end) == (4, 4)
+    # The real scenario still yields the real coordinates — not the old fallback's
+    # hardcoded (1, 1). Asserted as a DERIVATION from `defect_line` rather than a
+    # literal, so a scenario reshape (v4 planted on line 4, v5 on line 3) does not
+    # need this test
+    # edited to keep passing — which is the failure mode a literal invites.
+    assert plan.EXPECTED_FINDING.line_start == plan.DEFECT_SCENARIO.defect_line
+    assert plan.EXPECTED_FINDING.line_end == plan.DEFECT_SCENARIO.defect_line
+    assert plan.EXPECTED_FINDING.finding_type == plan.DEFECT_SCENARIO.expected_finding_type
 
 
 def test_hashes_bind_evidence_to_the_ledger_not_to_its_origin(tmp_path: Path) -> None:
