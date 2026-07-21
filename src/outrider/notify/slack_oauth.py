@@ -66,7 +66,15 @@ async def exchange_code(
     `oauth.v2.access` (server-side, App credentials). Raises `SlackOAuthError` on a
     Slack API error, transport failure, or malformed response (fail-closed). For
     tests, inject a `client` exposing `oauth_v2_access`."""
-    web = client if client is not None else AsyncWebClient()
+    # retry_handlers=[] disables slack_sdk's default ConnectionErrorRetryHandler
+    # (one retry with backoff on a connectivity failure). An OAuth `code` is
+    # single-use: if Slack consumed it and only the response was lost, the retry
+    # replays a spent code and comes back `invalid_code` — converting a recoverable
+    # blip into a failed install with no token persisted. Fail fast instead; the
+    # operator re-runs the install. Deliberately NOT applied to the notifier
+    # (`notify/slack.py`), where a retry can at worst duplicate a message — a
+    # residual V1 already accepts as low-harm.
+    web = client if client is not None else AsyncWebClient(retry_handlers=[])
     try:
         resp: AsyncSlackResponse = await web.oauth_v2_access(
             client_id=client_id,

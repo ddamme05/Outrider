@@ -122,3 +122,36 @@ async def test_exchange_code_rejects_invalid_required_fields(resp: dict[str, Any
             redirect_uri="https://dash.example/slack/oauth/callback",
             client=client,  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.asyncio
+async def test_exchange_code_disables_sdk_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default-constructed client disables slack_sdk's retry handlers.
+
+    slack_sdk enables `ConnectionErrorRetryHandler` by default (one retry on a
+    connectivity failure). An OAuth `code` is single-use, so replaying it after a
+    lost response returns `invalid_code` — turning a recoverable blip into a failed
+    install with no token persisted. The exchange fails fast instead.
+    """
+    captured: dict[str, Any] = {}
+
+    def _fake_ctor(**kwargs: Any) -> _FakeOAuthClient:
+        captured.update(kwargs)
+        return _FakeOAuthClient(
+            response={
+                "ok": True,
+                "access_token": "xoxb",
+                "team": {"id": "T0X", "name": "Acme"},
+                "bot_user_id": "U0BOT",
+            }
+        )
+
+    monkeypatch.setattr("outrider.notify.slack_oauth.AsyncWebClient", _fake_ctor)
+    result = await exchange_code(
+        client_id="cid",
+        client_secret=SecretStr("csecret"),
+        code="code123",
+        redirect_uri="https://dash.example/slack/oauth/callback",
+    )
+    assert result.team_id == "T0X"
+    assert captured["retry_handlers"] == []
