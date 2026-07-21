@@ -39,13 +39,20 @@ application database or runs separately. Apply your own retention controls to it
 > users yet, and configuration surfaces and APIs may still change before a stable release. Read
 > [What Outrider is not](#what-outrider-is-not) before forming expectations.
 
-**Contents:** [How a review works](#how-a-review-works) ·
-[A file's journey](#a-files-journey) ·
-[Design guarantees](#design-guarantees) · [Evaluation](#evaluation) ·
-[Quickstart](#quickstart) · [Configuration](#configuration) ·
-[Security and privacy](#security-and-privacy) ·
-[What Outrider is not](#what-outrider-is-not) · [Known limitations](#known-limitations) ·
-[Development](#development) · [License](#license)
+## Table of contents
+
+- [How a review works](#how-a-review-works)
+  - [A file's journey](#a-files-journey)
+- [Design guarantees](#design-guarantees)
+- [Evaluation](#evaluation)
+- [How Codex and GPT-5.6 helped me build Outrider](#how-codex-and-gpt-56-helped-me-build-outrider)
+- [Quickstart](#quickstart)
+- [Configuration](#configuration)
+- [Security and privacy](#security-and-privacy)
+- [What Outrider is not](#what-outrider-is-not)
+- [Known limitations](#known-limitations)
+- [Development](#development)
+- [License](#license)
 
 <!-- TODO(screenshots): 1) PR opened → 2) dashboard approval screen → 3) posted GitHub review.
      Use a sandbox repo. Redact installation ids and webhook URLs. -->
@@ -281,6 +288,22 @@ The eval harness's structural tier (currently 186 tests, collected by
 coordinate translation with zero LLM calls and no network. Every fixture in the paid suite
 is first driven through the real analyze admission path offline, so a fixture the pipeline
 would skip or veto never reaches a paid run.
+
+## How Codex and GPT-5.6 helped me build Outrider
+
+I used [Codex](https://openai.com/codex/) with [GPT-5.6 Sol](https://openai.com/index/gpt-5-6/) as an independent reviewer throughout development.
+
+Outrider has a catalog of rules covering things like severity, evidence, audit history, comment placement, and human approval. After each implementation pass, Codex read the diff and checked it against those rules, the project's trust boundaries, and its architectural decisions.
+
+That review process caught several real problems. It found a Slack update race that could replace a finished status with stale text, a React StrictMode issue in the GitHub setup flow, and places where benchmark wording claimed more than the saved results could prove. It also caught smaller problems such as outdated comments and tests whose names promised more coverage than they actually provided.
+
+Codex stayed read-only during these reviews. It reported findings with file and line references, explained which project rule was involved, and gave each finding a confidence level. I reviewed the findings, chose which ones to accept, and routed the accepted changes back through the implementation workflow. I ran the test suites and supplied the results for the next review.
+
+Every review was recorded in a local append-only audit log, including clean reviews where Codex found nothing. That gave me a running history of what was checked, what was caught, and how each finding was handled.
+
+Using GPT-5.6 Sol this way was especially helpful for changes that crossed several parts of the project. It could follow a workflow from the dashboard through saved state, background jobs, Slack, and GitHub, then point out where those pieces could disagree.
+
+The process ended up looking a lot like Outrider itself: findings came with evidence, important decisions stayed with me, and each review left a record I could revisit later.
 
 ## Quickstart
 
