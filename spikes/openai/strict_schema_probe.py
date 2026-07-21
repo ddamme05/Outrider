@@ -117,7 +117,6 @@ from spikes.openai.arc2.plan import (  # noqa: E402 - after sys.path bootstrap
     MODEL,
     REVIEWED_CAPS,
     Scenario,
-    _measure,
     analyze_prompt_pair,
     build_rows,
     derive_fired_query_match_ids,
@@ -136,6 +135,7 @@ from spikes.openai.arc2.strict_schema import (  # noqa: E402 - after sys.path bo
     strict_schema_json,
 )
 from spikes.openai.arc2.verifier import (  # noqa: E402 - after sys.path bootstrap
+    ReplayError,
     VerifiedSession,
     verify_and_derive,
 )
@@ -179,8 +179,11 @@ def run_dry() -> int:
     would describe a different experiment.
     """
     schema = derive_strict_analyze_schema()
-    rows = build_rows()
-    measurements = tuple(_measure(row_id, rows[row_id]) for row_id in ROW_ORDER)
+    # The PUBLIC function, not the private `_measure`. Beyond the boundary point: this
+    # used to iterate ROW_ORDER here while `registered_measurements()` iterated
+    # `build_rows()` dict order, and replay compares the two tuples with order-sensitive
+    # equality — so they agreed only because insertion order happened to match.
+    measurements = registered_measurements()
     freeze_error = refusal_freeze_error()
 
     print(f"contract          : {STRICT_PROBE_CONTRACT_VERSION}")
@@ -986,10 +989,19 @@ def run_paid(*, confirm: str | None = None, out_dir: Path | None = None) -> int:
     print(f"evidence      : {run_dir}")
     print(f"SPENDING NOW  : up to {len(contract.row_order)} calls\n")
 
+    # `verify_and_derive` runs INSIDE the session (after each call), so its failures
+    # surface here: a responding model that disagrees with the contract, a fixture
+    # whose bytes no longer match its reference, a row filed under the wrong key.
+    # Neither `ReplayError` nor `ContractViolationError` inherits `RuntimeError`, so
+    # catching only that let them escape `asyncio.run` as an uncaught traceback with
+    # exit 1 — after spend had already begun, which is exactly when a legible abort
+    # matters. `OSError` is included because the fixture and ledger writes are disk
+    # I/O on the same path.
     try:
         session = asyncio.run(_run_session(contract, rows, run_dir, api_key))
-    except RuntimeError as exc:
-        print(f"ABORTED: {exc}", file=sys.stderr)
+    except (RuntimeError, ReplayError, ContractViolationError, OSError) as exc:
+        print(f"ABORTED: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"evidence retained: {run_dir}", file=sys.stderr)
         return 2
 
     if session is None:  # pragma: no cover - row_order is non-empty

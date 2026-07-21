@@ -1435,3 +1435,67 @@ def _write_manifest_returning_path(d: Path) -> Path:
     path = d / f"dry_run_{dry.digest[:16]}.json"
     path.write_text(dry.model_dump_json())
     return path
+
+
+def test_a_mid_session_replay_failure_aborts_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ReplayError` mid-session must exit 2, not surface as a traceback.
+
+    `verify_and_derive` runs INSIDE the session, after each call, so its failures
+    land in the caller's except-block. Neither `ReplayError` nor
+    `ContractViolationError` inherits `RuntimeError`, so catching only that let them
+    escape `asyncio.run` uncaught: raw traceback, exit 1, and no line telling the
+    operator where the evidence went — after spend had already begun, which is
+    precisely when a legible abort matters.
+
+    Triggered naturally rather than by patching a raise: the second response claims a
+    different model than the contract, which is one of the real conditions replay
+    refuses on.
+    """
+    from spikes.openai import strict_schema_probe as probe
+
+    _write_reviewed_manifest(tmp_path)
+    _install_fake(
+        monkeypatch,
+        [
+            _scripted_capture(_EMPTY),
+            _raw_capture(
+                content=_finding_body(), refusal=None, finish_reason="stop", model="gpt-4o-other"
+            ),
+        ],
+    )
+
+    rc = probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path)
+
+    assert rc == 2, "a mid-session replay failure must be a handled exit, not a traceback"
+    assert _FakeClient.instances[-1].closed is True, "the client is closed on this path too"
+    # The evidence written before the failure is still on disk and still coherent.
+    run_dir = next(tmp_path.glob("capture_*"))
+    ledger = AttemptLedger.model_validate_json((run_dir / "attempt_ledger.json").read_bytes())
+    assert len(ledger.refs) == 2
+    assert (run_dir / "paid_contract.json").is_file()
+
+
+def test_dry_run_measurements_match_the_replay_authority(tmp_path: Path) -> None:
+    """`run_dry` and `registered_measurements()` must agree, ORDER INCLUDED.
+
+    Replay compares `contract.measurements != registered_measurements()` with tuple
+    equality, which is order-sensitive. `run_dry` used to iterate `ROW_ORDER` while
+    the public function iterated `build_rows()` dict order — agreeing only because
+    insertion order happened to match. A reordering of `build_rows` would have turned
+    a passing dry run into an unexplainable verification failure at replay.
+    """
+    from unittest.mock import patch
+
+    from spikes.openai import strict_schema_probe as probe
+
+    with patch.object(probe, "_OUT_DIR", tmp_path):
+        assert probe.run_dry() == 0
+
+    manifest = DryRunManifest.model_validate_json(
+        next(tmp_path.glob("dry_run_[0-9a-f]*.json")).read_bytes()
+    )
+    authority = plan.registered_measurements()
+    assert manifest.measurements == authority
+    assert tuple(m.row_id for m in authority) == ROW_ORDER, "order is explicit, not incidental"

@@ -657,4 +657,9 @@ def registered_measurements() -> tuple[RowMeasurement, ...]:
     the digests replay checks against are recomputed from the requests the plan
     produces, not read from the document under review.
     """
-    return tuple(_measure(row_id, kwargs) for row_id, kwargs in build_rows().items())
+    rows = build_rows()
+    # Iterate ROW_ORDER explicitly. Dict insertion order matches it today, but replay
+    # compares measurement TUPLES with order-sensitive equality, so leaving the order
+    # incidental makes a future reordering of `build_rows` a silent verification
+    # failure rather than a caught one.
+    return tuple(_measure(row_id, rows[row_id]) for row_id in ROW_ORDER)
