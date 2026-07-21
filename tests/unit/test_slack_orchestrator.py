@@ -489,3 +489,114 @@ async def test_notify_hitl_pending_re_posts_after_record_crash() -> None:
     assert second is not None
     assert len(notifier.posts) == 2  # the crash-window re-post
     assert len(sink.emitted) == 1  # only the second attempt recorded a row
+
+
+# ---------------------------------------------------------------------------
+# Status mirror (chat.update on the HITL card)
+# ---------------------------------------------------------------------------
+
+
+def _mirror_kwargs(review_id: UUID, **overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "review_id": review_id,
+        "channel_id": "C1",
+        "repo": "acme/api",
+        "pr_number": 7,
+        "pr_title": "Add webhook",
+        "findings": [_finding(FindingSeverity.CRITICAL)],
+        "reviewer_id": "alice",
+        "posted_count": 3,
+        "dashboard_only_count": 1,
+    }
+    base.update(overrides)
+    return base
+
+
+async def test_mirror_status_updates_the_recorded_hitl_card() -> None:
+    """The mirror targets the `message_ts` + channel recorded on the original
+    `hitl_pending` event — it edits the card that exists, never posts a new one."""
+    review_id = uuid4()
+    seeded = _slack_event(review_id, "C1", "hitl_pending")
+    notifier, sink = (
+        _FakeNotifier(),
+        _FakeSink(existing={(review_id, "C1", "hitl_pending"): seeded}),
+    )
+
+    applied = await _orch(notifier, sink).mirror_status(**_mirror_kwargs(review_id))
+
+    assert applied is True
+    assert notifier.posts == []  # a mirror never posts
+    assert len(notifier.updates) == 1
+    assert notifier.updates[0]["channel"] == "C1"
+    assert notifier.updates[0]["ts"] == seeded.message_ts
+
+
+async def test_mirror_status_emits_no_audit_event() -> None:
+    """The mirror is a reflection, not a new audited fact: no SlackNotificationEvent
+    is emitted and the original row is never mutated (audit-events-append-only)."""
+    review_id = uuid4()
+    seeded = _slack_event(review_id, "C1", "hitl_pending")
+    notifier, sink = (
+        _FakeNotifier(),
+        _FakeSink(existing={(review_id, "C1", "hitl_pending"): seeded}),
+    )
+
+    await _orch(notifier, sink).mirror_status(**_mirror_kwargs(review_id))
+
+    assert sink.emitted == []
+
+
+async def test_mirror_status_no_ops_when_review_never_gated() -> None:
+    """No `hitl_pending` row → nothing to mirror. This is the non-gated review, and
+    it is the guard that makes `mirror_status` the exact complement of
+    `notify_review_posted` (which skips when the row DOES exist)."""
+    notifier, sink = _FakeNotifier(), _FakeSink()
+
+    applied = await _orch(notifier, sink).mirror_status(**_mirror_kwargs(uuid4()))
+
+    assert applied is False
+    assert notifier.updates == []
+
+
+async def test_mirror_status_no_ops_when_channel_rotated() -> None:
+    """The card was posted to C1; the install now resolves to C2. The lookup is
+    channel-scoped, so the mirror finds no row and no-ops — it must never edit an
+    unrelated message in the new channel."""
+    review_id = uuid4()
+    seeded = _slack_event(review_id, "C1", "hitl_pending")
+    notifier, sink = (
+        _FakeNotifier(),
+        _FakeSink(existing={(review_id, "C1", "hitl_pending"): seeded}),
+    )
+
+    applied = await _orch(notifier, sink).mirror_status(
+        **_mirror_kwargs(review_id, channel_id="C2")
+    )
+
+    assert applied is False
+    assert notifier.updates == []
+
+
+async def test_mirror_status_swallows_transport_failure() -> None:
+    """Fire-and-forget: a `chat.update` failure leaves the card at its prior state
+    and never raises into the graph."""
+    review_id = uuid4()
+    seeded = _slack_event(review_id, "C1", "hitl_pending")
+    notifier = _FakeNotifier()
+    sink = _FakeSink(existing={(review_id, "C1", "hitl_pending"): seeded})
+
+    async def _boom(**_kwargs: Any) -> None:
+        raise SlackChannelError("channel_not_found")
+
+    notifier.update_message = _boom  # type: ignore[method-assign]
+
+    assert await _orch(notifier, sink).mirror_status(**_mirror_kwargs(review_id)) is False
+
+
+async def test_mirror_status_swallows_query_failure() -> None:
+    """A dedup/lookup crash degrades to no mirror rather than propagating."""
+    notifier = _FakeNotifier()
+    sink = _FakeSink(raise_on_query=RuntimeError("db down"))
+
+    assert await _orch(notifier, sink).mirror_status(**_mirror_kwargs(uuid4())) is False
+    assert notifier.updates == []

@@ -73,6 +73,9 @@ from outrider.policy.severity import FindingSeverity
 from outrider.schemas.hitl import PerFindingOutcome
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from uuid import UUID
+
     from outrider.schemas.hitl import HITLDecision, HITLRequest, PerFindingDecision
     from outrider.schemas.review_finding import ReviewFinding
 
@@ -332,3 +335,38 @@ def is_eligible_for_v1_publish(
         f"{matching_decision.outcome!r}; add a branch above when a new "
         f"outcome lands in PerFindingOutcome."
     )
+
+
+# The outcome partition `is_eligible_for_v1_publish` uses above: APPROVE and
+# SEVERITY_OVERRIDE admit the finding, REJECT and SUPPRESS withhold it. Kept as a set
+# so `count_gated_approvals` reports the reviewer's verdict under the SAME rule the
+# publish gate applies. `test_admitting_outcomes_matches_eligibility_gate` drives every
+# enum member through the real gate and pins the two together, so adding a member to
+# one without the other fails loudly.
+HITL_ADMITTING_OUTCOMES: Final[frozenset[PerFindingOutcome]] = frozenset(
+    {PerFindingOutcome.APPROVE, PerFindingOutcome.SEVERITY_OVERRIDE}
+)
+
+
+def count_gated_approvals(
+    *,
+    gated_finding_ids: Sequence[UUID],
+    hitl_decision: HITLDecision | None,
+) -> tuple[int, int]:
+    """`(approved, total)` over the GATED finding set.
+
+    The reviewer's verdict is NOT derivable from publish routing counts: those span
+    auto-post (non-gated) findings too, so a review that rejected every gated finding
+    can still show `posted_count > 0`, and an approved finding routed DASHBOARD_ONLY
+    contributes zero. Callers that need to say "approved" or "dismissed" ask here.
+
+    A gated finding with no matching decision counts as not-approved (fail-closed,
+    matching the gate's HITL_DECISION_MISSING withholding).
+    """
+    approved = sum(
+        1
+        for fid in gated_finding_ids
+        if (d := _find_decision_for(finding_id=fid, hitl_decision=hitl_decision)) is not None
+        and d.outcome in HITL_ADMITTING_OUTCOMES
+    )
+    return approved, len(gated_finding_ids)

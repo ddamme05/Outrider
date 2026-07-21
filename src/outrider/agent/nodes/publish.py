@@ -51,7 +51,7 @@ from __future__ import annotations
 import logging
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from outrider.audit.events import (
@@ -76,6 +76,7 @@ from outrider.coordinates import (
 from outrider.coordinates.errors import CoordinateErrorKind
 from outrider.policy.canonical import compute_phase_id
 from outrider.policy.publish_eligibility import (
+    count_gated_approvals,
     is_eligible_for_v1_publish,
     is_hitl_gated_severity,
 )
@@ -134,7 +135,184 @@ _AGENT_MARKER_TEMPLATE = "<!-- outrider:{key} {value} -->"
 _AUTH_REVOKED_STATUS_CODES: frozenset[int] = frozenset({401, 403, 404})
 
 
+# Outcomes for which the non-gated review-posted FYI is TRUE. Deliberately narrower
+# than the mirror's "every non-failed outcome": the FYI asserts "this review posted to
+# the PR", so it may only fire where a GitHub review exists — freshly created
+# (`success`) or confirmed already created (the two idempotent-skip paths, which are
+# also the repair path for an FYI whose first post failed).
+# Both exclusions are CORRECTNESS, not volume: under `not_published_auth_revoked` and
+# `empty` alike, no GitHub review was created, so a `review_posted` FYI would be a false
+# claim about the PR. A clean-review notification is a legitimate thing to want, but it
+# is a DIFFERENT message with different semantics ("review completed — no findings"),
+# not this one relaxed to fire on `empty`.
+_FYI_TRUTHFUL_OUTCOMES: Final[frozenset[str]] = frozenset(
+    {"success", "idempotently_skipped", "idempotently_skipped_external_record"}
+)
+
+
+async def _finalize_slack_notifications(
+    state: ReviewState,
+    *,
+    resolve_slack_target: SlackTargetResolver | None,
+    publish_event_sink: PublishEventSink,
+    delta: dict[str, object],
+) -> None:
+    """Best-effort Slack terminal finalization, shared by BOTH message classes.
+
+    `publish` funnels its whole body through this ONE call, so no return path can
+    silently skip its Slack surface. That single exit is the point — both defects this
+    replaced were "a return path that forgot the notification":
+      - the gated mirror fired only on fresh success, so rejecting every gated finding
+        (→ `NO_OP_EMPTY` short-circuit) left the card reading "Review needs approval"
+        forever, and a failed `chat.update` was unrepairable because replay
+        short-circuits at the prior-`PublishEvent` check;
+      - the non-gated FYI had the same shape, so a failed first post could never be
+        repaired despite the orchestrator carrying replay dedup precisely for that.
+
+    The two classes are mutually exclusive per review and branch on `hitl_request`
+    (None ⇒ the review never gated). Their outcome predicates differ: the FYI runs only
+    where a GitHub review actually exists (see `_FYI_TRUTHFUL_OUTCOMES`), while the
+    mirror runs on every non-failed outcome EXCEPT `not_published_auth_revoked` — the
+    one outcome whose rendering diverges from the rest, which `chat.update` cannot
+    order safely (see the guard below).
+
+    FAILED paths raise rather than return, so they never reach here — the card
+    correctly stays at its prior state pending a sweep-driven retry.
+    """
+    if resolve_slack_target is None:
+        return
+    report = state.review_report
+    result = delta.get("publish_result")
+    if report is None or not isinstance(result, PublishResult):
+        return
+    posted_count = result.comments_posted + result.review_body_findings_posted
+    dashboard_only_count = result.dashboard_only_findings_surfaced
+    gated_request = state.hitl_request
+    try:
+        slack_target = await resolve_slack_target(state.pr_context.installation_id)
+        if slack_target is None:
+            return
+        repo = f"{state.pr_context.owner}/{state.pr_context.repo}"
+        if gated_request is None:
+            # Never gated: the compact FYI is the whole Slack surface. The
+            # orchestrator's own `review_posted` dedup makes the replay call a no-op
+            # when the first post succeeded, and a real repair when it did not.
+            #
+            # Held under the SAME per-review advisory lock the publish body uses
+            # (`DECISIONS.md#027`). That dedup is query-then-post-then-record, so it is
+            # only sound while same-review invocations are serialized: unlocked,
+            # concurrent resumes can both query, both miss, and both post — turning the
+            # spec's narrow post-then-record crash-window residual into an ordinary
+            # concurrency race. The body released its lock before this runs, so the
+            # finalizer re-acquires rather than inheriting. The gated mirror below needs
+            # no lock: `chat.update` is idempotent for a given rendering, so a
+            # concurrent duplicate is a no-op rather than a second message.
+            if result.outcome in _FYI_TRUTHFUL_OUTCOMES:
+                async with publish_event_sink.acquire_publish_lock(review_id=state.review_id):
+                    await slack_target.orchestrator.notify_review_posted(
+                        review_id=state.review_id,
+                        is_eval=state.is_eval,
+                        channel_id=slack_target.channel_id,
+                        repo=repo,
+                        pr_number=state.pr_context.pr_number,
+                        posted_count=posted_count,
+                        dashboard_only_count=dashboard_only_count,
+                    )
+            return
+        if result.outcome == "not_published_auth_revoked":
+            # No terminal mirror on the revoked path, deliberately. It is the ONLY
+            # outcome whose rendering diverges from the others (they all derive their
+            # counts from the same durable state and converge), and `chat.update` has
+            # no compare-and-set. A concurrent pair — A revoked (emits no PublishEvent,
+            # so nothing durable records it), then B recovering and succeeding — can
+            # land A's delayed "access revoked" edit AFTER B's terminal one, leaving
+            # the card claiming a publish failure for a review that published. Locking
+            # the write does not fix it: mutual exclusion is not ordering, and lock
+            # acquisition can still happen in the wrong order. Gating on a prior
+            # `PublishEvent` does not fix it either — external-record recovery emits
+            # none. The card therefore stays at "Review needs approval" for a revoked
+            # review: stale, but never actively false. FUP-252 restores this together
+            # with the monotonic mechanism it needs.
+            return
+        approved_count, gated_count = count_gated_approvals(
+            gated_finding_ids=gated_request.findings_requiring_approval,
+            hitl_decision=state.hitl_decision,
+        )
+        mirror_ids = set(gated_request.findings_requiring_approval)
+        await slack_target.orchestrator.mirror_status(
+            review_id=state.review_id,
+            channel_id=slack_target.channel_id,
+            repo=repo,
+            pr_number=state.pr_context.pr_number,
+            pr_title=state.pr_context.pr_title,
+            findings=[f for f in report.findings if f.finding_id in mirror_ids],
+            reviewer_id=(
+                state.hitl_decision.reviewer_id if state.hitl_decision is not None else None
+            ),
+            approved_count=approved_count,
+            gated_count=gated_count,
+            posted_count=posted_count,
+            dashboard_only_count=dashboard_only_count,
+        )
+    except Exception:
+        # Never gate-breaking: the publish outcome is already recorded; a Slack-path
+        # failure must not lose the PublishResult.
+        logger.exception(
+            "slack terminal notification failed; publish result unaffected",
+            extra={"review_id": str(state.review_id)},
+        )
+
+
 async def publish(
+    state: ReviewState,
+    *,
+    publisher: GitHubPublisher,
+    publish_event_sink: PublishEventSink,
+    phase_event_sink: PhaseEventSink,
+    review_status_sink: ReviewStatusSink,
+    github_factory: Callable[[int], Awaitable[InstallationGitHubClient]],
+    dashboard_base_url: str | None = None,
+    resolve_slack_target: SlackTargetResolver | None = None,
+) -> dict[str, object]:
+    """Publish node. Thin wrapper over `_publish_body` that routes EVERY non-failed
+    outcome through the shared Slack terminal finalization (see
+    `_finalize_slack_notifications` for why neither notification can live inside the
+    success branch)."""
+    delta = await _publish_body(
+        state,
+        publisher=publisher,
+        publish_event_sink=publish_event_sink,
+        phase_event_sink=phase_event_sink,
+        review_status_sink=review_status_sink,
+        github_factory=github_factory,
+        dashboard_base_url=dashboard_base_url,
+        resolve_slack_target=resolve_slack_target,
+    )
+    await _finalize_slack_notifications(
+        state,
+        resolve_slack_target=resolve_slack_target,
+        publish_event_sink=publish_event_sink,
+        delta=delta,
+    )
+    # Phase-end LAST. `phase-events-bound-work` requires a node's observable work to sit
+    # INSIDE its start/end bracket, and Slack finalization is publish-node work — emitting
+    # phase-end from inside `_publish_body` left every Slack resolve/lock/post/update
+    # outside its own causal phase, which replay groups by. `compute_phase_id` is
+    # deterministic, so this closes exactly the bracket the body opened. A FAILED path
+    # raises out of `_publish_body` and never reaches here, preserving the dangling-start
+    # "publish interrupted" signal; the same holds for a `mark_completed` failure.
+    await _emit_phase_end(
+        phase_event_sink=phase_event_sink,
+        review_id=state.review_id,
+        phase_id=compute_phase_id(
+            review_id=str(state.review_id), node_id="publish", attempt_key="publish"
+        ),
+        is_eval=state.is_eval,
+    )
+    return delta
+
+
+async def _publish_body(
     state: ReviewState,
     *,
     publisher: GitHubPublisher,
@@ -399,18 +577,12 @@ async def publish(
                 is_eval=state.is_eval,
             )
             # Terminal-success lifecycle write per canonical
-            # `docs/spec.md` §3.3 step 10. Placed BEFORE
-            # `_emit_phase_end` so a lifecycle-write failure leaves
-            # phase-start dangling (the canonical "publish interrupted"
-            # signal); a sweep-driven retry hits the prior PublishEvent
-            # short-circuit again and re-attempts the completion write.
+            # `docs/spec.md` §3.3 step 10. A failure here raises before
+            # the wrapper's phase-end, leaving phase-start dangling (the
+            # canonical "publish interrupted" signal); a sweep-driven
+            # retry hits the prior PublishEvent short-circuit again and
+            # re-attempts the completion write.
             await review_status_sink.mark_completed(review_id=state.review_id)
-            await _emit_phase_end(
-                phase_event_sink=phase_event_sink,
-                review_id=state.review_id,
-                phase_id=phase_id,
-                is_eval=state.is_eval,
-            )
             return {
                 "publish_result": PublishResult.skipped(
                     comments_posted=prior_publish_event.comments_posted,
@@ -442,12 +614,6 @@ async def publish(
             # `docs/spec.md` §3.3 step 10. See the equivalent comment
             # at the Step-4 short-circuit above for ordering rationale.
             await review_status_sink.mark_completed(review_id=state.review_id)
-            await _emit_phase_end(
-                phase_event_sink=phase_event_sink,
-                review_id=state.review_id,
-                phase_id=phase_id,
-                is_eval=state.is_eval,
-            )
             return {"publish_result": PublishResult.empty()}
 
         # Step 6: external-record check (crash-after-success defense).
@@ -529,12 +695,6 @@ async def publish(
             # `docs/spec.md` §3.3 step 10. See the equivalent comment
             # at the Step-4 short-circuit above for ordering rationale.
             await review_status_sink.mark_completed(review_id=state.review_id)
-            await _emit_phase_end(
-                phase_event_sink=phase_event_sink,
-                review_id=state.review_id,
-                phase_id=phase_id,
-                is_eval=state.is_eval,
-            )
             return {
                 "publish_result": PublishResult.skipped_external(
                     existing_review_id=existing_review_id,
@@ -640,52 +800,20 @@ async def publish(
         )
         # Terminal-success lifecycle write per canonical `docs/spec.md`
         # §3.3 step 10. Placed BEFORE `_emit_phase_end` so a lifecycle-
-        # write failure leaves phase-start dangling (the canonical
-        # "publish interrupted" signal); the `PublishEvent` is already
-        # committed so a sweep-driven retry sees prior-publish-event at
-        # Step 4 and short-circuits to IDEMPOTENTLY_SKIPPED, where
-        # `mark_completed` retries.
+        # write failure raises before the wrapper's phase-end, leaving
+        # phase-start dangling (the canonical "publish interrupted"
+        # signal); the `PublishEvent` is already committed so a
+        # sweep-driven retry sees prior-publish-event at Step 4 and
+        # short-circuits to IDEMPOTENTLY_SKIPPED, where `mark_completed`
+        # retries.
         await review_status_sink.mark_completed(review_id=state.review_id)
-        await _emit_phase_end(
-            phase_event_sink=phase_event_sink,
-            review_id=state.review_id,
-            phase_id=phase_id,
-            is_eval=state.is_eval,
-        )
 
-        # Slack review-posted FYI (best-effort). Resolve the install's target
-        # (channel + token-bound orchestrator) per FUP-186; a None resolver or a
-        # None target → no FYI. The orchestrator's notify_* is itself no-raise and
-        # self-skips for gated reviews (a `hitl_pending` row exists → the HITL status
-        # mirror owns the Slack surface) and on replay (a `review_posted` row exists).
-        # The whole resolve+notify is wrapped: Slack is optional and NEVER
-        # gate-breaking, so a resolver failure (DB read / decrypt / notifier build)
-        # degrades to no FYI rather than failing the node AFTER the review already
-        # posted to GitHub. `posted_count` is the two POSTED channels — inline +
-        # review-body (DECISIONS.md#050); dashboard-only is counted "surfaced".
-        if resolve_slack_target is not None:
-            try:
-                slack_target = await resolve_slack_target(state.pr_context.installation_id)
-                if slack_target is not None:
-                    await slack_target.orchestrator.notify_review_posted(
-                        review_id=state.review_id,
-                        is_eval=state.is_eval,
-                        channel_id=slack_target.channel_id,
-                        # owner/repo slug (matches hitl-pending FYI; org-disambiguated).
-                        repo=f"{state.pr_context.owner}/{state.pr_context.repo}",
-                        pr_number=state.pr_context.pr_number,
-                        posted_count=(
-                            review_created.comments_posted + len(eligible_review_body_findings)
-                        ),
-                        dashboard_only_count=len(surfaced_dashboard_only_findings),
-                    )
-            except Exception:
-                # Never gate-breaking: the review is already posted; a Slack-path
-                # failure must not lose the PublishResult.
-                logger.exception(
-                    "slack review-posted FYI failed; publish result unaffected",
-                    extra={"review_id": str(state.review_id)},
-                )
+        # NOTE: no Slack call here. BOTH message classes — the non-gated
+        # review-posted FYI and the gated status mirror — run in
+        # `_finalize_slack_notifications`, off the `publish` wrapper's single exit, so
+        # the idempotent-skip return paths above get them too. Placing either here is
+        # the defect that shipped twice: a notification reachable only on fresh
+        # success can never be repaired, because replay short-circuits before it.
 
         # Started_at is not part of the result shape — kept as a local
         # marker for future eval-timing metrics; PublishEvent doesn't
@@ -764,7 +892,8 @@ async def _emit_auth_revoked_and_retain(
     """#065: a publish-path GitHub call was rejected with 401/403/404 — authorization
     revoked (App uninstalled / suspended / repo removed). Record the retained no-post —
     emit `PublishAttemptEvent(not_published_auth_revoked, status_code=<code>,
-    failure_class=None)`, mark the review `completed`, emit phase-end, return the result.
+    failure_class=None)`, mark the review `completed`, return the result (the `publish`
+    wrapper emits phase-end after Slack finalization).
 
     Shared by BOTH publish GitHub-call except paths — Step-6 `find_existing_review_on_head_sha`
     (the GET, the first call) and Step-7 `create_review` (the POST) — so a revocation surfacing
@@ -782,12 +911,6 @@ async def _emit_auth_revoked_and_retain(
         is_eval=is_eval,
     )
     await review_status_sink.mark_completed(review_id=review_id)
-    await _emit_phase_end(
-        phase_event_sink=phase_event_sink,
-        review_id=review_id,
-        phase_id=phase_id,
-        is_eval=is_eval,
-    )
     return {"publish_result": PublishResult.not_published_auth_revoked()}
 
 

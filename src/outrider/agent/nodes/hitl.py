@@ -414,6 +414,19 @@ async def hitl(
         hitl_decision_payload=canonical_decision.model_dump(mode="json"),
     )
 
+    # NOTE: no interim "Decided" Slack mirror here, deliberately. `chat.update`
+    # replaces the whole message and has no compare-and-set, so it is idempotent only
+    # for an IDENTICAL rendering — across DIFFERENT renderings it is last-writer-wins.
+    # Concurrent same-review resumes (a sweep reclaim racing a manual resume) can
+    # therefore let a delayed interim edit land AFTER the publish node's terminal one,
+    # regressing the card to "publishing…" for a review that already published — and
+    # if that delayed invocation then fails, nothing writes again. Publish is the sole
+    # mirror writer so no ordering needs protecting. Reintroducing an interim (or
+    # expiry) state needs a genuinely monotonic lifecycle mechanism first: gating on a
+    # prior `PublishEvent` is NOT sufficient, because `empty`,
+    # `not_published_auth_revoked`, and external-record recovery are all terminal
+    # outcomes that emit none. See FUP-252.
+
     # Step 12: phase end.
     await phase_event_sink.emit_phase(
         ReviewPhaseEvent(

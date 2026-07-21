@@ -14,7 +14,11 @@ from typing import Any
 from uuid import uuid4
 
 from outrider.audit.events import compute_finding_content_hash
-from outrider.notify.messages import build_hitl_pending_message, build_review_posted_message
+from outrider.notify.messages import (
+    build_hitl_pending_message,
+    build_review_posted_message,
+    build_status_mirror_message,
+)
 from outrider.policy import EvidenceTier
 from outrider.policy.severity import ACTIVE_POLICY_VERSION, FindingSeverity, FindingType
 from outrider.schemas import ReviewDimension
@@ -298,3 +302,129 @@ def test_review_posted_no_link_fallback_when_deep_link_none() -> None:
     assert "http" not in json.dumps(msg.blocks)
     assert "http" not in msg.text
     assert "|view>" not in json.dumps(msg.blocks)  # no mrkdwn link
+
+
+# ---------------------------------------------------------------------------
+# Status mirror card
+# ---------------------------------------------------------------------------
+
+
+def _mirror(**kw: Any) -> Any:
+    defaults: dict[str, Any] = {
+        "repo": "acme/api",
+        "pr_number": 7,
+        "pr_title": "Add webhook",
+        "findings": [_finding(FindingSeverity.CRITICAL, title="SQLi in lookup")],
+        "deep_link": "https://dash.example.com/reviews/abc",
+    }
+    defaults.update(kw)
+    return build_status_mirror_message(**defaults)
+
+
+def _all_text(msg: Any) -> str:
+    return json.dumps(msg.blocks)
+
+
+def test_mirror_preserves_findings_and_button() -> None:
+    """The mirror edits the HITL card in place: the finding record and the dashboard
+    button survive every status change (that record is the channel's value)."""
+    msg = _mirror(posted_count=3, dashboard_only_count=1)
+    assert "SQLi in lookup" in _all_text(msg)
+    assert _actions_button_url(msg.blocks) == "https://dash.example.com/reviews/abc"
+
+
+def test_mirror_published_reads_approved_when_all_gated_approved() -> None:
+    msg = _mirror(
+        reviewer_id="alice",
+        approved_count=2,
+        gated_count=2,
+        posted_count=3,
+        dashboard_only_count=1,
+    )
+    body = _all_text(msg)
+    assert "Approved" in body
+    assert "2 of 2 gated approved" in body
+    assert "3 posted" in body
+    assert "1 dashboard-only" in body
+
+
+def test_mirror_verdict_is_not_inferred_from_posted_count() -> None:
+    """Routing counts CANNOT express the reviewer's verdict, and inferring it from
+    them produced two false readings. Both are pinned here.
+
+    (a) Every gated finding rejected, but a non-gated MEDIUM auto-posts →
+        `posted_count > 0`. Must not read "Approved".
+    (b) A gated finding approved but routed DASHBOARD_ONLY → `posted_count == 0`.
+        Must not read "Dismissed".
+    """
+    rejected_but_autopost = _all_text(
+        _mirror(
+            reviewer_id="alice",
+            approved_count=0,
+            gated_count=1,
+            posted_count=1,  # the auto-post MEDIUM, not the gated finding
+            dashboard_only_count=0,
+        )
+    )
+    assert "Dismissed" in rejected_but_autopost
+    assert "Approved" not in rejected_but_autopost
+    assert "0 of 1 gated approved" in rejected_but_autopost
+
+    approved_but_dashboard_only = _all_text(
+        _mirror(
+            reviewer_id="alice",
+            approved_count=1,
+            gated_count=1,
+            posted_count=0,
+            dashboard_only_count=1,
+        )
+    )
+    assert "Approved" in approved_but_dashboard_only
+    assert "Dismissed" not in approved_but_dashboard_only
+    assert "1 of 1 gated approved" in approved_but_dashboard_only
+
+
+def test_mirror_published_reads_dismissed_when_no_gated_finding_approved() -> None:
+    msg = _mirror(
+        reviewer_id="alice",
+        approved_count=0,
+        gated_count=2,
+        posted_count=0,
+        dashboard_only_count=0,
+    )
+    body = _all_text(msg)
+    assert "Dismissed" in body
+    assert "Approved" not in body
+    assert "nothing posted" in body
+
+
+def test_mirror_published_reads_partially_approved_on_a_split_decision() -> None:
+    """A mixed decision is neither "Approved" nor "Dismissed" — claiming either
+    overstates what the reviewer did."""
+    msg = _mirror(
+        reviewer_id="alice",
+        approved_count=1,
+        gated_count=3,
+        posted_count=1,
+        dashboard_only_count=0,
+    )
+    body = _all_text(msg)
+    assert "Partially approved" in body
+    assert "1 of 3 gated approved" in body
+
+
+def test_mirror_escapes_reviewer_and_never_leaks_finding_detail() -> None:
+    """`reviewer_id` is escaped like every other interpolated value, and the mirror
+    inherits the metadata-first rule — no description/evidence reaches Slack."""
+    msg = _mirror(reviewer_id="<!here>", posted_count=1)
+    body = _all_text(msg)
+    assert "&lt;!here&gt;" in body
+    assert "<!here>" not in body
+    assert "DESCRIPTION THAT MUST NOT APPEAR IN SLACK" not in body
+    assert "EVIDENCE THAT MUST NOT APPEAR IN SLACK" not in body
+
+
+def test_mirror_without_deep_link_drops_the_button() -> None:
+    msg = _mirror(deep_link=None, posted_count=1)
+    assert all(b["type"] != "actions" for b in msg.blocks)
+    assert "https://" not in msg.text

@@ -22,7 +22,13 @@ if TYPE_CHECKING:
 
     from outrider.schemas.review_finding import ReviewFinding
 
-__all__ = ["RenderedSlackMessage", "build_hitl_pending_message", "build_review_posted_message"]
+__all__ = [
+    "RenderedSlackMessage",
+    "build_hitl_pending_message",
+    "build_review_posted_message",
+    "build_status_mirror_message",
+]
+
 
 # Severity order (most → least severe) for sorting + count rendering.
 _SEVERITY_ORDER: Final[tuple[FindingSeverity, ...]] = (
@@ -117,6 +123,48 @@ def _finding_line(f: ReviewFinding) -> str:
     )
 
 
+def _finding_blocks(
+    ordered: Sequence[ReviewFinding], *, top_n: int, deep_link: str | None
+) -> list[dict[str, Any]]:
+    """Top-N finding sections plus the `+N more` overflow line. Shared by the
+    HITL-pending card and the status mirror, which edits that same card in place —
+    the finding list is the channel's record and survives every mirror edit."""
+    total = len(ordered)
+    shown = ordered[:top_n]
+    blocks: list[dict[str, Any]] = [_section(_finding_line(f)) for f in shown]
+    if total > len(shown):
+        remaining = _severity_counts(ordered[top_n:])
+        more = f"+{total - len(shown)} more ({_counts_phrase(remaining)})"
+        more += (
+            f" · <{deep_link}|view all {total} in the dashboard>"
+            if deep_link is not None
+            else f" · view all {total} in the Outrider dashboard"
+        )
+        blocks.append(_context(more))
+    return blocks
+
+
+def _deeplink_blocks(deep_link: str | None) -> list[dict[str, Any]]:
+    """Divider + deep-link button. No-link fallback: when no valid base URL is
+    configured (build_review_deeplink returned None), emit nothing rather than a
+    broken-link button."""
+    if deep_link is None:
+        return []
+    return [
+        {"type": "divider"},
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Review in dashboard"},
+                    "url": deep_link,
+                }
+            ],
+        },
+    ]
+
+
 def build_hitl_pending_message(
     *,
     repo: str,
@@ -131,42 +179,14 @@ def build_hitl_pending_message(
     repo_s, pr_title_s = _escape_mrkdwn(_clip(repo)), _escape_mrkdwn(_clip(pr_title))
     ordered = sorted(findings, key=lambda f: _SEVERITY_RANK[f.severity])
     counts = _severity_counts(ordered)
-    total = len(ordered)
-    shown = ordered[:top_n]
 
     blocks: list[dict[str, Any]] = [
         _section(f":warning: *Review needs approval* — `{repo_s}` #{pr_number}\n{pr_title_s}"),
     ]
     if counts:
         blocks.append(_context(_counts_phrase(counts)))
-    for f in shown:
-        blocks.append(_section(_finding_line(f)))
-    if total > len(shown):
-        remaining = _severity_counts(ordered[top_n:])
-        more = f"+{total - len(shown)} more ({_counts_phrase(remaining)})"
-        more += (
-            f" · <{deep_link}|view all {total} in the dashboard>"
-            if deep_link is not None
-            else f" · view all {total} in the Outrider dashboard"
-        )
-        blocks.append(_context(more))
-    # No-link fallback: when no valid base URL is configured
-    # (build_review_deeplink returned None), drop the divider + deep-link button
-    # rather than emit a broken-link button.
-    if deep_link is not None:
-        blocks.append({"type": "divider"})
-        blocks.append(
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Review in dashboard"},
-                        "url": deep_link,
-                    }
-                ],
-            }
-        )
+    blocks.extend(_finding_blocks(ordered, top_n=top_n, deep_link=deep_link))
+    blocks.extend(_deeplink_blocks(deep_link))
 
     counts_text = _counts_phrase(counts) if counts else "no findings"
     # Cap the attacker-bearing fallback BEFORE appending the trusted deep-link (escape-aware, so
@@ -209,4 +229,113 @@ def build_review_posted_message(
         section_text += f" · <{deep_link}|view>"
         text += f" {deep_link}"
     blocks = [_section(section_text)]
+    return RenderedSlackMessage(text=text, blocks=blocks)
+
+
+def _mirror_headline(*, approved_count: int, gated_count: int) -> tuple[str, str]:
+    """(icon, headline) for a mirror edit.
+
+    The verdict comes from the reviewer's decisions over the GATED findings, never
+    from publish routing counts. Routing cannot express the verdict: `posted_count`
+    also counts auto-post (non-gated) findings, so a review that rejected everything
+    can still post; and an APPROVED finding routed DASHBOARD_ONLY posts nothing.
+    Counts are reported separately in the detail line.
+
+    There is deliberately NO status dimension. Every rendering the mirror can produce
+    must be IDENTICAL for a given review, because `chat.update` replaces the whole
+    message with no compare-and-set: it is idempotent across concurrent writers only
+    while they all render the same thing. The remaining publish outcomes (success,
+    both idempotent skips, empty) all derive their counts from the same durable state,
+    so they converge. A status-varying rendering reintroduces last-writer-wins and
+    needs a monotonic lifecycle mechanism first — see FUP-252.
+    """
+    if gated_count and approved_count == gated_count:
+        return ":white_check_mark:", "Approved"
+    if approved_count == 0:
+        return ":no_entry_sign:", "Dismissed"
+    return ":white_check_mark:", "Partially approved"
+
+
+def _routing_phrase(*, posted_count: int, dashboard_only_count: int) -> str:
+    """What reached the PR, stated separately from the verdict."""
+    if posted_count == 0 and dashboard_only_count == 0:
+        return "nothing posted"
+    parts = [f"{posted_count} posted"]
+    if dashboard_only_count:
+        parts.append(f"{dashboard_only_count} dashboard-only")
+    return " · ".join(parts)
+
+
+def _mirror_detail(
+    *,
+    reviewer_s: str | None,
+    approved_count: int,
+    gated_count: int,
+    posted_count: int,
+    dashboard_only_count: int,
+) -> str:
+    """The context line: who decided, what they decided, and what reached the PR —
+    kept as three separate clauses so the routing counts can never be read as the
+    reviewer's verdict."""
+    by = f"Decided by {reviewer_s}" if reviewer_s else "Decided"
+    verdict = f"{approved_count} of {gated_count} gated approved"
+    routing = _routing_phrase(posted_count=posted_count, dashboard_only_count=dashboard_only_count)
+    return f"{by} · {verdict} · {routing}"
+
+
+def build_status_mirror_message(
+    *,
+    repo: str,
+    pr_number: int,
+    pr_title: str,
+    findings: Sequence[ReviewFinding],
+    deep_link: str | None,
+    reviewer_id: str | None = None,
+    approved_count: int = 0,
+    gated_count: int = 0,
+    posted_count: int = 0,
+    dashboard_only_count: int = 0,
+    top_n: int = 3,
+) -> RenderedSlackMessage:
+    """Re-render the HITL card for a `chat.update` status mirror.
+
+    Same card, terminal state: the header and context lines carry the outcome while
+    the finding sections and dashboard button are preserved, so the channel keeps its
+    record of what was flagged. `findings` is the ORIGINAL gated set (the mirror
+    reflects the decision, it does not re-triage). There is one rendering per review
+    by construction — see `_mirror_headline` for why that is load-bearing.
+
+    `approved_count` / `gated_count` carry the reviewer's verdict over the gated set
+    (from `policy.publish_eligibility.count_gated_approvals`); `posted_count` /
+    `dashboard_only_count` carry publish routing. The two are rendered as separate
+    clauses and MUST NOT be conflated — routing spans auto-post findings, so it
+    cannot express what the reviewer decided.
+
+    Emits no audit event — the mirror is a side-effecting reflection of facts already
+    captured by `HITLDecisionEvent` / `PublishEvent` (spec: Audit events emitted).
+    """
+    repo_s, pr_title_s = _escape_mrkdwn(_clip(repo)), _escape_mrkdwn(_clip(pr_title))
+    reviewer_s = _escape_mrkdwn(_clip(reviewer_id)) if reviewer_id else None
+    ordered = sorted(findings, key=lambda f: _SEVERITY_RANK[f.severity])
+    icon, headline = _mirror_headline(approved_count=approved_count, gated_count=gated_count)
+    detail = _mirror_detail(
+        reviewer_s=reviewer_s,
+        approved_count=approved_count,
+        gated_count=gated_count,
+        posted_count=posted_count,
+        dashboard_only_count=dashboard_only_count,
+    )
+
+    blocks: list[dict[str, Any]] = [
+        _section(f"{icon} *{headline}* — `{repo_s}` #{pr_number}\n{pr_title_s}"),
+        _context(detail),
+    ]
+    blocks.extend(_finding_blocks(ordered, top_n=top_n, deep_link=deep_link))
+    blocks.extend(_deeplink_blocks(deep_link))
+
+    # Cap the attacker-bearing fallback BEFORE appending the trusted deep-link, same
+    # escape-aware discipline as the other builders.
+    text = _cap_text(f"{headline}: {repo_s} #{pr_number} — {pr_title_s} ({detail}).")
+    if deep_link is not None:
+        text += f" {deep_link}"
     return RenderedSlackMessage(text=text, blocks=blocks)

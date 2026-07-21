@@ -509,7 +509,13 @@ def test_compute_hitl_decision_content_hash_rejects_non_basemodel() -> None:
 
 
 class _FakeSlackOrchestrator:
-    """Records notify_hitl_pending calls; the hitl node calls only this method."""
+    """Records `notify_hitl_pending` — the ONLY orchestrator method the hitl node calls.
+
+    It deliberately does NOT define `mirror_status`. Publish is the sole mirror writer
+    (`chat.update` is last-writer-wins across differing renderings), so a hitl-side
+    mirror call is an ordering regression; omitting the attribute means one shows up as
+    a swallowed AttributeError with no recorded call rather than silently working.
+    `test_hitl_does_not_mirror_the_card` pins the absence positively."""
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -627,3 +633,59 @@ async def test_hitl_slack_resolver_failure_is_not_gate_breaking(
             hitl_config=HITLConfig(),
             resolve_slack_target=_boom,
         )
+
+
+@pytest.mark.asyncio
+async def test_hitl_does_not_mirror_the_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Publish is the SOLE Slack mirror writer; hitl must never edit the card.
+
+    `chat.update` replaces the whole message with no compare-and-set, so it is
+    idempotent for an identical rendering but last-writer-wins across different ones.
+    A hitl-side interim edit gives the review two writers, and under concurrent
+    same-review resumes (sweep reclaim racing a manual resume) a delayed interim edit
+    can land AFTER publish's terminal one — regressing the card to "publishing…" for a
+    review that already published, permanently if that invocation then fails. Pinned as
+    an absence so the interim edit cannot be reintroduced without a monotonic
+    lifecycle mechanism (FUP-252).
+    """
+
+    class _MirrorSpy(_FakeSlackOrchestrator):
+        def __init__(self) -> None:
+            super().__init__()
+            self.mirrors: list[dict[str, Any]] = []
+
+        async def mirror_status(self, **kwargs: Any) -> bool:
+            self.mirrors.append(kwargs)
+            return True
+
+    review_id = uuid4()
+    crit = _make_finding(review_id=review_id, severity=FindingSeverity.CRITICAL)
+    state = _make_state(findings=[crit], review_id=review_id, received_at=datetime.now(UTC))
+    spy = _MirrorSpy()
+
+    def _resume(*_a: Any, **_k: Any) -> dict[str, Any]:
+        return {
+            "reviewer_id": "alice",
+            "decisions": [
+                {"finding_id": str(crit.finding_id), "outcome": "approve", "reason": "ok"}
+            ],
+            "annotation": None,
+            "decided_at": datetime.now(UTC).isoformat(),
+        }
+
+    monkeypatch.setattr("outrider.agent.nodes.hitl.interrupt", _resume)
+
+    delta = await hitl(
+        state,  # type: ignore[arg-type]
+        phase_event_sink=_RecordingPhaseSink(),  # type: ignore[arg-type]
+        hitl_event_sink=_RecordingHITLSink(),  # type: ignore[arg-type]
+        review_status_sink=_RecordingStatusSink(),  # type: ignore[arg-type]
+        hitl_config=HITLConfig(),
+        resolve_slack_target=_resolver_for(spy),
+    )
+
+    # The decision still lands and the pre-interrupt card still posts...
+    assert delta["hitl_decision"].reviewer_id == "alice"
+    assert len(spy.calls) == 1
+    # ...but the node never edits it.
+    assert spy.mirrors == []

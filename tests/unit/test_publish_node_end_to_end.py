@@ -20,6 +20,7 @@ that the spec didn't explicitly name but should have.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -2198,13 +2199,24 @@ async def test_mixed_review_body_and_dashboard_only_both_materialize(
 
 
 class _RecordingSlackOrchestrator:
-    """Records `notify_review_posted` calls (publish never calls notify_hitl_pending)."""
+    """Records the two orchestrator methods publish calls: `notify_review_posted`
+    (non-gated FYI) and `mirror_status` (gated terminal edit). Publish never calls
+    notify_hitl_pending.
+
+    Both MUST stay defined even where a test asserts on only one: the node wraps the
+    calls in a no-raise envelope, so a missing method degrades to a swallowed
+    AttributeError and the remaining assertions silently stop proving anything."""
 
     def __init__(self) -> None:
         self.review_posted_calls: list[dict[str, Any]] = []
+        self.mirror_calls: list[dict[str, Any]] = []
 
     async def notify_review_posted(self, **kwargs: Any) -> None:
         self.review_posted_calls.append(kwargs)
+
+    async def mirror_status(self, **kwargs: Any) -> bool:
+        self.mirror_calls.append(kwargs)
+        return True
 
 
 def _resolver_for(orch: _RecordingSlackOrchestrator, channel_id: str = "C0123ABC") -> Any:
@@ -2344,3 +2356,678 @@ async def test_publish_slack_resolver_failure_is_not_publish_breaking() -> None:
     )
 
     assert result["publish_result"].outcome == "success"
+
+
+def _gate(state: ReviewState, finding: ReviewFinding, *, reviewer_id: str = "alice") -> ReviewState:
+    """Return `state` as a review that gated on `finding` and was then decided —
+    the shape publish sees when resuming past HITL."""
+    from datetime import timedelta
+
+    from outrider.schemas.hitl import (
+        HITLDecision,
+        HITLRequest,
+        PerFindingDecision,
+        PerFindingOutcome,
+    )
+
+    now = datetime.now(UTC)
+    return state.model_copy(
+        update={
+            "hitl_request": HITLRequest(
+                findings_requiring_approval=(finding.finding_id,),
+                auto_post_findings=(),
+                created_at=now,
+                expires_at=now + timedelta(hours=24),
+            ),
+            "hitl_decision": HITLDecision(
+                reviewer_id=reviewer_id,
+                decisions=(
+                    PerFindingDecision(
+                        finding_id=finding.finding_id,
+                        outcome=PerFindingOutcome.APPROVE,
+                        reason="approved",
+                    ),
+                ),
+                annotation=None,
+                decided_at=now,
+            ),
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_publish_mirrors_terminal_status_for_gated_review() -> None:
+    """A review that gated gets the terminal `chat.update` carrying the routing
+    counts and the reviewer — not a second standalone message."""
+    finding = _make_finding(severity=FindingSeverity.CRITICAL, line_start=1, line_end=1)
+    state = _gate(_make_state(findings=(finding,), changed_files=(_make_changed_file(),)), finding)
+    orch = _RecordingSlackOrchestrator()
+
+    await publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+        resolve_slack_target=_resolver_for(orch),
+    )
+
+    assert len(orch.mirror_calls) == 1
+    mirror = orch.mirror_calls[0]
+    assert mirror["reviewer_id"] == "alice"
+    assert mirror["review_id"] == state.review_id
+    assert mirror["channel_id"] == "C0123ABC"
+    assert mirror["repo"] == f"{state.pr_context.owner}/{state.pr_context.repo}"
+    assert mirror["pr_number"] == state.pr_context.pr_number
+    assert mirror["posted_count"] == 1
+    assert mirror["dashboard_only_count"] == 0
+    # The card keeps the ORIGINAL gated finding set as its record.
+    assert {f.finding_id for f in mirror["findings"]} == {finding.finding_id}
+
+
+@pytest.mark.asyncio
+async def test_publish_does_not_mirror_when_review_never_gated() -> None:
+    """Non-gated review: the FYI is the whole Slack surface. The node skips the
+    mirror outright rather than relying on the orchestrator's self-skip."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    orch = _RecordingSlackOrchestrator()
+
+    await publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+        resolve_slack_target=_resolver_for(orch),
+    )
+
+    assert orch.mirror_calls == []
+    assert len(orch.review_posted_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_publish_mirror_failure_does_not_lose_publish_result() -> None:
+    """The review is already on GitHub: a mirror crash must not fail the node."""
+    finding = _make_finding(severity=FindingSeverity.CRITICAL, line_start=1, line_end=1)
+    state = _gate(_make_state(findings=(finding,), changed_files=(_make_changed_file(),)), finding)
+
+    class _ExplodingOrchestrator(_RecordingSlackOrchestrator):
+        async def mirror_status(self, **kwargs: Any) -> bool:
+            raise RuntimeError("slack exploded")
+
+    delta = await publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+        resolve_slack_target=_resolver_for(_ExplodingOrchestrator()),
+    )
+    assert delta["publish_result"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Terminal mirror fires on EVERY non-failed outcome, not just fresh success
+# ---------------------------------------------------------------------------
+
+
+def _approve() -> Any:
+    from outrider.schemas.hitl import PerFindingOutcome
+
+    return PerFindingOutcome.APPROVE
+
+
+def _gate_with(
+    state: ReviewState,
+    finding: ReviewFinding,
+    *,
+    outcome: Any,
+    reviewer_id: str = "alice",
+) -> ReviewState:
+    """`state` as a gated review decided with `outcome` on `finding`."""
+    from datetime import timedelta
+
+    from outrider.schemas.hitl import HITLDecision, HITLRequest, PerFindingDecision
+
+    now = datetime.now(UTC)
+    return state.model_copy(
+        update={
+            "hitl_request": HITLRequest(
+                findings_requiring_approval=(finding.finding_id,),
+                auto_post_findings=(),
+                created_at=now,
+                expires_at=now + timedelta(hours=24),
+            ),
+            "hitl_decision": HITLDecision(
+                reviewer_id=reviewer_id,
+                decisions=(
+                    PerFindingDecision(
+                        finding_id=finding.finding_id, outcome=outcome, reason="decided"
+                    ),
+                ),
+                annotation=None,
+                decided_at=now,
+            ),
+        }
+    )
+
+
+async def _run_publish(state: ReviewState, orch: Any, **overrides: Any) -> dict[str, object]:
+    kwargs: dict[str, Any] = {
+        "publisher": _StubPublisher(),
+        "publish_event_sink": _RecordingPublishEventSink(),
+        "phase_event_sink": _RecordingPhaseEventSink(),
+        "review_status_sink": _RecordingReviewStatusSink(),
+        "github_factory": _stub_github_factory,
+        "resolve_slack_target": _resolver_for(orch),
+    }
+    kwargs.update(overrides)
+    return await publish(state, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_mirror_fires_when_every_gated_finding_is_rejected() -> None:
+    """The regression that motivated the single-exit wrapper: rejecting everything
+    leaves nothing to publish, so the node short-circuits at NO_OP_EMPTY. The mirror
+    must STILL run — otherwise the card sits at "Review needs approval" forever, for a
+    review whose findings were all rejected."""
+    from outrider.schemas.hitl import PerFindingOutcome as _Outcome
+
+    finding = _make_finding(severity=FindingSeverity.CRITICAL, line_start=1, line_end=1)
+    state = _gate_with(
+        _make_state(findings=(finding,), changed_files=(_make_changed_file(),)),
+        finding,
+        outcome=_Outcome.REJECT,
+    )
+    orch = _RecordingSlackOrchestrator()
+
+    result = await _run_publish(state, orch)
+
+    assert result["publish_result"].outcome == "empty"
+    assert len(orch.mirror_calls) == 1
+    mirror = orch.mirror_calls[0]
+    assert mirror["approved_count"] == 0
+    assert mirror["gated_count"] == 1
+    assert mirror["posted_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_mirror_reports_zero_approvals_even_when_an_autopost_finding_posts() -> None:
+    """Counterexample (a): the gated CRITICAL is rejected but a non-gated MEDIUM
+    auto-posts, so posted_count > 0. The verdict must still say 0 approved — the
+    routing count is not the reviewer's decision."""
+    from outrider.schemas.hitl import PerFindingOutcome as _Outcome
+
+    gated = _make_finding(severity=FindingSeverity.CRITICAL, line_start=1, line_end=1)
+    autopost = _make_finding(severity=FindingSeverity.MEDIUM, line_start=2, line_end=2)
+    state = _gate_with(
+        _make_state(
+            findings=(gated, autopost),
+            changed_files=(_make_changed_file(),),
+            # `_make_finding` uses a fixed dummy proposal_hash, which AnalysisRound
+            # rejects as a duplicate; publish reads review_report.findings anyway.
+            analysis_round_findings=(),
+        ),
+        gated,
+        outcome=_Outcome.REJECT,
+    )
+    orch = _RecordingSlackOrchestrator()
+
+    await _run_publish(state, orch)
+
+    assert len(orch.mirror_calls) == 1
+    mirror = orch.mirror_calls[0]
+    assert mirror["approved_count"] == 0
+    assert mirror["gated_count"] == 1
+    assert mirror["posted_count"] > 0  # the auto-post MEDIUM reached the PR
+
+
+@pytest.mark.asyncio
+async def test_mirror_reports_approval_when_finding_routes_dashboard_only() -> None:
+    """Counterexample (b): the gated finding is APPROVED but lands in a file that is
+    not in the diff, so it routes DASHBOARD_ONLY and posted_count is 0. The verdict
+    must still say approved."""
+    from outrider.schemas.hitl import PerFindingOutcome as _Outcome
+
+    finding = _make_finding(severity=FindingSeverity.CRITICAL, file_path="src/other.py")
+    state = _gate_with(
+        _make_state(
+            findings=(finding,),
+            changed_files=(_make_changed_file(path="src/foo.py"),),
+            analysis_round_findings=(),
+        ),
+        finding,
+        outcome=_Outcome.APPROVE,
+    )
+    orch = _RecordingSlackOrchestrator()
+
+    await _run_publish(state, orch)
+
+    assert len(orch.mirror_calls) == 1
+    mirror = orch.mirror_calls[0]
+    assert mirror["approved_count"] == 1
+    assert mirror["gated_count"] == 1
+    assert mirror["posted_count"] == 0
+    assert mirror["dashboard_only_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_mirror_fires_on_prior_event_replay_so_a_failed_update_can_be_repaired() -> None:
+    """Replay short-circuits at the prior-PublishEvent check. The mirror must run
+    there too, otherwise a `chat.update` that failed the first time can never be
+    repaired — every retry would short-circuit past it."""
+    from outrider.schemas.hitl import PerFindingOutcome as _Outcome
+
+    finding = _make_finding(severity=FindingSeverity.CRITICAL, line_start=1, line_end=1)
+    state = _gate_with(
+        _make_state(findings=(finding,), changed_files=(_make_changed_file(),)),
+        finding,
+        outcome=_Outcome.APPROVE,
+    )
+    sink = _RecordingPublishEventSink()
+    sink.prior_publish_event = PublishEvent(
+        review_id=state.review_id,
+        is_eval=False,
+        github_review_id=99,
+        comments_posted=2,
+        review_body_findings_posted=1,
+        dashboard_only_findings_surfaced=3,
+        review_status="COMMENT",
+    )
+    orch = _RecordingSlackOrchestrator()
+
+    result = await _run_publish(state, orch, publish_event_sink=sink)
+
+    assert result["publish_result"].outcome == "idempotently_skipped"
+    assert len(orch.mirror_calls) == 1
+    mirror = orch.mirror_calls[0]
+    # Counts come from the PRIOR event, not from a re-computation.
+    assert mirror["posted_count"] == 3  # 2 inline + 1 review-body
+    assert mirror["dashboard_only_count"] == 3
+    assert mirror["approved_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_mirror_fires_on_external_record_recovery() -> None:
+    """Crash-after-success recovery also returns early; the card still needs updating."""
+    from outrider.schemas.hitl import PerFindingOutcome as _Outcome
+
+    finding = _make_finding(severity=FindingSeverity.CRITICAL, line_start=1, line_end=1)
+    state = _gate_with(
+        _make_state(findings=(finding,), changed_files=(_make_changed_file(),)),
+        finding,
+        outcome=_Outcome.APPROVE,
+    )
+    orch = _RecordingSlackOrchestrator()
+
+    result = await _run_publish(state, orch, publisher=_StubPublisher(existing_review_id=4242))
+
+    assert result["publish_result"].outcome == "idempotently_skipped_external_record"
+    assert len(orch.mirror_calls) == 1
+    assert orch.mirror_calls[0]["approved_count"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [401, 403, 404])
+async def test_no_mirror_on_auth_revoked_because_its_rendering_diverges(
+    status_code: int,
+) -> None:
+    """#065 revoked is the ONE outcome whose mirror rendering differs from the rest,
+    and `chat.update` has no compare-and-set — so it is not safely orderable against a
+    concurrent invocation that recovers and succeeds. The card stays at "Review needs
+    approval": stale, but never actively false. Pinned as an absence (FUP-252)."""
+    finding = _make_finding(severity=FindingSeverity.CRITICAL, line_start=1, line_end=1)
+    state = _gate_with(
+        _make_state(findings=(finding,), changed_files=(_make_changed_file(),)),
+        finding,
+        outcome=_approve(),
+    )
+    orch = _RecordingSlackOrchestrator()
+
+    result = await _run_publish(
+        state, orch, publisher=_StubPublisher(should_raise=_StatusCodeError(status_code))
+    )
+
+    assert result["publish_result"].outcome == "not_published_auth_revoked"
+    assert orch.mirror_calls == []
+
+
+@pytest.mark.asyncio
+async def test_revoked_then_success_leaves_only_the_published_rendering() -> None:
+    """Adversarial interleaving: invocation A is auth-revoked, then B recovers and
+    publishes. A emits no `PublishEvent`, so nothing durable records its outcome — if
+    A rendered "access revoked" its delayed `chat.update` could land AFTER B's terminal
+    edit and leave the card claiming a publish failure for a review that published.
+    With A silent, every write the pair makes is the SAME terminal rendering, so order
+    stops mattering."""
+    finding = _make_finding(severity=FindingSeverity.CRITICAL, line_start=1, line_end=1)
+    state = _gate_with(
+        _make_state(findings=(finding,), changed_files=(_make_changed_file(),)),
+        finding,
+        outcome=_approve(),
+    )
+    orch = _RecordingSlackOrchestrator()
+    sink = _SerializingPublishEventSink()
+
+    revoked = await _run_publish(
+        state,
+        orch,
+        publish_event_sink=sink,
+        publisher=_StubPublisher(should_raise=_StatusCodeError(401)),
+    )
+    recovered = await _run_publish(state, orch, publish_event_sink=sink)
+
+    assert revoked["publish_result"].outcome == "not_published_auth_revoked"
+    assert recovered["publish_result"].outcome == "success"
+    # Exactly one mirror write, and it is the truthful terminal one.
+    assert len(orch.mirror_calls) == 1
+    assert orch.mirror_calls[0]["approved_count"] == 1
+    assert orch.mirror_calls[0]["posted_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Non-gated FYI: repairable on the idempotent-skip paths, silent where untrue
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fyi_fires_on_prior_event_replay_so_a_failed_post_can_be_repaired() -> None:
+    """The FYI had the same fresh-success-only shape the mirror did. The orchestrator
+    carries `review_posted` dedup precisely so a repeat call is a no-op when the first
+    post landed and a REPAIR when it did not — but that dedup is dead code unless the
+    replay path actually reaches the call."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    sink = _RecordingPublishEventSink()
+    sink.prior_publish_event = PublishEvent(
+        review_id=state.review_id,
+        is_eval=False,
+        github_review_id=99,
+        comments_posted=2,
+        review_body_findings_posted=1,
+        dashboard_only_findings_surfaced=3,
+        review_status="COMMENT",
+    )
+    orch = _RecordingSlackOrchestrator()
+
+    result = await _run_publish(state, orch, publish_event_sink=sink)
+
+    assert result["publish_result"].outcome == "idempotently_skipped"
+    assert len(orch.review_posted_calls) == 1
+    call = orch.review_posted_calls[0]
+    # Counts come from the PRIOR event, not a re-computation.
+    assert call["posted_count"] == 3  # 2 inline + 1 review-body
+    assert call["dashboard_only_count"] == 3
+    assert orch.mirror_calls == []  # never gated → no card to mirror
+
+
+@pytest.mark.asyncio
+async def test_fyi_fires_on_external_record_recovery() -> None:
+    """Crash-after-success recovery: the review exists on GitHub, so the FYI is true
+    and the first post may still be owed."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    orch = _RecordingSlackOrchestrator()
+
+    result = await _run_publish(state, orch, publisher=_StubPublisher(existing_review_id=4242))
+
+    assert result["publish_result"].outcome == "idempotently_skipped_external_record"
+    assert len(orch.review_posted_calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [401, 403, 404])
+async def test_no_fyi_when_auth_revoked_because_nothing_posted(status_code: int) -> None:
+    """The FYI asserts "this review posted to the PR". Under #065 nothing posted, so
+    firing it would be a false claim — this is why the FYI's outcome set is NARROWER
+    than the mirror's rather than simply "every non-failed outcome"."""
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    orch = _RecordingSlackOrchestrator()
+
+    result = await _run_publish(
+        state, orch, publisher=_StubPublisher(should_raise=_StatusCodeError(status_code))
+    )
+
+    assert result["publish_result"].outcome == "not_published_auth_revoked"
+    assert orch.review_posted_calls == []
+
+
+@pytest.mark.asyncio
+async def test_no_fyi_on_empty_review_because_no_github_review_exists() -> None:
+    """`PublishResult.empty()` means NO GitHub review was created, so a `review_posted`
+    FYI would be a false claim about the PR — the same reason auth-revoked is excluded.
+    A clean-review notification is legitimate to want later, but it needs its own
+    "review completed — no findings" semantics, not this message relaxed to fire here."""
+    state = _make_state(findings=(), changed_files=(_make_changed_file(),))
+    orch = _RecordingSlackOrchestrator()
+
+    result = await _run_publish(state, orch)
+
+    assert result["publish_result"].outcome == "empty"
+    assert orch.review_posted_calls == []
+
+
+class _SerializingPublishEventSink(_RecordingPublishEventSink):
+    """`_RecordingPublishEventSink` whose `acquire_publish_lock` actually serializes.
+
+    The base double yields immediately (no real lock), which is fine for sequential
+    tests but cannot express the contention this file's concurrency test is about.
+    A real `asyncio.Lock` stands in for `pg_try_advisory_xact_lock`.
+
+    It also LINKS emit → query: `query_prior_publish_event` returns the first
+    `PublishEvent` this sink recorded, the way the durable sink does. Without that
+    link both contenders read `prior_publish_event is None` and both take the fresh
+    `success` path, so the test would only ever exercise success-vs-success — and would
+    pass against a regression that serialized fresh success alone. With it, the second
+    contender observes the first's committed result and takes `idempotently_skipped`,
+    which is the interleaving production actually produces (`DECISIONS.md#027`
+    serialize-then-observe: the lock is acquired BEFORE the prior-event query).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = asyncio.Lock()
+        self.max_concurrent_holders = 0
+        self._holders = 0
+
+    @asynccontextmanager
+    async def acquire_publish_lock(self, *, review_id: UUID) -> AsyncIterator[None]:  # noqa: ARG002
+        async with self._lock:
+            self._holders += 1
+            self.max_concurrent_holders = max(self.max_concurrent_holders, self._holders)
+            try:
+                yield
+            finally:
+                self._holders -= 1
+
+    async def emit_publish_result(self, event: PublishEvent) -> None:
+        await super().emit_publish_result(event)
+        if self.prior_publish_event is None:
+            self.prior_publish_event = event
+
+
+class _DedupingSlackOrchestrator:
+    """Models the real orchestrator's query-then-post-then-record `review_posted`
+    dedup, with an await between the query and the record.
+
+    That await is the point: it widens the window the real implementation has anyway
+    (the audit row carries `message_ts`, which only exists AFTER the post), so an
+    unserialized pair of callers interleaves deterministically instead of by luck.
+    """
+
+    def __init__(self) -> None:
+        self.review_posted_calls: list[dict[str, Any]] = []
+        self.mirror_calls: list[dict[str, Any]] = []
+        self._recorded: set[UUID] = set()
+
+    async def notify_review_posted(self, **kwargs: Any) -> None:
+        if kwargs["review_id"] in self._recorded:  # pre-post dedup query
+            return
+        await asyncio.sleep(0)  # the post — yields, exposing the unserialized race
+        self.review_posted_calls.append(kwargs)
+        self._recorded.add(kwargs["review_id"])  # post-then-record
+
+    async def mirror_status(self, **kwargs: Any) -> bool:
+        self.mirror_calls.append(kwargs)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_review_publishes_post_exactly_one_fyi() -> None:
+    """Two concurrent resumes of the SAME review must produce ONE FYI.
+
+    The FYI's dedup is query-then-post-then-record, so it is only sound while
+    same-review invocations are serialized. When the FYI ran outside the per-review
+    advisory lock, both invocations queried before either recorded and BOTH posted —
+    an ordinary-operation duplicate, not the spec's narrow crash-window residual.
+    """
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    orch = _DedupingSlackOrchestrator()
+    sink = _SerializingPublishEventSink()
+
+    async def _one() -> dict[str, object]:
+        return await publish(
+            state,
+            publisher=_StubPublisher(),
+            publish_event_sink=sink,
+            phase_event_sink=_RecordingPhaseEventSink(),
+            review_status_sink=_RecordingReviewStatusSink(),
+            github_factory=_stub_github_factory,
+            resolve_slack_target=_resolver_for(orch),
+        )
+
+    results = await asyncio.gather(_one(), _one())
+
+    assert len(orch.review_posted_calls) == 1, (
+        f"expected exactly one FYI, got {len(orch.review_posted_calls)} — the FYI's "
+        "query/post/record ran outside the per-review advisory lock"
+    )
+    # The lock genuinely serialized (a no-op double would let both hold at once).
+    assert sink.max_concurrent_holders == 1
+    # The realistic interleaving: one contender publishes, the other observes the
+    # committed result and short-circuits. Asserted so this stays a test of the
+    # success-vs-replay race rather than degrading to success-vs-success — which a
+    # regression that locked only the fresh-success path would still pass.
+    assert {r["publish_result"].outcome for r in results} == {
+        "success",
+        "idempotently_skipped",
+    }
+    # Exactly one GitHub review was created despite two concurrent invocations.
+    assert len(sink.results) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_finalizers_across_outcomes_post_exactly_one_fyi() -> None:
+    """Two finalizers racing with DIFFERENT outcomes must still post exactly one FYI.
+
+    Driven against `_finalize_slack_notifications` directly, NOT end-to-end, and that
+    is the point. The body's advisory lock serializes two `publish` invocations almost
+    end-to-end, so their finalizers seldom overlap and an end-to-end test passes even
+    when only the fresh-success path is locked. Production's real interleaving is one
+    `success` finalizer against one `idempotently_skipped` finalizer, so a guard that
+    covers only `success` leaves the replay contender free to double-post. This
+    reproduces that pairing directly.
+    """
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    orch = _DedupingSlackOrchestrator()
+    sink = _SerializingPublishEventSink()
+
+    async def _finalize(result: PublishResult) -> None:
+        await publish_module._finalize_slack_notifications(
+            state,
+            resolve_slack_target=_resolver_for(orch),
+            publish_event_sink=sink,
+            delta={"publish_result": result},
+        )
+
+    await asyncio.gather(
+        _finalize(
+            PublishResult.success(
+                github_review_id=42,
+                comments_posted=1,
+                review_body_findings_posted=0,
+                dashboard_only_findings_surfaced=0,
+            )
+        ),
+        _finalize(
+            PublishResult.skipped(
+                comments_posted=1,
+                review_body_findings_posted=0,
+                dashboard_only_findings_surfaced=0,
+            )
+        ),
+    )
+
+    assert len(orch.review_posted_calls) == 1, (
+        f"expected exactly one FYI, got {len(orch.review_posted_calls)} — a "
+        "non-`success` outcome reached the FYI without holding the per-review lock"
+    )
+
+
+@pytest.mark.asyncio
+async def test_phase_end_is_emitted_after_slack_finalization() -> None:
+    """`phase-events-bound-work`: a node's observable work sits INSIDE its start/end
+    bracket. Slack finalization IS publish-node work — resolve, lock, post, update — so
+    a phase-end emitted from inside `_publish_body` left all of it outside the causal
+    phase that replay groups by. Pinned as an ordering assertion because both orderings
+    produce identical events and identical counts; only the sequence differs.
+    """
+    order: list[str] = []
+
+    class _OrderedPhaseSink(_RecordingPhaseEventSink):
+        async def emit_phase(self, event: ReviewPhaseEvent) -> None:
+            order.append(f"phase:{event.marker}")
+            await super().emit_phase(event)
+
+    class _OrderedOrchestrator(_RecordingSlackOrchestrator):
+        async def notify_review_posted(self, **kwargs: Any) -> None:
+            order.append("slack:fyi")
+            await super().notify_review_posted(**kwargs)
+
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+
+    await publish(
+        state,
+        publisher=_StubPublisher(),
+        publish_event_sink=_RecordingPublishEventSink(),
+        phase_event_sink=_OrderedPhaseSink(),
+        review_status_sink=_RecordingReviewStatusSink(),
+        github_factory=_stub_github_factory,
+        resolve_slack_target=_resolver_for(_OrderedOrchestrator()),
+    )
+
+    assert order == ["phase:start", "slack:fyi", "phase:end"]
+
+
+@pytest.mark.asyncio
+async def test_failed_publish_still_leaves_phase_start_dangling() -> None:
+    """The wrapper must NOT rescue the dangling-start signal. A FAILED publish raises
+    out of `_publish_body`, so it never reaches the wrapper's phase-end and the open
+    bracket remains the canonical "publish interrupted" marker."""
+
+    class _BoomError(Exception):
+        pass
+
+    finding = _make_finding(severity=FindingSeverity.MEDIUM, line_start=1, line_end=1)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    phase_sink = _RecordingPhaseEventSink()
+
+    with pytest.raises(_BoomError):
+        await publish(
+            state,
+            publisher=_StubPublisher(should_raise=_BoomError()),
+            publish_event_sink=_RecordingPublishEventSink(),
+            phase_event_sink=phase_sink,
+            review_status_sink=_RecordingReviewStatusSink(),
+            github_factory=_stub_github_factory,
+        )
+
+    assert [e.marker for e in phase_sink.events] == ["start"]

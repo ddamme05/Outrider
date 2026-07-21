@@ -22,11 +22,18 @@ from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.dimensions import lookup_dimension
 from outrider.policy.publish_eligibility import (
     _V1_SEVERITY_GATE,
+    HITL_ADMITTING_OUTCOMES,
+    count_gated_approvals,
     is_eligible_for_v1_publish,
 )
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas import ReviewFinding
-from outrider.schemas.hitl import HITLDecision, HITLRequest
+from outrider.schemas.hitl import (
+    HITLDecision,
+    HITLRequest,
+    PerFindingDecision,
+    PerFindingOutcome,
+)
 
 
 def _make_finding(
@@ -355,3 +362,73 @@ def test_medium_passes_through_regardless_of_hitl_state() -> None:
     e2, _ = is_eligible_for_v1_publish(finding, hitl_request=request, hitl_decision=None)
     assert e1 is PublishEligibility.ELIGIBLE
     assert e2 is PublishEligibility.ELIGIBLE
+
+
+# ---------------------------------------------------------------------------
+# count_gated_approvals + its agreement with the eligibility gate
+# ---------------------------------------------------------------------------
+
+
+def test_admitting_outcomes_matches_eligibility_gate() -> None:
+    """`HITL_ADMITTING_OUTCOMES` must name exactly the outcomes the gate admits.
+
+    The set is a second statement of the gate's outcome partition, so it can drift.
+    This drives every `PerFindingOutcome` through the real gate and asserts the two
+    agree, which fails loudly if a new member is branched in one place only.
+    """
+    for outcome in PerFindingOutcome:
+        finding = _make_finding(severity=FindingSeverity.CRITICAL)
+        kwargs: dict = {"finding_id": finding.finding_id, "outcome": outcome, "reason": "r"}
+        if outcome is PerFindingOutcome.SEVERITY_OVERRIDE:
+            kwargs |= {
+                "original_severity": FindingSeverity.CRITICAL,
+                "override_severity": FindingSeverity.LOW,
+            }
+        decision = PerFindingDecision(**kwargs)
+        eligibility, _ = is_eligible_for_v1_publish(
+            finding,
+            hitl_request=_make_request(finding_ids=(finding.finding_id,)),
+            hitl_decision=_make_decision(decisions=(decision,)),
+        )
+        admits = eligibility is PublishEligibility.ELIGIBLE
+        assert admits is (outcome in HITL_ADMITTING_OUTCOMES), (
+            f"{outcome.value}: gate admits={admits} but "
+            f"HITL_ADMITTING_OUTCOMES membership={outcome in HITL_ADMITTING_OUTCOMES}"
+        )
+
+
+def test_count_gated_approvals_counts_only_admitting_outcomes() -> None:
+    approved = _make_finding(severity=FindingSeverity.CRITICAL)
+    rejected = _make_finding(severity=FindingSeverity.CRITICAL)
+    suppressed = _make_finding(severity=FindingSeverity.CRITICAL)
+    decision = _make_decision(
+        decisions=(
+            PerFindingDecision(
+                finding_id=approved.finding_id, outcome=PerFindingOutcome.APPROVE, reason="r"
+            ),
+            PerFindingDecision(
+                finding_id=rejected.finding_id, outcome=PerFindingOutcome.REJECT, reason="r"
+            ),
+            PerFindingDecision(
+                finding_id=suppressed.finding_id, outcome=PerFindingOutcome.SUPPRESS, reason="r"
+            ),
+        )
+    )
+    assert count_gated_approvals(
+        gated_finding_ids=(approved.finding_id, rejected.finding_id, suppressed.finding_id),
+        hitl_decision=decision,
+    ) == (1, 3)
+
+
+def test_count_gated_approvals_treats_a_missing_decision_as_not_approved() -> None:
+    """Fail-closed, matching the gate's HITL_DECISION_MISSING withholding — an
+    undecided gated finding must never be reported as approved."""
+    finding = _make_finding(severity=FindingSeverity.CRITICAL)
+    assert count_gated_approvals(gated_finding_ids=(finding.finding_id,), hitl_decision=None) == (
+        0,
+        1,
+    )
+
+
+def test_count_gated_approvals_is_empty_for_a_non_gated_review() -> None:
+    assert count_gated_approvals(gated_finding_ids=(), hitl_decision=None) == (0, 0)

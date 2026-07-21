@@ -1,10 +1,14 @@
 """Slack notification orchestrator — the notify subsystem's coordination service.
 
 Ties the transport (`SlackNotifier`), the metadata-first message builders, the
-deep-link, and the audit sink (`SlackEventSink`) into the two V1 notification
-flows: the HITL-pending card (review gated on critical/high) and the compact
-review-posted FYI (review published without gating). The status-mirror
-`chat.update` is a later sub-commit (it needs decision/publish/expiry triggers).
+deep-link, and the audit sink (`SlackEventSink`) into the V1 notification
+flows: the HITL-pending card (review gated on critical/high), the compact
+review-posted FYI (review published without gating), and the terminal status mirror
+that `chat.update`s the HITL card once publish completes. The mirror has exactly ONE
+rendering and exactly one writer (the publish node): `chat.update` replaces the whole
+message with no compare-and-set, so concurrent writers are safe only while they render
+the same thing. Decision-time, expiry, and auth-revoked states were all removed for
+that reason and return with a monotonic lifecycle mechanism — see FUP-252.
 
 Best-effort and fire-and-forget (`degrades-gracefully`): every public method
 swallows transport + audit failures so a Slack outage NEVER blocks or raises
@@ -31,7 +35,11 @@ from typing import TYPE_CHECKING
 from outrider.audit.events import SlackNotificationEvent
 from outrider.notify.base import SlackNotifyError
 from outrider.notify.deeplink import build_review_deeplink
-from outrider.notify.messages import build_hitl_pending_message, build_review_posted_message
+from outrider.notify.messages import (
+    build_hitl_pending_message,
+    build_review_posted_message,
+    build_status_mirror_message,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -160,6 +168,76 @@ class SlackNotificationOrchestrator:
             return None
         await self._record(review_id, is_eval, channel_id, result.ts, "review_posted")
         return result
+
+    async def mirror_status(
+        self,
+        *,
+        review_id: UUID,
+        channel_id: str,
+        repo: str,
+        pr_number: int,
+        pr_title: str,
+        findings: Sequence[ReviewFinding],
+        reviewer_id: str | None = None,
+        approved_count: int = 0,
+        gated_count: int = 0,
+        posted_count: int = 0,
+        dashboard_only_count: int = 0,
+    ) -> bool:
+        """`chat.update` the review's HITL card to its terminal state. Returns whether
+        the edit was applied.
+
+        Targets the `message_ts` recorded on the original `hitl_pending` event — the
+        mirror edits the card that exists, and never posts a new one. No matching row
+        is a legitimate no-op, not an error: the review never gated, the original post
+        failed, or the install's channel was rotated since the card was posted (the
+        lookup is channel-scoped, so a rotated config finds nothing rather than editing
+        an unrelated message in the new channel).
+
+        Emits NO audit event (spec: Audit events emitted) — the decision and publish
+        facts are already captured by `HITLDecisionEvent` / `PublishEvent`, and
+        `audit-events-append-only` forbids mutating the original notification row.
+        `chat.update` is idempotent for a given rendering, so replay needs no dedup.
+        """
+        try:
+            existing = await self._sink.query_slack_notification(
+                review_id=review_id, channel_id=channel_id, kind="hitl_pending"
+            )
+            if existing is None:
+                return False
+            deep_link = build_review_deeplink(self._dashboard_base_url, review_id)
+            message = build_status_mirror_message(
+                repo=repo,
+                pr_number=pr_number,
+                pr_title=pr_title,
+                findings=findings,
+                deep_link=deep_link,
+                reviewer_id=reviewer_id,
+                approved_count=approved_count,
+                gated_count=gated_count,
+                posted_count=posted_count,
+                dashboard_only_count=dashboard_only_count,
+            )
+            await self._notifier.update_message(
+                channel=existing.channel_id,
+                ts=existing.message_ts,
+                text=message.text,
+                blocks=message.blocks,
+            )
+        except SlackNotifyError as exc:
+            logger.warning(
+                "Slack status mirror failed (%s); card left at its prior state",
+                type(exc).__name__,
+                extra={"review_id": str(review_id), "channel_id": channel_id},
+            )
+            return False
+        except Exception:
+            logger.exception(
+                "Unexpected error building/posting Slack status mirror",
+                extra={"review_id": str(review_id), "channel_id": channel_id},
+            )
+            return False
+        return True
 
     async def _already_posted(
         self, review_id: UUID, channel_id: str, kind: Literal["hitl_pending", "review_posted"]
