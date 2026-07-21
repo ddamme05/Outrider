@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 import {
   SetupError,
@@ -54,6 +54,41 @@ function sentence(text: string): string {
   return /[.?!]$/.test(text) ? text : `${text}.`;
 }
 
+// Post-install confirmation. GitHub redirects here after the operator finishes installing the App,
+// but the `installation` webhook that populates `install_known` is a SEPARATE delivery and can land
+// after the browser does — so a single status read momentarily reports "not installed" for an App
+// that is. Poll briefly to close that gap. Bounded on purpose: this is a nicety, and an unbounded
+// poll on a public, unauthenticated page is a liability.
+const INSTALL_POLL_ATTEMPTS = 10;
+const INSTALL_POLL_INTERVAL_MS = 1000;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Consume GitHub's post-install redirect hint, if present, and scrub it from the URL.
+ *
+ * GitHub appends `?installation_id=…&setup_action=install` to the App's Setup URL. The
+ * `installation_id` is NEVER trusted — GitHub's own docs warn it can be spoofed, and this page is
+ * public — so it is read ONLY to decide "an install probably just happened, start polling". It is
+ * never stored, sent, or displayed, and no code path derives an installation from it.
+ * `GET /setup/status` re-derives `install_known` from the local installations table, which is fed
+ * by the signature-verified installation webhook; that stays the authority.
+ *
+ * Scrubbing (same treatment as `auth/token.ts` gives the token fragment) keeps a reload from
+ * re-entering the polling path, and keeps a spoofable value out of the address bar and referrers.
+ */
+function consumeInstallHint(): boolean {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("setup_action") !== "install" && !params.has("installation_id")) {
+    return false;
+  }
+  params.delete("setup_action");
+  params.delete("installation_id");
+  const qs = params.toString();
+  window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
+  return true;
+}
+
 export function SetupGitHubApp() {
   const [state, setState] = useState<StatusState>("loading");
   const [org, setOrg] = useState("");
@@ -61,22 +96,57 @@ export function SetupGitHubApp() {
   const [error, setError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [confirmDeleted, setConfirmDeleted] = useState(false);
+  const [confirmingInstall, setConfirmingInstall] = useState(false);
 
-  const refresh = useCallback(async (): Promise<void> => {
+  const refresh = useCallback(async (): Promise<SetupStatus | null> => {
     try {
       const s = await fetchSetupStatus();
       setState(s ?? "unavailable");
       setStatusError(null);
+      return s;
     } catch (err) {
       // Bind the error and route on TYPE. A protocol error is never a backend fault, so it must not
       // render as one; only `SetupError` messages are surfaced (they are ours), never a raw body.
       setState(err instanceof SetupProtocolError ? "topology" : "error");
       setStatusError(err instanceof SetupError ? err.message : null);
+      return null;
     }
   }, []);
 
+  // Consumed in the EFFECT, never during render. Two constraints pull in opposite directions and
+  // only this placement satisfies both:
+  //   - `consumeInstallHint` calls `history.replaceState`, a side effect. React requires render to
+  //     be pure, and in dev StrictMode double-invokes the render function and DISCARDS the first
+  //     pass's hook state — so a render-time scrub runs on pass 1 while the surviving pass 2 reads
+  //     an already-clean URL, records no hint, and never polls. Exactly the protection inverted.
+  //   - StrictMode ALSO re-runs effects (setup → cleanup → setup) on the same instance. Refs
+  //     survive that, so latching the hint in a ref keeps the second setup from re-reading the
+  //     scrubbed URL and skipping the poll the first setup started (then cancelled).
+  const installHint = useRef<boolean | null>(null);
+
   useEffect(() => {
-    void refresh();
+    installHint.current ??= consumeInstallHint();
+    if (!installHint.current) {
+      void refresh();
+      return;
+    }
+    let cancelled = false;
+    setConfirmingInstall(true);
+    void (async () => {
+      for (let attempt = 0; attempt < INSTALL_POLL_ATTEMPTS; attempt += 1) {
+        const s = await refresh();
+        if (cancelled) return;
+        if (s?.install_known) break;
+        if (attempt < INSTALL_POLL_ATTEMPTS - 1) {
+          await sleep(INSTALL_POLL_INTERVAL_MS);
+          if (cancelled) return;
+        }
+      }
+      setConfirmingInstall(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [refresh]);
 
   async function onStart(e: FormEvent): Promise<void> {
@@ -186,9 +256,20 @@ export function SetupGitHubApp() {
           </p>
         )}
 
+        {/* Post-install: GitHub bounced the operator back here. `install_known` flips only once the
+            separate installation webhook lands, so say we are waiting rather than briefly claiming
+            the App isn't installed. */}
+        {confirmingInstall && !installed && (
+          <p className="setup-note">
+            Confirming the installation&hellip; GitHub delivers the install event separately, so this
+            can take a few seconds.
+          </p>
+        )}
+
         {/* CONFIGURED: credentials obtained — but the operator may not have finished GitHub's
             separate install step, so distinguish configured from installed (spec §Land). */}
         {configured &&
+          !confirmingInstall &&
           (installed ? (
             <p className="setup-note setup-note--ok">
               This instance is fully set up — the App is configured and installed. &#10003;

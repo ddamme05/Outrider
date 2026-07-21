@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -273,4 +274,113 @@ test.each([
 
   const p = await screen.findByText(expected);
   expect(p.textContent).not.toMatch(/[.?!]\./); // no doubled terminator
+});
+
+// ---------------------------------------------------------------------------
+// Post-install return from GitHub (setup_url)
+// ---------------------------------------------------------------------------
+
+function visitWith(search: string): void {
+  window.history.replaceState(null, "", `/setup${search}`);
+}
+
+afterEach(() => {
+  window.history.replaceState(null, "", "/setup");
+});
+
+test("post-install hint scrubs the untrusted installation_id from the URL", async () => {
+  mockStatus({ status: "CONFIGURED", configured: true, install_known: true });
+  visitWith("?installation_id=999&setup_action=install");
+
+  render(<SetupGitHubApp />);
+
+  await screen.findByText(/fully set up/i);
+  // The id is never stored, sent, or displayed — and must not survive in the address bar,
+  // so a reload cannot re-enter the polling path and the spoofable value leaves no trace.
+  expect(window.location.search).toBe("");
+  expect(document.body.textContent).not.toContain("999");
+});
+
+test("post-install hint polls until the installation webhook lands", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    // The webhook is a SEPARATE delivery and can arrive after the browser redirect: the first read
+    // legitimately says not-installed. Without polling the page would settle on "isn't installed
+    // on any repositories yet" for an App that is.
+    let installed = false;
+    server.use(
+      http.get(STATUS, () =>
+        HttpResponse.json({
+          status: "CONFIGURED",
+          configured: true,
+          install_known: installed,
+        }),
+      ),
+    );
+    visitWith("?installation_id=1&setup_action=install");
+
+    render(<SetupGitHubApp />);
+
+    await screen.findByText(/confirming the installation/i);
+    // Wait for the first status to LAND before asserting absence. Without this the
+    // assertion is vacuous: `setConfirmingInstall(true)` runs synchronously, so the
+    // confirming note appears while `state` is still "loading" and the configured
+    // block has not rendered at all — absence would hold for the wrong reason.
+    await screen.findByText("CONFIGURED");
+    // Status is now CONFIGURED + install_known=false, which renders BOTH notes unless
+    // suppressed — telling the operator two contradictory things at once.
+    expect(screen.queryByText(/isn’t installed on any repositories yet/i)).toBeNull();
+    installed = true;
+    await vi.advanceTimersByTimeAsync(1000);
+    await waitFor(() => expect(screen.getByText(/fully set up/i)).toBeTruthy());
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("no post-install hint → a single status read, no polling", async () => {
+  let reads = 0;
+  server.use(
+    http.get(STATUS, () => {
+      reads += 1;
+      return HttpResponse.json({
+        status: "CONFIGURED",
+        configured: true,
+        install_known: false,
+      });
+    }),
+  );
+
+  render(<SetupGitHubApp />);
+
+  await screen.findByText(/isn’t installed on any repositories yet/i);
+  expect(screen.queryByText(/confirming the installation/i)).toBeNull();
+  expect(reads).toBe(1);
+});
+
+
+test("post-install polling survives StrictMode's double render", async () => {
+  // StrictMode double-invokes the render function and DISCARDS the first render's hook
+  // state, so a hint consumed during render is read once, the URL is scrubbed, and the
+  // surviving render sees a clean URL — recording no hint and never polling. Consuming
+  // the hint in the effect (where refs persist across the mount/unmount/mount cycle)
+  // is what makes this pass. Regression guard: the app mounts under StrictMode.
+  let installed = false;
+  server.use(
+    http.get(STATUS, () =>
+      HttpResponse.json({ status: "CONFIGURED", configured: true, install_known: installed }),
+    ),
+  );
+  window.history.replaceState(null, "", "/setup?installation_id=7&setup_action=install");
+
+  render(
+    <StrictMode>
+      <SetupGitHubApp />
+    </StrictMode>,
+  );
+
+  await screen.findByText(/confirming the installation/i);
+  installed = true;
+  await waitFor(() => expect(screen.getByText(/fully set up/i)).toBeTruthy(), { timeout: 4000 });
+  expect(window.location.search).toBe("");
 });
