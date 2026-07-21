@@ -1599,6 +1599,41 @@ It is NOT routed through `n_proposals_rejected` (that would fire a `FindingPropo
 
 **(d) Strict-schema reopening is docs-compatible but unverified.** A proof-preserving strict `json_schema` (evidence-tier-discriminated `anyOf` branches — OBSERVED/INFERRED/JUDGED — each carrying only its valid proof fields) appears compatible with the documented Structured Outputs grammar (nested `anyOf` + `["type","null"]` unions are allowed). Only the mechanical required-completion approach rejected by the 2026-07-06 Fireworks amendment, point (b), is foreclosed. But acceptance of Outrider's exact schema and GPT-5.6 refusal behavior both remain unverified pending a paid feasibility capture. Reopening triggers (either, tracked as FUP-246): (1) a reliable refusal discriminator in the proof-safe `json_object` mode; OR (2) the strict-schema feasibility pass on a paid wire + proof-boundary gate. **Passing an Analyze-level refusal-discrimination gate (either trigger above) is necessary but is not, by itself, sufficient to remove the whole-host production gate.** Whole-host selection also sends triage, trace, synthesize-summary, and patch through OpenAI, and several of those have legitimate empty/no-op outputs (an empty findings array, no patch suggestion) that could conceal a refusal — the operation-specific standard is in `HORIZON_ARCS.md` §5.3. So: if `OUTRIDER_LLM_HOST=openai` remains a whole-pipeline selector, re-admission additionally requires operation-specific evidence that every GPT-served operation distinguishes refusal from each legitimate empty or no-op result, for every proposed serving model. If operation-level routing lands first, admission is scoped to the exact verified operation capability; the whole-host selector remains refused until the complete operation matrix passes. The mechanisms of this amendment live in the already-referenced `llm/host_profiles.py`, `api/lifespan.py`, and `llm/pricing.py`.
 
+**Amended 2026-07-20 — point (d) trigger (2) TESTED; result PARK; gate UNCHANGED.** The
+strict-schema feasibility capture ran to completion (`arc2-strict-schema:5`, evidence
+`capture_1e957792b449dce8`, 5 calls; plus the partial v4 `capture_c6ac52a38ed27425`, 2 calls).
+Point (d)'s "unverified" status is now partly resolved, in both directions:
+
+- **Verified positive — schema acceptance.** GPT-5.6 Sol accepted Outrider's exact
+  proof-preserving, evidence-tier-discriminated strict `json_schema` on all five requests
+  (no HTTP 400), including a bare `{"type": "null"}` subschema at four sites — a construct
+  absent from the documented supported-types list and previously recorded as a deliberate
+  bet. The schema half of point (d) is no longer conjecture.
+- **Verified positive — proof shape, n=1.** The single live finding used the JUDGED branch
+  with `query_match_id` and `trace_path` both null. OBSERVED and INFERRED branches were
+  accepted in the schema but never exercised live (n=0), so no claim is made about them.
+- **Verified negative — no refusal discriminator.** Three frozen refusal elicitations
+  returned `{"findings":[]}` with `refusal=null` and `finish_reason="stop"`, matching a
+  same-session clean control on all three pre-registered verdict-relevant fields. Other
+  response metadata differs, but no captured evidence gives that metadata refusal semantics.
+
+**Trigger (2) therefore did not fire.** Under the pre-registered rule the verdict is `PARK`.
+`"openai"` remains in `PRODUCTION_UNADMITTED_HOSTS`; the Arc 0 composition-root refusal in
+`api/lifespan.py` is unchanged; the whole-host operation-matrix requirement above is
+unchanged; HORIZON Arc 3 is NOT authorized on this evidence.
+
+**Scope, stated narrowly.** This bounds to three frozen elicitations, `gpt-5.6-sol`, the
+Analyze operation, Chat Completions, one session. It does NOT establish that the refusal
+channel can never surface. Reopening trigger (2) now requires a MATERIAL change — a
+different endpoint contract (e.g. an API-owned outcome type), a different serving model, or
+a documented refusal-contract change — not a re-run of the same tuple. The instrument is
+committed and locked behind an explicit spend authorization, so a re-probe after such a
+change is cheap.
+
+Both cheap candidate discriminators are now closed by evidence rather than conjecture:
+`json_object` (2026-07-19) and strict `json_schema` (this capture). Cost remains withheld
+as `Unpriced(BILLING_PENDING)` — this amendment does not touch point (c) or FUP-247.
+
 ## 057. OBSERVED queries may carry a deterministic value-predicate
 
 **Status:** Accepted, 2026-06-28.

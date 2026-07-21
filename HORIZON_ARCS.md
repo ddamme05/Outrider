@@ -669,6 +669,34 @@ The arcs below are ordered by dependency. Arc 1 and Arc 2 can be designed in par
 
 ### Arc 2 — Proof-preserving strict GPT Analyze
 
+> **RESULT 2026-07-20 — feasibility gate returned `PARK`. Do NOT begin Arc 3 on this evidence.**
+>
+> The gate ran to completion (`arc2-strict-schema:5`, evidence `capture_1e957792b449dce8`,
+> 5 calls; plus partial v4 `capture_c6ac52a38ed27425`, 2 calls). Against its four criteria:
+>
+> - **(a) schema accepted — YES.** All five requests, no HTTP 400, including a bare
+>   `{"type": "null"}` subschema at four sites.
+> - **(b) legitimate empty result is a content response — YES.** The clean control returned
+>   `{"findings":[]}` in `message.content`.
+> - **(c) elicited refusal uses the separate wire refusal field — NO.** All three frozen
+>   elicitations returned `{"findings":[]}` with `refusal=null` and `finish_reason="stop"`,
+>   matching the same-session clean control on all three pre-registered verdict-relevant
+>   fields.
+> - **(d) all three proof branches compile and parse — PARTIAL.** The three-branch schema was
+>   accepted and the one live finding honored JUDGED with null proof fields; OBSERVED and
+>   INFERRED were never exercised live (n=0).
+>
+> The gate's own stopping rule — *"Stop Arc 2 immediately if schema acceptance OR refusal
+> discrimination fails"* — fired on (c). Everything below this line is consequently NOT
+> authorized. `"openai"` stays in `PRODUCTION_UNADMITTED_HOSTS`; see `DECISIONS.md#056(d)`
+> (Amended 2026-07-20), `FOLLOWUPS.md` FUP-246, and
+> `reports/2026-07-20-arc2-strict-schema-park-arc.md`.
+>
+> **Scope.** Bounded to three frozen elicitations, `gpt-5.6-sol`, Analyze, Chat Completions,
+> one session. It does not establish that the refusal channel can never surface. Reopening
+> requires a material endpoint / model / contract change, not a re-run of the same tuple —
+> the instrument is committed and locked behind an explicit spend authorization.
+
 **Objective:** Make GPT Analyze refusal distinguishable from a legitimate zero-finding result without weakening proof metadata.
 
 **Feasibility gate — DO THIS FIRST, before any plumbing.** OpenAI's docs confirm the design is *plausible* (strict requires a root object, permits nested `anyOf`, requires all fields, exposes refusals separately) — but docs don't prove the exact three-tier Outrider schema compiles or that GPT-5.6 refuses in the API channel. Generate the complete strict schema and run ONE bounded paid capture proving: (a) the schema is accepted; (b) a legitimate empty result is a content response; (c) an elicited refusal uses the separate wire refusal field; (d) all three proof branches (OBSERVED/INFERRED/JUDGED) compile and parse. **Stop Arc 2 immediately if schema acceptance OR refusal discrimination fails** — everything below is wasted otherwise.
