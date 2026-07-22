@@ -1,6 +1,7 @@
 # Outrider
 
-**▶ Live demo — [outrider-review.duckdns.org](https://outrider-review.duckdns.org/#token=demo_0d4890832aa14a0c0b3d64cb38bae952)** · a keyless, read-only dashboard over six seeded reviews (token pre-filled, no signup). Open a review's findings, browse the append-only audit trail, and run a replay.
+**Get started:** [Production setup](#production-setup) ·
+[Seeded read-only demo](https://outrider-review.duckdns.org/#token=demo_0d4890832aa14a0c0b3d64cb38bae952) (keyless, read-only, six seeded reviews)
 
 Outrider is a self-hosted AI code-review agent for GitHub. A seven-stage LangGraph pipeline
 reviews eligible pull requests and can post an ordinary GitHub review with inline comments
@@ -41,12 +42,17 @@ application database or runs separately. Apply your own retention controls to it
 
 ## Table of contents
 
+- [Production setup](#production-setup)
+  - [Recommended: guided GitHub App setup](#recommended-guided-github-app-setup)
+  - [Verify the installation](#verify-the-installation)
+  - [Alternative: use an existing GitHub App](#alternative-use-an-existing-github-app)
+  - [Optional: Slack notifications](#optional-slack-notifications)
+  - [Troubleshooting](#troubleshooting)
 - [How a review works](#how-a-review-works)
   - [A file's journey](#a-files-journey)
 - [Design guarantees](#design-guarantees)
 - [Evaluation](#evaluation)
 - [How Codex and GPT-5.6 helped me build Outrider](#how-codex-and-gpt-56-helped-me-build-outrider)
-- [Quickstart](#quickstart)
 - [Configuration](#configuration)
 - [Security and privacy](#security-and-privacy)
 - [What Outrider is not](#what-outrider-is-not)
@@ -54,10 +60,226 @@ application database or runs separately. Apply your own retention controls to it
 - [Development](#development)
 - [License](#license)
 
-<!-- TODO(screenshots): 1) PR opened → 2) dashboard approval screen → 3) posted GitHub review.
-     Use a sandbox repo. Redact installation ids and webhook URLs. -->
+## Production setup
+
+**Prerequisites:** Git, Docker with Docker Compose, Python 3 (only for the
+secret-generation one-liners below), a GitHub account that can create a GitHub App,
+an Anthropic API key (or a Fireworks or Baseten key, see `OUTRIDER_LLM_HOST`), and an
+HTTPS-reachable public URL for webhooks.
+
+> [!IMPORTANT]
+> This guide runs the complete production application using
+> `deploy/docker-compose.prod.yml` and `deploy/Dockerfile.prod`.
+> `deploy/docker-compose.demo.yml` is only for the seeded read-only demo and
+> cannot review pull requests.
+
+Clone the repo and create your env file:
+
+```bash
+git clone https://github.com/ddamme05/Outrider.git && cd Outrider
+cp .env.example deploy/.env
+```
+
+Edit `deploy/.env` (it is fully commented). Minimum for a first boot: `POSTGRES_USER` /
+`POSTGRES_PASSWORD` / `POSTGRES_DB`, `ANTHROPIC_API_KEY`, `OUTRIDER_ADMIN_API_KEY` (dashboard
+bearer token, a random secret), and `OUTRIDER_TRUNCATION_HMAC_SECRET` (a random secret, 32+
+chars). To use a GLM host instead of Anthropic, set `OUTRIDER_LLM_HOST=fireworks` plus
+`FIREWORKS_API_KEY` (or `baseten` plus `BASETEN_API_KEY`) in place of the Anthropic key.
+
+Then add GitHub App credentials. For the recommended guided setup, set these in `deploy/.env`
+before launching — in this mode they are required at startup:
+
+```bash
+OUTRIDER_GITHUB_CREDENTIAL_SOURCE=database
+OUTRIDER_PUBLIC_BASE_URL=https://review.example.com   # bare origin, HTTPS, no path
+OUTRIDER_SETUP_STATE_SECRET=<generate-a-random-secret>       # 32+ chars
+OUTRIDER_GITHUB_CREDENTIAL_ENC_KEY=<generate-a-key>          # python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+```
+
+Generate every secret independently. Startup rejects a setup-state secret that matches any other
+configured secret root, and rejects reusing the GitHub credential-encryption key as the Slack
+token-encryption key. It does not check every other pair for reuse, so keeping the rest distinct
+is on you. To bring your own GitHub App instead, set those variables now — see
+[Alternative: use an existing GitHub App](#alternative-use-an-existing-github-app) below.
+
+Next, decide how traffic reaches the app. It serves on `127.0.0.1:8000`, which is loopback only,
+so put your own ingress in front.
+
+<details>
+<summary><strong>No static domain? Use an HTTPS tunnel</strong></summary>
+
+Start (or reserve) a tunnel on the same host, such as ngrok, pointed at
+`http://127.0.0.1:8000`, and copy its public HTTPS address into `deploy/.env` before
+launching (leave off `--profile tls`). Prefer a stable tunnel address. For guided setup,
+set `OUTRIDER_PUBLIC_BASE_URL` to that address, with no path. If you use an existing
+GitHub App, `OUTRIDER_PUBLIC_BASE_URL` is ignored; set the App's webhook URL to
+`<public-url>/webhooks/github` in GitHub instead. Set
+`OUTRIDER_DASHBOARD_BASE_URL=<public-url>` if you want working dashboard links.
+
+For Slack, set `OUTRIDER_SLACK_REDIRECT_URI=<public-url>/slack/oauth/callback` and
+register that exact URL in the Slack App.
+
+If the tunnel address changes, update `deploy/.env`, recreate the app container, and
+update GitHub and Slack to match. For a guided (database-mode) App, update its webhook
+URL and Setup URL (`<public-url>/setup`); for an existing (env-mode) App, update its
+webhook URL only — Outrider does not mount its onboarding API in that mode, so there is
+no Setup URL. Update Slack's redirect URL before a new connection or reconnect. Existing
+Slack tokens remain valid, but links in previously posted messages keep their old
+address. Redeliver any GitHub events missed during the switch. Do not change the address
+during guided GitHub App setup; reset setup and start again. Disable query-string
+capture for `/setup/callback` and `/slack/oauth/callback` in the tunnel's request
+inspector.
+
+</details>
+
+For automatic HTTPS with the bundled Caddy instead, point your domain's DNS at the server, make
+sure inbound ports 80 and 443 are open (Caddy needs both to obtain and renew the certificate), and
+set `OUTRIDER_DOMAIN=review.example.com` in `deploy/.env`. If you use your own reverse proxy,
+disable or redact query-string logging for `GET /setup/callback` and `GET /slack/oauth/callback`
+(both callbacks carry single-use secrets in their query strings, which is also why the production
+image runs uvicorn with `--no-access-log`).
+
+Launch the production stack — add `--profile tls` for the bundled Caddy:
+
+```bash
+docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml up -d --build
+# with the bundled Caddy (automatic HTTPS on ports 80 and 443):
+docker compose --env-file deploy/.env --profile tls -f deploy/docker-compose.prod.yml up -d --build
+```
+
+The image builds the dashboard and installs dependencies, a one-shot `migrate` container applies
+database migrations before the app starts, and the app serves both the API and the dashboard.
+`GET /health` returns `{"status":"ok"}` once the app has booted. It is a liveness probe only and
+does not check database or provider reachability.
+
+### Recommended: guided GitHub App setup
+
+Outrider creates its own GitHub App for you from an [App Manifest](DECISIONS.md#070-self-service-onboarding-credential-mode--provider--setup-state-machine-refines-066).
+Every deployment gets its own App, key, and webhook secret. There is no shared app and no
+phone-home ([#066](DECISIONS.md#066-oss-self-host-via-github-app-manifest--one-app-per-deployment)).
+
+With the stack running and `GET /health` green, open the dashboard's `/setup` page, enter your
+GitHub org, and follow the redirect. GitHub creates the App (permissions `contents: read` and
+`pull_requests: write`, subscribed to `pull_request` events, webhook pointed at
+`{base_url}/webhooks/github`) and redirects back. Outrider verifies the response against what it
+requested, encrypts the private key and webhook secret into Postgres, and sends you to GitHub's
+install page to pick repositories. Setup state is a signed single-use token, so refreshing the
+callback URL fails by design.
+
+### Verify the installation
+
+1. Open a pull request in a sandbox repository the App is installed on. The repo ships
+   deliberately vulnerable demo fixtures under
+   [`scripts/demo_fixtures/`](scripts/demo_fixtures/) (intentional, don't report them), with
+   their own README covering the PR procedure, and expected outcomes in
+   [`LIVE_RUN_EXPECTED_FINDINGS.md`](LIVE_RUN_EXPECTED_FINDINGS.md).
+2. Watch the review appear in the dashboard: webhook received, stages progressing, then status
+   `completed`, or `awaiting_approval` if anything critical or high was found.
+3. If gated, approve or reject per finding in the dashboard. The review resumes, and it
+   posts if at least one eligible or surfaced finding remains (medium and lower severities
+   are eligible without approval). If nothing eligible or surfaced remains, publish records
+   `no_op_empty` and makes no GitHub call.
+4. When a GitHub review is posted, it appears under your App's bot account, with findings
+   placed inline on the diff where coordinates allow.
+
+Don't plant a real vulnerability in a repository that matters to test this.
+
+### Alternative: use an existing GitHub App
+
+Create a GitHub App manually (same permissions and events as above, webhook URL
+`{your-base-url}/webhooks/github`, a webhook secret you generate). On the App's settings page,
+generate and download a private key — GitHub gives you a `.pem` file.
+
+`.env` values do not interpret literal newlines, so the multi-line PEM has to go in as a single
+line with escaped `\n` (the format `.env.example` ships). Convert the downloaded key, then set
+the three variables:
+
+```bash
+# Turn the downloaded .pem into a single escaped line to paste as the value below.
+awk 'NF {sub(/\r/, ""); printf "%s\\n", $0}' path/to/your-app.private-key.pem
+
+OUTRIDER_GITHUB_CREDENTIAL_SOURCE=env    # the modes never fall back, so a leftover "database" would ignore these
+OUTRIDER_GITHUB_APP_ID=<app id>
+OUTRIDER_GITHUB_APP_PRIVATE_KEY="<paste the escaped one-line output, keeping the quotes>"
+OUTRIDER_GITHUB_WEBHOOK_SECRET=<your webhook secret>
+```
+
+The `OUTRIDER_` prefix is required. A bare `GITHUB_APP_ID` is silently ignored, and so is a
+misspelled name inside the prefix, so double-check the three names. A missing required variable
+fails at startup with the field named.
+
+Launch the stack as shown above, and once `GET /health` is green, install the App on the
+repositories you want reviewed (App settings → Install App → pick repositories). Installing
+sends the installation event and subsequent pull-request webhooks immediately, so Outrider
+must be running to receive them — GitHub does not retry a delivery that arrives while it is
+down.
+
+Then run through [Verify the installation](#verify-the-installation) above to confirm the first
+review.
+
+### Optional: Slack notifications
+
+Slack integration is **outbound notifications only**. Each review normally produces one of
+two message kinds. A review that pauses for approval gets a card carrying the repository, PR
+number and title, severity counts, and up to three gated findings with their severity, type,
+file location, and model-written title (an overflow line summarizes the rest). A review that
+publishes without gating gets a one-line message carrying the repository, PR number, and
+posted versus dashboard-only counts. Descriptions, evidence,
+suggested fixes, and source context are not sent to Slack, though model-written
+titles may quote short source fragments. Both kinds deep-link to the
+dashboard when
+`OUTRIDER_DASHBOARD_BASE_URL` is set and omit the link otherwise. You cannot trigger reviews
+or approve findings from Slack. Delivery and deduplication are best effort. Outrider posts
+to Slack before it records the post, so a failure to record can repeat a message after a
+resume, and a persistently failing record can let one gated review receive both message
+kinds. Configure a Slack app with the `chat:write` scope, set
+`OUTRIDER_SLACK_CLIENT_ID`, `OUTRIDER_SLACK_CLIENT_SECRET`, `OUTRIDER_SLACK_REDIRECT_URI`,
+`OUTRIDER_SLACK_STATE_SECRET`, and `OUTRIDER_TOKEN_ENC_KEY`, then connect a channel.
+
+The simplest way is the dashboard: open **Connect Slack** in the sidebar, enter the GitHub
+installation id and the Slack channel id, and click Connect. That sends you to Slack to
+approve the app, Slack redirects back, and the bot token is stored encrypted. This runs only
+when the app is serving the built dashboard (the same one-origin requirement as GitHub App
+setup), not on the Vite dev server.
+
+For a headless deployment you can drive the same endpoint by hand. It needs your admin bearer
+token (export it from `deploy/.env` first, since Production setup only wrote it there), then
+fetch the redirect with curl and open the returned Slack URL in a browser:
+
+```bash
+export OUTRIDER_ADMIN_API_KEY="$(grep -E '^OUTRIDER_ADMIN_API_KEY=' deploy/.env | cut -d= -f2-)"
+curl -si -H "Authorization: Bearer $OUTRIDER_ADMIN_API_KEY" \
+  "https://review.example.com/slack/install?installation_id=<github install id>&channel_id=<C0000000000>" \
+  | grep -i '^location:'
+```
+
+The GitHub installation id is the number at the end of the App's installation settings URL on
+GitHub. The Slack channel id starts with `C` (or `G` for private groups) and sits at the
+bottom of the channel's details
+pane. The redirect URL carries an HMAC-signed, expiring `state` value binding the
+installation and channel ids, and the public callback at `GET /slack/oauth/callback` verifies
+that state before exchanging the code for a bot token (identity comes from the verified
+state, never from the callback's own query parameters). After the OAuth install completes,
+invite the bot to the channel (`/invite @Outrider`) so posts succeed. Bot tokens are
+encrypted at rest. When the Slack variables are unset, Slack is simply off and never blocks
+the review pipeline.
+
+### Troubleshooting
+
+> The root `docker-compose.yml` is development database infrastructure only (it has no app
+> service). The production stack lives in `deploy/docker-compose.prod.yml`, and the
+> `--env-file deploy/.env` flag is required. Without it Compose fails with a misleading
+> "set POSTGRES_USER" error.
+
+Until setup completes, the webhook receiver and other credential-dependent routes return 503,
+while `/setup`, `/health`, `/privacy`, and the read-only dashboard stay up. GitHub does not
+retry failed webhook deliveries on its own, so if a PR event arrived during that window,
+redeliver it from the App's settings page (Advanced → Recent Deliveries) once setup finishes.
 
 ---
+
+<!-- TODO(screenshots): 1) PR opened → 2) dashboard approval screen → 3) posted GitHub review.
+     Use a sandbox repo. Redact installation ids and webhook URLs. -->
 
 ## How a review works
 
@@ -291,7 +513,7 @@ would skip or veto never reaches a paid run.
 
 ## How Codex and GPT-5.6 helped me build Outrider
 
-I used [Codex](https://openai.com/codex/) with [GPT-5.6 Sol](https://openai.com/index/gpt-5-6/) as an independent reviewer throughout development.
+I used [Codex](https://openai.com/codex/) with [GPT-5.6 Sol](https://openai.com/index/gpt-5-6/) as an independent reviewer throughout development. This was development tooling only — GPT-5.6 is not one of Outrider's runtime model providers, which are Anthropic by default plus OpenAI-compatible hosts such as Fireworks and Baseten (see [`OUTRIDER_LLM_HOST`](#configuration)).
 
 Outrider has a catalog of rules covering things like severity, evidence, audit history, comment placement, and human approval. After each implementation pass, Codex read the diff and checked it against those rules, the project's trust boundaries, and its architectural decisions.
 
@@ -304,156 +526,6 @@ Every review was recorded in a local append-only audit log, including clean revi
 Using GPT-5.6 Sol this way was especially helpful for changes that crossed several parts of the project. It could follow a workflow from the dashboard through saved state, background jobs, Slack, and GitHub, then point out where those pieces could disagree.
 
 The process ended up looking a lot like Outrider itself: findings came with evidence, important decisions stayed with me, and each review left a record I could revisit later.
-
-## Quickstart
-
-**Prerequisites:** Docker with Docker Compose, a GitHub account that can create a GitHub App,
-an Anthropic API key (or a Fireworks or Baseten key, see `OUTRIDER_LLM_HOST`), and an
-HTTPS-reachable public URL for webhooks. A tunnel like ngrok works for evaluation.
-
-```bash
-git clone https://github.com/ddamme05/Outrider.git && cd Outrider
-cp .env.example deploy/.env
-# Edit deploy/.env. The file is fully commented. Minimum for a first boot:
-#   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
-#   ANTHROPIC_API_KEY
-#   OUTRIDER_ADMIN_API_KEY            (dashboard bearer token, generate a random secret)
-#   OUTRIDER_TRUNCATION_HMAC_SECRET   (generate a random secret, 32+ chars)
-#   + GitHub App credentials: pick mode A or B below
-docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml up -d --build
-```
-
-To use a GLM host instead of Anthropic, set `OUTRIDER_LLM_HOST=fireworks` plus
-`FIREWORKS_API_KEY` (or `baseten` plus `BASETEN_API_KEY`) in place of the Anthropic key.
-
-That is the whole sequence. The image builds the dashboard and installs dependencies, a
-one-shot `migrate` container applies database migrations before the app starts, and the app
-serves both the API and the dashboard on `127.0.0.1:8000`. That port is loopback only, so put
-your own ingress in front, or add `--profile tls` plus `OUTRIDER_DOMAIN=review.example.com` in
-`deploy/.env` to run the bundled Caddy with automatic HTTPS on ports 80 and 443. If you use
-your own reverse proxy, disable or redact query-string logging for `GET /setup/callback` and
-`GET /slack/oauth/callback` (both callbacks carry single-use secrets in their query strings,
-which is also why the production image runs uvicorn with `--no-access-log`).
-
-`GET /health` returns `{"status":"ok"}` once the app has booted. It is a liveness probe only
-and does not check database or provider reachability.
-
-> The root `docker-compose.yml` is development database infrastructure only (it has no app
-> service). The production stack lives in `deploy/docker-compose.prod.yml`, and the
-> `--env-file deploy/.env` flag is required. Without it Compose fails with a misleading
-> "set POSTGRES_USER" error.
-
-### GitHub App, mode A: click-through setup (recommended)
-
-Outrider creates its own GitHub App for you from an [App Manifest](DECISIONS.md#070-self-service-onboarding-credential-mode--provider--setup-state-machine-refines-066).
-Every deployment gets its own App, key, and webhook secret. There is no shared app and no
-phone-home ([#066](DECISIONS.md#066-oss-self-host-via-github-app-manifest--one-app-per-deployment)).
-
-Set in `deploy/.env`:
-
-```bash
-OUTRIDER_GITHUB_CREDENTIAL_SOURCE=database
-OUTRIDER_PUBLIC_BASE_URL=https://review.example.com   # bare origin, HTTPS, no path
-OUTRIDER_SETUP_STATE_SECRET=<generate-a-random-secret>       # 32+ chars
-OUTRIDER_GITHUB_CREDENTIAL_ENC_KEY=<generate-a-key>          # python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
-```
-
-Then open the dashboard's `/setup` page, enter your GitHub org, and follow the redirect. GitHub
-creates the App (permissions `contents: read` and `pull_requests: write`, subscribed to
-`pull_request` events, webhook pointed at `{base_url}/webhooks/github`) and redirects back.
-Outrider verifies the response against what it requested, encrypts the private key and webhook
-secret into Postgres, and sends you to GitHub's install page to pick repositories. Setup state
-is a signed single-use token, so refreshing the callback URL fails by design.
-
-Until setup completes, the webhook receiver and other credential-dependent routes return 503,
-while `/setup`, `/health`, `/privacy`, and the read-only dashboard stay up. GitHub does not
-retry failed webhook deliveries on its own, so if a PR event arrived during that window,
-redeliver it from the App's settings page (Advanced → Recent Deliveries) once setup finishes.
-
-Generate every secret above independently. Startup rejects a setup-state secret that matches
-any other configured secret root, and rejects reusing the GitHub credential-encryption key as
-the Slack token-encryption key. It does not check every other pair for reuse, so keeping the
-rest distinct is on you.
-
-### GitHub App, mode B: bring your own App (default)
-
-Create a GitHub App manually (same permissions and events as above, webhook URL
-`{your-base-url}/webhooks/github`, a webhook secret you generate) and set:
-
-```bash
-OUTRIDER_GITHUB_APP_ID=<app id>
-OUTRIDER_GITHUB_APP_PRIVATE_KEY=<PEM contents>
-OUTRIDER_GITHUB_WEBHOOK_SECRET=<your webhook secret>
-```
-
-The `OUTRIDER_` prefix is required. A bare `GITHUB_APP_ID` is silently ignored, and so is a
-misspelled name inside the prefix, so double-check the three names. A missing required variable
-fails at startup with the field named.
-
-### Slack notifications (optional)
-
-Slack integration is **outbound notifications only**. Each review normally produces one of
-two message kinds. A review that pauses for approval gets a card carrying the repository, PR
-number and title, severity counts, and up to three gated findings with their severity, type,
-file location, and model-written title (an overflow line summarizes the rest). A review that
-publishes without gating gets a one-line message carrying the repository, PR number, and
-posted versus dashboard-only counts. Descriptions, evidence,
-suggested fixes, and source context are not sent to Slack, though model-written
-titles may quote short source fragments. Both kinds deep-link to the
-dashboard when
-`OUTRIDER_DASHBOARD_BASE_URL` is set and omit the link otherwise. You cannot trigger reviews
-or approve findings from Slack. Delivery and deduplication are best effort. Outrider posts
-to Slack before it records the post, so a failure to record can repeat a message after a
-resume, and a persistently failing record can let one gated review receive both message
-kinds. Configure a Slack app with the `chat:write` scope, set
-`OUTRIDER_SLACK_CLIENT_ID`, `OUTRIDER_SLACK_CLIENT_SECRET`, `OUTRIDER_SLACK_REDIRECT_URI`,
-`OUTRIDER_SLACK_STATE_SECRET`, and `OUTRIDER_TOKEN_ENC_KEY`, then connect a channel.
-
-The simplest way is the dashboard: open **Connect Slack** in the sidebar, enter the GitHub
-installation id and the Slack channel id, and click Connect. That sends you to Slack to
-approve the app, Slack redirects back, and the bot token is stored encrypted. This runs only
-when the app is serving the built dashboard (the same one-origin requirement as GitHub App
-setup), not on the Vite dev server.
-
-For a headless deployment you can drive the same endpoint by hand. It needs your admin bearer
-token (export it from `deploy/.env` first, since the quickstart only wrote it there), then
-fetch the redirect with curl and open the returned Slack URL in a browser:
-
-```bash
-export OUTRIDER_ADMIN_API_KEY="$(grep -E '^OUTRIDER_ADMIN_API_KEY=' deploy/.env | cut -d= -f2-)"
-curl -si -H "Authorization: Bearer $OUTRIDER_ADMIN_API_KEY" \
-  "https://review.example.com/slack/install?installation_id=<github install id>&channel_id=<C0000000000>" \
-  | grep -i '^location:'
-```
-
-The GitHub installation id is the number at the end of the App's installation settings URL on
-GitHub. The Slack channel id starts with `C` (or `G` for private groups) and sits at the
-bottom of the channel's details
-pane. The redirect URL carries an HMAC-signed, expiring `state` value binding the
-installation and channel ids, and the public callback at `GET /slack/oauth/callback` verifies
-that state before exchanging the code for a bot token (identity comes from the verified
-state, never from the callback's own query parameters). After the OAuth install completes,
-invite the bot to the channel (`/invite @Outrider`) so posts succeed. Bot tokens are
-encrypted at rest. When the Slack variables are unset, Slack is simply off and never blocks
-the review pipeline.
-
-### Verify the installation
-
-1. Open a pull request in a sandbox repository the App is installed on. The repo ships
-   deliberately vulnerable demo fixtures under
-   [`scripts/demo_fixtures/`](scripts/demo_fixtures/) (intentional, don't report them), with
-   their own README covering the PR procedure, and expected outcomes in
-   [`LIVE_RUN_EXPECTED_FINDINGS.md`](LIVE_RUN_EXPECTED_FINDINGS.md).
-2. Watch the review appear in the dashboard: webhook received, stages progressing, then status
-   `completed`, or `awaiting_approval` if anything critical or high was found.
-3. If gated, approve or reject per finding in the dashboard. The review resumes, and it
-   posts if at least one eligible or surfaced finding remains (medium and lower severities
-   are eligible without approval). If nothing eligible or surfaced remains, publish records
-   `no_op_empty` and makes no GitHub call.
-4. When a GitHub review is posted, it appears under your App's bot account, with findings
-   placed inline on the diff where coordinates allow.
-
-Don't plant a real vulnerability in a repository that matters to test this.
 
 ## Configuration
 
