@@ -1,9 +1,9 @@
 # LangGraph state object per docs/spec.md §7.1
 """`ReviewState`: the LangGraph state envelope.
 
-The webhook receiver seeds `review_id`, `pr_context` and `received_at`
-(`DECISIONS.md#020`); every other slot is written by the node that owns it, and
-intake enriches `pr_context` in place rather than adding a slot.
+Review execution starts with `review_id`, `pr_context`, `received_at`, and
+`is_eval`; every other slot is written by its owning node. Intake replaces
+`pr_context` with an enriched `PRContext` rather than adding another top-level slot.
 
 State round-trips through Postgres JSON via langgraph-checkpoint-postgres, so
 every field type must be JSON-serializable and runtime dependencies (DB sessions,

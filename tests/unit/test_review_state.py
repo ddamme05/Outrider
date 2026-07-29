@@ -1,11 +1,4 @@
-"""`ReviewState` construction and assignment validation.
-
-Covers the webhook-seeded slots (`review_id`, `pr_context`, `received_at`) and
-`triage_result`. Two properties carry the weight: the model is NOT frozen, because
-nodes return partial-update dicts that reducers merge, and `received_at` is an
-`AwareDatetime`, because naive datetimes round-trip as subtly wrong times through
-Postgres `timestamptz`.
-"""
+"""`ReviewState` construction, assignment validation, and serialization tests."""
 
 from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
