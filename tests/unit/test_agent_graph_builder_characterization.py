@@ -131,7 +131,6 @@ def test_patch_config_rejects_a_non_patch_config() -> None:
 
 
 def test_provider_none_precedes_checkpointer_none() -> None:
-    """The first guard wins over one that had no assertion before this file."""
     with pytest.raises(BuildGraphError, match="provider must not be None"):
         build_graph(**_args(provider=None, checkpointer=None))
 
