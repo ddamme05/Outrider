@@ -1,10 +1,7 @@
-"""Characterization of `build_graph`'s dependency validation, before SLICE-004 moves it.
+"""Characterize `build_graph` dependency validation and error precedence.
 
-Expectations are read off `2237d987:src/outrider/agent/graph.py` via
-`.refactor/build_guard_manifest.py`, which owns the guard-to-line mapping. Pins the thirteen
-guards no assertion covered, plus precedence cases 2-5; case 1 lives in
-`test_agent_graph_builder.py::test_build_graph_provider_gate_fires_before_sink_gate`.
-Message text is asserted, never `BuildGraphError` alone, which all forty-one guards raise.
+Each test perturbs a valid argument set as narrowly as possible so the asserted
+message identifies the guard that won.
 """
 
 from __future__ import annotations
@@ -32,9 +29,7 @@ class _NotAProtocol:
     """Satisfies nothing. Every runtime-checkable Protocol check rejects it."""
 
 
-# ---------------------------------------------------------------------------
-# Unpinned guards: None-checks
-# ---------------------------------------------------------------------------
+# Required dependency None checks
 
 
 def test_hitl_event_sink_none_is_rejected() -> None:
@@ -68,9 +63,7 @@ def test_checkpointer_none_is_rejected_with_the_rehydration_rationale() -> None:
         build_graph(**_args(checkpointer=None))
 
 
-# ---------------------------------------------------------------------------
-# Unpinned guards: value and callability checks
-# ---------------------------------------------------------------------------
+# Value and callability checks
 
 
 @pytest.mark.parametrize("value", [0, -1, True, "3", 1.0])
@@ -102,9 +95,7 @@ def test_resolve_slack_target_accepts_none() -> None:
     assert callable(graph.ainvoke)
 
 
-# ---------------------------------------------------------------------------
-# Unpinned guards: Protocol / instance checks
-# ---------------------------------------------------------------------------
+# Protocol and instance checks
 
 
 @pytest.mark.parametrize(
@@ -136,11 +127,7 @@ def test_patch_config_rejects_a_non_patch_config() -> None:
         build_graph(**_args(patch_config=_NotAProtocol()))
 
 
-# ---------------------------------------------------------------------------
-# Order. Two arguments invalid at once; source position decides the message, so
-# a reordered block still raises BuildGraphError and only the message differs.
-# Cases 2-5; case 1 is test_build_graph_provider_gate_fires_before_sink_gate.
-# ---------------------------------------------------------------------------
+# Error precedence when multiple arguments are invalid
 
 
 def test_provider_none_precedes_checkpointer_none() -> None:
