@@ -557,7 +557,7 @@ def compute_phase_id(
 ) -> str:
     """SHA-256 hex digest identifying one logical phase span.
 
-    `PhaseEventSink` idempotency keys on `(review_id, phase_id, marker)`;
+    `PhaseEventSink` idempotency keys on `(review_id, phase_id, COALESCE(phase_key, ''), marker)`;
     under LangGraph checkpoint replay (HITL resume is the first arc that
     exercises this path), a node body re-runs from the top and emits the
     same logical `marker="start"` / `marker="end"` pair. A uuid4-minted

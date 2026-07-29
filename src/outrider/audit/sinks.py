@@ -6,20 +6,22 @@
 Nodes consume these Protocols instead of touching DB code directly, which keeps
 audit-table writes out of node call sites and lets tests inject recorders.
 
-Eight Protocols live here, one per emitting node or notifier. The ninth,
+Eight Protocols live here, grouped by event family or emitting component. The ninth,
 `LLMExchangePersister`, lives in `llm/base.py` because LLM-exchange persistence
 belongs to the LLM provider boundary — no node emits `LLMCallEvent` directly.
 `AuditPersister` implements all nine from one body, sharing its transaction and
 session-per-call discipline.
 
-Rules every durable implementation shares, stated once here rather than per
-Protocol:
+Shared emission rules:
 
-  - Persist before returning, or raise. A sink that returns success without
-    persisting is the failure the `isinstance` gate at build time cannot catch.
-  - Be safe under concurrent invocation — a fresh `AsyncSession` per call.
-  - Test recorders are deliberately exempt from idempotency: they record every
-    emission so double-emit bugs surface instead of being silently deduped.
+  - Durable emitters persist before returning or raise. A sink that returns
+    success without persisting is the failure the `isinstance` gate at build time
+    cannot catch.
+  - Durable implementations are safe under concurrent invocation. `AuditPersister`
+    isolates concurrent operations with fresh `AsyncSession`s; publish-lock
+    acquisition uses one session per probe.
+  - Test recorders deliberately do not deduplicate, so double emissions remain
+    visible.
 
 Each Protocol below documents only what is unique to it: its events, its
 idempotency key, and any behaviour that departs from the above.
@@ -64,8 +66,9 @@ class PhaseEventSink(Protocol):
     Nodes emit at entry (marker='start') and success-exit (marker='end') so replay
     has causal barriers.
 
-    Idempotency key: `(review_id, phase_id, marker)`. `phase_id` is a SHA-256 digest
-    from `policy.canonical.compute_phase_id(review_id, node_id, attempt_key)`,
+    Idempotency key: `(review_id, phase_id, COALESCE(phase_key, ''), marker)`; a
+    missing `phase_key` is normalized to the empty string. `phase_id` is a SHA-256
+    digest from `policy.canonical.compute_phase_id(review_id, node_id, attempt_key)`,
     deterministic across body re-runs so the key survives checkpoint replay.
     """
 
@@ -93,8 +96,8 @@ class FileExaminationSink(Protocol):
 class AnalyzeEventSink(Protocol):
     """Sink for the eight event types the analyze node emits.
 
-    One Protocol rather than eight because a single node body emits all of them
-    inside one transaction window, and separate kwargs would crowd the deps surface.
+    One Protocol rather than eight because analyze owns all eight event types, and
+    separate kwargs would crowd the dependency surface.
 
     Idempotency differs by method, which is why it is not stated once:
 

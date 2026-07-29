@@ -1071,7 +1071,7 @@ async def test_phase_id_is_deterministic_sha256_hex(
     `compute_phase_id`'s contract — deterministic over
     `(review_id, node_id, attempt_key)` so LangGraph checkpoint replay
     of the node body produces the same key, letting PhaseEventSink
-    collapse re-emissions on `(review_id, phase_id, marker)`."""
+    collapse re-emissions on `(review_id, phase_id, COALESCE(phase_key, ''), marker)`."""
     import re
 
     from outrider.policy.canonical import SHA256_HEX_PATTERN, compute_phase_id

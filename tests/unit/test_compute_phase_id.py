@@ -1,7 +1,7 @@
 """Canonical-recipe pinning for `compute_phase_id`.
 
 `ReviewPhaseEvent` uses `phase_id: str`. `PhaseEventSink` idempotency
-keys on `(review_id, phase_id, marker)`; LangGraph checkpoint replay
+keys on `(review_id, phase_id, COALESCE(phase_key, ''), marker)`; LangGraph checkpoint replay
 re-runs the body and re-mints, so the helper produces a deterministic
 SHA-256 hex digest over `(review_id, node_id, attempt_key)`.
 
