@@ -340,9 +340,10 @@ portion. The run-level gap is the weighted mixture above, not the rate ratio.</l
 
 <h2>Outcome: the shrink did not ship</h2>
 <p><span class="badge ok">COMPLETE</span> No <code>SYSTEM_PROMPT_EXEMPLARS</code> edit, no
-<code>VERSION</code> bump, no candidate paid run. <code>prompts/analyze.py</code> is byte-identical
-to its pre-arc state. This is a successful no-change result, not an abandoned feature: the arc built
-an instrument, priced the lever with it, and the lever did not clear the bar.</p>
+<code>VERSION</code> bump, no candidate paid run. <code>prompts/analyze.py</code> was
+byte-identical to its pre-arc state <em>at arc close</em>. This is a successful
+no-change result, not an abandoned feature: the arc built an instrument, priced
+the lever with it, and the lever did not clear the bar.</p>
 <p><strong>Why.</strong> Every deletion had to name a byte-visible surviving equivalent. Across all
 12 type blocks exactly ONE cleared — <code>sql_injection</code>'s self-admitted <em>"This restates
 the parameterized-query rule above"</em>, ~104 chars. That is <strong>~0.4% of the
