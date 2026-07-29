@@ -10,9 +10,10 @@ Intake routes with `Command(goto=...)`, which is why this module deliberately ha
 `add_edge("intake", ...)` and no `add_conditional_edges("intake", ...)`: under LangGraph
 1.1.6 a static edge fires ALONGSIDE the Command's dynamic edge, sending to both.
 
-Every runtime dependency arrives as a keyword argument and is closed over in the node
-callables (`nodes-receive-deps-via-closure`); nodes read no env. All nodes are async, so
-the compiled graph is driven with `await graph.ainvoke(seed_state)`.
+Every runtime dependency arrives as a keyword argument and is closed over in
+the node callables rather than stored in ReviewState
+(`nodes-receive-deps-via-closure`). All nodes are async, so the compiled graph is
+driven with `await graph.ainvoke(seed_state)`.
 """
 
 from __future__ import annotations
