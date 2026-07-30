@@ -538,13 +538,13 @@ class PythonAdapter:
         tree: Tree,
         scope_units: tuple[ScopeUnit, ...],
     ) -> tuple[ComputedParserOutcome, dict[str, bool]]:
-        # Map each ScopeUnit to its tree-sitter node by byte range.
-        # ScopeUnit byte ranges include decorators when wrapped; the
-        # underlying function/class node may have a narrower span.
-        # We pass the full ScopeUnit span (via `_inner_span`) to
-        # `_find_node_by_span`, which uses containment-based lookup —
-        # smallest start_byte / largest end_byte tiebreaker — to locate
-        # the OUTERMOST scope-defining node enclosed by the ScopeUnit.
+        # Map each ScopeUnit to its tree-sitter node by byte range. A decorated
+        # ScopeUnit's `byte_start` includes its `@decorator`s while the underlying
+        # function/class node starts narrower, and the exact inner span is not
+        # recoverable from the ScopeUnit alone — so the full stored span is passed
+        # as a conservative bound and `_find_node_by_span`'s containment lookup
+        # (smallest start_byte / largest end_byte tiebreaker) picks the OUTERMOST
+        # scope-defining node enclosed by it.
         # `decorated_definition` is in target_types so a decorator-region
         # syntax error propagates to the wrapping scope's `has_error`.
         # NOTE: this currently always returns `"clean"` — syntax errors
@@ -555,35 +555,9 @@ class PythonAdapter:
         # outcome alongside the FUP-053 raw-bytes path. Not in V1 scope.
         has_error: dict[str, bool] = {}
         for scope in scope_units:
-            inner_start, inner_end = self._inner_span(scope)
-            node = _find_node_by_span(tree.root_node, inner_start, inner_end)
+            node = _find_node_by_span(tree.root_node, scope.byte_start, scope.byte_end)
             has_error[scope.unit_id] = bool(node and node.has_error)
         return "clean", has_error
-
-    @staticmethod
-    def _compute_error_lines_from_tree(tree: Tree) -> frozenset[int]:
-        """1-indexed source lines covered by tree-sitter ERROR or MISSING nodes.
-
-        Delegates to the shared `scope_search.error_lines_from_tree`
-        (language-agnostic ERROR/MISSING walk); semantics documented
-        there. See DECISIONS.md#033.
-        """
-        return error_lines_from_tree(tree)
-
-    @staticmethod
-    def _inner_span(scope: ScopeUnit) -> tuple[int, int]:
-        """Return the `ScopeUnit` byte range as the conservative match bound
-        for `_find_node_by_span`'s containment lookup.
-
-        For decorated scopes, `byte_start` includes `@decorator`s; the
-        underlying `function_definition` / `class_definition` node has
-        a narrower start. We can't recover the exact inner span from
-        `ScopeUnit` alone, so the ScopeUnit-to-node match in
-        `compute_parser_outcome` uses the full stored ScopeUnit span as
-        the conservative bound and lets `_find_node_by_span` pick the
-        outermost contained scope-defining node from within it.
-        """
-        return scope.byte_start, scope.byte_end
 
     # ------------------------------------------------------------------
     # Generic tree walker
@@ -735,5 +709,5 @@ def parse_python(source: bytes, file_path: str, resolver: ImportPathResolver) ->
         call_sites=call_sites,
         assignment_sites=assignment_sites,
         has_error=has_error,
-        error_lines=adapter._compute_error_lines_from_tree(tree),
+        error_lines=error_lines_from_tree(tree),
     )
