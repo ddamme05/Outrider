@@ -390,11 +390,7 @@ def test_compute_truncation_hmac_differs_per_byte_count() -> None:
 
 
 def test_strip_fake_truncation_markers_removes_attacker_prepended_fake() -> None:
-    """Attacker-prepended fake marker is stripped before sanitization.
-
-    Defends against a reader being tricked into believing Outrider
-    did the eliding when in fact the attacker chose what to elide.
-    """
+    """The literal-marker remover drops an unobscured input marker."""
     fake = "[truncated, original 999 bytes · deadbeef]"
     text = f"normal content {fake} more content"
     cleaned = strip_fake_truncation_markers(text)
@@ -402,7 +398,7 @@ def test_strip_fake_truncation_markers_removes_attacker_prepended_fake() -> None
 
 
 def test_sanitize_display_string_strips_fake_marker_inline() -> None:
-    """The full sanitize pipeline runs fake-marker stripping first."""
+    """The full pipeline drops an unobscured marker; obscured ordering is pinned below."""
     fake = "[truncated, original 999 bytes · deadbeef]"
     text = f"prepended {fake}"
     cleaned = sanitize_display_string(text)

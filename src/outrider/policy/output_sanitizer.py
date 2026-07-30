@@ -44,14 +44,12 @@ Five concerns this module owns:
    hide.
 
 5. **HMAC-tagged truncation marker** — an 8-char HMAC keyed by the
-   `OUTRIDER_TRUNCATION_HMAC_SECRET` env var, embedded in the marker
-   text. An attacker who prepends a fake `[truncated, original N bytes
-   · faked8x]` to their content can't predict the HMAC, so the
-   sanitizer's `strip_fake_truncation_markers` (called BEFORE
-   sanitization) reliably distinguishes attacker-prepended markers
-   from sanitizer-produced ones. The HMAC is short (8 hex chars =
-   32 bits) — collision-resistance is NOT the goal; preimage
-   resistance against a key-less attacker is. 32 bits is plenty.
+   `OUTRIDER_TRUNCATION_HMAC_SECRET` env var binds the claimed original
+   byte count to the deployment secret. Marker-shaped input is removed
+   unconditionally after control-codepoint normalization; `_apply_byte_cap`
+   alone appends a legitimate marker afterward. The HMAC is short (8 hex
+   chars = 32 bits) because preimage resistance, not collision resistance,
+   is the goal.
 """
 
 from __future__ import annotations
@@ -134,8 +132,9 @@ _MIN_TRUNCATION_SECRET_LEN: Final[int] = 32
 # content didn't end with a newline. `original N bytes` wording pairs
 # with the BYTE measurement of the cap (NOT codepoints) so a reader
 # computing "how much was lost" gets the correct answer for non-ASCII
-# content. The HMAC tag (`<hmac8>`) is what distinguishes
-# sanitizer-produced markers from attacker-prepended fakes.
+# content. The HMAC tag (`<hmac8>`) lets a holder of the deployment secret confirm
+# a marker was produced here; the strip itself does not consult it, removing every
+# marker-shaped run regardless of tag validity.
 _TRUNCATION_MARKER_TEMPLATE: Final[str] = "\n\n[truncated, original {n} bytes · {hmac}]"
 
 # Regex to detect any truncation-marker-shaped string in input. Used
@@ -246,18 +245,12 @@ _OUTRIDER_MARKER_OPEN_REGEX: Final[re.Pattern[str]] = re.compile(
 
 
 def strip_fake_truncation_markers(text: str) -> str:
-    """Remove any attacker-prepended truncation markers from input.
+    """Remove literal truncation-marker shapes from control-normalized input.
 
-    Called BEFORE other sanitization steps so an attacker who embeds
-    `[truncated, original 999 bytes · deadbeef]` in their finding text
-    can't trick a reader into believing Outrider did the eliding.
-
-    The legitimate truncation marker is appended by `_apply_byte_cap`
-    AT truncation time — never present in input. So stripping ALL
-    markers shaped like the regex is correct: zero false positives in
-    real finding text (nobody writes that pattern by accident), zero
-    false negatives (attacker can't avoid the regex without losing the
-    visual shape of the spoof).
+    `_strip_hostile_codepoints` calls this after stripping bidi/zero-width
+    characters, ANSI sequences, NUL, and lone surrogates. `_apply_byte_cap`
+    appends the only legitimate marker later, so every literal marker already
+    present in input is removed regardless of tag validity.
     """
     return _TRUNCATION_MARKER_REGEX.sub("", text)
 
