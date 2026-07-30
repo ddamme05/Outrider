@@ -126,26 +126,49 @@ class PythonAdapter:
 
     def _extract_scopes_from_tree(self, tree: Tree, file_path: str) -> tuple[ScopeUnit, ...]:
         scopes: list[ScopeUnit] = []
-        self._walk_for_scopes(
-            tree.root_node,
-            file_path=file_path,
-            qual_path=(),
-            in_class=False,
-            parent_unit_id=None,
-            out=scopes,
-        )
+        self._walk_for_scopes(tree.root_node, file_path=file_path, out=scopes)
         return tuple(scopes)
 
-    def _walk_for_scopes(
+    def _emit_scope(
         self,
+        out: list[ScopeUnit],
         node: Node,
         *,
-        file_path: str,
+        kind: str,
+        name: str,
         qual_path: tuple[str, ...],
-        in_class: bool,
+        file_path: str,
         parent_unit_id: str | None,
-        out: list[ScopeUnit],
-    ) -> None:
+    ) -> str:
+        """Append one `ScopeUnit` and return its `unit_id`.
+
+        The byte and line ranges come from `_scope_byte_range` /
+        `_scope_line_range`, which widen a decorated definition to cover its
+        decorators — which is why the `decorated_definition` wrapper node itself
+        never emits.
+        """
+        qualified_name = ".".join((*qual_path, name))
+        byte_start, byte_end = self._scope_byte_range(node)
+        line_start, line_end = self._scope_line_range(node)
+        unit_id = compute_unit_id(file_path, kind=kind, qualified_name=qualified_name)
+        out.append(
+            ScopeUnit(
+                unit_id=unit_id,
+                kind=kind,
+                name=name,
+                qualified_name=qualified_name,
+                file_path=file_path,
+                line_start=line_start,
+                line_end=line_end,
+                byte_start=byte_start,
+                byte_end=byte_end,
+                decorators=self._decorator_strings(node),
+                parent_scope_id=parent_unit_id,
+            )
+        )
+        return unit_id
+
+    def _walk_for_scopes(self, node: Node, *, file_path: str, out: list[ScopeUnit]) -> None:
         """Iterative pre-order scope walk with state carried per frame.
 
         Each stack frame is a `(node, qual_path, in_class, parent_unit_id)`
@@ -169,9 +192,9 @@ class PythonAdapter:
         function/class node handles decorator-span detection via
         `_scope_byte_range` / `_decorator_strings`.
         """
-        stack: list[tuple[Node, tuple[str, ...], bool, str | None]] = [
-            (node, qual_path, in_class, parent_unit_id)
-        ]
+        # The root frame is invariant: module scope has no qualified path, is not
+        # inside a class, and has no parent unit.
+        stack: list[tuple[Node, tuple[str, ...], bool, str | None]] = [(node, (), False, None)]
         while stack:
             cur_node, cur_qual_path, cur_in_class, cur_parent_unit_id = stack.pop()
             node_type = cur_node.type
@@ -181,29 +204,18 @@ class PythonAdapter:
                 if name_node is None:
                     continue
                 name = self._node_text(name_node)
-                kind = "method" if cur_in_class else "function"
-                qualified_name = ".".join(cur_qual_path + (name,))
-                byte_start, byte_end = self._scope_byte_range(cur_node)
-                line_start, line_end = self._scope_line_range(cur_node)
-                unit_id = compute_unit_id(file_path, kind=kind, qualified_name=qualified_name)
-                out.append(
-                    ScopeUnit(
-                        unit_id=unit_id,
-                        kind=kind,
-                        name=name,
-                        qualified_name=qualified_name,
-                        file_path=file_path,
-                        line_start=line_start,
-                        line_end=line_end,
-                        byte_start=byte_start,
-                        byte_end=byte_end,
-                        decorators=self._decorator_strings(cur_node),
-                        parent_scope_id=cur_parent_unit_id,
-                    )
+                unit_id = self._emit_scope(
+                    out,
+                    cur_node,
+                    kind="method" if cur_in_class else "function",
+                    name=name,
+                    qual_path=cur_qual_path,
+                    file_path=file_path,
+                    parent_unit_id=cur_parent_unit_id,
                 )
                 body = cur_node.child_by_field_name("body")
                 if body is not None:
-                    stack.append((body, cur_qual_path + (name,), False, unit_id))
+                    stack.append((body, (*cur_qual_path, name), False, unit_id))
                 continue
 
             if node_type == "class_definition":
@@ -211,28 +223,18 @@ class PythonAdapter:
                 if name_node is None:
                     continue
                 name = self._node_text(name_node)
-                qualified_name = ".".join(cur_qual_path + (name,))
-                byte_start, byte_end = self._scope_byte_range(cur_node)
-                line_start, line_end = self._scope_line_range(cur_node)
-                unit_id = compute_unit_id(file_path, kind="class", qualified_name=qualified_name)
-                out.append(
-                    ScopeUnit(
-                        unit_id=unit_id,
-                        kind="class",
-                        name=name,
-                        qualified_name=qualified_name,
-                        file_path=file_path,
-                        line_start=line_start,
-                        line_end=line_end,
-                        byte_start=byte_start,
-                        byte_end=byte_end,
-                        decorators=self._decorator_strings(cur_node),
-                        parent_scope_id=cur_parent_unit_id,
-                    )
+                unit_id = self._emit_scope(
+                    out,
+                    cur_node,
+                    kind="class",
+                    name=name,
+                    qual_path=cur_qual_path,
+                    file_path=file_path,
+                    parent_unit_id=cur_parent_unit_id,
                 )
                 body = cur_node.child_by_field_name("body")
                 if body is not None:
-                    stack.append((body, cur_qual_path + (name,), True, unit_id))
+                    stack.append((body, (*cur_qual_path, name), True, unit_id))
                 continue
 
             # Other node (including `decorated_definition` wrapper): push
