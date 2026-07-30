@@ -237,6 +237,40 @@ class JavaScriptAdapter:
                 continue
             stack.append((child, qual_path, in_class, parent_unit_id))
 
+    def _emit_and_descend(
+        self,
+        scopes: list[ScopeUnit],
+        stack: list[tuple[Node, tuple[str, ...], bool, str | None]],
+        *,
+        span_node: Node,
+        kind: str,
+        name: str,
+        qual_path: tuple[str, ...],
+        file_path: str,
+        parent_unit_id: str | None,
+        body_owner: Node,
+        child_in_class: bool,
+    ) -> None:
+        """Emit one scope, then queue its body as a child frame.
+
+        `body_owner` is whichever node HOLDS the body: the declaration itself for
+        a function/class/method declaration, or the value node when a function is
+        assigned to a field, an object pair, or a variable. A body-less node still
+        emits its scope and simply descends no further.
+        """
+        unit_id = self._emit(
+            scopes,
+            span_node=span_node,
+            kind=kind,
+            name=name,
+            qual_path=qual_path,
+            file_path=file_path,
+            parent_unit_id=parent_unit_id,
+        )
+        body = body_owner.child_by_field_name("body")
+        if body is not None:
+            stack.append((body, (*qual_path, name), child_in_class, unit_id))
+
     def _extract_scopes_from_tree(self, tree: Tree, file_path: str) -> tuple[ScopeUnit, ...]:
         scopes: list[ScopeUnit] = []
         # Frame: (node, qual_path, in_class, parent_unit_id) — the same
@@ -255,18 +289,18 @@ class JavaScriptAdapter:
                 if name_node is None:
                     continue
                 name = self._node_text(name_node)
-                unit_id = self._emit(
+                self._emit_and_descend(
                     scopes,
+                    stack,
                     span_node=node,
                     kind="function",
                     name=name,
                     qual_path=qual_path,
                     file_path=file_path,
                     parent_unit_id=parent_unit_id,
+                    body_owner=node,
+                    child_in_class=False,
                 )
-                body = node.child_by_field_name("body")
-                if body is not None:
-                    stack.append((body, (*qual_path, name), False, unit_id))
                 continue
 
             if node_type in self._CLASS_DECL_TYPES:
@@ -274,18 +308,18 @@ class JavaScriptAdapter:
                 if name_node is None:
                     continue
                 name = self._node_text(name_node)
-                unit_id = self._emit(
+                self._emit_and_descend(
                     scopes,
+                    stack,
                     span_node=node,
                     kind="class",
                     name=name,
                     qual_path=qual_path,
                     file_path=file_path,
                     parent_unit_id=parent_unit_id,
+                    body_owner=node,
+                    child_in_class=True,
                 )
-                body = node.child_by_field_name("body")
-                if body is not None:
-                    stack.append((body, (*qual_path, name), True, unit_id))
                 continue
 
             if node_type == "method_definition":
@@ -298,18 +332,18 @@ class JavaScriptAdapter:
                     self._push_scope_children(stack, node, qual_path, in_class, parent_unit_id)
                     continue
                 name = self._node_text(name_node)
-                unit_id = self._emit(
+                self._emit_and_descend(
                     scopes,
+                    stack,
                     span_node=node,
                     kind="method",
                     name=name,
                     qual_path=qual_path,
                     file_path=file_path,
                     parent_unit_id=parent_unit_id,
+                    body_owner=node,
+                    child_in_class=False,
                 )
-                body = node.child_by_field_name("body")
-                if body is not None:
-                    stack.append((body, (*qual_path, name), False, unit_id))
                 continue
 
             if node_type in self._FIELD_DEF_TYPES:
@@ -324,18 +358,18 @@ class JavaScriptAdapter:
                     and value.type in self._FUNCTION_VALUE_TYPES
                 ):
                     name = self._node_text(prop)
-                    unit_id = self._emit(
+                    self._emit_and_descend(
                         scopes,
+                        stack,
                         span_node=node,
                         kind="method",
                         name=name,
                         qual_path=qual_path,
                         file_path=file_path,
                         parent_unit_id=parent_unit_id,
+                        body_owner=value,
+                        child_in_class=False,
                     )
-                    body = value.child_by_field_name("body")
-                    if body is not None:
-                        stack.append((body, (*qual_path, name), False, unit_id))
                     continue
                 self._push_scope_children(stack, node, qual_path, in_class, parent_unit_id)
                 continue
@@ -346,18 +380,18 @@ class JavaScriptAdapter:
                 if key is not None and key.type == "property_identifier" and value is not None:
                     name = self._node_text(key)
                     if value.type in self._FUNCTION_VALUE_TYPES:
-                        unit_id = self._emit(
+                        self._emit_and_descend(
                             scopes,
+                            stack,
                             span_node=node,
                             kind="method",
                             name=name,
                             qual_path=qual_path,
                             file_path=file_path,
                             parent_unit_id=parent_unit_id,
+                            body_owner=value,
+                            child_in_class=False,
                         )
-                        body = value.child_by_field_name("body")
-                        if body is not None:
-                            stack.append((body, (*qual_path, name), False, unit_id))
                         continue
                     if value.type == "object":
                         # Nested literal: extend the qualified path so
@@ -374,32 +408,32 @@ class JavaScriptAdapter:
                 if name_node is not None and name_node.type == "identifier" and value is not None:
                     name = self._node_text(name_node)
                     if value.type in self._FUNCTION_VALUE_TYPES:
-                        unit_id = self._emit(
+                        self._emit_and_descend(
                             scopes,
+                            stack,
                             span_node=node,
                             kind="function",
                             name=name,
                             qual_path=qual_path,
                             file_path=file_path,
                             parent_unit_id=parent_unit_id,
+                            body_owner=value,
+                            child_in_class=False,
                         )
-                        body = value.child_by_field_name("body")
-                        if body is not None:
-                            stack.append((body, (*qual_path, name), False, unit_id))
                         continue
                     if value.type in self._CLASS_VALUE_TYPES:
-                        unit_id = self._emit(
+                        self._emit_and_descend(
                             scopes,
+                            stack,
                             span_node=node,
                             kind="class",
                             name=name,
                             qual_path=qual_path,
                             file_path=file_path,
                             parent_unit_id=parent_unit_id,
+                            body_owner=value,
+                            child_in_class=True,
                         )
-                        body = value.child_by_field_name("body")
-                        if body is not None:
-                            stack.append((body, (*qual_path, name), True, unit_id))
                         continue
                     if value.type == "object":
                         stack.append((value, (*qual_path, name), False, parent_unit_id))
