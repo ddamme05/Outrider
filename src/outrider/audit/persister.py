@@ -1,11 +1,11 @@
 # See specs/2026-05-16-audit-persister.md + DECISIONS.md#014/#016.
-"""AuditPersister — durable single-class implementation of nine sink Protocols.
+"""AuditPersister — one class implementing every audit sink Protocol.
 
-Implements `LLMExchangePersister` (`llm/base.py`) AND `PhaseEventSink`,
-`FileExaminationSink`, `AnalyzeEventSink`, `PublishEventSink`,
-`TraceEventSink`, `HITLEventSink`, `SynthesizeEventSink`
-(`audit/sinks.py`) from one body,
-sharing transaction lifecycle and session-per-call discipline. The
+Implements `LLMExchangePersister` (`llm/base.py`) plus every Protocol in
+`audit/sinks.py` — `PhaseEventSink`, `FileExaminationSink`, `AnalyzeEventSink`,
+`PublishEventSink`, `TraceEventSink`, `HITLEventSink`, `SynthesizeEventSink`,
+`SlackEventSink` — from one body, sharing transaction lifecycle and
+session-per-call discipline. The
 non-phase events route through a shared `_persist_non_phase_event`
 helper so the idempotency + payload-mismatch discipline is uniform
 across event types; natural-key-mode events
@@ -27,19 +27,14 @@ Key invariants:
   different content is a producer-side bug, not a silent discard).
 - **Atomic LLMCallEvent + llm_call_content write** per `DECISIONS.md#016`.
   Both rows commit together via `session.begin()` or neither does.
-- **Post-retention content-resurrection guard.** When the audit-row INSERT
-  hits a conflict (existing audit row matches), the audit-conflict branch
-  ALWAYS exits via `return` or `raise` — it NEVER falls through to a
-  content INSERT (a check-then-INSERT pattern would race the retention
-  sweep). The branch SELECTs the existing content row and compares it
-  to the attempted write: if absent (retention purged), returns as
-  metadata-only-replay state idempotent no-op; if present and matches,
-  returns as idempotent no-op; if present and mismatches, raises
-  `AuditPersisterIdempotencyConflict` with the content-field digest set.
-  Content INSERT is reachable ONLY from the freshly-inserted-audit
-  branch where no prior content can exist for this `event_id` (the
-  audit-events PK would have caught it). Prevents resurrecting raw
-  prompt/completion content that retention deliberately removed.
+- **Post-retention content-resurrection guard.** An audit-row conflict ALWAYS
+  exits by `return` or `raise` and never falls through to a content INSERT — a
+  check-then-INSERT would race the retention sweep. Content INSERT is reachable
+  only from the freshly-inserted-audit branch, where no prior content can exist
+  for this `event_id` because the audit PK would have caught it. The three
+  outcomes of comparing against an existing content row live on
+  `_verify_stored_llm_content`, called by the ordinary audit-row conflict path and
+  by the defensive content-insert conflict path.
 - **Metadata-only exception contract.** `AuditPersisterIdempotencyConflict`
   carries `event_id`, `mismatched_fields`, and `FieldDigest` (SHA-256 + length
   per field) — never raw `prompt`/`completion`/`payload`. Reason: logger
@@ -75,11 +70,6 @@ Key invariants:
   lifespan MUST honor the same setting to preserve the layered
   defense — the wrapper's type-narrow is the primary gate; the
   engine's `hide_parameters` is the secondary.
-
-  (Earlier docstring referenced a `LLMPersisterError(f"{exc!r}")` wrap
-  shape that has since been replaced by the two-layer defense described
-  above; verified against `src/outrider/llm/anthropic_provider.py::complete()`
-  step 9 `except Exception as exc` block.)
 
 Design choices documented in the persister spec; reading the spec is the
 faster path to context than re-deriving from this docstring.
@@ -283,6 +273,150 @@ class _FrozenAllowlistMeta(type):
                 "the literal mapping in the class body."
             )
         super().__setattr__(name, value)
+
+
+async def _verify_stored_llm_content(
+    session: AsyncSession,
+    *,
+    event: LLMCallEvent,
+    request: LLMRequest,
+    response: LLMResponse,
+    installation_id: int,
+) -> None:
+    """Compare the stored `llm_call_content` row against this emission, or accept a purge.
+
+    Called from two places. The ordinary one is the audit-row conflict path: the
+    audit INSERT hit its `event_id` PK, so this emission is a replay. The other is
+    the content-insert conflict path, which is UNREACHABLE while three constraints
+    hold — `audit_events.event_id` is the parent PK, `llm_call_content.event_id` is
+    both PK and a non-deferrable FK to it, and both INSERTs share one transaction.
+    A content row therefore cannot exist without its audit row, and if the audit row
+    exists the audit INSERT would already have conflicted. It is kept because it
+    preserves compare-or-purge behaviour if any of those three drift.
+
+    Three outcomes, the same from either call site:
+
+      - no row — retention purged the content while the append-only audit row
+        remains, so this is a metadata-only replay. Returning is the resurrection
+        guard: content is never re-INSERTed for a purged event.
+      - fields differ — raise `AuditPersisterIdempotencyConflict`.
+      - fields match — return, the re-emission is a genuine replay.
+
+    `installation_id` and `is_eval` are compared alongside the text because they
+    drive purge scope and eval isolation; text-only comparison would let a
+    re-emission with the same prompt and completion but a flipped `is_eval` pass as
+    idempotent. `retention_expires_at` is deliberately NOT compared — it derives
+    from `event.timestamp` plus the configured TTL, so a TTL change between deploys
+    legitimately produces a different value for the same event.
+
+    The read is `one_or_none()` so a purge landing between the INSERT and this
+    SELECT is a no-op rather than a `NoResultFound`: the retention contract wins
+    over conflict detection.
+    """
+    stored = (
+        await session.execute(
+            select(
+                LLMCallContent.prompt,
+                LLMCallContent.completion,
+                LLMCallContent.installation_id,
+                LLMCallContent.is_eval,
+            ).where(LLMCallContent.event_id == event.event_id)
+        )
+    ).one_or_none()
+    if stored is None:
+        return
+    prompt_db, completion_db, installation_id_db, is_eval_db = stored
+    matches = (
+        prompt_db == request.user_prompt
+        and completion_db == response.text
+        and installation_id_db == installation_id
+        and is_eval_db == event.is_eval
+    )
+    if matches:
+        return
+    raise AuditPersisterIdempotencyConflict(
+        event_id=event.event_id,
+        mismatched_fields=_diff_content_field_names(
+            prompt_db=prompt_db,
+            prompt_new=request.user_prompt,
+            completion_db=completion_db,
+            completion_new=response.text,
+            installation_id_db=installation_id_db,
+            installation_id_new=installation_id,
+            is_eval_db=is_eval_db,
+            is_eval_new=event.is_eval,
+        ),
+        field_digests=_compute_content_field_digests(
+            prompt_db=prompt_db,
+            prompt_new=request.user_prompt,
+            completion_db=completion_db,
+            completion_new=response.text,
+        ),
+    )
+
+
+async def _verify_stored_finding_content(
+    session: AsyncSession,
+    *,
+    event: FindingEvent,
+    finding: ReviewFinding,
+    is_eval: bool,
+    installation_id: int,
+) -> None:
+    """Compare the stored `findings` row against this emission, or accept a purge.
+
+    Called from two places: the audit-row conflict path, where the audit INSERT hit
+    its `event_id` PK and this emission is a replay; and the findings-insert conflict
+    path, where a concurrent writer landed the `findings` row first. Unlike the
+    LLM-content table, `findings` is keyed on `finding_id` rather than on the audit
+    `event_id`, so that second path is genuinely reachable.
+
+    Both need the same three outcomes:
+
+      - no row — retention purged it, so return without resurrecting it;
+      - fields differ — raise `AuditPersisterIdempotencyConflict`;
+      - fields match — return, the re-emission is a genuine replay.
+
+    A purge that lands between the INSERT and this SELECT therefore wins over
+    conflict detection, which is why the read is `one_or_none()` rather than `one()`.
+    """
+    row = (
+        await session.execute(
+            select(
+                Finding.content_hash,
+                Finding.is_eval,
+                Finding.installation_id,
+                Finding.finding_type,
+                Finding.dimension,
+                Finding.severity,
+                Finding.evidence_tier,
+                Finding.file_path,
+                Finding.line_start,
+                Finding.line_end,
+                Finding.title,
+                Finding.description,
+                Finding.evidence,
+                Finding.suggested_fix,
+                Finding.query_match_id,
+                Finding.trace_path,
+                Finding.policy_version,
+            ).where(Finding.finding_id == finding.finding_id)
+        )
+    ).one_or_none()
+    if row is None:
+        return
+    mismatched = _finding_row_mismatches(
+        row, finding, is_eval=is_eval, installation_id=installation_id
+    )
+    if not mismatched:
+        return
+    raise AuditPersisterIdempotencyConflict(
+        event_id=event.event_id,
+        mismatched_fields=mismatched,
+        field_digests=_finding_field_digests(
+            row, finding, mismatched, is_eval=is_eval, installation_id=installation_id
+        ),
+    )
 
 
 class AuditPersisterConfigError(ValueError, metaclass=_FrozenAllowlistMeta):
@@ -2059,66 +2193,16 @@ class AuditPersister:
                         field_digests=_compute_field_digests(existing_cmp, new_cmp),
                     )
 
-                # Audit payload matches. Now check content: if absent
-                # (retention purged), respect the purge as an idempotent
-                # no-op; if present, verify it matches our attempted write
-                # for the idempotency contract; either way, RETURN — never
-                # fall through to content INSERT from this branch.
-                #
-                # The SELECT includes `installation_id` and `is_eval`
-                # alongside the text content. Those columns drive
-                # operational semantics (purge scope + eval isolation);
-                # comparing only text would let a re-emission with same
-                # prompt/completion but different `installation_id` or
-                # flipped `is_eval` pass silently. `retention_expires_at`
-                # is intentionally EXCLUDED from the comparison — it
-                # derives from `event.timestamp + retention_settings.ttl`,
-                # so a TTL config change between deploys can legitimately
-                # produce different values for the same event_id; that's
-                # an operator-driven re-emission, not a producer bug.
-                content_row = await session.execute(
-                    select(
-                        LLMCallContent.prompt,
-                        LLMCallContent.completion,
-                        LLMCallContent.installation_id,
-                        LLMCallContent.is_eval,
-                    ).where(LLMCallContent.event_id == event.event_id)
+                # Audit payload matches. Check content next, and RETURN either
+                # way — this branch never falls through to the content INSERT.
+                await _verify_stored_llm_content(
+                    session,
+                    event=event,
+                    request=request,
+                    response=response,
+                    installation_id=installation_id,
                 )
-                row_or_none = content_row.one_or_none()
-                if row_or_none is None:
-                    # Post-retention state: audit row exists (append-only),
-                    # content row purged. Treat as metadata-only-replay
-                    # idempotent no-op. Returning here is the resurrection
-                    # guard — we never INSERT content for a previously-
-                    # purged audit row.
-                    return
-                prompt_db, completion_db, installation_id_db, is_eval_db = row_or_none
-                if (
-                    prompt_db != request.user_prompt
-                    or completion_db != response.text
-                    or installation_id_db != installation_id
-                    or is_eval_db != event.is_eval
-                ):
-                    raise AuditPersisterIdempotencyConflict(
-                        event_id=event.event_id,
-                        mismatched_fields=_diff_content_field_names(
-                            prompt_db=prompt_db,
-                            prompt_new=request.user_prompt,
-                            completion_db=completion_db,
-                            completion_new=response.text,
-                            installation_id_db=installation_id_db,
-                            installation_id_new=installation_id,
-                            is_eval_db=is_eval_db,
-                            is_eval_new=event.is_eval,
-                        ),
-                        field_digests=_compute_content_field_digests(
-                            prompt_db=prompt_db,
-                            prompt_new=request.user_prompt,
-                            completion_db=completion_db,
-                            completion_new=response.text,
-                        ),
-                    )
-                return  # both audit and content match; idempotent no-op
+                return  # both audit and content agree; idempotent no-op
 
             # Fresh-write pricing cross-check. Reachable only on the
             # freshly-inserted audit branch — never on idempotent re-emit.
@@ -2194,58 +2278,18 @@ class AuditPersister:
             )
             inserted_content = await session.scalar(content_stmt)
             if inserted_content is None:
-                # Conflict on content. Reachable only when a concurrent emit
-                # landed both rows between our audit INSERT and this content
-                # INSERT (a separate transaction inserted audit+content for
-                # the same event_id, then committed, after our audit INSERT
-                # succeeded but before ours could commit — extremely tight
-                # race window since both INSERTs are inside our transaction).
-                #
-                # Use `.one_or_none()` so a subsequent retention purge that
-                # ran between our INSERT and our SELECT returns as a no-op
-                # rather than raising `NoResultFound`. Retention contract
-                # wins over conflict detection.
-                # Same SELECT + comparison shape as the audit-conflict
-                # branch above: include installation_id + is_eval so a
-                # concurrent emit with the same event_id but different
-                # purge-scope / eval-flag cannot pass silently as idempotent.
-                content_row = await session.execute(
-                    select(
-                        LLMCallContent.prompt,
-                        LLMCallContent.completion,
-                        LLMCallContent.installation_id,
-                        LLMCallContent.is_eval,
-                    ).where(LLMCallContent.event_id == event.event_id)
+                # Defensive: unreachable while the parent PK, the child PK/FK, and
+                # this single transaction hold — a content row cannot exist without
+                # its audit row, and an existing audit row would have conflicted at
+                # the INSERT above. Kept so compare-or-purge still applies if any of
+                # those three constraints drift.
+                await _verify_stored_llm_content(
+                    session,
+                    event=event,
+                    request=request,
+                    response=response,
+                    installation_id=installation_id,
                 )
-                row_or_none = content_row.one_or_none()
-                if row_or_none is None:
-                    return  # purged between INSERT and SELECT; respect retention
-                prompt_db, completion_db, installation_id_db, is_eval_db = row_or_none
-                if (
-                    prompt_db != request.user_prompt
-                    or completion_db != response.text
-                    or installation_id_db != installation_id
-                    or is_eval_db != event.is_eval
-                ):
-                    raise AuditPersisterIdempotencyConflict(
-                        event_id=event.event_id,
-                        mismatched_fields=_diff_content_field_names(
-                            prompt_db=prompt_db,
-                            prompt_new=request.user_prompt,
-                            completion_db=completion_db,
-                            completion_new=response.text,
-                            installation_id_db=installation_id_db,
-                            installation_id_new=installation_id,
-                            is_eval_db=is_eval_db,
-                            is_eval_new=event.is_eval,
-                        ),
-                        field_digests=_compute_content_field_digests(
-                            prompt_db=prompt_db,
-                            prompt_new=request.user_prompt,
-                            completion_db=completion_db,
-                            completion_new=response.text,
-                        ),
-                    )
 
     # -- PhaseEventSink surface ----------------------------------------------
 
@@ -2324,16 +2368,24 @@ class AuditPersister:
                 # phase_id + COALESCE(phase_key, '') + JSONB-extracted
                 # marker) so it deterministically resolves to the
                 # single existing row.
-                existing_payload = await session.scalar(
-                    select(AuditEventRow.payload).where(
-                        AuditEventRow.review_id == event.review_id,
-                        AuditEventRow.event_type == "review_phase",
-                        AuditEventRow.payload["phase_id"].astext == event.phase_id,
-                        sa_func.coalesce(AuditEventRow.phase_key, "") == (event.phase_key or ""),
-                        AuditEventRow.payload["marker"].astext == event.marker,
+                #
+                # One SELECT for both comparands. `is_eval` is a top-level column
+                # while `node_id` rides the JSONB payload, so they used to be fetched
+                # by two queries carrying this identical five-predicate WHERE; the
+                # row is the same and no write intervenes, so one read serves both.
+                existing_row = (
+                    await session.execute(
+                        select(AuditEventRow.payload, AuditEventRow.is_eval).where(
+                            AuditEventRow.review_id == event.review_id,
+                            AuditEventRow.event_type == "review_phase",
+                            AuditEventRow.payload["phase_id"].astext == event.phase_id,
+                            sa_func.coalesce(AuditEventRow.phase_key, "")
+                            == (event.phase_key or ""),
+                            AuditEventRow.payload["marker"].astext == event.marker,
+                        )
                     )
-                )
-                if existing_payload is None:
+                ).one_or_none()
+                if existing_row is None:
                     # Index reported conflict but our reload found
                     # nothing — schema invariant violation. The
                     # partial-index predicate diverged from this
@@ -2346,21 +2398,14 @@ class AuditPersister:
                             "no matching row found on reload"
                         ),
                     )
-                # Compare non-ephemeral fields. `event_id` + `timestamp`
-                # are per-emission and excluded. The natural-key fields
-                # (`phase_id`, `marker`, `phase_key`) match by index
-                # definition. The remaining payload fields are
-                # `node_id`. `is_eval` is a top-level column, not
-                # payload, so include it in the existing-row load
-                # explicitly via a second SELECT or fold into payload
-                # comparison — for emit_phase the simpler shape is
-                # JSONB-only compare on `node_id`, with `is_eval`
-                # cross-check via the existing row's column.
-                # Build a single-field digest map for each compare to
-                # keep `field_digests` keys aligned with `mismatched_fields`
-                # (constructor invariant: digest keys ⊆ mismatched fields).
-                # Per-emission noise (`event_id`, `timestamp`) and natural-
-                # key fields (already matched by definition) are excluded.
+                existing_payload, existing_is_eval = existing_row
+                # Only `node_id` and `is_eval` are compared. `event_id` and
+                # `timestamp` are per-emission noise; the natural-key fields
+                # (`phase_id`, `marker`, `phase_key`) match by index definition.
+                # Each raise carries a single-field digest map, because the
+                # conflict constructor requires digest keys to be a subset of
+                # `mismatched_fields`. `node_id` is checked first, so an emission
+                # differing in both reports `node_id` — unchanged from before.
                 if existing_payload.get("node_id") != event.node_id:
                     raise AuditPersisterIdempotencyConflict(
                         event_id=event.event_id,
@@ -2378,15 +2423,6 @@ class AuditPersister:
                             )
                         },
                     )
-                existing_is_eval = await session.scalar(
-                    select(AuditEventRow.is_eval).where(
-                        AuditEventRow.review_id == event.review_id,
-                        AuditEventRow.event_type == "review_phase",
-                        AuditEventRow.payload["phase_id"].astext == event.phase_id,
-                        sa_func.coalesce(AuditEventRow.phase_key, "") == (event.phase_key or ""),
-                        AuditEventRow.payload["marker"].astext == event.marker,
-                    )
-                )
                 if existing_is_eval != event.is_eval:
                     # `is_eval` is a top-level column, not a payload field;
                     # the digest is computed against the bool directly.
@@ -2647,46 +2683,13 @@ class AuditPersister:
                 # analyze-time-immutable verify set. None → no-op (the
                 # no-resurrection guard: never re-INSERT purged content, firing
                 # for both Case A and Case B). Exists → verify or raise.
-                row = (
-                    await session.execute(
-                        select(
-                            Finding.content_hash,
-                            Finding.is_eval,
-                            Finding.installation_id,
-                            Finding.finding_type,
-                            Finding.dimension,
-                            Finding.severity,
-                            Finding.evidence_tier,
-                            Finding.file_path,
-                            Finding.line_start,
-                            Finding.line_end,
-                            Finding.title,
-                            Finding.description,
-                            Finding.evidence,
-                            Finding.suggested_fix,
-                            Finding.query_match_id,
-                            Finding.trace_path,
-                            Finding.policy_version,
-                        ).where(Finding.finding_id == finding.finding_id)
-                    )
-                ).one_or_none()
-                if row is None:
-                    return  # purged content — respect retention, no resurrection
-                mismatched = _finding_row_mismatches(
-                    row, finding, is_eval=is_eval, installation_id=installation_id
+                await _verify_stored_finding_content(
+                    session,
+                    event=event,
+                    finding=finding,
+                    is_eval=is_eval,
+                    installation_id=installation_id,
                 )
-                if mismatched:
-                    raise AuditPersisterIdempotencyConflict(
-                        event_id=event.event_id,
-                        mismatched_fields=mismatched,
-                        field_digests=_finding_field_digests(
-                            row,
-                            finding,
-                            mismatched,
-                            is_eval=is_eval,
-                            installation_id=installation_id,
-                        ),
-                    )
                 return
 
             # First-emit branch: INSERT the findings row, with
@@ -2729,46 +2732,13 @@ class AuditPersister:
             # audit INSERT and this content INSERT. Verify-or-noop, identical
             # shape to the re-emit branch (purge between INSERT and SELECT wins
             # over conflict detection via one_or_none()).
-            row = (
-                await session.execute(
-                    select(
-                        Finding.content_hash,
-                        Finding.is_eval,
-                        Finding.installation_id,
-                        Finding.finding_type,
-                        Finding.dimension,
-                        Finding.severity,
-                        Finding.evidence_tier,
-                        Finding.file_path,
-                        Finding.line_start,
-                        Finding.line_end,
-                        Finding.title,
-                        Finding.description,
-                        Finding.evidence,
-                        Finding.suggested_fix,
-                        Finding.query_match_id,
-                        Finding.trace_path,
-                        Finding.policy_version,
-                    ).where(Finding.finding_id == finding.finding_id)
-                )
-            ).one_or_none()
-            if row is None:
-                return  # purged between INSERT and SELECT; respect retention
-            mismatched = _finding_row_mismatches(
-                row, finding, is_eval=is_eval, installation_id=installation_id
+            await _verify_stored_finding_content(
+                session,
+                event=event,
+                finding=finding,
+                is_eval=is_eval,
+                installation_id=installation_id,
             )
-            if mismatched:
-                raise AuditPersisterIdempotencyConflict(
-                    event_id=event.event_id,
-                    mismatched_fields=mismatched,
-                    field_digests=_finding_field_digests(
-                        row,
-                        finding,
-                        mismatched,
-                        is_eval=is_eval,
-                        installation_id=installation_id,
-                    ),
-                )
 
     async def emit_finding_proposal_rejected(self, event: FindingProposalRejectedEvent) -> None:
         """Persist a `FindingProposalRejectedEvent` row (parser rejection)."""
@@ -3263,9 +3233,9 @@ class AuditPersister:
             return await aggregate_review_llm_metrics(session, review_id=review_id, is_eval=is_eval)
 
     # See DECISIONS.md#027 — V1 per-review publish-side advisory lock
-    # (try-lock with bounded backoff, serialize-then-observe). The
-    # rejected-alternative rationale (plain blocking vs single-shot
-    # try-lock) lives in the docstring + the DECISIONS entry.
+    # (try-lock with bounded backoff, serialize-then-observe). The rejected
+    # alternatives live on `PublishEventSink.acquire_publish_lock` and in
+    # `DECISIONS.md#027`.
     @asynccontextmanager
     async def acquire_publish_lock(
         self,
@@ -3275,83 +3245,31 @@ class AuditPersister:
         initial_backoff_seconds: float = 0.05,
         max_backoff_seconds: float = 1.0,
     ) -> AsyncIterator[None]:
-        """Per-review advisory lock — try-lock with bounded backoff retry.
+        """Per-review advisory lock: serialize contenders, then let them observe.
 
-        Implementation: loop runs `pg_try_advisory_xact_lock(<lock_id>)`
-        in a fresh session, where `lock_id` is the first 8 bytes of
-        `review_id.bytes` interpreted as a signed int8. On acquire,
-        holds that session+transaction open for the duration of the
-        `yield` (the caller's critical section); the lock auto-releases
-        on commit at context exit. On NOT-acquired, the probe session+
-        transaction is closed immediately (rollback releases the held
-        connection back to the pool) and the loop sleeps with
-        exponential backoff before retrying. After `max_wait_seconds`
-        from the FIRST probe, raises
+        Acquires `pg_try_advisory_xact_lock` in a fresh session and holds that
+        session's transaction open across the `yield`, so the lock releases on commit
+        at context exit. A failed probe closes its session immediately and retries
+        after a backoff; past `max_wait_seconds` from the first probe it raises
         `AuditPersisterPublishLockAcquisitionTimeoutError`.
 
-        Concurrency model: serialized-first-then-observe. Two FastAPI
-        background tasks racing on the same `review_id` (e.g., a
-        human-issued `/decide` resume paired with
-        `sweep/hitl_expiry.py::reclaim_stuck_hitl_states`'s graph-driven
-        `Command(resume=...)`) serialize through this lock. The SECOND
-        task, on acquiring the lock, re-reads `query_prior_publish_event`
-        INSIDE the critical section — if the first task succeeded, the
-        prior event is observed and the publish node's existing Step 4
-        short-circuit emits `IDEMPOTENTLY_SKIPPED` (now AUTHENTIC: the
-        first task's `PublishEvent` is the observed evidence). If the
-        first task crashed before emitting `PublishEvent`, the prior
-        event is `None` and the second task POSTs through Step 7 — the
-        audit row's absence is the correct authority, not the lock
-        release.
+        Serialize-then-observe is the contract callers depend on. Two tasks racing on
+        one `review_id` — a human `/decide` resume against
+        `reclaim_stuck_hitl_states`'s graph-driven resume — serialize here, and the
+        second re-reads `query_prior_publish_event` INSIDE the critical section.
 
-        Why try-lock + backoff (NOT plain blocking
-        `pg_advisory_xact_lock`): a blocking variant holds a connection
-        for the entire wait. With N same-review contenders, blocking
-        would pin N connections from the pool simultaneously — the
-        winner's emit_* calls (which open additional fresh sessions per
-        the per-emit session discipline) could be starved by the
-        waiters' held connections. Try-lock + backoff releases the
-        probe session between attempts, so waiters only occupy a
-        connection during the brief probe (~ms), not during the
-        backoff sleep. Connection pressure under contention drops
-        from N held + winner's K transient to ~1 held + occasional
-        probes — the winner's emit_* path stays unblocked.
+        If the first persisted `PublishEvent`, the second observes it and skips. If no
+        local event exists, the second continues to the external body-marker lookup:
+        a matching marker proves the GitHub POST landed before a crash; only absence
+        of both signals permits a new POST. The lock orders the checks; the local
+        event and remote marker jointly decide the outcome.
 
-        Why NOT pure `pg_try_advisory_xact_lock` with single-shot
-        loser-skip: a try-lock loser that returns immediately cannot
-        observe whether the winner actually committed the POST.
-        Loser-skip → emit `IDEMPOTENTLY_SKIPPED` even when the winner
-        crashed between lock acquisition and POST → publish lost.
-        Bounded retry puts the loser BEHIND the winner's transaction
-        boundary on the SUCCESSFUL acquire path (winner has released,
-        and on the next retry our acquire succeeds and we re-read the
-        committed `PublishEvent`). False-skip class eliminated.
+        The rejected alternatives — a plain blocking lock, and a single-shot try-lock
+        with loser-skip — live on `PublishEventSink.acquire_publish_lock` and in
+        `DECISIONS.md#027`. The body below documents the lock-key derivation, the
+        schedule, and the timeout at the point each is applied.
 
-        The advisory-lock key is the first 8 bytes of `review_id.bytes`
-        as a signed int8. UUIDs are 128-bit; the 64-bit slice gives
-        near-zero collision probability at any realistic review volume.
-        Disjoint by construction from `SWEEP_LOCK_ID=0x4F5554524452_0001`
-        (uniform UUID distribution makes a collision against the fixed
-        sweep id negligible).
-
-        Timeout semantics: `max_wait_seconds=120` covers typical
-        publish wall-clock (1-30s GitHub POST plus N-comment writes)
-        with headroom. On timeout, raises
-        `AuditPersisterPublishLockAcquisitionTimeoutError`; the publish
-        node's outer try/except wrapping `enter_async_context` catches
-        and emits `PublishAttemptEvent(outcome=failed,
-        failure_class="...PublishLockAcquisitionTimeoutError")` before
-        re-raising. Operator investigates via audit log + dashboard;
-        the row stays at its pre-publish lifecycle state for retry.
-
-        Backoff schedule: starts at `initial_backoff_seconds` (default
-        50ms), doubles each iteration up to `max_backoff_seconds` (cap
-        1s). Deterministic (no jitter for V1; V1.5 may add jitter if
-        multi-tenant scheduling synchronization becomes an issue).
-        Total maximum probe count is bounded above by
-        `max_wait_seconds / initial_backoff_seconds` (worst case ~2400
-        probes at default config, in practice far fewer due to
-        exponential growth).
+        Raises `ValueError` on non-positive or inconsistent timing arguments.
         """
         # Validate timing kwargs at call time. Zero or negative values
         # would degenerate the loop into a tight retry on `await
