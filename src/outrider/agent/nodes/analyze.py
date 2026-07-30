@@ -232,7 +232,7 @@ from outrider.schemas.llm.analyze import (
     ANALYZE_RESPONSE_SCHEMA_JSON,
 )
 from outrider.schemas.pr_context import ChangedFile  # noqa: TC001 — payload model field
-from outrider.schemas.triage_result import ReviewTier
+from outrider.schemas.triage_result import ReviewTier, TriageResult
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -691,151 +691,154 @@ async def analyze_file(
     return {"analyze_worker_outcomes": [outcome]}
 
 
-async def analyze(
+async def _plan_pass_zero(
     state: ReviewState,
     *,
-    provider: LLMProvider,
-    analyze_model: str,
-    standard_analyze_model: str,
-    # Host-identity triad (DECISIONS.md#056) closed in at build_graph for the AnalyzeCompletedEvent
-    # (default None = unqualified until lifespan wiring; the event validator enforces coherence).
-    profile_id: str | None = None,
-    reasoning_enabled: bool | None = None,
-    profile_contract_digest: str | None = None,
     phase_event_sink: PhaseEventSink,
-    file_examination_sink: FileExaminationSink,
-    analyze_event_sink: AnalyzeEventSink,
-    anomaly_sink: AnomalySink,
-    import_path_resolver: ImportPathResolver,
-    active_policy_version: str = ACTIVE_POLICY_VERSION,
-    total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
-    trivial_scope_filter_enabled: bool = False,
-    analyze_observed_skip_enforced: bool = False,
-    analyze_cache_store: AnalyzeCacheStore | None = None,
-    cache_mode: CacheMode = CacheMode.SHADOW,
+    total_review_budget_tokens: int,
+    pass_index: int,
+    phase_id: str,
+    plan_phase_key: str | None,
+    started_at: datetime,
+    per_file_cap_tokens: int,
+    cache_scope: CacheScope | None,
+    triage_result: TriageResult | None,
 ) -> Command[Literal["analyze_file", "analyze_aggregate", "synthesize"]]:
-    """The analyze entry vertex: pass-0 PLANNER, pass-1 sequential body.
+    """Pass 0: plan the fan-out and return one `Send` per kept file.
 
-    Pass 0 (the fan-out cutover, specs/2026-07-05-parallel-analyze.md):
-    emit the pass's phase start, resolve the cache scope, build the
-    kept-file worklist, allocate per-file budgets pre-flight
-    (`plan_file_budgets` over the bytes-based proxy estimate), and
-    return `Command(goto=[Send("analyze_file", payload), ...])` — one
-    self-contained payload per kept file. Zero kept files routes to
-    "analyze_aggregate" directly (the empty pass still folds one empty
-    round + completed event). No per-file work happens here; the
-    planner emits no per-file events.
+    No per-file work happens here and no per-file events are emitted — the
+    planner allocates budgets pre-flight and hands each worker a self-contained
+    payload. Zero kept files routes straight to the aggregate, which still folds
+    one empty round plus its completed event.
 
-    Pass 1 (trace re-entry) stays SEQUENTIAL and byte-unchanged: the
-    trace-fetched loop, round assembly, event emissions, and phase end
-    all run in this body, and the Command routes to "synthesize" (the
-    depth-2 ceiling means a post-pass-1 round count can never route
-    back to trace).
-
-    Counter source-of-truth (pass 1): per-file local bookkeeping
-    accumulators. NEVER re-read from the audit stream.
+    Returns the node's full destination union because `Command` is invariant, but
+    only ever routes to "analyze_file" or "analyze_aggregate".
     """
-    # `pass_index` is derived from `state.analysis_rounds`: pass 0 = no
-    # rounds merged yet (the first analyze pass); pass 1 = one round
-    # merged (post-trace re-entry per the M8 loop). The round_id reducer
-    # dedup includes pass_index in its content-derived hash, so deriving
-    # the index from state guarantees distinct round_ids across the two
-    # passes (a hardcoded `pass_index = 0` would collide under the
-    # reducer + silently drop the second pass). The depth-2 ceiling is
-    # enforced at `agent/graph.py::_trace_router` via `MAX_ANALYSIS_ROUNDS`.
-    pass_index = len(state.analysis_rounds)
-    # Phase identity per pass shape (increment 4): pass 0 emits the keyed
-    # PLANNER pair (`plan#<pass>`; attempt_key = phase_key VERBATIM, so
-    # phase_id inherits the key's retry stability and collision-freedom);
-    # the sequential pass-1 body keeps the legacy un-keyed
-    # `analyze-pass-<n>` envelope. Both derive from pre-merge state, so
-    # replay re-emission collapses on the PhaseEventSink idempotency.
-    if pass_index == 0:
-        plan_phase_key: str | None = f"plan#{pass_index}"
-        phase_id = compute_phase_id(
-            review_id=str(state.review_id),
-            node_id="analyze",
-            attempt_key=f"plan#{pass_index}",
-        )
-    else:
-        plan_phase_key = None
-        phase_id = compute_phase_id(
-            review_id=str(state.review_id),
-            node_id="analyze",
-            attempt_key=f"analyze-pass-{pass_index}",
-        )
-    started_at = datetime.now(UTC)
-    # Monotonic anchor for the round DURATION (FUP-141): `ended_at` is derived
-    # from this rather than a second wall-clock read, so a backwards clock jump
-    # (NTP step / VM resume / WSL2 skew) between start and end can't make
-    # `ended_at < started_at` and trip the `AnalysisRound` invariant mid-review.
-    # `started_at` stays wall-clock for the audit trail. Precondition: this mark
-    # and the matching end read stay in one process (`monotonic()` is per-process;
-    # a V1.5 parallel-analyze fan-out must re-anchor per worker, not hoist this).
-    started_mono = time.monotonic()
-    per_file_cap_tokens = _compute_per_file_cap(total_review_budget_tokens)
+    pass_zero_worklist: list[tuple[ChangedFile, ReviewTier]] = []
+    if triage_result is not None:
+        for changed_file in state.pr_context.changed_files:
+            tier = triage_result.file_tiers.get(changed_file.path, ReviewTier.SKIP)
+            if tier in (ReviewTier.DEEP, ReviewTier.STANDARD):
+                pass_zero_worklist.append((changed_file, tier))
+        pass_zero_worklist.sort(key=lambda item: _PASS0_TIER_RANK[item[1]])
 
-    # Step 1: start phase event (the plan# pair on pass 0; the legacy
-    # envelope on pass 1). If this raises (audit infra outage), the node
-    # fails before any work — no dangling start.
+    # Fixed proxy overhead, computed ONCE per review from the real
+    # prompt constants: system prefix + empty user-template scaffolding
+    # + the output reservation — the same three fixed terms the
+    # worker's real estimate carries (omitting any would under-fund
+    # every file by that constant and convert the gap into spurious
+    # COST_BUDGET_EXHAUSTED skips).
+    empty_parts = analyze_prompt.render(
+        file_path="",
+        scope_unit_context="",
+        query_match_id_list="",
+        diff_hunks="",
+        pass_index=0,
+    )
+    fixed_overhead_tokens = (
+        _estimate_tokens(empty_parts.system_prompt)
+        + _estimate_tokens(empty_parts.user_prompt)
+        + analyze_prompt.MAX_TOKENS
+        + _PROXY_RENDER_MARGIN_TOKENS
+    )
+
+    # Pre-flight allocation replaces the sequential drawdown: the
+    # reserved/general split is unchanged (Stage 1), but allocations
+    # are final — unspent tokens are NOT redistributed (the
+    # later-files-benefit dynamic is deliberately given up per the
+    # spec's Non-goals; utilization is measured via skip counters).
+    # plan_file_budgets fails loud on a duplicate path BEFORE any
+    # Send (vendor-data corruption, never silently deduped).
+    reserved_pool_tokens = int(total_review_budget_tokens * HIGH_RISK_RESERVE_FRACTION)
+    general_pool_tokens = total_review_budget_tokens - reserved_pool_tokens
+    plan = plan_file_budgets(
+        tuple(
+            FileBudgetRequest(
+                path=changed_file.path,
+                estimate_tokens=proxy_estimate_tokens(
+                    len((changed_file.content_head or "").encode("utf-8")),
+                    len((changed_file.patch or "").encode("utf-8")),
+                    fixed_overhead_tokens=fixed_overhead_tokens,
+                ),
+                is_high_risk=bool(scan_added_lines_for_risk(changed_file.patch)),
+            )
+            for changed_file, _tier in pass_zero_worklist
+        ),
+        general_pool_tokens=general_pool_tokens,
+        reserved_pool_tokens=reserved_pool_tokens,
+        per_file_cap_tokens=per_file_cap_tokens,
+    )
+    allocation_by_path = {a.path: a for a in plan.allocations}
+    sends = [
+        Send(
+            "analyze_file",
+            AnalyzeWorkerPayload(
+                review_id=state.review_id,
+                installation_id=state.pr_context.installation_id,
+                is_eval=state.is_eval,
+                pass_index=pass_index,
+                review_tier=tier,
+                allocation_tokens=allocation_by_path[changed_file.path].allocation_tokens,
+                changed_file=changed_file,
+                cache_scope=cache_scope,
+            ),
+        )
+        for changed_file, tier in pass_zero_worklist
+    ]
+    # Close the planner's own phase pair: planning work is bounded
+    # here; the workers and the aggregate own their own envelopes.
     await phase_event_sink.emit_phase(
         ReviewPhaseEvent(
             review_id=state.review_id,
             phase_id=phase_id,
             node_id="analyze",
-            marker="start",
+            marker="end",
             is_eval=state.is_eval,
             phase_key=plan_phase_key,
         )
     )
+    # `analyze_pass_started_at` rides state to the aggregate (the pass
+    # spans vertices; a monotonic anchor cannot). Zero-worker route:
+    # no Sends would strand the aggregate — route to it by name so the
+    # empty pass still folds one empty round + completed event.
+    return Command(
+        update={"analyze_pass_started_at": started_at},
+        goto=sends if sends else "analyze_aggregate",
+    )
 
-    # Analyze-cache scope, resolved once on pass 0 from the reviews row —
-    # the canonical (installation_id, repo_id) tenant identity the cache
-    # key requires (never PRContext's mutable owner/repo strings); the
-    # cache is pass-0-only, so trace rounds skip the SELECT. Sits AFTER
-    # the phase-start emit: the resolve is node work (a DB read), and
-    # `phase-events-bound-work` requires node work inside the phase
-    # envelope. None disables the cache for this pass: store not
-    # injected (the eval driver's default), review row missing
-    # (fail-open to UNCACHED, never to cross-scope), or a store DB
-    # failure: the shadow cache is optional telemetry and must never
-    # abort a review (`CacheStoreError` is contained, not raised). An
-    # eval review does NOT disable the cache — it reads/writes scoped to
-    # is_eval rows via the lookup's is_eval predicate (DECISIONS.md#046).
-    cache_scope: CacheScope | None = None
-    if analyze_cache_store is not None and pass_index == 0:
-        try:
-            cache_scope = await analyze_cache_store.resolve_scope(state.review_id)
-        except CacheStoreError:
-            logger.warning(
-                "analyze-cache resolve_scope failed; cache disabled for this pass",
-                exc_info=True,
-            )
-            cache_scope = None
-        # No is_eval bypass (DECISIONS.md#046): eval and production reviews BOTH
-        # use the cache, kept mutually invisible by the lookup's REQUIRED is_eval
-        # read-isolation predicate (the scope's is_eval, passed at the lookup
-        # below) plus the is_eval-stamped write.
-        #
-        # Defense-in-depth: the lookup partitions on cache_scope.is_eval (the
-        # reviews row) while CacheLookupEvent + the serve emits are tagged
-        # state.is_eval. The two are set together at review creation and cannot
-        # diverge in production; but if a producer bug ever split them, reading one
-        # partition while emitting the other's telemetry would be incoherent — so a
-        # divergence disables the cache for this pass (fail-safe; the protection the
-        # pre-#046 either-flag bypass gave, kept without the eval-wide veto).
-        if cache_scope is not None and cache_scope.is_eval != state.is_eval:
-            logger.warning(
-                "analyze-cache is_eval divergence (scope=%s, state=%s); cache disabled",
-                cache_scope.is_eval,
-                state.is_eval,
-            )
-            cache_scope = None
 
-    # Local accumulators — single source of truth for AnalyzeCompletedEvent
-    # counters. Re-reading from the audit stream would couple counter
-    # correctness to emission ordering and break the proposal-accounting
-    # equation under concurrent-emit refactors.
+async def _run_trace_pass(
+    state: ReviewState,
+    *,
+    provider: LLMProvider,
+    analyze_model: str,
+    profile_id: str | None,
+    reasoning_enabled: bool | None,
+    profile_contract_digest: str | None,
+    phase_event_sink: PhaseEventSink,
+    file_examination_sink: FileExaminationSink,
+    analyze_event_sink: AnalyzeEventSink,
+    anomaly_sink: AnomalySink,
+    import_path_resolver: ImportPathResolver,
+    active_policy_version: str,
+    total_review_budget_tokens: int,
+    pass_index: int,
+    phase_id: str,
+    started_at: datetime,
+    started_mono: float,
+    per_file_cap_tokens: int,
+) -> Command[Literal["analyze_file", "analyze_aggregate", "synthesize"]]:
+    """Pass 1: the sequential trace re-entry, from worklist through phase end.
+
+    Counter source-of-truth is the local bookkeeping below — never re-read from
+    the audit stream. The accumulators are declared here rather than in `analyze`
+    because pass 0 never touches them and the counters are rebound as work
+    proceeds, so they cannot be passed in.
+
+    Routes to "synthesize" unconditionally: the depth-2 ceiling means a
+    post-pass-1 round count can never route back to trace. The annotation carries
+    the node's full union because `Command` is invariant.
+    """
     admitted_findings: list[ReviewFinding] = []
     # Dedupe-by-(content_hash, proposal_hash) tracked alongside
     # `admitted_findings` because `AnalysisRound` enforces uniqueness
@@ -890,287 +893,144 @@ async def analyze(
     total_cost_decimal = Decimal("0")
     remaining_budget_tokens = total_review_budget_tokens
 
-    # Step 2: per-pass iteration scope.
-    #
-    # Pass 0 (`len(state.analysis_rounds) == 0`): iterate
-    # `pr_context.changed_files` filtered by triage tier — the original
-    # analyze surface. SKIM/SKIP excluded by construction; files absent
-    # from the tier map are treated as SKIP (defensive against tier-map
-    # gaps; per spec §7 step 2). No FileExaminationEvent fires for
-    # excluded files.
-    #
-    # Pass 1 (`len(state.analysis_rounds) == 1`, post-trace re-entry per
-    # M8 loop): iterate `state.trace_fetched_files` — files trace
-    # resolved + fetched at head SHA. These are NOT PR-diff files, so
-    # there's no patch, no triage classification, and no
-    # changed-scope-unit intersection: analyze examines the WHOLE file
-    # because trace's resolution decided the file is relevant to a
-    # source finding. The parser admits INFERRED proposals only on
-    # pass 1 (`pass_index > 0`) — pass 0 still rejects per the V1 stub
-    # (no trace context exists yet at that point).
-    triage_result = state.triage_result
-    if pass_index == 0:
-        # ---- THE PLANNER STEP (fan-out cutover) ----
-        # Kept-file worklist exactly as the sequential loop built it:
-        # DEEP/STANDARD only, tier-descending stable order (Send dispatch
-        # order follows it, so a bounded semaphore admits higher-tier
-        # files first under pressure — the Stage 2 ordering survives).
-        pass_zero_worklist: list[tuple[ChangedFile, ReviewTier]] = []
-        if triage_result is not None:
-            for changed_file in state.pr_context.changed_files:
-                tier = triage_result.file_tiers.get(changed_file.path, ReviewTier.SKIP)
-                if tier in (ReviewTier.DEEP, ReviewTier.STANDARD):
-                    pass_zero_worklist.append((changed_file, tier))
-            pass_zero_worklist.sort(key=lambda item: _PASS0_TIER_RANK[item[1]])
+    source_findings_by_id: dict[UUID, ReviewFinding] = {
+        f.finding_id: f for r in state.analysis_rounds for f in r.findings
+    }
+    # Fan out by `(target_file, source_finding_id)` per
+    # `state.trace_decisions`, NOT by `state.trace_fetched_files`
+    # alone. `TraceFetchedFile.path` is dedup'd first-write-wins
+    # under the reducer; iterating over fetched files would
+    # process the fetched content ONCE under the first finding's
+    # context only, leaving every other finding that resolved to
+    # the same target with no source-specific pass-1 analysis.
+    # Each `(fetched_file, source_finding)` pair runs pass-1
+    # independently so every admitted source finding gets its own
+    # post-trace prompt.
+    fetched_files_by_path: dict[str, TraceFetchedFile] = {
+        f.path: f for f in state.trace_fetched_files
+    }
+    # Build the (path, source_finding_id) work list from the
+    # canonical state.trace_decisions stream (filter to resolved +
+    # target_file in fetched_files_by_path to skip target-in-PR
+    # decisions whose Phase 2 deliberately skipped per M8).
+    pass_one_work: list[tuple[TraceFetchedFile, ReviewFinding]] = []
+    for decision in state.trace_decisions:
+        if decision.target_file is None:
+            continue
+        fetched = fetched_files_by_path.get(decision.target_file)
+        if fetched is None:
+            # Decision resolved but Phase 2 skipped (target-in-PR
+            # case per M8). No content to feed pass-1.
+            continue
+        source_finding = source_findings_by_id.get(decision.source_finding_id)
+        if source_finding is None:
+            raise RuntimeError(
+                f"analyze pass {pass_index}: TraceDecision "
+                f"source_finding_id={decision.source_finding_id} "
+                f"does not appear in state.analysis_rounds. Trace's "
+                f"emission contract is broken — "
+                f"_build_proposal_hash_join only admits proposal "
+                f"hashes from admitted findings, so every "
+                f"TraceDecision.source_finding_id should resolve."
+            )
+        pass_one_work.append((fetched, source_finding))
 
-        # Fixed proxy overhead, computed ONCE per review from the real
-        # prompt constants: system prefix + empty user-template scaffolding
-        # + the output reservation — the same three fixed terms the
-        # worker's real estimate carries (omitting any would under-fund
-        # every file by that constant and convert the gap into spurious
-        # COST_BUDGET_EXHAUSTED skips).
-        empty_parts = analyze_prompt.render(
-            file_path="",
-            scope_unit_context="",
-            query_match_id_list="",
-            diff_hunks="",
-            pass_index=0,
-        )
-        fixed_overhead_tokens = (
-            _estimate_tokens(empty_parts.system_prompt)
-            + _estimate_tokens(empty_parts.user_prompt)
-            + analyze_prompt.MAX_TOKENS
-            + _PROXY_RENDER_MARGIN_TOKENS
-        )
-
-        # Pre-flight allocation replaces the sequential drawdown: the
-        # reserved/general split is unchanged (Stage 1), but allocations
-        # are final — unspent tokens are NOT redistributed (the
-        # later-files-benefit dynamic is deliberately given up per the
-        # spec's Non-goals; utilization is measured via skip counters).
-        # plan_file_budgets fails loud on a duplicate path BEFORE any
-        # Send (vendor-data corruption, never silently deduped).
-        reserved_pool_tokens = int(total_review_budget_tokens * HIGH_RISK_RESERVE_FRACTION)
-        general_pool_tokens = total_review_budget_tokens - reserved_pool_tokens
-        plan = plan_file_budgets(
-            tuple(
-                FileBudgetRequest(
-                    path=changed_file.path,
-                    estimate_tokens=proxy_estimate_tokens(
-                        len((changed_file.content_head or "").encode("utf-8")),
-                        len((changed_file.patch or "").encode("utf-8")),
-                        fixed_overhead_tokens=fixed_overhead_tokens,
-                    ),
-                    is_high_risk=bool(scan_added_lines_for_risk(changed_file.patch)),
-                )
-                for changed_file, _tier in pass_zero_worklist
-            ),
-            general_pool_tokens=general_pool_tokens,
-            reserved_pool_tokens=reserved_pool_tokens,
+    for fetched_file, source_finding in pass_one_work:
+        file_outcome = await _process_one_trace_fetched_file(
+            fetched_file=fetched_file,
+            source_finding=source_finding,
+            review_id=state.review_id,
+            installation_id=state.pr_context.installation_id,
+            is_eval=state.is_eval,
+            provider=provider,
+            analyze_model=analyze_model,
+            import_path_resolver=import_path_resolver,
+            file_examination_sink=file_examination_sink,
+            analyze_event_sink=analyze_event_sink,
+            active_policy_version=active_policy_version,
+            pass_index=pass_index,
             per_file_cap_tokens=per_file_cap_tokens,
+            remaining_budget_tokens=remaining_budget_tokens,
         )
-        allocation_by_path = {a.path: a for a in plan.allocations}
-        sends = [
-            Send(
-                "analyze_file",
-                AnalyzeWorkerPayload(
-                    review_id=state.review_id,
-                    installation_id=state.pr_context.installation_id,
-                    is_eval=state.is_eval,
-                    pass_index=pass_index,
-                    review_tier=tier,
-                    allocation_tokens=allocation_by_path[changed_file.path].allocation_tokens,
-                    changed_file=changed_file,
-                    cache_scope=cache_scope,
-                ),
+
+        if file_outcome.parser_result is not None:
+            n_llm_calls += 1
+            n_proposals_seen += file_outcome.parser_result.counters.n_proposals_seen
+            # Trace-fetched files don't run the OBSERVED producer today, so
+            # n_findings_observed / n_proposals_superseded_by_observed are 0
+            # here; aggregated symmetrically with the main path so accounting
+            # stays correct if that ever changes.
+            n_findings_emitted += (
+                file_outcome.parser_result.counters.n_findings_emitted
+                + file_outcome.parser_result.counters.n_findings_observed
             )
-            for changed_file, tier in pass_zero_worklist
-        ]
-        # Close the planner's own phase pair: planning work is bounded
-        # here; the workers and the aggregate own their own envelopes.
-        await phase_event_sink.emit_phase(
-            ReviewPhaseEvent(
-                review_id=state.review_id,
-                phase_id=phase_id,
-                node_id="analyze",
-                marker="end",
-                is_eval=state.is_eval,
-                phase_key=plan_phase_key,
+            n_findings_observed += file_outcome.parser_result.counters.n_findings_observed
+            n_proposals_superseded_by_observed += (
+                file_outcome.parser_result.counters.n_proposals_superseded_by_observed
             )
-        )
-        # `analyze_pass_started_at` rides state to the aggregate (the pass
-        # spans vertices; a monotonic anchor cannot). Zero-worker route:
-        # no Sends would strand the aggregate — route to it by name so the
-        # empty pass still folds one empty round + completed event.
-        return Command(
-            update={"analyze_pass_started_at": started_at},
-            goto=sends if sends else "analyze_aggregate",
-        )
-    else:
-        # Pass 1+ trace-fetched-file iteration. Trace resolved these
-        # files; analyze examines the whole content (no diff intersection)
-        # and admits INFERRED proposals citing trace_path.
+            n_proposals_rejected += file_outcome.parser_result.counters.n_proposals_rejected
+            n_responses_rejected += file_outcome.parser_result.counters.n_responses_rejected
+            n_trace_candidates_emitted += (
+                file_outcome.parser_result.counters.n_trace_candidates_emitted
+            )
+            n_trace_candidates_dropped_malformed += (
+                file_outcome.parser_result.counters.n_trace_candidates_dropped_malformed
+            )
+            admit_with_pair_dedup(
+                file_outcome.parser_result.admitted_findings,
+                admitted_findings,
+                admitted_keys_seen,
+            )
+            # Per DECISIONS.md#025 point 6: trace_candidates from
+            # rejected-parent proposals stay in state for replay
+            # ("Unjoined candidates remain forensic-only"). Trace's
+            # `_bucket_candidates_by_finding` skips the unjoined
+            # ones (INFO log) — that's the documented forensic
+            # contract, not a bug to filter at the analyze→state
+            # boundary. The audit-event counter
+            # `n_trace_candidates_emitted` on
+            # `AnalyzeCompletedEvent` reflects the same pre-dedup
+            # set the state-side reducer ingests.
+            trace_candidates.extend(file_outcome.parser_result.trace_candidates)
+
+        total_input_tokens += file_outcome.input_tokens
+        total_output_tokens += file_outcome.output_tokens
+        total_cache_read_tokens += file_outcome.cache_read_tokens
+        total_cache_write_tokens += file_outcome.cache_write_tokens
+        total_cost_decimal += file_outcome.cost_decimal
+        # Cross-type subsumption records (DECISIONS.md#055) from this file's
+        # outcome — empty for trace-fetched files (no OBSERVED producer runs
+        # there) and for cache misses with nothing subsumed.
+        pass_subsumed_matches.extend(file_outcome.subsumed_matches)
+        remaining_budget_tokens -= file_outcome.estimated_tokens
+
+        # Pass-1 fan-out can iterate the same `fetched_file.path`
+        # multiple times (one per source finding targeting that
+        # path). `AnalysisRound._enforce_files_examined_unique` /
+        # `_enforce_files_skipped_unique` validators reject
+        # duplicates, so dedup at append time.
         #
-        # Build `source_findings_by_id` once per pass — the post-trace
-        # prompt names the originating finding's title/description/evidence
-        # so the model can connect the trace-fetched file back to the
-        # source finding (passing source_finding_id alone leaves the
-        # model with no content to reason about). The lookup walks ALL
-        # prior rounds' findings; the source finding always exists for
-        # any (path, source_finding_id) pair derived from
-        # `state.trace_decisions` per trace's emission contract
-        # (`trace.py::_build_proposal_hash_join` admits only proposal
-        # hashes from admitted findings; unjoined candidates die at
-        # `_bucket_candidates_by_finding` BEFORE producing a
-        # TraceDecision — DECISIONS.md#025 point 6 documents the
-        # forensic-only behavior of those dropped candidates). So
-        # `.get(...)` returning None is a programmer error.
-        source_findings_by_id: dict[UUID, ReviewFinding] = {
-            f.finding_id: f for r in state.analysis_rounds for f in r.findings
-        }
-        # Fan out by `(target_file, source_finding_id)` per
-        # `state.trace_decisions`, NOT by `state.trace_fetched_files`
-        # alone. `TraceFetchedFile.path` is dedup'd first-write-wins
-        # under the reducer; iterating over fetched files would
-        # process the fetched content ONCE under the first finding's
-        # context only, leaving every other finding that resolved to
-        # the same target with no source-specific pass-1 analysis.
-        # Each `(fetched_file, source_finding)` pair runs pass-1
-        # independently so every admitted source finding gets its own
-        # post-trace prompt.
-        fetched_files_by_path: dict[str, TraceFetchedFile] = {
-            f.path: f for f in state.trace_fetched_files
-        }
-        # Build the (path, source_finding_id) work list from the
-        # canonical state.trace_decisions stream (filter to resolved +
-        # target_file in fetched_files_by_path to skip target-in-PR
-        # decisions whose Phase 2 deliberately skipped per M8).
-        pass_one_work: list[tuple[TraceFetchedFile, ReviewFinding]] = []
-        for decision in state.trace_decisions:
-            if decision.target_file is None:
-                continue
-            fetched = fetched_files_by_path.get(decision.target_file)
-            if fetched is None:
-                # Decision resolved but Phase 2 skipped (target-in-PR
-                # case per M8). No content to feed pass-1.
-                continue
-            source_finding = source_findings_by_id.get(decision.source_finding_id)
-            if source_finding is None:
-                raise RuntimeError(
-                    f"analyze pass {pass_index}: TraceDecision "
-                    f"source_finding_id={decision.source_finding_id} "
-                    f"does not appear in state.analysis_rounds. Trace's "
-                    f"emission contract is broken — "
-                    f"_build_proposal_hash_join only admits proposal "
-                    f"hashes from admitted findings, so every "
-                    f"TraceDecision.source_finding_id should resolve."
-                )
-            pass_one_work.append((fetched, source_finding))
+        # Examined-wins semantic: once a path lands in
+        # `files_examined`, subsequent iterations are no-ops; if an
+        # earlier iteration skipped the path and a later one
+        # examines it, promote the path from `files_skipped` to
+        # `files_examined`. In current code paths skip outcomes
+        # are deterministic per file (same content → same
+        # decision), so the skip→examined transition cannot occur
+        # — but encoding "examined wins" defensively means a
+        # future skip-reason addition that DOES depend on
+        # iteration-mutable state (e.g., partial-budget) can't
+        # silently leave a successfully-examined path stuck in
+        # `files_skipped`.
+        if fetched_file.path in files_examined:
+            pass
+        elif file_outcome.parse_status != "skipped":
+            if fetched_file.path in files_skipped:
+                files_skipped.remove(fetched_file.path)
+            files_examined.append(fetched_file.path)
+        elif fetched_file.path not in files_skipped:
+            files_skipped.append(fetched_file.path)
 
-        for fetched_file, source_finding in pass_one_work:
-            file_outcome = await _process_one_trace_fetched_file(
-                fetched_file=fetched_file,
-                source_finding=source_finding,
-                review_id=state.review_id,
-                installation_id=state.pr_context.installation_id,
-                is_eval=state.is_eval,
-                provider=provider,
-                analyze_model=analyze_model,
-                import_path_resolver=import_path_resolver,
-                file_examination_sink=file_examination_sink,
-                analyze_event_sink=analyze_event_sink,
-                active_policy_version=active_policy_version,
-                pass_index=pass_index,
-                per_file_cap_tokens=per_file_cap_tokens,
-                remaining_budget_tokens=remaining_budget_tokens,
-            )
-
-            if file_outcome.parser_result is not None:
-                n_llm_calls += 1
-                n_proposals_seen += file_outcome.parser_result.counters.n_proposals_seen
-                # Trace-fetched files don't run the OBSERVED producer today, so
-                # n_findings_observed / n_proposals_superseded_by_observed are 0
-                # here; aggregated symmetrically with the main path so accounting
-                # stays correct if that ever changes.
-                n_findings_emitted += (
-                    file_outcome.parser_result.counters.n_findings_emitted
-                    + file_outcome.parser_result.counters.n_findings_observed
-                )
-                n_findings_observed += file_outcome.parser_result.counters.n_findings_observed
-                n_proposals_superseded_by_observed += (
-                    file_outcome.parser_result.counters.n_proposals_superseded_by_observed
-                )
-                n_proposals_rejected += file_outcome.parser_result.counters.n_proposals_rejected
-                n_responses_rejected += file_outcome.parser_result.counters.n_responses_rejected
-                n_trace_candidates_emitted += (
-                    file_outcome.parser_result.counters.n_trace_candidates_emitted
-                )
-                n_trace_candidates_dropped_malformed += (
-                    file_outcome.parser_result.counters.n_trace_candidates_dropped_malformed
-                )
-                admit_with_pair_dedup(
-                    file_outcome.parser_result.admitted_findings,
-                    admitted_findings,
-                    admitted_keys_seen,
-                )
-                # Per DECISIONS.md#025 point 6: trace_candidates from
-                # rejected-parent proposals stay in state for replay
-                # ("Unjoined candidates remain forensic-only"). Trace's
-                # `_bucket_candidates_by_finding` skips the unjoined
-                # ones (INFO log) — that's the documented forensic
-                # contract, not a bug to filter at the analyze→state
-                # boundary. The audit-event counter
-                # `n_trace_candidates_emitted` on
-                # `AnalyzeCompletedEvent` reflects the same pre-dedup
-                # set the state-side reducer ingests.
-                trace_candidates.extend(file_outcome.parser_result.trace_candidates)
-
-            total_input_tokens += file_outcome.input_tokens
-            total_output_tokens += file_outcome.output_tokens
-            total_cache_read_tokens += file_outcome.cache_read_tokens
-            total_cache_write_tokens += file_outcome.cache_write_tokens
-            total_cost_decimal += file_outcome.cost_decimal
-            # Cross-type subsumption records (DECISIONS.md#055) from this file's
-            # outcome — empty for trace-fetched files (no OBSERVED producer runs
-            # there) and for cache misses with nothing subsumed.
-            pass_subsumed_matches.extend(file_outcome.subsumed_matches)
-            remaining_budget_tokens -= file_outcome.estimated_tokens
-
-            # Pass-1 fan-out can iterate the same `fetched_file.path`
-            # multiple times (one per source finding targeting that
-            # path). `AnalysisRound._enforce_files_examined_unique` /
-            # `_enforce_files_skipped_unique` validators reject
-            # duplicates, so dedup at append time.
-            #
-            # Examined-wins semantic: once a path lands in
-            # `files_examined`, subsequent iterations are no-ops; if an
-            # earlier iteration skipped the path and a later one
-            # examines it, promote the path from `files_skipped` to
-            # `files_examined`. In current code paths skip outcomes
-            # are deterministic per file (same content → same
-            # decision), so the skip→examined transition cannot occur
-            # — but encoding "examined wins" defensively means a
-            # future skip-reason addition that DOES depend on
-            # iteration-mutable state (e.g., partial-budget) can't
-            # silently leave a successfully-examined path stuck in
-            # `files_skipped`.
-            if fetched_file.path in files_examined:
-                pass
-            elif file_outcome.parse_status != "skipped":
-                if fetched_file.path in files_skipped:
-                    files_skipped.remove(fetched_file.path)
-                files_examined.append(fetched_file.path)
-            elif fetched_file.path not in files_skipped:
-                files_skipped.append(fetched_file.path)
-
-    # FUP-044 ext 3 starvation anomaly: if pass-0 starved >= threshold files on the
-    # per-review budget, emit one COST_BUDGET_STARVATION anomaly so operators see
-    # the structural pattern instead of counting individual FileExaminationEvent
-    # skips. Scope: pass-0 changed-file set (the verified failure mode; pass-1
-    # trace-fetched starvation is out of V1 scope). Best-effort — observability must
-    # not fail the review, so an emit failure is logged, never raised (unlike
-    # synthesize's correctness-critical divergence anomaly). Idempotent on
-    # (review_id, rule_name) via the partial unique index.
     if budget_skip_count >= COST_BUDGET_STARVATION_THRESHOLD:
         try:
             await anomaly_sink.emit_anomaly(
@@ -1358,6 +1218,205 @@ async def analyze(
             "analyze_worker_outcomes": [],
         },
         goto="synthesize",
+    )
+
+
+async def analyze(
+    state: ReviewState,
+    *,
+    provider: LLMProvider,
+    analyze_model: str,
+    standard_analyze_model: str,
+    # Host-identity triad (DECISIONS.md#056) closed in at build_graph for the AnalyzeCompletedEvent
+    # (default None = unqualified until lifespan wiring; the event validator enforces coherence).
+    profile_id: str | None = None,
+    reasoning_enabled: bool | None = None,
+    profile_contract_digest: str | None = None,
+    phase_event_sink: PhaseEventSink,
+    file_examination_sink: FileExaminationSink,
+    analyze_event_sink: AnalyzeEventSink,
+    anomaly_sink: AnomalySink,
+    import_path_resolver: ImportPathResolver,
+    active_policy_version: str = ACTIVE_POLICY_VERSION,
+    total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
+    trivial_scope_filter_enabled: bool = False,
+    analyze_observed_skip_enforced: bool = False,
+    analyze_cache_store: AnalyzeCacheStore | None = None,
+    cache_mode: CacheMode = CacheMode.SHADOW,
+) -> Command[Literal["analyze_file", "analyze_aggregate", "synthesize"]]:
+    """The analyze entry vertex: pass-0 PLANNER, pass-1 sequential body.
+
+    Pass 0 (the fan-out cutover, specs/2026-07-05-parallel-analyze.md):
+    emit the pass's phase start, resolve the cache scope, build the
+    kept-file worklist, allocate per-file budgets pre-flight
+    (`plan_file_budgets` over the bytes-based proxy estimate), and
+    return `Command(goto=[Send("analyze_file", payload), ...])` — one
+    self-contained payload per kept file. Zero kept files routes to
+    "analyze_aggregate" directly (the empty pass still folds one empty
+    round + completed event). No per-file work happens here; the
+    planner emits no per-file events.
+
+    Pass 1 (trace re-entry) stays SEQUENTIAL and byte-unchanged: the
+    trace-fetched loop, round assembly, event emissions, and phase end
+    all run in this body, and the Command routes to "synthesize" (the
+    depth-2 ceiling means a post-pass-1 round count can never route
+    back to trace).
+
+    Counter source-of-truth (pass 1): per-file local bookkeeping
+    accumulators. NEVER re-read from the audit stream.
+    """
+    # `pass_index` is derived from `state.analysis_rounds`: pass 0 = no
+    # rounds merged yet (the first analyze pass); pass 1 = one round
+    # merged (post-trace re-entry per the M8 loop). The round_id reducer
+    # dedup includes pass_index in its content-derived hash, so deriving
+    # the index from state guarantees distinct round_ids across the two
+    # passes (a hardcoded `pass_index = 0` would collide under the
+    # reducer + silently drop the second pass). The depth-2 ceiling is
+    # enforced at `agent/graph.py::_trace_router` via `MAX_ANALYSIS_ROUNDS`.
+    pass_index = len(state.analysis_rounds)
+    # Phase identity per pass shape (increment 4): pass 0 emits the keyed
+    # PLANNER pair (`plan#<pass>`; attempt_key = phase_key VERBATIM, so
+    # phase_id inherits the key's retry stability and collision-freedom);
+    # the sequential pass-1 body keeps the legacy un-keyed
+    # `analyze-pass-<n>` envelope. Both derive from pre-merge state, so
+    # replay re-emission collapses on the PhaseEventSink idempotency.
+    if pass_index == 0:
+        plan_phase_key: str | None = f"plan#{pass_index}"
+        phase_id = compute_phase_id(
+            review_id=str(state.review_id),
+            node_id="analyze",
+            attempt_key=f"plan#{pass_index}",
+        )
+    else:
+        plan_phase_key = None
+        phase_id = compute_phase_id(
+            review_id=str(state.review_id),
+            node_id="analyze",
+            attempt_key=f"analyze-pass-{pass_index}",
+        )
+    started_at = datetime.now(UTC)
+    # Monotonic anchor for the round DURATION (FUP-141): `ended_at` is derived
+    # from this rather than a second wall-clock read, so a backwards clock jump
+    # (NTP step / VM resume / WSL2 skew) between start and end can't make
+    # `ended_at < started_at` and trip the `AnalysisRound` invariant mid-review.
+    # `started_at` stays wall-clock for the audit trail. Precondition: this mark
+    # and the matching end read stay in one process (`monotonic()` is per-process;
+    # a V1.5 parallel-analyze fan-out must re-anchor per worker, not hoist this).
+    started_mono = time.monotonic()
+    per_file_cap_tokens = _compute_per_file_cap(total_review_budget_tokens)
+
+    # Step 1: start phase event (the plan# pair on pass 0; the legacy
+    # envelope on pass 1). If this raises (audit infra outage), the node
+    # fails before any work — no dangling start.
+    await phase_event_sink.emit_phase(
+        ReviewPhaseEvent(
+            review_id=state.review_id,
+            phase_id=phase_id,
+            node_id="analyze",
+            marker="start",
+            is_eval=state.is_eval,
+            phase_key=plan_phase_key,
+        )
+    )
+
+    # Analyze-cache scope, resolved once on pass 0 from the reviews row —
+    # the canonical (installation_id, repo_id) tenant identity the cache
+    # key requires (never PRContext's mutable owner/repo strings); the
+    # cache is pass-0-only, so trace rounds skip the SELECT. Sits AFTER
+    # the phase-start emit: the resolve is node work (a DB read), and
+    # `phase-events-bound-work` requires node work inside the phase
+    # envelope. None disables the cache for this pass: store not
+    # injected (the eval driver's default), review row missing
+    # (fail-open to UNCACHED, never to cross-scope), or a store DB
+    # failure: the shadow cache is optional telemetry and must never
+    # abort a review (`CacheStoreError` is contained, not raised). An
+    # eval review does NOT disable the cache — it reads/writes scoped to
+    # is_eval rows via the lookup's is_eval predicate (DECISIONS.md#046).
+    cache_scope: CacheScope | None = None
+    if analyze_cache_store is not None and pass_index == 0:
+        try:
+            cache_scope = await analyze_cache_store.resolve_scope(state.review_id)
+        except CacheStoreError:
+            logger.warning(
+                "analyze-cache resolve_scope failed; cache disabled for this pass",
+                exc_info=True,
+            )
+            cache_scope = None
+        # No is_eval bypass (DECISIONS.md#046): eval and production reviews BOTH
+        # use the cache, kept mutually invisible by the lookup's REQUIRED is_eval
+        # read-isolation predicate (the scope's is_eval, passed at the lookup
+        # below) plus the is_eval-stamped write.
+        #
+        # Defense-in-depth: the lookup partitions on cache_scope.is_eval (the
+        # reviews row) while CacheLookupEvent + the serve emits are tagged
+        # state.is_eval. The two are set together at review creation and cannot
+        # diverge in production; but if a producer bug ever split them, reading one
+        # partition while emitting the other's telemetry would be incoherent — so a
+        # divergence disables the cache for this pass (fail-safe; the protection the
+        # pre-#046 either-flag bypass gave, kept without the eval-wide veto).
+        if cache_scope is not None and cache_scope.is_eval != state.is_eval:
+            logger.warning(
+                "analyze-cache is_eval divergence (scope=%s, state=%s); cache disabled",
+                cache_scope.is_eval,
+                state.is_eval,
+            )
+            cache_scope = None
+
+    # Local accumulators — single source of truth for AnalyzeCompletedEvent
+    # counters. Re-reading from the audit stream would couple counter
+    # correctness to emission ordering and break the proposal-accounting
+    # equation under concurrent-emit refactors.
+
+    # Step 2: per-pass iteration scope.
+    #
+    # Pass 0 (`len(state.analysis_rounds) == 0`): iterate
+    # `pr_context.changed_files` filtered by triage tier — the original
+    # analyze surface. SKIM/SKIP excluded by construction; files absent
+    # from the tier map are treated as SKIP (defensive against tier-map
+    # gaps; per spec §7 step 2). No FileExaminationEvent fires for
+    # excluded files.
+    #
+    # Pass 1 (`len(state.analysis_rounds) == 1`, post-trace re-entry per
+    # M8 loop): iterate `state.trace_fetched_files` — files trace
+    # resolved + fetched at head SHA. These are NOT PR-diff files, so
+    # there's no patch, no triage classification, and no
+    # changed-scope-unit intersection: analyze examines the WHOLE file
+    # because trace's resolution decided the file is relevant to a
+    # source finding. The parser admits INFERRED proposals only on
+    # pass 1 (`pass_index > 0`) — pass 0 still rejects per the V1 stub
+    # (no trace context exists yet at that point).
+    if pass_index == 0:
+        return await _plan_pass_zero(
+            state,
+            phase_event_sink=phase_event_sink,
+            total_review_budget_tokens=total_review_budget_tokens,
+            pass_index=pass_index,
+            phase_id=phase_id,
+            plan_phase_key=plan_phase_key,
+            started_at=started_at,
+            per_file_cap_tokens=per_file_cap_tokens,
+            cache_scope=cache_scope,
+            triage_result=state.triage_result,
+        )
+    return await _run_trace_pass(
+        state,
+        provider=provider,
+        analyze_model=analyze_model,
+        profile_id=profile_id,
+        reasoning_enabled=reasoning_enabled,
+        profile_contract_digest=profile_contract_digest,
+        phase_event_sink=phase_event_sink,
+        file_examination_sink=file_examination_sink,
+        analyze_event_sink=analyze_event_sink,
+        anomaly_sink=anomaly_sink,
+        import_path_resolver=import_path_resolver,
+        active_policy_version=active_policy_version,
+        total_review_budget_tokens=total_review_budget_tokens,
+        pass_index=pass_index,
+        phase_id=phase_id,
+        started_at=started_at,
+        started_mono=started_mono,
+        per_file_cap_tokens=per_file_cap_tokens,
     )
 
 
