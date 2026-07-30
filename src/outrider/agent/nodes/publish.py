@@ -482,7 +482,8 @@ async def _publish_body(
     # `prior_publish_event=None` and both POST. The lock serializes them, so the
     # second task reaches Step 4 BEHIND the first task's transaction boundary and
     # sees either its committed `PublishEvent` (authentic `IDEMPOTENTLY_SKIPPED`)
-    # or its absence (first task crashed before emit → this task POSTs).
+    # or its absence, in which case this task continues to the external-record
+    # check — absence of the local event alone does not authorize another POST.
     #
     # The database advisory lock coordinates contenders across processes, but it is
     # released if the winner crashes. Step 6 covers
