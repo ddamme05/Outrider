@@ -175,6 +175,17 @@ def _find_decision_for(
     return None
 
 
+# The outcome partition the publish gate applies: APPROVE and SEVERITY_OVERRIDE admit
+# the finding, REJECT and SUPPRESS withhold it. Defined once and used by both
+# `is_eligible_for_v1_publish` and `count_gated_approvals`, so the reviewer's reported
+# verdict cannot drift from the rule that decides what actually publishes.
+# `test_admitting_outcomes_matches_eligibility_gate` drives every enum member through the
+# real gate and pins the two together, so adding a member to one without the other fails.
+HITL_ADMITTING_OUTCOMES: Final[frozenset[PerFindingOutcome]] = frozenset(
+    {PerFindingOutcome.APPROVE, PerFindingOutcome.SEVERITY_OVERRIDE}
+)
+
+
 def is_eligible_for_v1_publish(
     finding: ReviewFinding,
     *,
@@ -312,9 +323,7 @@ def is_eligible_for_v1_publish(
             PublishEligibilityReason.HITL_DECISION_MISSING,
         )
 
-    if matching_decision.outcome == PerFindingOutcome.APPROVE:
-        return (PublishEligibility.ELIGIBLE, None)
-    if matching_decision.outcome == PerFindingOutcome.SEVERITY_OVERRIDE:
+    if matching_decision.outcome in HITL_ADMITTING_OUTCOMES:
         return (PublishEligibility.ELIGIBLE, None)
     if matching_decision.outcome == PerFindingOutcome.REJECT:
         return (
@@ -335,17 +344,6 @@ def is_eligible_for_v1_publish(
         f"{matching_decision.outcome!r}; add a branch above when a new "
         f"outcome lands in PerFindingOutcome."
     )
-
-
-# The outcome partition `is_eligible_for_v1_publish` uses above: APPROVE and
-# SEVERITY_OVERRIDE admit the finding, REJECT and SUPPRESS withhold it. Kept as a set
-# so `count_gated_approvals` reports the reviewer's verdict under the SAME rule the
-# publish gate applies. `test_admitting_outcomes_matches_eligibility_gate` drives every
-# enum member through the real gate and pins the two together, so adding a member to
-# one without the other fails loudly.
-HITL_ADMITTING_OUTCOMES: Final[frozenset[PerFindingOutcome]] = frozenset(
-    {PerFindingOutcome.APPROVE, PerFindingOutcome.SEVERITY_OVERRIDE}
-)
 
 
 def count_gated_approvals(
