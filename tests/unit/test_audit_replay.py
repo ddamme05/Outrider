@@ -545,6 +545,43 @@ def test_verify_phase_wellformed_rejects_end_without_start() -> None:
         _verify_phase_wellformed(events)
 
 
+def test_verify_phase_wellformed_rejects_duplicate_end() -> None:
+    """A second end for an already-closed phase is rejected, not absorbed.
+    `started` still holds the phase, so the end-without-start guard passes and
+    the duplicate-end guard is the one that must fire."""
+    events = (
+        _phase_event(node_id="intake", marker="start", phase_id="intake:0"),
+        _phase_event(node_id="intake", marker="end", phase_id="intake:0"),
+        _phase_event(node_id="intake", marker="end", phase_id="intake:0"),
+    )
+    with pytest.raises(ReplayEquivalenceError, match="more than one end marker"):
+        _verify_phase_wellformed(events)
+
+
+def test_verify_phase_wellformed_rejects_end_phase_key_mismatch() -> None:
+    """An end marker must carry the phase_key its start carried.
+
+    The id-to-key binding is enforced on the START only, so nothing else stops
+    an end from closing a keyed envelope under a different key. Same phase_id
+    and node_id, so the preceding guards pass and this one decides.
+    """
+    start = _phase_event(node_id="analyze", marker="start", phase_key="file:a.py#0")
+    events = (
+        start,
+        _phase_event(
+            node_id="analyze",
+            marker="end",
+            phase_id=start.phase_id,
+            phase_key="file:b.py#0",
+        ),
+    )
+    with pytest.raises(
+        ReplayEquivalenceError,
+        match=r"end phase_key .* disagrees with start phase_key",
+    ):
+        _verify_phase_wellformed(events)
+
+
 def test_verify_phase_wellformed_allows_work_within_phase() -> None:
     events = (
         _phase_event(node_id="analyze", marker="start", phase_id="analyze:0"),
