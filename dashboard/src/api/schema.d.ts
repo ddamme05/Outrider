@@ -309,20 +309,18 @@ export interface paths {
          * Decide
          * @description Accept a HITL approval submission for `review_id`.
          *
-         *     Flow (M12 step-order is load-bearing):
-         *       1. Auth (via `require_admin_api_key` Depends). 401 on failure.
-         *       2. State preflight via `ReviewStatusReader.fetch_for_decide`.
-         *          409 if: hitl_request is None / status not in the HITL set /
-         *          hitl_decision already landed.
-         *       3. Mismatch check: payload `finding_id` set must equal the
-         *          gated set on `hitl_request.findings_requiring_approval`.
-         *          422 with `{"missing": [...], "extras": [...]}` on mismatch.
-         *       4. Construct typed `HITLDecision` server-side (server-set
-         *          `reviewer_id`, server-derived `original_severity` from the
-         *          preflight map for SEVERITY_OVERRIDE outcomes, server-set
-         *          `decided_at=datetime.now(UTC)`).
-         *       5. Enqueue `_run_resume_under_failure_wrapper` via FastAPI
-         *          `BackgroundTasks`; return 202 immediately.
+         *     Auth runs first as a `require_admin_api_key` dependency (401), then the
+         *     state preflight (409 unless the review is still awaiting a decision), then
+         *     the payload gates: the submitted `finding_id` set must equal the gated set
+         *     and carry no duplicates (422), and a `severity_override` must actually
+         *     change the severity (422). That order is load-bearing — it keeps an
+         *     unauthenticated caller, or one whose review is not awaiting a decision,
+         *     from probing the gated finding set.
+         *
+         *     On success the typed `HITLDecision` is constructed server-side —
+         *     `reviewer_id`, `original_severity` from the preflight map, `decided_at` —
+         *     and the resume is enqueued via FastAPI `BackgroundTasks`, returning 202
+         *     without waiting for it.
          */
         post: operations["decide_reviews__review_id__decide_post"];
         delete?: never;

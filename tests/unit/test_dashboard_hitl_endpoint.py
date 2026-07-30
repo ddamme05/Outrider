@@ -427,6 +427,86 @@ def test_severity_override_uses_preflight_map() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Override-legitimacy gates
+# ---------------------------------------------------------------------------
+
+
+def test_override_without_a_preflight_baseline_returns_500() -> None:
+    """A SEVERITY_OVERRIDE whose finding_id is absent from
+    `gated_finding_severities` is state corruption, not a client error:
+    the gated set and the FindingEvent rows disagree. The endpoint
+    surfaces a labelled 500 rather than letting `_build_domain_decisions`
+    raise KeyError mid-handler.
+    """
+    pf = _make_preflight(gated_severities={_FINDING_B: FindingSeverity.CRITICAL})
+    client, _, compiled_graph = _build_app(preflight=pf)
+    body = {
+        "decisions": [
+            {
+                "finding_id": str(_FINDING_A),
+                "outcome": "severity_override",
+                "reason": "downgrade per context",
+                "override_severity": "low",
+            },
+            {"finding_id": str(_FINDING_B), "outcome": "approve", "reason": "ok"},
+        ],
+        "annotation": None,
+    }
+    resp = client.post(f"/reviews/{uuid4()}/decide", json=body, headers=_auth_headers())
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert detail["error"] == "preflight_gated_severities_incomplete"
+    assert detail["missing_finding_ids"] == [str(_FINDING_A)]
+    # Rejected before the resume is enqueued.
+    compiled_graph.ainvoke.assert_not_awaited()
+
+
+def test_override_equal_to_the_baseline_returns_422() -> None:
+    """Reject a no-op override with 422 before domain-model construction."""
+    pf = _make_preflight(
+        gated_severities={_FINDING_A: FindingSeverity.HIGH, _FINDING_B: FindingSeverity.CRITICAL}
+    )
+    client, _, compiled_graph = _build_app(preflight=pf)
+    body = {
+        "decisions": [
+            {
+                "finding_id": str(_FINDING_A),
+                "outcome": "severity_override",
+                "reason": "no change intended",
+                "override_severity": "high",
+            },
+            {"finding_id": str(_FINDING_B), "outcome": "approve", "reason": "ok"},
+        ],
+        "annotation": None,
+    }
+    resp = client.post(f"/reviews/{uuid4()}/decide", json=body, headers=_auth_headers())
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["error"] == "noop_severity_override"
+    assert detail["finding_ids"] == [str(_FINDING_A)]
+    compiled_graph.ainvoke.assert_not_awaited()
+
+
+def test_persister_severity_divergence_returns_500() -> None:
+    """`fetch_for_decide` raises ValueError when the persister itself finds
+    the gated set diverged from the FindingEvent rows. That reaches the
+    caller as the same labelled 500 as the endpoint-side check, so the
+    durable persister and a stubbed reader produce one operator-visible
+    shape.
+    """
+    client, reader, compiled_graph = _build_app(preflight=None)
+    reader.fetch_for_decide = AsyncMock(side_effect=ValueError("gated severities incomplete"))
+    resp = client.post(
+        f"/reviews/{uuid4()}/decide",
+        json=_decision_payload(),
+        headers=_auth_headers(),
+    )
+    assert resp.status_code == 500
+    assert resp.json()["detail"]["error"] == "preflight_gated_severities_incomplete"
+    compiled_graph.ainvoke.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # Failure wrapper exit semantics
 # ---------------------------------------------------------------------------
 
