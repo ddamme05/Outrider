@@ -416,6 +416,35 @@ def parse_analyze_response(
     # admission emits corrected siblings against (module form only).
     _collecting = pass_index == 0 and collect_trace_candidates
     from_import_modules = _build_from_import_map(import_refs) if _collecting else {}
+
+    def reject_proposal(
+        *,
+        proposal: AnalyzeFindingProposalRaw,
+        proposal_hash: str,
+        candidates: list[TraceCandidate],
+        rejection_reason: _ProposalRejectionReason,
+        rejection_detail: str,
+        claimed_evidence_tier: EvidenceTier | None,
+    ) -> None:
+        """Record a proposal's rejection and keep its trace candidates.
+
+        Candidates survive rejection per spec §6 step 10 — a rejected JUDGED
+        claim can still carry a legitimate cross-file signal. The caller writes
+        its own `continue`, so the loop's exits stay visible at the step that
+        decides them.
+        """
+        proposal_rejections.append(
+            _build_proposal_rejection(
+                proposal,
+                proposal_hash=proposal_hash,
+                file_path=file_path,
+                rejection_reason=rejection_reason,
+                rejection_detail=rejection_detail,
+                claimed_evidence_tier=claimed_evidence_tier,
+            )
+        )
+        trace_candidates.extend(candidates)
+
     for raw_proposal in raw.findings:
         n_proposals_seen += 1
 
@@ -469,17 +498,14 @@ def parse_analyze_response(
         try:
             evidence_tier = EvidenceTier(raw_proposal.evidence_tier)
         except ValueError:
-            proposal_rejections.append(
-                _build_proposal_rejection(
-                    raw_proposal,
-                    proposal_hash=proposal_hash,
-                    file_path=file_path,
-                    rejection_reason="evidence_tier_not_in_enum",
-                    rejection_detail="no_near_enum_match",
-                    claimed_evidence_tier=None,
-                )
+            reject_proposal(
+                proposal=raw_proposal,
+                proposal_hash=proposal_hash,
+                candidates=proposal_trace_candidates,
+                rejection_reason="evidence_tier_not_in_enum",
+                rejection_detail="no_near_enum_match",
+                claimed_evidence_tier=None,
             )
-            trace_candidates.extend(proposal_trace_candidates)
             continue
 
         # Step 3: finding_type enum admission (runs second so
@@ -487,17 +513,14 @@ def parse_analyze_response(
         try:
             finding_type = FindingType(raw_proposal.finding_type)
         except ValueError:
-            proposal_rejections.append(
-                _build_proposal_rejection(
-                    raw_proposal,
-                    proposal_hash=proposal_hash,
-                    file_path=file_path,
-                    rejection_reason="finding_type_not_in_enum",
-                    rejection_detail="no_near_enum_match",
-                    claimed_evidence_tier=evidence_tier,
-                )
+            reject_proposal(
+                proposal=raw_proposal,
+                proposal_hash=proposal_hash,
+                candidates=proposal_trace_candidates,
+                rejection_reason="finding_type_not_in_enum",
+                rejection_detail="no_near_enum_match",
+                claimed_evidence_tier=evidence_tier,
             )
-            trace_candidates.extend(proposal_trace_candidates)
             continue
 
         # Step 4: producer admission for OBSERVED / INFERRED. JUDGED
@@ -506,30 +529,27 @@ def parse_analyze_response(
         if evidence_tier == EvidenceTier.OBSERVED:
             claimed_id = raw_proposal.query_match_id
             if claimed_id is None or claimed_id not in query_match_id_set:
-                proposal_rejections.append(
-                    _build_proposal_rejection(
-                        raw_proposal,
-                        proposal_hash=proposal_hash,
-                        file_path=file_path,
-                        rejection_reason="query_match_id_not_in_registry",
-                        # Spec §3 names `[A-Za-z0-9_./:-]+` as the
-                        # safety pattern for storing query_match_id
-                        # verbatim in rejection_detail, BUT the raw
-                        # schema at `schemas/llm/analyze.py:87` only
-                        # ships `max_length=256` — no pattern. Without
-                        # sanitization, ANSI escapes / Trojan-Source /
-                        # XSS payloads would land verbatim. Apply the
-                        # spec-named pattern here as a sanitization
-                        # step: replace any out-of-class char with
-                        # `?` so the structural shape is preserved for
-                        # operator visibility while the dangerous
-                        # bytes are stripped. Tracked as FUP-046 to
-                        # align the raw schema with spec §3 intent.
-                        rejection_detail=_sanitize_query_match_id_for_detail(claimed_id),
-                        claimed_evidence_tier=evidence_tier,
-                    )
+                reject_proposal(
+                    proposal=raw_proposal,
+                    proposal_hash=proposal_hash,
+                    candidates=proposal_trace_candidates,
+                    rejection_reason="query_match_id_not_in_registry",
+                    # Spec §3 names `[A-Za-z0-9_./:-]+` as the
+                    # safety pattern for storing query_match_id
+                    # verbatim in rejection_detail, BUT the raw
+                    # schema at `schemas/llm/analyze.py:87` only
+                    # ships `max_length=256` — no pattern. Without
+                    # sanitization, ANSI escapes / Trojan-Source /
+                    # XSS payloads would land verbatim. Apply the
+                    # spec-named pattern here as a sanitization
+                    # step: replace any out-of-class char with
+                    # `?` so the structural shape is preserved for
+                    # operator visibility while the dangerous
+                    # bytes are stripped. Tracked as FUP-046 to
+                    # align the raw schema with spec §3 intent.
+                    rejection_detail=_sanitize_query_match_id_for_detail(claimed_id),
+                    claimed_evidence_tier=evidence_tier,
                 )
-                trace_candidates.extend(proposal_trace_candidates)
                 continue
         elif evidence_tier == EvidenceTier.INFERRED:
             # Pass-conditional admission per the trace-node arc (M8 loop).
@@ -575,17 +595,14 @@ def parse_analyze_response(
                         f"{len(valid_trace_path_elements)} entries)"
                     )
             if inferred_rejection_detail is not None:
-                proposal_rejections.append(
-                    _build_proposal_rejection(
-                        raw_proposal,
-                        proposal_hash=proposal_hash,
-                        file_path=file_path,
-                        rejection_reason="trace_path_not_admissible",
-                        rejection_detail=inferred_rejection_detail,
-                        claimed_evidence_tier=evidence_tier,
-                    )
+                reject_proposal(
+                    proposal=raw_proposal,
+                    proposal_hash=proposal_hash,
+                    candidates=proposal_trace_candidates,
+                    rejection_reason="trace_path_not_admissible",
+                    rejection_detail=inferred_rejection_detail,
+                    claimed_evidence_tier=evidence_tier,
                 )
-                trace_candidates.extend(proposal_trace_candidates)
                 continue
             # Pass 1+ with valid trace_path grounded in the proof set:
             # fall through to step 5 (span admission). The proof-boundary
@@ -609,17 +626,14 @@ def parse_analyze_response(
             try:
                 span = line_range_to_span(line_start, line_end, file_content)
             except CoordinateError:
-                proposal_rejections.append(
-                    _build_proposal_rejection(
-                        raw_proposal,
-                        proposal_hash=proposal_hash,
-                        file_path=file_path,
-                        rejection_reason="span_outside_file",
-                        rejection_detail=f"({line_start},{line_end})",
-                        claimed_evidence_tier=evidence_tier,
-                    )
+                reject_proposal(
+                    proposal=raw_proposal,
+                    proposal_hash=proposal_hash,
+                    candidates=proposal_trace_candidates,
+                    rejection_reason="span_outside_file",
+                    rejection_detail=f"({line_start},{line_end})",
+                    claimed_evidence_tier=evidence_tier,
                 )
-                trace_candidates.extend(proposal_trace_candidates)
                 continue
             if not span_is_nonempty(span) or not span_within_file(
                 span, file_byte_length=file_byte_length
@@ -629,17 +643,14 @@ def parse_analyze_response(
                     if not span_is_nonempty(span)
                     else f"({span.byte_start},{span.byte_end})"
                 )
-                proposal_rejections.append(
-                    _build_proposal_rejection(
-                        raw_proposal,
-                        proposal_hash=proposal_hash,
-                        file_path=file_path,
-                        rejection_reason="span_outside_file",
-                        rejection_detail=detail,
-                        claimed_evidence_tier=evidence_tier,
-                    )
+                reject_proposal(
+                    proposal=raw_proposal,
+                    proposal_hash=proposal_hash,
+                    candidates=proposal_trace_candidates,
+                    rejection_reason="span_outside_file",
+                    rejection_detail=detail,
+                    claimed_evidence_tier=evidence_tier,
                 )
-                trace_candidates.extend(proposal_trace_candidates)
                 continue
             # FUP-138: a degraded JUDGED finding must anchor inside the deterministic
             # addable-diff context — content the patch actually added/modified — not
@@ -648,17 +659,14 @@ def parse_analyze_response(
             # `coordinates.added_line_byte_ranges`), never recomputed from prompt text
             # or trusted from a model-provided span.
             if not span_within_degraded_context(span, degraded_context_byte_ranges):
-                proposal_rejections.append(
-                    _build_proposal_rejection(
-                        raw_proposal,
-                        proposal_hash=proposal_hash,
-                        file_path=file_path,
-                        rejection_reason="span_outside_degraded_context",
-                        rejection_detail=f"({span.byte_start},{span.byte_end})",
-                        claimed_evidence_tier=evidence_tier,
-                    )
+                reject_proposal(
+                    proposal=raw_proposal,
+                    proposal_hash=proposal_hash,
+                    candidates=proposal_trace_candidates,
+                    rejection_reason="span_outside_degraded_context",
+                    rejection_detail=f"({span.byte_start},{span.byte_end})",
+                    claimed_evidence_tier=evidence_tier,
                 )
-                trace_candidates.extend(proposal_trace_candidates)
                 continue
         elif not any(
             line_range_within_scope_unit(line_start, line_end, su) for su in included_scope_units
@@ -667,17 +675,14 @@ def parse_analyze_response(
             # unit. No match → span_outside_scope_unit (which subsumes a past-EOF
             # range — it is in no scope — preserving today's single-reason
             # clean-path taxonomy; per the spec's status-quo decision).
-            proposal_rejections.append(
-                _build_proposal_rejection(
-                    raw_proposal,
-                    proposal_hash=proposal_hash,
-                    file_path=file_path,
-                    rejection_reason="span_outside_scope_unit",
-                    rejection_detail=f"({line_start},{line_end})",
-                    claimed_evidence_tier=evidence_tier,
-                )
+            reject_proposal(
+                proposal=raw_proposal,
+                proposal_hash=proposal_hash,
+                candidates=proposal_trace_candidates,
+                rejection_reason="span_outside_scope_unit",
+                rejection_detail=f"({line_start},{line_end})",
+                claimed_evidence_tier=evidence_tier,
             )
-            trace_candidates.extend(proposal_trace_candidates)
             continue
 
         # FUP-162 parameterized-call veto (specs/2026-06-12-sqli-parameterized-
@@ -697,17 +702,14 @@ def parse_analyze_response(
                 line_start, line_end, parameterized_call_scan
             )
         ):
-            proposal_rejections.append(
-                _build_proposal_rejection(
-                    raw_proposal,
-                    proposal_hash=proposal_hash,
-                    file_path=file_path,
-                    rejection_reason="sql_injection_on_parameterized_call",
-                    rejection_detail=f"({line_start},{line_end})",
-                    claimed_evidence_tier=evidence_tier,
-                )
+            reject_proposal(
+                proposal=raw_proposal,
+                proposal_hash=proposal_hash,
+                candidates=proposal_trace_candidates,
+                rejection_reason="sql_injection_on_parameterized_call",
+                rejection_detail=f"({line_start},{line_end})",
+                claimed_evidence_tier=evidence_tier,
             )
-            trace_candidates.extend(proposal_trace_candidates)
             continue
 
         # Steps 6-9: admission succeeded; construct `ReviewFinding` (line-based).
@@ -763,17 +765,14 @@ def parse_analyze_response(
             # auditable rather than crashing the whole pass. Narrowed
             # to `ValidationError` so genuinely-unexpected failures
             # (MemoryError, RecursionError, etc.) propagate as bugs.
-            proposal_rejections.append(
-                _build_proposal_rejection(
-                    raw_proposal,
-                    proposal_hash=proposal_hash,
-                    file_path=file_path,
-                    rejection_reason="schema_construction_failed",
-                    rejection_detail=f"{type(exc).__name__} x1",
-                    claimed_evidence_tier=evidence_tier,
-                )
+            reject_proposal(
+                proposal=raw_proposal,
+                proposal_hash=proposal_hash,
+                candidates=proposal_trace_candidates,
+                rejection_reason="schema_construction_failed",
+                rejection_detail=f"{type(exc).__name__} x1",
+                claimed_evidence_tier=evidence_tier,
             )
-            trace_candidates.extend(proposal_trace_candidates)
             continue
 
         admitted_findings.append(finding)
