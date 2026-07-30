@@ -7,18 +7,16 @@ Sequence:
      BEFORE any input-validation work. Held in a local; only attached
      to the seed ReviewState once signature/membership/idempotency clear.
   2. Read `X-Hub-Signature-256`; missing → 401 WITHOUT reading the
-     request body (defends against unauthenticated multi-GB POST
-     buffering pressure).
+     request body. Presence is only a precondition; authenticity is
+     established by HMAC verification at step 4.
   2b. Content-Length precheck against `_MAX_WEBHOOK_BODY_BYTES` (1 MiB).
      `Content-Length` exceeding cap → 413 BEFORE `await request.body()`.
-     Malformed (non-integer) Content-Length → 400. Post-read length
-     guard at step 3 is defense-in-depth for chunked / missing-header
-     deliveries. Streaming-HMAC bound remains FUP-034 part 1.
+     Malformed or negative Content-Length → 400.
   3. `body = await request.body()` — raw bytes captured BEFORE any
-     model binding; rejected with 413 if `len(body)` exceeds the cap
-     (catches chunked / lying-Content-Length cases). FastAPI's default
-     `Request.body()` caches internally (Starlette `_body`); a second
-     call returns the same bytes.
+     model binding; rejected with 413 after buffering if `len(body)`
+     exceeds the cap. Streaming protection remains FUP-034 part 1.
+     FastAPI's default `Request.body()` caches internally (Starlette
+     `_body`); a second call returns the same bytes.
   4. `verify_signature(secret, body, signature_header)` via the
      route-facing module that delegates to `github/webhooks.py`. Returns
      False → 401. Unexpected raises propagate as 5xx (verifier
@@ -81,6 +79,7 @@ from outrider.github.credentials import GitHubUnconfiguredError
 
 if TYPE_CHECKING:
     from sqlalchemy import Select
+    from sqlalchemy.ext.asyncio import AsyncSession
 
     from outrider.dispatcher import ReviewDispatcher
     from outrider.github.credentials import GitHubCredentialProvider
@@ -102,25 +101,11 @@ _PULL_REQUEST_ACTION_ALLOWLIST: frozenset[str] = frozenset(
     {"opened", "synchronize", "reopened", "ready_for_review"}
 )
 
-# Hard cap on webhook body size at the FastAPI/ASGI boundary. GitHub's
-# real `pull_request` payloads are well under 1 MiB (the heaviest cases
-# are big PRs with long descriptions; the payload itself does not include
-# file content — intake pulls content via the contents API). 1 MiB is
-# 5-10x typical worst-case, comfortable headroom without admitting
-# attacker-controlled multi-MB / multi-GB bodies into RAM.
+# Webhook body-size cap at the FastAPI/ASGI boundary.
 #
-# Two-layer enforcement:
-#   1. Content-Length precheck — reject before `await request.body()`
-#      buffers anything. Most well-formed deliveries carry this header.
-#   2. Post-read length guard — defense-in-depth for chunked /
-#      no-content-length / lying-content-length deliveries. The
-#      precheck-only path would still buffer the full body before the
-#      schema/signature layer caught oversize.
-#
-# Full streaming-HMAC bound (no buffering even chunked) is FUP-034 part 1
-# remaining work; this commit lands the Content-Length precheck + post-
-# read guard, closing the unsigned/signed-but-attacker DoS path with
-# Content-Length set.
+# Requests with malformed, negative, or declared over-cap lengths are rejected
+# before buffering. Any over-cap body that reaches the read is rejected after
+# buffering. Full streaming protection remains FUP-034.
 _MAX_WEBHOOK_BODY_BYTES: int = 1_048_576  # 1 MiB
 
 
@@ -140,130 +125,13 @@ async def receive_pull_request_webhook(
     # Step 1: receipt timestamp, held until validation clears.
     received_at = datetime.now(UTC)
 
-    # Log delivery id for traceability; never persisted. Logged BEFORE
-    # body-read so missing-signature 401s still carry the correlation id
-    # for operators tracing the GitHub-side delivery.
-    logger.info(
-        "webhook received",
-        extra={
-            "x_github_delivery": x_github_delivery,
-            "x_github_event": x_github_event,
-            "received_at": received_at.isoformat(),
-        },
+    body = await _verified_webhook_body(
+        request,
+        x_hub_signature_256=x_hub_signature_256,
+        x_github_delivery=x_github_delivery,
+        x_github_event=x_github_event,
+        received_at=received_at,
     )
-
-    # Step 2: signature header presence — BEFORE body-read.
-    #
-    # Body-read-after-header-check defends against an unsigned multi-GB
-    # POST consuming RAM before failing. Streaming-HMAC cap (full
-    # chunked-transfer defense) tracked at FUP-034.
-    if x_hub_signature_256 is None:
-        logger.warning(
-            "webhook rejected: missing X-Hub-Signature-256",
-            extra={"x_github_delivery": x_github_delivery},
-        )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing signature")
-
-    # Step 2b: Content-Length precheck BEFORE buffering. A signed but
-    # attacker-controlled delivery that sets `Content-Length: 10000000000`
-    # would otherwise force `await request.body()` to allocate. The
-    # precheck rejects at HTTP-413 before any read; the post-read guard
-    # below catches the missing-header / lying-header chunked cases.
-    content_length_header = request.headers.get("content-length")
-    if content_length_header is not None:
-        try:
-            content_length = int(content_length_header)
-        except ValueError:
-            logger.warning(
-                "webhook rejected: malformed Content-Length",
-                extra={
-                    "x_github_delivery": x_github_delivery,
-                    "content_length_raw": content_length_header[:64],
-                },
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="malformed Content-Length",
-            ) from None
-        # Negative Content-Length is HTTP-malformed but `int()` accepts
-        # "-1" cleanly, and `-1 > cap` is False — without an explicit
-        # check, a negative header bypasses both the malformed-400 path
-        # AND the 413 cap, deferring rejection until after body buffer.
-        if content_length < 0:
-            logger.warning(
-                "webhook rejected: negative Content-Length",
-                extra={
-                    "x_github_delivery": x_github_delivery,
-                    "content_length_raw": content_length_header[:64],
-                },
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="malformed Content-Length",
-            )
-        if content_length > _MAX_WEBHOOK_BODY_BYTES:
-            logger.warning(
-                "webhook rejected: Content-Length exceeds cap",
-                extra={
-                    "x_github_delivery": x_github_delivery,
-                    "content_length": content_length,
-                    "cap": _MAX_WEBHOOK_BODY_BYTES,
-                },
-            )
-            raise HTTPException(
-                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                detail="payload too large",
-            )
-
-    # Step 3: capture raw body bytes BEFORE any JSON parsing. Signature
-    # verification (next step) requires the raw bytes the sender HMAC'd.
-    body = await request.body()
-    if len(body) > _MAX_WEBHOOK_BODY_BYTES:
-        # Defense-in-depth for chunked / missing / lying Content-Length.
-        # Reached after buffering — strictly worse than the precheck,
-        # which is why FUP-034 part 1 remains open for streaming-HMAC.
-        logger.warning(
-            "webhook rejected: body size exceeds cap post-read",
-            extra={
-                "x_github_delivery": x_github_delivery,
-                "body_bytes": len(body),
-                "cap": _MAX_WEBHOOK_BODY_BYTES,
-            },
-        )
-        raise HTTPException(
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail="payload too large",
-        )
-
-    # Step 4: signature verification BEFORE event-type filtering.
-    #
-    # `verify_signature` (delegating to `githubkit.webhooks.verify`)
-    # returns False for any signature mismatch — malformed digest,
-    # wrong-length header, base64 garbage, mismatched HMAC — never
-    # raises in those cases. We do NOT wrap this call in
-    # `except Exception` → 401: an unexpected verifier exception
-    # (programming bug, dependency regression) is a server-side fault
-    # that should surface as 5xx, not collapse into a "401 invalid
-    # signature" response that hides the actual failure class.
-    credential_provider: GitHubCredentialProvider = request.app.state.credential_provider
-    try:
-        creds = await credential_provider.current()
-    except GitHubUnconfiguredError:
-        # `database` mode, not yet CONFIGURED → fail closed with 503 (the delivery shows as
-        # failed on GitHub; the operator redelivers after setup — GitHub does not auto-retry).
-        # The setup-only route gating also returns 503 here; this is the defense-in-depth read
-        # at the secret source.
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="setup incomplete"
-        ) from None
-    secret = creds.webhook_secret.get_secret_value()
-    signature_ok = verify_signature(secret, body, x_hub_signature_256)
-    if not signature_ok:
-        logger.warning(
-            "webhook rejected: signature mismatch",
-            extra={"x_github_delivery": x_github_delivery},
-        )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid signature")
 
     # Step 5: dispatch by event type. Install-lifecycle events (`installation`,
     # `installation_repositories`) maintain the local install CACHE via idempotent upserts
@@ -316,45 +184,12 @@ async def receive_pull_request_webhook(
     repo_id = payload.repository.id
 
     async with session_factory() as session:
-        # Active install: exists, not tombstoned (#012), not suspended (Arc B2).
-        install = (
-            await session.execute(
-                select(Installation).where(
-                    Installation.installation_id == installation_id,
-                    Installation.tombstoned_at.is_(None),
-                    Installation.suspended_at.is_(None),
-                )
-            )
-        ).scalar_one_or_none()
-        # Arc B2 repository_selection gate: `all` installs authorize at the install
-        # level (no per-repo row); `selected` installs require the active per-repo
-        # membership row. Absent/tombstoned/suspended install → not authorized.
-        # (Per DECISIONS.md#065 the cache is the EARLY-OUT here; the authoritative
-        # live GitHub auth check is the intake node's first step — tracked B2 work.)
-        authorized = install is not None and (
-            install.repository_selection == "all"
-            or (
-                await session.execute(
-                    select(InstallationRepository.id).where(
-                        active_repo_membership(installation_id, repo_id)
-                    )
-                )
-            ).first()
-            is not None
+        await _assert_installation_authorized(
+            session,
+            installation_id=installation_id,
+            repo_id=repo_id,
+            x_github_delivery=x_github_delivery,
         )
-        if not authorized:
-            logger.warning(
-                "webhook rejected: unknown or inactive installation+repo membership",
-                extra={
-                    "installation_id": installation_id,
-                    "repo_id": repo_id,
-                    "x_github_delivery": x_github_delivery,
-                },
-            )
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="installation or repository not active",
-            )
 
         head_sha = payload.pull_request.head.sha
 
@@ -626,6 +461,198 @@ async def receive_pull_request_webhook(
         raise
 
     return {"status": "running", "review_id": str(review_id)}
+
+
+async def _assert_installation_authorized(
+    session: AsyncSession,
+    *,
+    installation_id: int,
+    repo_id: int,
+    x_github_delivery: str | None,
+) -> None:
+    """Raise 404 unless the local install cache shows this repo as active.
+
+    Per `DECISIONS.md#065` the cache is an EARLY-OUT, never the authority — the
+    authoritative live GitHub check runs at intake. An `all`-selection install
+    authorizes at the install level; a `selected` install additionally requires the
+    per-repo membership row.
+    """
+    # Active install: exists, not tombstoned (#012), not suspended (Arc B2).
+    install = (
+        await session.execute(
+            select(Installation).where(
+                Installation.installation_id == installation_id,
+                Installation.tombstoned_at.is_(None),
+                Installation.suspended_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    # Arc B2 repository_selection gate: `all` installs authorize at the install
+    # level (no per-repo row); `selected` installs require the active per-repo
+    # membership row. Absent/tombstoned/suspended install → not authorized.
+    # (Per DECISIONS.md#065 the cache is the EARLY-OUT here; the authoritative
+    # live GitHub auth check is the intake node's first step — tracked B2 work.)
+    authorized = install is not None and (
+        install.repository_selection == "all"
+        or (
+            await session.execute(
+                select(InstallationRepository.id).where(
+                    active_repo_membership(installation_id, repo_id)
+                )
+            )
+        ).first()
+        is not None
+    )
+    if not authorized:
+        logger.warning(
+            "webhook rejected: unknown or inactive installation+repo membership",
+            extra={
+                "installation_id": installation_id,
+                "repo_id": repo_id,
+                "x_github_delivery": x_github_delivery,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="installation or repository not active",
+        )
+
+
+async def _verified_webhook_body(
+    request: Request,
+    *,
+    x_hub_signature_256: str | None,
+    x_github_delivery: str | None,
+    x_github_event: str | None,
+    received_at: datetime,
+) -> bytes:
+    """Return the request body after size checks and signature verification.
+
+    Rejections raise HTTPException. A missing signature header or declared over-cap
+    Content-Length is rejected before buffering. If an over-cap body is chunked or
+    its length is missing or understated, rejection occurs only after buffering;
+    streaming protection remains FUP-034.
+    """
+    # Log delivery id for traceability; never persisted. Logged BEFORE
+    # body-read so missing-signature 401s still carry the correlation id
+    # for operators tracing the GitHub-side delivery.
+    logger.info(
+        "webhook received",
+        extra={
+            "x_github_delivery": x_github_delivery,
+            "x_github_event": x_github_event,
+            "received_at": received_at.isoformat(),
+        },
+    )
+
+    # Reject requests that omit the signature header before reading the body.
+    # Header presence alone does not prevent buffering; streaming protection remains FUP-034.
+    if x_hub_signature_256 is None:
+        logger.warning(
+            "webhook rejected: missing X-Hub-Signature-256",
+            extra={"x_github_delivery": x_github_delivery},
+        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing signature")
+
+    # Step 2b: reject a declared Content-Length above the cap before buffering.
+    # If an over-cap body is chunked or its length is missing or understated, the
+    # post-read guard rejects it only after `request.body()` has buffered it.
+    content_length_header = request.headers.get("content-length")
+    if content_length_header is not None:
+        try:
+            content_length = int(content_length_header)
+        except ValueError:
+            logger.warning(
+                "webhook rejected: malformed Content-Length",
+                extra={
+                    "x_github_delivery": x_github_delivery,
+                    "content_length_raw": content_length_header[:64],
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="malformed Content-Length",
+            ) from None
+        # Negative Content-Length is HTTP-malformed but `int()` accepts
+        # "-1" cleanly, and `-1 > cap` is False — without an explicit
+        # check, a negative header bypasses both the malformed-400 path
+        # AND the 413 cap, deferring rejection until after body buffer.
+        if content_length < 0:
+            logger.warning(
+                "webhook rejected: negative Content-Length",
+                extra={
+                    "x_github_delivery": x_github_delivery,
+                    "content_length_raw": content_length_header[:64],
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="malformed Content-Length",
+            )
+        if content_length > _MAX_WEBHOOK_BODY_BYTES:
+            logger.warning(
+                "webhook rejected: Content-Length exceeds cap",
+                extra={
+                    "x_github_delivery": x_github_delivery,
+                    "content_length": content_length,
+                    "cap": _MAX_WEBHOOK_BODY_BYTES,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="payload too large",
+            )
+
+    # Step 3: capture raw body bytes BEFORE any JSON parsing. Signature
+    # verification (next step) requires the raw bytes the sender HMAC'd.
+    body = await request.body()
+    if len(body) > _MAX_WEBHOOK_BODY_BYTES:
+        # Reject any over-cap body that reached buffering. Streaming protection
+        # remains FUP-034.
+        logger.warning(
+            "webhook rejected: body size exceeds cap post-read",
+            extra={
+                "x_github_delivery": x_github_delivery,
+                "body_bytes": len(body),
+                "cap": _MAX_WEBHOOK_BODY_BYTES,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="payload too large",
+        )
+
+    # Step 4: signature verification BEFORE event-type filtering.
+    #
+    # `verify_signature` (delegating to `githubkit.webhooks.verify`)
+    # returns False for any signature mismatch — malformed digest,
+    # wrong-length header, base64 garbage, mismatched HMAC — never
+    # raises in those cases. We do NOT wrap this call in
+    # `except Exception` → 401: an unexpected verifier exception
+    # (programming bug, dependency regression) is a server-side fault
+    # that should surface as 5xx, not collapse into a "401 invalid
+    # signature" response that hides the actual failure class.
+    credential_provider: GitHubCredentialProvider = request.app.state.credential_provider
+    try:
+        creds = await credential_provider.current()
+    except GitHubUnconfiguredError:
+        # `database` mode, not yet CONFIGURED → fail closed with 503 (the delivery shows as
+        # failed on GitHub; the operator redelivers after setup — GitHub does not auto-retry).
+        # The setup-only route gating also returns 503 here; this is the defense-in-depth read
+        # at the secret source.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="setup incomplete"
+        ) from None
+    secret = creds.webhook_secret.get_secret_value()
+    signature_ok = verify_signature(secret, body, x_hub_signature_256)
+    if not signature_ok:
+        logger.warning(
+            "webhook rejected: signature mismatch",
+            extra={"x_github_delivery": x_github_delivery},
+        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid signature")
+
+    return body
 
 
 def _parse_webhook_or_reject[PayloadT: BaseModel](
