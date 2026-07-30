@@ -212,7 +212,7 @@ class ReviewFinding(BaseModel):
     def _enforce_canonical_file_path(cls, path: str) -> str:
         """Re-run `validate_diff_path` so the schema layer enforces the
         repo-relative-POSIX invariant. Same shape as
-        `AnalysisRound._enforce_canonical_files_examined` — propagates
+        `AnalysisRound._enforce_canonical_paths` — propagates
         the canonical-record discipline to every cross-boundary model
         that carries a diff-side path. (TraceCandidate uses
         `_enforce_canonical_import_string` for its import-string field

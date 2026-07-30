@@ -100,8 +100,9 @@ class AnalysisRound(BaseModel):
 
         Pushing the rule down to the schema means the parser, replay
         reconstructor, test fixture, and any future producer all get
-        the same guarantee. `validate_diff_path` raises `CoordinateError`
-        on invalid input — Pydantic surfaces that as `ValidationError`.
+        the same guarantee. `validate_diff_path` raises `CoordinateError` on invalid
+        input; because it is not a `ValueError` subclass, Pydantic lets it propagate
+        unchanged.
         """
         return tuple(validate_diff_path(p) for p in paths)
 
