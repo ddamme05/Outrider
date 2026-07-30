@@ -2,101 +2,36 @@
 # Append-only contract per docs/trust-boundaries.md §7.
 # Planned under DECISIONS.md#056: the identity triad (`profile_id`/`reasoning_enabled`/
 # `profile_contract_digest`) on LLMCall/Analyze/SynthesizeCompletedEvent.
-"""Audit event class hierarchy + discriminated union.
+"""Audit event class hierarchy and its discriminated union.
 
-`AuditEventBase` is the shared base. The hierarchy has twenty-two
-concrete subtypes: the twelve original V1 subtypes (`AgentTransitionEvent`,
-`ReviewPhaseEvent`, `LLMCallEvent`, `FileExaminationEvent`,
-`FindingEvent`, `TraceDecisionEvent`, `HITLRequestEvent`,
-`HITLDecisionEvent`, `PublishEvent`, `PublishRoutingEvent`,
-`PublishEligibilityEvent`, `PublishAttemptEvent`), three
-analyze-foundation additions (`AnalyzeCompletedEvent`,
-`FindingProposalRejectedEvent`, `AnalyzeResponseRejectedEvent`), the
-synthesize-node addition (`SynthesizeCompletedEvent`), the
-replay-verdict-projection addition (`ReplayVerdictEvent`), the
-trivial-scope-filter addition (`ScopeExclusionEvent`), the
-analyze-cache lookup addition (`CacheLookupEvent`), the analyze-cache
-serve addition (`CacheServeEvent`), the OBSERVED-tier skip-shadow
-addition (`ObservedSkipShadowEvent`, Cost Lever 3), and the Slack-notification
-addition (`SlackNotificationEvent`, dashboard-in-Slack V1). Each
-declares its own `event_type: Literal[...]` discriminator value. The
-`AuditEvent` discriminated-union alias is what `audit/replay.py` uses to
-reconstruct concrete events from `audit_events.payload` JSONB at read time:
+Every concrete event subclasses `AuditEventBase` and declares its own
+`event_type: Literal[...]` discriminator. The `AuditEvent` union alias at the
+bottom of this module is the live inventory of those subtypes, and it is what
+`audit/replay.py` validates rows against when reconstructing from the
+`audit_events.payload` JSONB:
 
     TypeAdapter(AuditEvent).validate_python({**payload, "sequence_number": row.sequence_number})
 
-Every event uses `ConfigDict(frozen=True, extra="forbid")` per
-`audit-events-frozen-extra-forbid`. Tuple-typed sequence fields
-(`context_summary`, `trace_path`, the HITL containers,
-`proposed_import_strings`, `resolved_candidate_paths`)
-deliver true immutability — Pydantic `frozen=True` only blocks attribute
-reassignment, not in-place container mutation. Nested Pydantic payload
-classes (`ContextManifestEntry`) carry their own `frozen=True + extra=forbid`
-because the outer model's frozen-ness does not propagate.
+`sequence_number` is a DB-assigned BIGSERIAL that lives on the row rather than
+in the payload. New events carry `None` until INSERT; the persister excludes the
+field from JSONB, and replay restores the assigned value before validation.
 
-Eleven event types carry validators (plus `PerFindingDecision` inherited
-by `HITLDecisionEvent.decisions`):
+Immutability takes three separate mechanisms, because `frozen=True` alone is not
+enough (`audit-events-frozen-extra-forbid`):
 
-  - `LLMCallEvent` enforces the `degradation_reason` cross-field rule
-    per `DECISIONS.md#016`: non-None iff `degraded_mode is True`.
-  - `FileExaminationEvent` enforces the `skip_reason` cross-field rule
-    per `DECISIONS.md#018`: `skip_reason is not None` ↔
-    `parse_status == "skipped"`.
-  - `ScopeExclusionEvent` runs the `validate_diff_path` audit-shadow on
-    `file_path`; its nested `ScopeExclusionEntry` carries the
-    trivial ↔ reason pairing model validator.
-  - `CacheLookupEvent` runs the same `validate_diff_path` audit-shadow
-    on `file_path`.
-  - `CacheServeEvent` runs the same `validate_diff_path` audit-shadow on
-    `file_path` (its nested `ServedTraceCandidateRef` carries pattern-validated
-    `candidate_id` / `source_proposal_hash`).
-  - `ObservedSkipShadowEvent` carries three validators: the `validate_diff_path`
-    audit-shadow on `file_path`, the outcome↔blockers biconditional
-    (`would_skip` iff no blockers, `not_eligible` iff ≥1 blocker), and the
-    `would_skip` coverage-coherence rule (a `would_skip` with changed regions
-    requires `covering_matches` and forbids base-side regions, so the row stays a
-    reconstructable promotion proof); its nested `ObservedSkipChangedRegion` /
-    `ObservedSkipCoveringMatch` each carry a `line_end >= line_start` validator.
-  - `FindingEvent` carries three validators — proof-boundary
-    (`policy/findings.enforce_proof_boundary`, backs
-    `evidence-tier-schema-enforced`), the line constraint
-    (`line_end >= line_start`), and `_verify_content_hash` per spec §8.5
-    (rejects emitter bugs that produce a mis-computed hash with the
-    right shape).
-  - `TraceDecisionEvent` enforces the three-rule resolution invariant
-    per `DECISIONS.md#017` × `#024` amendment:
-    (a) resolved ↔ `len(resolved_candidate_paths) == 1` AND
-        `target_file == resolved_candidate_paths[0]`;
-    (b) unresolved ↔ `len(resolved_candidate_paths) == 0` AND
-        `target_file is None`;
-    (c) ambiguous ↔ `len(resolved_candidate_paths) > 1` AND
-        `target_file is None`.
-    Plus per-element `is_valid_trace_import_string` (the two-form
-    dispatcher per `DECISIONS.md#024`, Amended 2026-07-03) on
-    `proposed_import_strings`
-    and `validate_diff_path` on `resolved_candidate_paths` + `target_file`.
-  - `AnalyzeCompletedEvent` enforces two accounting equations per
-    foundation §5: `n_proposals_seen == (n_findings_emitted -
-    n_findings_served - n_findings_observed) + n_proposals_rejected
-    + n_proposals_superseded_by_observed` (cache-served AND deterministic
-    OBSERVED findings ride in n_findings_emitted but sit outside the
-    proposal lifecycle, so they subtract; JUDGED proposals superseded by a
-    colliding OBSERVED finding per #054 have no surviving finding, so they
-    ADD), and `n_responses_rejected <= n_llm_calls`.
-  - `FindingProposalRejectedEvent` enforces the bidirectional
-    `claimed_evidence_tier` ↔ `rejection_reason ==
-    "evidence_tier_not_in_enum"` coupling.
-  - `ReplayVerdictEvent` carries two validators: `reason` paired iff
-    inequivalent, and the reconstruction-metadata envelope (`mode` + the
-    three counts) all-present-or-all-absent — present iff reconstruction
-    succeeded, so an equivalent verdict requires it.
-  - `PerFindingDecision` (referenced via `HITLDecisionEvent.decisions`)
-    carries its own validator per `schemas/hitl.py`; the wrapping event
-    inherits that gate.
+  - `ConfigDict(frozen=True, extra="forbid")` on every event blocks attribute
+    reassignment and unknown fields.
+  - Sequence fields are TUPLE-typed, because frozen does not prevent in-place
+    mutation of a list.
+  - Nested payload models carry their own `frozen=True, extra="forbid"`, because
+    the outer model's frozen-ness does not propagate into them.
 
-Replay merges the row-level `sequence_number` (DB-assigned BIGSERIAL)
-into the payload before validating; the emitter dumps with
-`mode="json", exclude={"sequence_number"}` per the row-vs-payload split.
+Cross-field rules live as validators on the classes that own them, next to the
+fields they constrain.
+
+Where present, `phase_key` identifies the planner, worker, or aggregate phase
+under the parallel-analyze fan-out and is `None` on sequential-era rows.
+Grouping follows the strict derived-owner hybrid (`DECISIONS.md#064`).
 """
 
 import hashlib
@@ -432,10 +367,6 @@ class LLMCallEvent(AuditEventBase):
     """
 
     event_type: Literal["llm_call"] = "llm_call"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     model: str
     # The provider's normalized stop reason (`end_turn`/`refusal`/`max_tokens`/…),
@@ -699,10 +630,6 @@ class ScopeExclusionEvent(AuditEventBase):
     """
 
     event_type: Literal["scope_exclusion"] = "scope_exclusion"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     file_path: Annotated[str, Field(max_length=1024)]
     node_id: Literal["analyze"] = "analyze"
@@ -751,10 +678,6 @@ class CacheLookupEvent(AuditEventBase):
     """
 
     event_type: Literal["cache_lookup"] = "cache_lookup"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     file_path: Annotated[str, Field(max_length=1024)]
     node_id: Literal["analyze"] = "analyze"
@@ -833,10 +756,6 @@ class CacheServeEvent(AuditEventBase):
     """
 
     event_type: Literal["cache_serve"] = "cache_serve"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     file_path: Annotated[str, Field(max_length=1024)]
     node_id: Literal["analyze"] = "analyze"
@@ -949,10 +868,6 @@ class ObservedSkipShadowEvent(AuditEventBase):
     """
 
     event_type: Literal["observed_skip_shadow"] = "observed_skip_shadow"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     node_id: Literal["analyze"] = "analyze"
     file_path: Annotated[str, Field(max_length=1024)]
@@ -1043,10 +958,6 @@ class FileExaminationEvent(AuditEventBase):
     """
 
     event_type: Literal["file_examination"] = "file_examination"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     file_path: Annotated[str, Field(max_length=1024)]
     # Bounded to the two actually-emitted values today: intake's
@@ -1128,10 +1039,6 @@ class FindingEvent(AuditEventBase):
     """
 
     event_type: Literal["finding"] = "finding"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     finding_id: UUID
     finding_type: FindingType
@@ -2654,10 +2561,6 @@ class AnalyzeCompletedEvent(AuditEventBase):
     """
 
     event_type: Literal["analyze_completed"] = "analyze_completed"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     pass_index: int = Field(ge=0)
     node_id: Literal["analyze"] = "analyze"
@@ -2906,10 +2809,6 @@ class FindingProposalRejectedEvent(AuditEventBase):
     """
 
     event_type: Literal["finding_proposal_rejected"] = "finding_proposal_rejected"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     node_id: Literal["analyze"] = "analyze"
     file_path: Annotated[str, Field(max_length=1024)]
@@ -3002,10 +2901,6 @@ class AnalyzeResponseRejectedEvent(AuditEventBase):
     """
 
     event_type: Literal["analyze_response_rejected"] = "analyze_response_rejected"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     node_id: Literal["analyze"] = "analyze"
     file_path: Annotated[str, Field(max_length=1024)]
