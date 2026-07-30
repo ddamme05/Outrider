@@ -25,7 +25,8 @@ The public surface, all re-exported below and each documented at its definition:
   - Diff and span predicates the analyze admission gates compose.
   - Boundary types: `GitHubCommentLocation`, `ChangedLineSpan`,
     `ScopeChangedLineSpans`, and `CoordinateError` as the single failure mode.
-    Raw `unidiff.Line` and tree-sitter objects never cross out of this package.
+    Raw `unidiff.Line` objects never cross out of this package; raw tree-sitter
+    nodes stay behind the `ast_facts` firewall.
   - `COORDINATES_IMPORT_PATH_RESOLVER`, the singleton `build_graph` injects so
     nodes close over one resolver instead of each constructing their own.
 
