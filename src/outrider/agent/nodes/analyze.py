@@ -232,7 +232,7 @@ from outrider.schemas.llm.analyze import (
     ANALYZE_RESPONSE_SCHEMA_JSON,
 )
 from outrider.schemas.pr_context import ChangedFile  # noqa: TC001 — payload model field
-from outrider.schemas.triage_result import ReviewTier, TriageResult
+from outrider.schemas.triage_result import ReviewTier
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -254,6 +254,7 @@ if TYPE_CHECKING:
         TraceFetchedFile,
     )
     from outrider.schemas.analyze_worker import AnalyzeWorkerOutcome
+    from outrider.schemas.triage_result import TriageResult
 
 
 logger = logging.getLogger(__name__)
@@ -1256,14 +1257,10 @@ async def analyze(
     round + completed event). No per-file work happens here; the
     planner emits no per-file events.
 
-    Pass 1 (trace re-entry) stays SEQUENTIAL and byte-unchanged: the
-    trace-fetched loop, round assembly, event emissions, and phase end
-    all run in this body, and the Command routes to "synthesize" (the
-    depth-2 ceiling means a post-pass-1 round count can never route
-    back to trace).
-
-    Counter source-of-truth (pass 1): per-file local bookkeeping
-    accumulators. NEVER re-read from the audit stream.
+    Pass 1 (trace re-entry) runs in `_run_trace_pass`: sequential, and routing to
+    "synthesize" because the depth-2 ceiling means a post-pass-1 round count can
+    never route back to trace. Its counter source-of-truth is the local bookkeeping
+    declared there — never the audit stream.
     """
     # `pass_index` is derived from `state.analysis_rounds`: pass 0 = no
     # rounds merged yet (the first analyze pass); pass 1 = one round
@@ -1361,11 +1358,6 @@ async def analyze(
                 state.is_eval,
             )
             cache_scope = None
-
-    # Local accumulators — single source of truth for AnalyzeCompletedEvent
-    # counters. Re-reading from the audit stream would couple counter
-    # correctness to emission ordering and break the proposal-accounting
-    # equation under concurrent-emit refactors.
 
     # Step 2: per-pass iteration scope.
     #

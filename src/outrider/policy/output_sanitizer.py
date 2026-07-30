@@ -265,14 +265,19 @@ def strip_fake_truncation_markers(text: str) -> str:
 def _strip_hostile_codepoints(text: str) -> str:
     """Remove the codepoint classes that attack the display layer.
 
-    Five operations, and the ORDER matters: fake truncation markers go first so a
-    marker hidden behind a bidi override or an ANSI sequence is not left behind by
-    the later strips, and lone surrogates go last because the earlier passes can
-    leave one unpaired.
+    Five operations, in the order both call sites have always run them: fake
+    truncation markers, bidi overrides and zero-width joiners, ANSI sequences, NUL,
+    lone surrogates.
 
-    Shared verbatim by prose sanitization and fenced-block rendering — a fence
-    prevents markdown interpretation, not terminal escapes or Trojan Source
-    reordering, so both need exactly this.
+    Shared by prose sanitization and fenced-block rendering — a fence prevents
+    markdown interpretation, not terminal escapes or Trojan Source reordering, so
+    both need exactly this.
+
+    KNOWN DEFECT in this order, fixed in the commit that follows: because the marker
+    strip runs FIRST, a forged marker whose text is broken up by a zero-width joiner,
+    a bidi override, or an ANSI sequence does not match the regex — and the later
+    strips then remove the obscuring characters, revealing a clean forged marker in
+    the output.
     """
     text = strip_fake_truncation_markers(text)
     text = _strip_bidi_and_zero_width(text)
