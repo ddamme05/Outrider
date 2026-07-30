@@ -67,6 +67,10 @@ backstops drift; producer-side correctness is the contract.
   every admitted scope classified ordinary-comment-only, so the LLM
   call is skipped (the shadow default never produces this). Fires
   after the cost gate per `DECISIONS.md#018` Amended 2026-06-11.
+- `skipped+PATCH_HEAD_MISALIGNED` — the patch names an added line the
+  fetched head content doesn't have, so every coordinate anchor for the
+  file is unsound (FUP-217; a force-push racing intake's file-list
+  fetch against its content fetch). Probed once before any route.
 
 **V1 unreachable: `failed+degraded_llm`.** Spec §7 step 3a names this
 outcome; the analyze code path is wired to handle it, but in V1 the
@@ -2085,43 +2089,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     gate → trivial-scope classification → LLM call → parser → audit
     events.
 
-    File outcomes — the spec §7 step 3a set, plus the parser-stage
-    pass-through, plus the trivial-scope filter's skip (the
-    trivial-scope-filter spec):
-
-    - `skipped+NO_REVIEWABLE_CONTEXT` — no content at all OR (V1
-      unreachable, see module docstring) parse failure with no addable
-      diff text.
-    - `skipped+NO_CHANGED_SCOPE_UNITS` — clean parse but no scope
-      unit intersects the changed regions, UNLESS an eligible
-      module-level OBSERVED match sits on the added lines (the
-      module-scope arm routes that to `degraded+degraded_llm` below).
-    - `skipped+COST_BUDGET_EXHAUSTED` — outcome would have made an
-      LLM call but cost gate failed.
-    - `skipped+ALL_SCOPES_TRIVIAL` — enforcing-mode trivial-scope
-      filter: every admitted scope classified ordinary-comment-only
-      (after the cost gate; the shadow default never skips).
-    - `failed+degraded_llm` — V1 unreachable (intake gates invalid
-      UTF-8; analyze re-encodes valid str). Kept as a structural slot
-      for the future raw-bytes intake path (FUP-053). Would fire on
-      parse failure with addable text; degraded LLM call
-      (`degradation_reason="parse_failed"`).
-    - `degraded+degraded_llm` — clean parse but `has_error` ERROR
-      nodes intersect a changed scope unit
-      (`degradation_reason="tree_has_error_in_changed_regions"`), OR a
-      changed addable line intersects a tree error with no recovered scope
-      (`degradation_reason="tree_has_error_no_scope"`, DECISIONS#033), OR
-      a diff whose added lines all sit outside any scope unit carries an
-      eligible module-level OBSERVED match
-      (`degradation_reason="module_level_observed_match"` — clean parse,
-      `parse_status="clean"`; the producer runs and its OBSERVED findings
-      merge with the degraded pass);
-      degraded LLM call.
-    - `clean+full_llm` — clean parse, scope units intersect changed
-      regions, no `has_error` in those units.
-    - Parser-stage skip — `parse_source` returned `parser_outcome=
-      "skipped"` (`OVERSIZED`, `VENDORED`, etc.); the parser's
-      `skip_reason` is the audit value.
+    Produces every file outcome the module docstring's table enumerates,
+    plus the parser-stage skip pass-through described there. The table is
+    stated once, in that docstring.
     """
     # Language gate: registry dispatch (dispatch spec). Triage doesn't
     # filter by language and `ChangedFile.language` is unpopulated, so a
