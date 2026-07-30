@@ -1893,9 +1893,10 @@ def test_narrow_exception_handler_lets_unexpected_propagate(
     failures propagate as bugs rather than as misleading rejections.
 
     To prove narrowing actually narrows: monkeypatch the
-    `compute_finding_content_hash` call (which fires inside the
-    try-block during `ReviewFinding` construction) to raise a
-    `RuntimeError`. The parser MUST propagate it instead of folding
+    `compute_finding_content_hash` call (evaluated as a `ReviewFinding`
+    argument, so it raises inside the try-block before construction
+    begins) to raise a `RuntimeError`. The parser MUST propagate it
+    instead of folding
     to `schema_construction_failed`. A re-broadening to
     `except Exception` would catch the RuntimeError and produce a
     rejection event — this test would fail with `RuntimeError` not
@@ -1929,6 +1930,45 @@ def test_narrow_exception_handler_lets_unexpected_propagate(
             included_scope_units=(_build_scope_unit(),),
             file_content="x" * 200,
         )
+
+
+def test_validation_error_folds_to_schema_construction_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ValidationError raised inside the try-block becomes a
+    `schema_construction_failed` rejection instead of propagating.
+
+    Injected by monkeypatching `compute_finding_content_hash`, which is
+    evaluated as a `ReviewFinding` argument — so it raises inside the try-block
+    before construction begins, the same injection point the narrowing test
+    above uses. That test asserts what must NOT fold here; this asserts what
+    must.
+    """
+    from pydantic import BaseModel
+
+    from outrider.agent.nodes import analyze_parser
+
+    class _IntOnly(BaseModel):
+        value: int
+
+    def _raise_validation_error(**_kwargs: object) -> str:
+        _IntOnly(value="not-an-int")  # type: ignore[arg-type]
+        msg = "expected _IntOnly to raise ValidationError"
+        raise AssertionError(msg)
+
+    response = _build_response_json(_minimal_proposal(evidence_tier="judged"))
+    monkeypatch.setattr(analyze_parser, "compute_finding_content_hash", _raise_validation_error)
+    result = _call_parser(
+        response,
+        included_scope_units=(_build_scope_unit(),),
+        file_content="x" * 200,
+    )
+
+    assert len(result.admitted_findings) == 0
+    assert len(result.proposal_rejections) == 1
+    rejection = result.proposal_rejections[0]
+    assert rejection.rejection_reason == "schema_construction_failed"
+    assert rejection.rejection_detail == "ValidationError x1"
 
 
 # ---------------------------------------------------------------------------
