@@ -48,6 +48,8 @@ __all__ = ["ModelConfig", "is_anthropic_family_model", "model_uses_adaptive_thin
 # previous regex rejected the dated form
 # even though the SDK catalog publishes it as the precise model id.
 _VALID_MODEL_PATTERN: Final = re.compile(r"^claude-(haiku|sonnet|opus)-\d+(-\d+)?(-\d{8})?$")
+# A dated slug suffix is YYYYMMDD, so exactly this many digits.
+_DATED_SUFFIX_LEN: Final[int] = 8
 
 
 def is_anthropic_family_model(slug: str) -> bool:
@@ -79,16 +81,16 @@ def model_uses_adaptive_thinking(slug: str) -> bool:
     (`model-strings-from-config-not-hardcoded`)."""
     if not is_anthropic_family_model(slug):
         return False
-    # claude-{family}-{major}[-{minor}][-{YYYYMMDD}] — split and read major/minor.
-    parts = slug.split("-")
-    family = parts[1]
-    major = int(parts[2])
-    # parts[3], when present, is the minor OR an 8-digit dated suffix with no
-    # minor (e.g. claude-sonnet-5-20260615) — the greedy `(-\d+)?` group in
-    # `_VALID_MODEL_PATTERN` captures a bare date into this slot. A date is
-    # exactly 8 digits, so anything shorter is the minor (a 3-digit minor must
-    # not be misread as a date). Only opus reads minor; sonnet keys on major.
-    minor = int(parts[3]) if len(parts) > 3 and len(parts[3]) < 8 else 0
+    # claude-{family}-{major}[-{minor}][-{YYYYMMDD}]
+    _, family, major_text, *rest = slug.split("-")
+    major = int(major_text)
+    # The first trailing segment is either the minor OR a bare dated suffix with no
+    # minor (`claude-sonnet-5-20260615`) — the greedy `(-\d+)?` group in
+    # `_VALID_MODEL_PATTERN` captures a date into the minor slot when no minor is
+    # given. A date is exactly `_DATED_SUFFIX_LEN` digits, so a shorter run is the
+    # minor, which keeps a three-digit minor from reading as a date. Only opus reads
+    # minor; sonnet keys on major alone.
+    minor = int(rest[0]) if rest and len(rest[0]) < _DATED_SUFFIX_LEN else 0
     if family == "sonnet":
         return major >= 5
     if family == "opus":
