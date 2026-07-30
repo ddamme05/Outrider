@@ -80,6 +80,8 @@ from outrider.db.models.reviews import Review
 from outrider.github.credentials import GitHubUnconfiguredError
 
 if TYPE_CHECKING:
+    from sqlalchemy import Select
+
     from outrider.dispatcher import ReviewDispatcher
     from outrider.github.credentials import GitHubCredentialProvider
 
@@ -358,10 +360,10 @@ async def receive_pull_request_webhook(
 
         # Step 8: idempotency fast-path SELECT.
         existing_row = await session.execute(
-            select(Review).where(
-                Review.repo_id == repo_id,
-                Review.pr_number == payload.pull_request.number,
-                Review.head_sha == head_sha,
+            _review_by_natural_key(
+                repo_id=repo_id,
+                pr_number=payload.pull_request.number,
+                head_sha=head_sha,
             )
         )
         existing = existing_row.scalar_one_or_none()
@@ -431,14 +433,14 @@ async def receive_pull_request_webhook(
         # driver without diag) re-raises so the delivery is marked
         # failed on GitHub (redeliverable; GitHub does not auto-retry).
         if _is_reviews_natural_key_conflict(exc):
-            # The duplicate row exists. Re-read it (separate session
-            # because the failing transaction was rolled back).
+            # Re-read the conflicting natural-key row in a separate session
+            # because the failed transaction was rolled back.
             async with session_factory() as session:
                 existing_row = await session.execute(
-                    select(Review).where(
-                        Review.repo_id == repo_id,
-                        Review.pr_number == payload.pull_request.number,
-                        Review.head_sha == head_sha,
+                    _review_by_natural_key(
+                        repo_id=repo_id,
+                        pr_number=payload.pull_request.number,
+                        head_sha=head_sha,
                     )
                 )
                 existing = existing_row.scalar_one()
@@ -472,10 +474,10 @@ async def receive_pull_request_webhook(
         # duplicate detection is preserved.
         async with session_factory() as session:
             fallback_row = await session.execute(
-                select(Review).where(
-                    Review.repo_id == repo_id,
-                    Review.pr_number == payload.pull_request.number,
-                    Review.head_sha == head_sha,
+                _review_by_natural_key(
+                    repo_id=repo_id,
+                    pr_number=payload.pull_request.number,
+                    head_sha=head_sha,
                 )
             )
             fallback_existing = fallback_row.scalar_one_or_none()
@@ -759,6 +761,15 @@ def _serialize_webhook_agent_transition(
         latency_ms=0,
     )
     return _serialize_event_payload(event)
+
+
+def _review_by_natural_key(*, repo_id: int, pr_number: int, head_sha: str) -> Select[tuple[Review]]:
+    """Build the database-enforced review natural-key lookup without choosing result strictness."""
+    return select(Review).where(
+        Review.repo_id == repo_id,
+        Review.pr_number == pr_number,
+        Review.head_sha == head_sha,
+    )
 
 
 def _is_reviews_natural_key_conflict(exc: SQLAlchemyIntegrityError) -> bool:
