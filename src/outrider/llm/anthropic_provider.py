@@ -273,27 +273,9 @@ class AnthropicProvider:
         # Always False on the native path (the fail-loud guard above rejects a True request);
         # stamped on every LLMResponse + LLMCallEvent as the triad's reasoning_enabled.
         self._reasoning_enabled = False
-        # `_closed` makes `aclose()` idempotent under both sequential AND
-        # concurrent calls. A future code path calling `aclose()` outside
-        # the lifespan teardown (e.g., a V2-style graceful-shutdown hook
-        # racing the lifespan callback) would otherwise stack a second
-        # `close()` on top of the lifespan callback; httpx behavior on
-        # repeated `aclose()` is version-dependent. The `_close_lock`
-        # serializes the check-then-set so two concurrent callers can't
-        # both pass `if self._closed` before either sets True.
-        #
-        # `asyncio.Lock()` constructed in __init__ binds to the running
-        # event loop on first acquire (Python 3.10+). Since `aclose()` is
-        # the only awaiter, this is safe — the provider is constructed in
-        # the same loop that will later call `aclose()`.
-        #
-        # `_close_task` retains a strong reference to the in-flight close
-        # task so a `wait_for` timeout doesn't strand it as an unreferenced
-        # task that asyncio may GC before completion (Python 3.10+ tracks
-        # tasks via WeakSet in some loop impls; an unreferenced task can
-        # be collected mid-execution). Cleared via a done-callback after
-        # the task completes so we don't accumulate dead references across
-        # multiple aclose calls.
+        # Teardown state; `aclose` documents what each of the three is for.
+        # Constructing the Lock here is safe because it binds to the running loop
+        # on first acquire and `aclose` is its only awaiter, in the same loop.
         self._closed: bool = False
         self._close_lock = asyncio.Lock()
         self._close_task: asyncio.Task[None] | None = None
@@ -734,65 +716,43 @@ class AnthropicProvider:
         return response
 
     async def aclose(self) -> None:
-        """Close the underlying Anthropic SDK client and drain its connection pool.
+        """Close the SDK client and drain its connection pool. Closes FUP-011.
 
-        Wired into the FastAPI lifespan teardown so connection pools drain
-        gracefully on app shutdown. The SDK's `AsyncAnthropic` (via
-        `DefaultAsyncHttpxClient`) keeps up to 50 connections (per the
-        `__init__` config); without explicit close, the OS reaps them at
-        process exit, which is fine for V1's single-provider-per-app
-        model but compounds under V1.5's parallel-analyze fanout where N
-        providers can be constructed per review.
+        This is the canonical account of the wrapper's teardown; `__init__` and
+        `_clear_close_task` defer to it.
 
-        Delegates to `AsyncAnthropic.close()` — the SDK's async close
-        method, which in turn closes the wrapped httpx client and drains
-        its connection pool. The wrapper exposes this as `aclose()` (the
-        async-conventional name) so the lifespan caller doesn't need to
-        know the SDK's specific method name; if the SDK ever renames
-        `close` to `aclose` (httpx convention), the wrapper hides the
-        change.
+        Wired into the FastAPI lifespan teardown. Without an explicit close the OS
+        reaps the pool at process exit, which is tolerable for one provider per app
+        but compounds under parallel-analyze, where N providers can be constructed
+        per review. Delegating to `AsyncAnthropic.close()` behind an `aclose` name
+        also means an SDK rename to the httpx convention stays inside this wrapper.
 
-        **Idempotent**: second and later calls are no-ops via the
-        `_closed` guard. httpx's behavior on repeated `aclose()` is
-        version-dependent; the wrapper-level guard means a future
-        graceful-shutdown hook calling `aclose()` outside the lifespan
-        teardown won't stack a second close on top of the lifespan
-        callback. The `_close_lock` serializes concurrent calls so the
-        check-then-set is atomic — two callers can't both pass
-        `if self._closed` before either sets True.
+        **Idempotent, including concurrently.** `_closed` short-circuits repeat
+        calls — httpx's behaviour on repeated close is version-dependent — and
+        `_close_lock` serializes the check-then-set so two callers cannot both pass
+        the guard before either sets it.
 
-        **Bounded teardown**: wrapped in `asyncio.wait_for(..., timeout=10s)`
-        so a hung SDK close (in-flight request waiting on the 30-second
-        read timeout, network blip during a rolling deploy, etc.) doesn't
-        block the entire lifespan teardown indefinitely. On timeout, the
-        wrapper marks itself closed and lets the OS reap the connection
-        pool — leak-on-rare-teardown beats indefinite hang.
+        **Bounded and shielded.** `wait_for(..., timeout=10s)` keeps a hung close
+        (an in-flight request against the 30s read timeout, a blip during a rolling
+        deploy) from stalling teardown. `asyncio.shield` stops the timeout's
+        cancellation from reaching httpx mid-drain: cancelling while the client
+        transitions through `CLOSING` can leave it half-closed, which is worse than
+        letting it finish. So the inner close keeps running and teardown returns at
+        the deadline. On timeout the wrapper marks itself closed and lets the OS
+        reap the pool — leaking on a rare teardown beats hanging on every one.
 
-        **`asyncio.shield`** wraps the inner close-task so a timeout-induced
-        cancellation does NOT propagate into httpx mid-drain. Cancelling
-        httpx's `aclose()` while it's transitioning the client's `_state`
-        through `CLOSING` can leave the client in a half-closed state
-        (worse than letting it finish). With `shield`, the inner close
-        continues running in the background; the lifespan teardown returns
-        after the 10s deadline regardless. Under lifespan-teardown the
-        task is cancelled by the event-loop shutdown sequence
-        (`loop.shutdown_asyncgens()` / loop close); in tests, pytest-asyncio's
-        teardown silently cancels pending tasks — verified by running the
-        suite with `-W error::RuntimeWarning -W error::ResourceWarning`
-        and seeing no warnings.
+        **Strong task reference.** `shield` wraps the coroutine in a Task but keeps
+        no reference to it, and asyncio tracks tasks weakly in some loop
+        implementations, so an unreferenced Task can be collected before it
+        finishes — which would falsify the paragraph above. `self._close_task`
+        holds it; the done-callback releases it afterwards.
 
-        **Strong-task retention via `self._close_task`**: `asyncio.shield()`
-        wraps the inner coroutine in a Task via `ensure_future`, but the
-        Task object isn't retained anywhere by `shield` itself. Python's
-        asyncio tracks tasks via WeakSet in some loop implementations
-        (3.10+), so an unreferenced Task can be GC'd before completion,
-        invalidating the docstring's "runs to completion" claim. Storing
-        the task on `self._close_task` keeps it alive; a done-callback
-        clears the reference after completion to prevent accumulation
-        across multiple aclose() calls (though the `_closed` guard makes
-        that a non-issue in practice — only the first call creates a task).
-
-        Closes FUP-011.
+        **Exception consumption.** A close that fails AFTER `wait_for` returned has
+        no awaiter, so Python would report it as an unretrieved task exception at GC
+        time, on a surface that bypasses this wrapper's logging.
+        `_clear_close_task` retrieves it and logs the type name only — metadata-only
+        per `DECISIONS.md#016`, because SDK exceptions can carry bound parameters or
+        response fragments that would bypass `RejectLLMContentFilter`.
         """
         async with self._close_lock:
             if self._closed:
@@ -816,23 +776,11 @@ class AnthropicProvider:
                 )
 
     def _clear_close_task(self, task: asyncio.Task[None]) -> None:
-        """Done-callback: consume the task's exception (if any) and release
-        the strong reference once the close task completes (or is cancelled
-        by event-loop shutdown).
+        """Done-callback: retrieve any exception and release the strong reference.
 
-        Without consuming `task.exception()`, an SDK-close failure that
-        happens AFTER `wait_for` returned (the wait_for timed out and the
-        shielded close kept running) becomes an unretrieved task exception.
-        Python logs "Exception was never retrieved" at task GC time — an
-        opaque surface that bypasses normal wrapper logging. By calling
-        `task.exception()` here, the exception is "retrieved" (no log spam),
-        and we emit a metadata-only warning on the wrapper's logger so the
-        operator has at least a type-name signal.
-
-        Metadata-only per `DECISIONS.md#016`: log only the exception's
-        type name (`type(exc).__name__`), never `repr(exc)` or `str(exc)`
-        — the underlying SDK exceptions may carry bound parameter values
-        or response body fragments that would bypass `RejectLLMContentFilter`.
+        See `aclose` for why both matter. Cancellation is the expected outcome when
+        the wait timed out and event-loop shutdown collected the shielded task, so
+        it is not warned about.
         """
         if task.cancelled():
             # Cancellation by event-loop shutdown is the expected path

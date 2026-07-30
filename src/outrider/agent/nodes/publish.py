@@ -476,61 +476,29 @@ async def _publish_body(
     # mid-execution".
     #
     # Concurrent-invocation race defense — per-review advisory lock
-    # (try-lock with bounded backoff, serialize-then-observe).
-    # See DECISIONS.md#027 — V1 per-review publish-side advisory lock.
-    # The `query_prior_publish_event` → POST → `emit_publish_result`
-    # sequence is read-before-write. Two concurrent
-    # `ainvoke(Command(resume=...))` on the same `thread_id` (e.g., a
-    # human-issued resume racing with a `reclaim_stuck_hitl_states`
-    # graph-driven resume) could both observe `prior_publish_event=None`
-    # and both POST. Defense: `acquire_publish_lock(review_id)` runs
-    # `pg_try_advisory_xact_lock(<lock_id>)` (where lock_id is the
-    # first 8 bytes of `review_id.bytes` as a signed int8) in a
-    # bounded backoff loop. On NOT-acquired, the probe session
-    # releases its connection back to the pool and sleeps with
-    # exponential backoff (50ms doubling to 1s cap) before retrying;
-    # on acquired, holds the session+transaction for the lifetime of
-    # the critical section. The eventual acquire puts the second task
-    # BEHIND the first task's transaction boundary — Step 4's
-    # `query_prior_publish_event` then observes the first task's
-    # committed `PublishEvent` (success path → authentic
-    # `IDEMPOTENTLY_SKIPPED`) OR its absence (first task crashed
-    # before emit → second task POSTs through Step 7).
+    # (`DECISIONS.md#027`). Steps 4→7 are read-before-write: two concurrent
+    # `ainvoke(Command(resume=...))` on one `thread_id` — a human resume racing a
+    # `reclaim_stuck_hitl_states` resume — could both observe
+    # `prior_publish_event=None` and both POST. The lock serializes them, so the
+    # second task reaches Step 4 BEHIND the first task's transaction boundary and
+    # sees either its committed `PublishEvent` (authentic `IDEMPOTENTLY_SKIPPED`)
+    # or its absence (first task crashed before emit → this task POSTs).
     #
-    # Why try-lock + bounded backoff (NOT plain blocking
-    # `pg_advisory_xact_lock`): blocking holds a connection for the
-    # entire wait. With N same-review contenders, blocking pins N
-    # connections — the winner's `emit_publish_*` calls (each opens
-    # a fresh session per the per-emit discipline) could be starved
-    # by the held waiters. Backoff releases the connection between
-    # probes; pool pressure drops from N held to ~1 held + occasional
-    # probes.
+    # That covers same-process racing only. Step 6's
+    # `find_existing_review_on_head_sha` is the separate defense for
+    # crash-after-success-before-emit ACROSS processes, where no in-process lock
+    # exists to apply and the body marker is the only evidence.
     #
-    # Why NOT single-shot try-lock with immediate loser-skip: the
-    # immediate loser cannot observe whether the winner actually
-    # committed the POST. Skipping → false `IDEMPOTENTLY_SKIPPED`
-    # when winner crashes mid-POST → publish lost.
+    # Lock mechanics — try-lock, bounded backoff, why not blocking or single-shot
+    # loser-skip — live on `PublishEventSink.acquire_publish_lock`.
     #
-    # Timeout: default 120s from first probe. On exhaustion,
-    # `AuditPersisterPublishLockAcquisitionTimeoutError` raises out
-    # of `enter_async_context` and the outer try/except below emits
-    # `PublishAttemptEvent(FAILED, failure_class="...PublishLock
-    # AcquisitionTimeoutError")` before re-raising.
-    # `find_existing_review_on_head_sha` at Step 6 remains the
-    # defense for the cross-process crash-after-success-before-emit
-    # case (matches by body marker on a process restart, when no
-    # in-process lock can apply). The structural split — lock-
-    # acquire in its own try, critical-section in a separate
-    # try/finally — means inner-step failures (Step 4/6/7) reach
-    # only their own existing FAILED emits, never the outer catch,
-    # so no double-emit.
-    # Acquire the lock BEFORE entering the critical section, in its
-    # own try/except so a failure during `__aenter__` (DB outage,
-    # connection drop) emits `PublishAttemptEvent(FAILED)` BEFORE
-    # re-raising — honoring the node's raises contract. The
-    # `AsyncExitStack` holds the lock for the lifetime of the
-    # critical section that follows; `stack.aclose()` releases on
-    # both success and exception paths.
+    # Acquisition gets its own `try` for two reasons. A failure inside
+    # `__aenter__` (DB outage, acquisition timeout) must emit
+    # `PublishAttemptEvent(FAILED)` before re-raising, per the node's raises
+    # contract. And keeping it separate from the critical section's own
+    # `try/finally` means an inner-step failure reaches only that step's existing
+    # FAILED emit, never this one — no double-emit. The `AsyncExitStack` holds the
+    # lock for the critical section and releases on both paths.
     lock_stack = AsyncExitStack()
     try:
         await lock_stack.enter_async_context(
