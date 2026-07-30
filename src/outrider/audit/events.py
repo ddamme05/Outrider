@@ -42,6 +42,7 @@ from typing import Annotated, Final, Literal, Self
 from uuid import UUID, uuid4
 
 from pydantic import (
+    AfterValidator,
     AwareDatetime,
     BaseModel,
     ConfigDict,
@@ -73,6 +74,16 @@ from outrider.schemas.hitl import PerFindingDecision
 from outrider.schemas.observed_subsumption import ObservedSubsumedMatch
 from outrider.schemas.review_finding import PublishDestination, ReviewDimension
 from outrider.schemas.triage_result import RiskLevel
+
+# The audit-side mirror of `AnalysisRound.files_examined` and
+# `ReviewFinding.file_path`: every audit payload path uses the same
+# repo-relative POSIX/NFC gate and must be at least as strict as those
+# in-memory schemas. Keeping the gate in the annotation makes it visible
+# at every field and prevents carrier-specific drift. Pydantic applies
+# `max_length=1024` before `validate_diff_path`; `CoordinateError`
+# propagates directly rather than becoming `ValidationError`.
+DiffPathStr = Annotated[str, Field(max_length=1024), AfterValidator(validate_diff_path)]
+
 
 # SHA-256 hashes are 256 bits = 64 hex characters per spec §8.5
 # (FindingEvent.finding_content_hash = SHA-256(file_path + line_start +
@@ -230,7 +241,7 @@ class ContextManifestEntry(BaseModel):
     # (function/method/class name) plus optional dotted qualifier;
     # 1024 chars accommodates deeply-nested closures while bounding
     # the audit-row growth.
-    file_path: str = Field(max_length=1024)
+    file_path: DiffPathStr
     scope_unit_name: str = Field(max_length=1024)
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
@@ -239,18 +250,6 @@ class ContextManifestEntry(BaseModel):
         "same_file_context",
         "trace_expansion",
     ]
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Re-run `validate_diff_path` so the audit-event side enforces the
-        same repo-relative-POSIX invariant `AnalysisRound.files_examined`
-        does. Without this gate, a traversal-bearing or shell-metacharacter
-        path on a `ContextManifestEntry` inside `LLMCallEvent.context_summary`
-        could ride into the append-only audit log without going through
-        the canonical path-validation gate.
-        """
-        return validate_diff_path(path)
 
     @model_validator(mode="after")
     def _enforce_line_constraint(self) -> Self:
@@ -325,6 +324,28 @@ def _triad_all_set_or_all_none(
         profile_contract_digest is not None,
     )
     return all(present) or not any(present)
+
+
+def _require_triad_coherence(
+    profile_id: str | None,
+    reasoning_enabled: bool | None,
+    profile_contract_digest: str | None,
+) -> None:
+    """Raise unless the host-identity triad is all-present or all-None.
+
+    The raising half of `_triad_all_set_or_all_none`, shared by every event that
+    carries the triad so the three classes cannot drift in message or in what they
+    accept.
+    """
+    if _triad_all_set_or_all_none(profile_id, reasoning_enabled, profile_contract_digest):
+        return
+    raise ValueError(
+        "host-identity triad (DECISIONS.md#056) is peers — all-present or all-None; "
+        f"got profile_id={profile_id!r}, "
+        f"reasoning_enabled={reasoning_enabled!r}, "
+        f"digest_set={profile_contract_digest is not None}. The fresh-write "
+        "all-present guard lands in a later step-4 commit."
+    )
 
 
 class DegradationReason(StrEnum):
@@ -463,16 +484,9 @@ class LLMCallEvent(AuditEventBase):
 
     @model_validator(mode="after")
     def _enforce_triad_coherence(self) -> Self:
-        if not _triad_all_set_or_all_none(
+        _require_triad_coherence(
             self.profile_id, self.reasoning_enabled, self.profile_contract_digest
-        ):
-            raise ValueError(
-                "host-identity triad (DECISIONS.md#056) is peers — all-present or all-None; "
-                f"got profile_id={self.profile_id!r}, "
-                f"reasoning_enabled={self.reasoning_enabled!r}, "
-                f"digest_set={self.profile_contract_digest is not None}. The fresh-write "
-                "all-present guard lands in a later step-4 commit."
-            )
+        )
         return self
 
     @model_validator(mode="after")
@@ -631,7 +645,7 @@ class ScopeExclusionEvent(AuditEventBase):
 
     event_type: Literal["scope_exclusion"] = "scope_exclusion"
     phase_key: str | None = None
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     node_id: Literal["analyze"] = "analyze"
     applied: bool
     # The code-pinned matcher version (ast_facts.triviality
@@ -640,14 +654,6 @@ class ScopeExclusionEvent(AuditEventBase):
     # cache-key component per FUP-166.
     filter_version: Annotated[str, Field(max_length=64, min_length=1)]
     entries: tuple[ScopeExclusionEntry, ...] = Field(min_length=1)
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use` — same as
-        every sibling path-bearing event: a traversal-bearing or
-        shell-metacharacter path can't ride into the append-only log."""
-        return validate_diff_path(path)
 
 
 class CacheLookupEvent(AuditEventBase):
@@ -679,17 +685,10 @@ class CacheLookupEvent(AuditEventBase):
 
     event_type: Literal["cache_lookup"] = "cache_lookup"
     phase_key: str | None = None
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     node_id: Literal["analyze"] = "analyze"
     outcome: Literal["would_hit", "miss"]
     cache_key: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use` — same as
-        every sibling path-bearing event."""
-        return validate_diff_path(path)
 
 
 class ServedTraceCandidateRef(BaseModel):
@@ -757,7 +756,7 @@ class CacheServeEvent(AuditEventBase):
 
     event_type: Literal["cache_serve"] = "cache_serve"
     phase_key: str | None = None
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     node_id: Literal["analyze"] = "analyze"
     cache_key: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     installation_id: int
@@ -772,13 +771,6 @@ class CacheServeEvent(AuditEventBase):
     served_trace_candidates: tuple[ServedTraceCandidateRef, ...] = ()
     source_review_id: UUID
     source_cache_created_at: AwareDatetime
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use` — same as
-        every sibling path-bearing event."""
-        return validate_diff_path(path)
 
 
 class ObservedSkipChangedRegion(BaseModel):
@@ -870,7 +862,7 @@ class ObservedSkipShadowEvent(AuditEventBase):
     event_type: Literal["observed_skip_shadow"] = "observed_skip_shadow"
     phase_key: str | None = None
     node_id: Literal["analyze"] = "analyze"
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     outcome: Literal["would_skip", "not_eligible"]
     changed_regions: tuple[ObservedSkipChangedRegion, ...]
     covering_matches: tuple[ObservedSkipCoveringMatch, ...] = ()
@@ -880,13 +872,6 @@ class ObservedSkipShadowEvent(AuditEventBase):
     # enforced `would_skip` branch sets it True. Default-valued -> no migration; a
     # pre-3b row replays as False (the CacheLookupEvent field-widening precedent).
     skip_enforced: bool = False
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use` — same as
-        every sibling path-bearing event."""
-        return validate_diff_path(path)
 
     @model_validator(mode="after")
     def _enforce_outcome_blocker_consistency(self) -> Self:
@@ -959,7 +944,7 @@ class FileExaminationEvent(AuditEventBase):
 
     event_type: Literal["file_examination"] = "file_examination"
     phase_key: str | None = None
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     # Bounded to the two actually-emitted values today: intake's
     # per-file fetch record (`emit_file_examination` sites in
     # `agent/nodes/intake.py`) and analyze's per-file examination (the
@@ -978,17 +963,6 @@ class FileExaminationEvent(AuditEventBase):
     node_id: Literal["intake", "analyze"]
     parse_status: Literal["clean", "degraded", "failed", "skipped"]
     skip_reason: SkipReason | None = None
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use`. Matches
-        the `AnalysisRound.files_examined` validator at the schemas side
-        so the audit-row contract is at least as strict as the in-memory
-        shape — a traversal-bearing or shell-metacharacter path can't
-        ride into the append-only log unvalidated.
-        """
-        return validate_diff_path(path)
 
     @model_validator(mode="after")
     def _enforce_skip_reason_outcome(self) -> Self:
@@ -1043,7 +1017,7 @@ class FindingEvent(AuditEventBase):
     finding_id: UUID
     finding_type: FindingType
     severity: FindingSeverity
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
     dimension: ReviewDimension
@@ -1073,17 +1047,6 @@ class FindingEvent(AuditEventBase):
     # recipe (#025 point 3): content hash stays stable across LLM
     # phrasing variation; proposal_hash carries provenance.
     proposal_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use`. Matches
-        the `ReviewFinding.file_path` validator at the schemas side —
-        the audit shadow must be at least as strict as the in-memory
-        shape, or a traversal-bearing file_path could ride into the
-        append-only log unvalidated.
-        """
-        return validate_diff_path(path)
 
     @field_validator("proposal_hash")
     @classmethod
@@ -1941,7 +1904,7 @@ class PublishRoutingEvent(AuditEventBase):
     # but different diagnostic stories — replay can tell them apart via
     # this field.
     coordinate_error_kind: str | None = None
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
     # Carried so `_verify_finding_content_hash` can recompute against the
@@ -1950,12 +1913,6 @@ class PublishRoutingEvent(AuditEventBase):
     finding_type: FindingType
     finding_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     decision_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use`."""
-        return validate_diff_path(path)
 
     @field_validator("coordinate_error_kind")
     @classmethod
@@ -2161,7 +2118,7 @@ class PublishEligibilityEvent(AuditEventBase):
 
     event_type: Literal["publish_eligibility"] = "publish_eligibility"
     finding_id: UUID
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
     finding_type: FindingType
@@ -2181,11 +2138,6 @@ class PublishEligibilityEvent(AuditEventBase):
     eligibility: PublishEligibility
     reason: PublishEligibilityReason | None = None
     policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        return validate_diff_path(path)
 
     @model_validator(mode="after")
     def _enforce_line_constraint(self) -> Self:
@@ -2713,16 +2665,9 @@ class AnalyzeCompletedEvent(AuditEventBase):
 
     @model_validator(mode="after")
     def _enforce_triad_coherence(self) -> Self:
-        if not _triad_all_set_or_all_none(
+        _require_triad_coherence(
             self.profile_id, self.reasoning_enabled, self.profile_contract_digest
-        ):
-            raise ValueError(
-                "host-identity triad (DECISIONS.md#056) is peers — all-present or all-None; "
-                f"got profile_id={self.profile_id!r}, "
-                f"reasoning_enabled={self.reasoning_enabled!r}, "
-                f"digest_set={self.profile_contract_digest is not None}. The fresh-write "
-                "all-present guard lands in a later step-4 commit."
-            )
+        )
         return self
 
     @model_validator(mode="after")
@@ -2811,7 +2756,7 @@ class FindingProposalRejectedEvent(AuditEventBase):
     event_type: Literal["finding_proposal_rejected"] = "finding_proposal_rejected"
     phase_key: str | None = None
     node_id: Literal["analyze"] = "analyze"
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     proposal_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     claimed_evidence_tier: EvidenceTier | None = None
     claimed_finding_type_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN_SHORT)]
@@ -2832,16 +2777,6 @@ class FindingProposalRejectedEvent(AuditEventBase):
         "schema_construction_failed",
     ]
     rejection_detail: Annotated[str, Field(max_length=500)]
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow `paths-validated-before-use`. Even rejected
-        proposals carry a file_path that names the analyze target;
-        a traversal-bearing path here would land in the audit log
-        with no in-memory ReviewFinding to gate it.
-        """
-        return validate_diff_path(path)
 
     @field_validator("proposal_hash")
     @classmethod
@@ -2903,17 +2838,10 @@ class AnalyzeResponseRejectedEvent(AuditEventBase):
     event_type: Literal["analyze_response_rejected"] = "analyze_response_rejected"
     phase_key: str | None = None
     node_id: Literal["analyze"] = "analyze"
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     response_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     rejection_reason: Literal["raw_response_unparseable"]
     rejection_detail: Annotated[str, Field(max_length=500)]
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow `paths-validated-before-use`. Same canonical
-        gate as `FindingProposalRejectedEvent.file_path` above."""
-        return validate_diff_path(path)
 
 
 class SynthesizeCompletedEvent(AuditEventBase):
@@ -3063,16 +2991,9 @@ class SynthesizeCompletedEvent(AuditEventBase):
 
     @model_validator(mode="after")
     def _enforce_triad_coherence(self) -> Self:
-        if not _triad_all_set_or_all_none(
+        _require_triad_coherence(
             self.profile_id, self.reasoning_enabled, self.profile_contract_digest
-        ):
-            raise ValueError(
-                "host-identity triad (DECISIONS.md#056) is peers — all-present or all-None; "
-                f"got profile_id={self.profile_id!r}, "
-                f"reasoning_enabled={self.reasoning_enabled!r}, "
-                f"digest_set={self.profile_contract_digest is not None}. The fresh-write "
-                "all-present guard lands in a later step-4 commit."
-            )
+        )
         return self
 
 
