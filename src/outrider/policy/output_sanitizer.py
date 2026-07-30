@@ -396,14 +396,18 @@ def is_safe_suggestion_replacement(replacement: str) -> bool:
         return False
     if "<!--" in replacement or "-->" in replacement:
         return False
-    # Trojan-Source codepoints — the same set `render_fenced_block` strips from prose;
-    # here we REJECT (an applicable code fix can't be silently transformed).
-    return not (
+    # The same codepoint classes `_strip_hostile_codepoints` removes from prose, but
+    # here they REJECT rather than transform: GitHub commits a suggestion verbatim, so
+    # silently rewriting the code the reviewer is about to apply is not an option.
+    # Each test is "would stripping change the string", which is how a strip-based
+    # check becomes a detection.
+    carries_hostile_codepoint = (
         _strip_bidi_and_zero_width(replacement) != replacement
         or _ANSI_CONTROL_REGEX.search(replacement) is not None
         or _NUL_CHAR in replacement
         or _drop_lone_surrogates(replacement) != replacement
     )
+    return not carries_hostile_codepoint
 
 
 def is_safe_link_url(value: str) -> bool:
