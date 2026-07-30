@@ -161,7 +161,11 @@ from outrider.agent.nodes.degradation import (
     _ParseStatus,
     decide_degradation,
 )
-from outrider.agent.nodes.finding_cap import admit_with_pair_dedup, cap_findings_by_severity
+from outrider.agent.nodes.finding_cap import (
+    _collapse_by_content_hash,
+    admit_with_pair_dedup,
+    cap_findings_by_severity,
+)
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.analyze_bundle import extract_triviality_and_scan
 from outrider.ast_facts.models import SkipReason, TrivialityReason
@@ -1060,12 +1064,7 @@ async def _run_trace_pass(
     #    both survive, and `AnalysisRound._enforce_findings_unique` (content_hash) would
     #    then raise — the same collapse the augment/skip paths apply via fresh_hashes /
     #    skip_hashes (FUP-180 review finding A).
-    collapsed_findings: list[ReviewFinding] = []
-    seen_content_hashes: set[str] = set()
-    for finding in admitted_findings:
-        if finding.content_hash not in seen_content_hashes:
-            collapsed_findings.append(finding)
-            seen_content_hashes.add(finding.content_hash)
+    collapsed_findings = _collapse_by_content_hash(admitted_findings)
 
     # 2. Gated-aware severity cap. NON-gated findings drop to the soft cap; gated
     #    (CRITICAL/HIGH) are NEVER dropped to fit it (hitl-gates-high-severity), only the
@@ -2003,12 +2002,7 @@ async def _emit_skip_with_module_findings(
         installation_id=installation_id,
         active_policy_version=active_policy_version,
     )
-    deduped: list[ReviewFinding] = []
-    seen_hashes: set[str] = set()
-    for finding in produced:
-        if finding.content_hash not in seen_hashes:
-            deduped.append(finding)
-            seen_hashes.add(finding.content_hash)
+    deduped = _collapse_by_content_hash(produced)
     return replace(outcome, observed_skip_result=_ObservedSkipResult(tuple(deduped)))
 
 
@@ -2791,12 +2785,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             # finding_type matching the same span (two queries) would otherwise fire
             # duplicate FindingEvents AND trip AnalysisRound._enforce_findings_unique.
             # No JUDGED to supersede here (the LLM never ran).
-            skip_findings: list[ReviewFinding] = []
-            skip_hashes: set[str] = set()
-            for produced_finding in produced:
-                if produced_finding.content_hash not in skip_hashes:
-                    skip_findings.append(produced_finding)
-                    skip_hashes.add(produced_finding.content_hash)
+            skip_findings = _collapse_by_content_hash(produced)
             # model_validate (not model_copy) so the skip_enforced=True event is
             # RE-VALIDATED (skip_enforced => would_skip); the branch already guarantees
             # would_skip, but model_copy bypasses validators — re-validation keeps the

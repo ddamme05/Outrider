@@ -124,3 +124,25 @@ def admit_with_pair_dedup(
             continue
         keys_seen.add(key)
         admitted.append(finding)
+
+
+def _collapse_by_content_hash(findings: Sequence[ReviewFinding]) -> list[ReviewFinding]:
+    """Keep the first finding per `content_hash`, preserving input order.
+
+    `AnalysisRound._enforce_findings_unique` requires content_hash uniqueness,
+    but admission keys on the `(content_hash, proposal_hash)` PAIR, and
+    content_hash excludes evidence_tier — so two findings can legitimately reach
+    a round sharing a content_hash and would trip that validator. Every plain
+    first-wins collapse uses this.
+
+    Not for the prefer-OBSERVED merge in `analyze.py`, which replaces a
+    colliding JUDGED incumbent and counts the supersessions rather than dropping
+    the newcomer.
+    """
+    collapsed: list[ReviewFinding] = []
+    seen_hashes: set[str] = set()
+    for finding in findings:
+        if finding.content_hash not in seen_hashes:
+            seen_hashes.add(finding.content_hash)
+            collapsed.append(finding)
+    return collapsed

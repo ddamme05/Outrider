@@ -45,7 +45,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from outrider.agent.nodes.finding_cap import admit_with_pair_dedup, cap_findings_by_severity
+from outrider.agent.nodes.finding_cap import (
+    _collapse_by_content_hash,
+    admit_with_pair_dedup,
+    cap_findings_by_severity,
+)
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.models import SkipReason
 from outrider.audit.events import AnalyzeCompletedEvent, ReviewPhaseEvent
@@ -211,12 +215,7 @@ def fold_worker_outcomes(
     # Content-hash collapse, first-wins (the sequential FUP-180 finding-A
     # collapse: two findings may share content_hash with differing
     # proposal_hash; AnalysisRound enforces content_hash uniqueness).
-    collapsed: list[ReviewFinding] = []
-    seen_hashes: set[str] = set()
-    for finding in admitted:
-        if finding.content_hash not in seen_hashes:
-            seen_hashes.add(finding.content_hash)
-            collapsed.append(finding)
+    collapsed = _collapse_by_content_hash(admitted)
 
     # Gated-aware severity cap: non-gated drop to the soft cap; gated are
     # never dropped (hitl-gates-high-severity); the hard ceiling fails loud.
