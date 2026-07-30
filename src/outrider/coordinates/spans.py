@@ -28,7 +28,8 @@ from outrider.ast_facts.models import (
 from outrider.coordinates.errors import CoordinateError, CoordinateErrorKind
 
 if TYPE_CHECKING:
-    from unidiff import PatchedFile
+    from unidiff import Hunk, PatchedFile
+    from unidiff.patch import Line
 
     from outrider.ast_facts.models import ScopeUnit
     from outrider.ast_facts.parameterized_calls import ParameterizedCallScan
@@ -467,10 +468,10 @@ def scope_unit_diff_hunks(scope_unit: ScopeUnit, patched_file: PatchedFile) -> t
     number falls within `[scope_unit.line_start, scope_unit.line_end]`
     (inclusive, 1-indexed). The hunk header (`@@ -A,B +C,D @@`) is
     rewritten to reflect the clipped body's source/target line counts
-    so the emitted text remains a valid unified diff. keeping the full overlapping hunk leaked
-    changed lines outside the eligible scope unit into the analyze
-    prompt — true scope-unit-bounded clipping requires this in-hunk
-    filter, not just hunk-level overlap.
+    so the emitted text remains a valid unified diff. Filtering the BODY is the point:
+    keeping the full overlapping hunk leaked changed lines outside the
+    eligible scope unit into the analyze prompt, so scope-unit-bounded
+    clipping needs this in-hunk filter and not just hunk-level overlap.
 
     Removed-side (`-` prefix) lines have no target line number; they
     are kept iff at least one neighboring target-side line in the same
@@ -563,11 +564,11 @@ def changed_line_spans(
 
 
 def _clip_hunk_lines(
-    hunk: object,
+    hunk: Hunk,
     *,
     line_start: int,
     line_end: int,
-) -> list[object]:
+) -> list[Line]:
     """Structured core of hunk clipping: the kept `unidiff.Line` objects.
 
     Single source of truth for which lines survive clipping to the
@@ -581,14 +582,11 @@ def _clip_hunk_lines(
     consumers. Private: raw `unidiff.Line` objects never leave
     `coordinates/`.
     """
-    # unidiff's Hunk is iterable over Line objects; each Line has
-    # `is_added`, `is_removed`, `is_context`, `source_line_no`,
-    # `target_line_no`, and `value`.
-    kept: list[object] = []
-    pending_removed: list[object] = []
+    kept: list[Line] = []
+    pending_removed: list[Line] = []
     any_kept_in_block = False
-    for line in list(hunk):  # type: ignore[call-overload]
-        target_no: int | None = getattr(line, "target_line_no", None)
+    for line in hunk:
+        target_no = line.target_line_no
         if target_no is not None:
             # Added or context line — has a target line number.
             in_range = line_start <= target_no <= line_end
@@ -617,7 +615,7 @@ def _clip_hunk_lines(
 
 
 def _clip_hunk_to_line_range(
-    hunk: object,
+    hunk: Hunk,
     *,
     line_start: int,
     line_end: int,
@@ -629,7 +627,7 @@ def _clip_hunk_to_line_range(
     +tgt_start,tgt_len @@` to match the surviving line counts and
     stringifies.
     """
-    hunk_lines: list[object] = list(hunk)  # type: ignore[call-overload]
+    hunk_lines: list[Line] = list(hunk)
     kept = _clip_hunk_lines(hunk, line_start=line_start, line_end=line_end)
 
     if not kept:
@@ -637,18 +635,19 @@ def _clip_hunk_to_line_range(
 
     # Recompute header counts. Source side counts removed + context;
     # target side counts added + context.
-    src_lines = [
-        ln for ln in kept if getattr(ln, "is_removed", False) or getattr(ln, "is_context", False)
-    ]
-    tgt_lines = [
-        ln for ln in kept if getattr(ln, "is_added", False) or getattr(ln, "is_context", False)
-    ]
-    tgt_start = tgt_lines[0].target_line_no if tgt_lines else 0  # type: ignore[attr-defined]
+    src_lines: list[Line] = []
+    tgt_lines: list[Line] = []
+    for line in kept:
+        if line.is_removed or line.is_context:
+            src_lines.append(line)
+        if line.is_added or line.is_context:
+            tgt_lines.append(line)
+    tgt_start = tgt_lines[0].target_line_no if tgt_lines else 0
     src_len = len(src_lines)
     tgt_len = len(tgt_lines)
 
     if src_lines:
-        src_start = src_lines[0].source_line_no  # type: ignore[attr-defined]
+        src_start = src_lines[0].source_line_no
     else:
         # Pure-added clipped subset: there are no source-side lines in
         # the kept set, so `src_lines[0]` isn't available. `src_start = 0`
