@@ -262,6 +262,25 @@ def strip_fake_truncation_markers(text: str) -> str:
     return _TRUNCATION_MARKER_REGEX.sub("", text)
 
 
+def _strip_hostile_codepoints(text: str) -> str:
+    """Remove the codepoint classes that attack the display layer.
+
+    Five operations, and the ORDER matters: fake truncation markers go first so a
+    marker hidden behind a bidi override or an ANSI sequence is not left behind by
+    the later strips, and lone surrogates go last because the earlier passes can
+    leave one unpaired.
+
+    Shared verbatim by prose sanitization and fenced-block rendering — a fence
+    prevents markdown interpretation, not terminal escapes or Trojan Source
+    reordering, so both need exactly this.
+    """
+    text = strip_fake_truncation_markers(text)
+    text = _strip_bidi_and_zero_width(text)
+    text = _ANSI_CONTROL_REGEX.sub("", text)
+    text = text.replace(_NUL_CHAR, "")
+    return _drop_lone_surrogates(text)
+
+
 def sanitize_display_string(text: str) -> str:
     """Strip codepoints, escape markdown semantics, return prose-safe text.
 
@@ -271,21 +290,16 @@ def sanitize_display_string(text: str) -> str:
     (reject-not-transform) + a fixed GitHub ```suggestion fence.
 
     Pipeline:
-      1. Strip fake truncation markers (attacker-prepended).
-      2. Strip bidi-override / zero-width / ANSI / NUL codepoints.
-      3. Drop lone surrogates (Python str admits them; UTF-8 encode rejects).
-      4. Escape markdown inline characters.
-      5. Escape leading block markers per line.
+      1. `_strip_hostile_codepoints` — fake truncation markers, bidi overrides,
+         zero-width joiners, ANSI sequences, NUL, lone surrogates.
+      2. Escape markdown inline characters.
+      3. Escape leading block markers per line.
 
     Does NOT truncate or fence — the publisher's `from_finding(...)`
     composes sanitized fields into the final body, then calls
     `apply_size_cap(body)` to truncate the assembled result.
     """
-    text = strip_fake_truncation_markers(text)
-    text = _strip_bidi_and_zero_width(text)
-    text = _ANSI_CONTROL_REGEX.sub("", text)
-    text = text.replace(_NUL_CHAR, "")
-    text = _drop_lone_surrogates(text)
+    text = _strip_hostile_codepoints(text)
     text = escape_markdown_prose(text)
     return text
 
@@ -329,11 +343,7 @@ def render_fenced_block(content: str, *, language: str = "") -> str:
     `-_+` so attacker-controlled language strings can't break out.
     """
     # Inner content: strip control codes but keep the literal text shape.
-    content = strip_fake_truncation_markers(content)
-    content = _strip_bidi_and_zero_width(content)
-    content = _ANSI_CONTROL_REGEX.sub("", content)
-    content = content.replace(_NUL_CHAR, "")
-    content = _drop_lone_surrogates(content)
+    content = _strip_hostile_codepoints(content)
     # Neutralize any agent-marker signature by breaking `<!` → `\<\!` (exactly what prose escaping
     # does via `<`→`\<` + `!`→`\!`): the raw `<!--` token no longer appears in the bytes, so a
     # marker grep — substring OR line-anchored — can't see a forged `<!-- outrider… -->`.
