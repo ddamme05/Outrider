@@ -132,8 +132,8 @@ _MIN_TRUNCATION_SECRET_LEN: Final[int] = 32
 # content didn't end with a newline. `original N bytes` wording pairs
 # with the BYTE measurement of the cap (NOT codepoints) so a reader
 # computing "how much was lost" gets the correct answer for non-ASCII
-# content. The HMAC tag (`<hmac8>`) lets a holder of the deployment secret confirm
-# a marker was produced here; the strip itself does not consult it, removing every
+# content. The HMAC tag (`<hmac8>`) binds the claimed original byte count to the
+# deployment secret; the strip itself does not consult it, removing every
 # marker-shaped run regardless of tag validity.
 _TRUNCATION_MARKER_TEMPLATE: Final[str] = "\n\n[truncated, original {n} bytes · {hmac}]"
 
