@@ -484,10 +484,11 @@ async def _publish_body(
     # sees either its committed `PublishEvent` (authentic `IDEMPOTENTLY_SKIPPED`)
     # or its absence (first task crashed before emit → this task POSTs).
     #
-    # That covers same-process racing only. Step 6's
-    # `find_existing_review_on_head_sha` is the separate defense for
-    # crash-after-success-before-emit ACROSS processes, where no in-process lock
-    # exists to apply and the body marker is the only evidence.
+    # The database advisory lock coordinates contenders across processes, but it is
+    # released if the winner crashes. Step 6 covers
+    # crash-after-success-before-emit: after that release there is no
+    # `PublishEvent` to observe, so the GitHub body marker is the only evidence
+    # that the POST succeeded.
     #
     # Lock mechanics — try-lock, bounded backoff, why not blocking or single-shot
     # loser-skip — live on `PublishEventSink.acquire_publish_lock`.

@@ -721,11 +721,11 @@ class AnthropicProvider:
         This is the canonical account of the wrapper's teardown; `__init__` and
         `_clear_close_task` defer to it.
 
-        Wired into the FastAPI lifespan teardown. Without an explicit close the OS
-        reaps the pool at process exit, which is tolerable for one provider per app
-        but compounds under parallel-analyze, where N providers can be constructed
-        per review. Delegating to `AsyncAnthropic.close()` behind an `aclose` name
-        also means an SDK rename to the httpx convention stays inside this wrapper.
+        Wired into the FastAPI lifespan teardown. The lifespan constructs one
+        provider at startup and shares it across reviews and parallel-analyze
+        workers, so explicit close drains its shared connection pool before process
+        exit. Delegating to `AsyncAnthropic.close()` behind an `aclose` name also
+        keeps any SDK method rename inside this wrapper.
 
         **Idempotent, including concurrently.** `_closed` short-circuits repeat
         calls — httpx's behaviour on repeated close is version-dependent — and
