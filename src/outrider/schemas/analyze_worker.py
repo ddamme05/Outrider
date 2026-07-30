@@ -6,14 +6,12 @@ the aggregate step folds these into ONE `AnalysisRound` per pass plus the
 `AnalyzeCompletedEvent` accounting (per `DECISIONS.md#063`, workers never
 emit rounds — round count is the trace depth counter).
 
-Design rule, learned across five review rounds: the outcome carries
-**facts and identities, never re-derived judgments.** Early drafts made
-workers report derived counters (emitted/observed/served) and validators
-re-inferred branch semantics from them — every such inference was a guess
-about the node, and several proved subtly wrong (evidence tier is NOT
-producer origin; response rejection does NOT preclude producer
-augmentation). The shipped shape instead records what only the worker
-knows, as explicit identity:
+Design rule: the outcome carries **facts and identities, never re-derived
+judgments.** A worker reporting derived counters would force validators to
+re-infer branch semantics from them, and those inferences do not hold —
+evidence tier is NOT producer origin, and a response rejection does NOT
+preclude producer augmentation. The outcome instead records what only the
+worker knows, as explicit identity:
 
 - `source` — the sequential branch, discriminated (parser / cache_serve /
   observed_coverage / observed_skip / plain_skip), never inferred.

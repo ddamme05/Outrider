@@ -1066,13 +1066,12 @@ async def _run_trace_pass(
     #    admit two findings sharing a content_hash but differing in proposal_hash (same
     #    file/line/finding_type, different prose); `_admit_with_dedup` keys on the PAIR so
     #    both survive, and `AnalysisRound._enforce_findings_unique` (content_hash) would
-    #    then raise — the same collapse the augment/skip paths apply via fresh_hashes /
-    #    skip_hashes (FUP-180 review finding A).
+    #    then raise.
     collapsed_findings = _collapse_by_content_hash(admitted_findings)
 
     # 2. Gated-aware severity cap. NON-gated findings drop to the soft cap; gated
     #    (CRITICAL/HIGH) are NEVER dropped to fit it (hitl-gates-high-severity), only the
-    #    hard runaway ceiling bounds them (FUP-180 review design call).
+    #    hard runaway ceiling bounds them (FUP-180).
     kept_findings, dropped_findings = cap_findings_by_severity(
         collapsed_findings, soft_cap=MAX_FINDINGS_PER_ROUND, hard_cap=MAX_FINDINGS_HARD_CAP
     )
@@ -1085,7 +1084,7 @@ async def _run_trace_pass(
     #    (tier OBSERVED + query_match_id in the producer registry), else a model proposal.
     #    `n_proposals_dropped` = parser proposal-emitted minus surviving proposals — covers
     #    ALL pre-emission drops (cross-source dedup, content-hash collapse, AND the cap),
-    #    keeping `_enforce_proposal_accounting` balanced (FUP-180 review finding B).
+    #    keeping `_enforce_proposal_accounting` balanced (FUP-180).
     parser_proposal_emitted = n_findings_emitted - n_findings_served - n_findings_observed
     kept_served = sum(1 for f in kept_findings if f.content_hash in served_content_hashes)
     kept_observed = sum(
@@ -1106,14 +1105,13 @@ async def _run_trace_pass(
     # proposal) stays in state.trace_candidates as a forensic-only record per
     # DECISIONS.md#025 point 6 — trace's proposal-hash join already INFO-skips any
     # unjoinable candidate (no GitHub fetch), so a cap-orphaned candidate is handled
-    # identically and safely. (An earlier filter here over-removed the rejected-parent
-    # forensic class; reverted.)
+    # identically and safely.
 
     # Step 4: build AnalysisRound AND construct AnalyzeCompletedEvent — BOTH BEFORE any
     # side effect. Their validators (round uniqueness + round_id; the proposal-accounting
     # equation) run here, so a validator raise crashes cleanly with NOTHING emitted,
-    # closing the strand class fully (FUP-180 review finding A + the residual: the
-    # completed-event accounting validators must run before the FindingEvent emit too).
+    # closing the strand class fully (FUP-180): the completed-event accounting
+    # validators must run before the FindingEvent emit, too.
     # `round_id` is content-derived so re-emission is idempotent on replay.
     round_id = compute_round_id(
         pass_index=pass_index,

@@ -353,10 +353,9 @@ def parse_analyze_response(
     try:
         # Strip a single outer ```json...``` wrapper if present — the
         # model sometimes adds one despite the system-prompt instruction.
-        # Malformed wrappers fall through unchanged so Pydantic produces
-        # a clean ResponseRejection. Previously, fenced output was
-        # silently rejected as `raw_response_unparseable` and the file's
-        # findings were lost; this defense closes that coverage hole.
+        # Without this, fenced output rejects as `raw_response_unparseable`
+        # and every finding for the file is lost. Malformed wrappers fall
+        # through unchanged so Pydantic produces a clean ResponseRejection.
         raw = AnalyzeResponseRaw.model_validate_json(strip_outer_json_fence(response_text))
     except ValidationError as e:
         # When the provider reports `finish_reason == "max_tokens"`, the JSON is
