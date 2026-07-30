@@ -600,7 +600,7 @@ def run_observed_matches(
     apply to module-level matches.
 
     Returns a
-    deterministically ordered tuple (by query id, then the registry's match
+    deterministically ordered tuple (by catalog order, then the registry's match
     sort) so any content-derived id downstream stays stable across replays.
     """
     # Per-language selection: the registry pairs the query set with the
