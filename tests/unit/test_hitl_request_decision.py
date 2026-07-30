@@ -2,10 +2,9 @@
 
 Both are decision artifacts (frozen=True). HITLRequest is the agent's gate
 envelope at interrupt time; HITLDecision is the reviewer's full submission.
-The field on HITLDecision is `decisions: list[PerFindingDecision]` per
-spec §7.4 line 290 — NOT `per_finding_decisions`. Round-trip through JSON
-matters because audit replay reconstructs HITLDecision from the audit row's
-JSONB payload.
+The field on HITLDecision is `decisions: tuple[PerFindingDecision, ...]` per
+spec §7.4 — NOT `per_finding_decisions`. The dashboard-to-HITL resume
+boundary carries this model as JSON-shaped data.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -82,10 +81,10 @@ def test_hitl_decision_is_frozen() -> None:
 
 
 def test_hitl_decision_decisions_field_required() -> None:
-    """Per spec §7.4 line 290: field name is `decisions`, not `per_finding_decisions`.
+    """Per spec §7.4: field name is `decisions`, not `per_finding_decisions`.
 
-    Empty list admits (the reviewer can decide on zero findings if all
-    auto-approve), but the field itself must be present at construction.
+    The schema admits an empty tuple, but the field itself must be present at
+    construction.
     """
     empty_decisions = HITLDecision(
         reviewer_id="reviewer@example.com",
@@ -105,8 +104,8 @@ def test_hitl_decision_decisions_field_required() -> None:
 def test_hitl_decision_serializes_round_trip_through_json() -> None:
     """Pydantic .model_dump_json() + reconstruct → equal.
 
-    Audit replay reconstructs HITLDecision from the audit row's JSONB
-    payload; this verifies the round-trip is lossless.
+    The dashboard-to-HITL resume boundary carries this model as JSON-shaped
+    data; this verifies the round-trip is lossless.
     """
     inner = PerFindingDecision(
         finding_id=uuid4(),

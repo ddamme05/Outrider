@@ -191,7 +191,7 @@ class PRContext(BaseModel):
     Frozen: see module docstring. `changed_files` is `tuple[ChangedFile, ...]`
     not `list[ChangedFile]` because `frozen=True` is faux-immutable over
     `.append()` / `.clear()` on a list field — same convention as
-    HITLDecision.decisions (spec §7.4 line 290 + hitl.py module docstring) and
+    HITLDecision.decisions (spec §7.4 + hitl.py module docstring) and
     ReviewFinding.trace_path (review_finding.py module docstring). Tuple
     delivers what frozen=True is meant to deliver. Spec.md §7.2 was amended
     same-day (2026-05-08) to match this commitment.

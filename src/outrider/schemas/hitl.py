@@ -15,14 +15,9 @@ envelope at the moment it interrupts the graph (reviewer state mutates
 HITLDecision, not HITLRequest). Contrast ReviewFinding (NOT frozen) — see
 schemas/review_finding.py module docstring for the lifecycle rationale.
 
-PerFindingDecision.enforce_override_fields covers THREE spec §7.4 rules:
-(1) SEVERITY_OVERRIDE requires both override_severity and original_severity
-    (lines 277-283),
-(2) APPROVE / REJECT / SUPPRESS must NOT carry override_severity or
-    original_severity — those fields are SEVERITY_OVERRIDE-specific per the
-    field docstrings ("Only set when outcome == SEVERITY_OVERRIDE"), and
-(3) any non-APPROVE outcome requires a non-empty reason (lines 284-285).
-APPROVE callers pass reason="" to keep the decision-record shape uniform.
+`PerFindingDecision.enforce_override_fields` owns the cross-field contract:
+override fields appear together only on `SEVERITY_OVERRIDE`, a real override
+must change severity, and every non-`APPROVE` outcome requires a reason.
 
 HITL artifact container fields use tuple[..., ...] for true immutability:
 Pydantic frozen=True only blocks attribute reassignment, not in-place
@@ -192,8 +187,8 @@ class HITLRequest(BaseModel):
 class HITLDecision(BaseModel):
     """Reviewer's full decision set for a HITL gate, final at submission.
 
-    Frozen: the decision is the audit record at submit time. Per spec §7.4
-    line 290 the field is `decisions: tuple[PerFindingDecision, ...]` (NOT
+    Frozen: the submitted decision is final at construction. Per spec §7.4
+    the field is `decisions: tuple[PerFindingDecision, ...]` (NOT
     `per_finding_decisions`; tuple-not-list for true immutability — see
     module docstring); the dashboard endpoint constructs this from reviewer
     input and the graph resumes with Command(resume=hitl_decision).
