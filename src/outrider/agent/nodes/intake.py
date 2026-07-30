@@ -524,6 +524,128 @@ async def _gather_two_fetches(
     return base_task.result(), head_task.result()
 
 
+async def _fetch_one_side(
+    *,
+    semaphore: asyncio.Semaphore,
+    gh: InstallationGitHubClient,
+    pr_context: PRContext,
+    state: ReviewState,
+    file_examination_sink: FileExaminationSink,
+    byte_budget: _ByteBudget,
+    event_path: str,
+    fetch_path: str,
+    ref: str,
+) -> str | None:
+    """Fetch and decode one ref, or emit the skip event and return None.
+
+    A None return always means "skipped, event already emitted": on the success
+    path `_classify_or_reserve_decode` yields text whenever it yields no skip
+    reason, so there is no third outcome to distinguish.
+    """
+    content_bytes = await _semaphore_guarded_fetch(
+        semaphore,
+        gh,
+        owner=pr_context.owner,
+        repo=pr_context.repo,
+        path=fetch_path,
+        ref=ref,
+    )
+    if content_bytes is None:
+        await _emit_skip(
+            file_examination_sink,
+            state=state,
+            file_path=event_path,
+            reason=SkipReason.OVERSIZED,
+        )
+        return None
+    content, skip_reason = await _classify_or_reserve_decode(content_bytes, byte_budget)
+    if skip_reason is not None:
+        await _emit_skip(
+            file_examination_sink,
+            state=state,
+            file_path=event_path,
+            reason=skip_reason,
+        )
+        return None
+    return content
+
+
+async def _fetch_both_sides(
+    *,
+    semaphore: asyncio.Semaphore,
+    gh: InstallationGitHubClient,
+    pr_context: PRContext,
+    state: ReviewState,
+    file_examination_sink: FileExaminationSink,
+    byte_budget: _ByteBudget,
+    event_path: str,
+    base_path: str,
+    head_path: str,
+) -> tuple[str | None, str | None] | None:
+    """Fetch base and head concurrently and decode both, or emit the skip and
+    return None.
+
+    `base_path` and `head_path` differ only for a rename; `event_path` is always
+    the head-side name, because the audit row identifies the file as GitHub
+    reports it now.
+
+    Nested TaskGroup rather than `asyncio.gather`, per the same
+    `phase-events-bound-work` discipline as the outer per-file fan-out: a failing
+    fetch must cancel its sibling BEFORE the failure propagates, or the sibling
+    outlives the outer TaskGroup's cancel-point and leaks side effects.
+    """
+    bytes_base, bytes_head = await _gather_two_fetches(
+        _semaphore_guarded_fetch(
+            semaphore,
+            gh,
+            owner=pr_context.owner,
+            repo=pr_context.repo,
+            path=base_path,
+            ref=pr_context.base_sha,
+        ),
+        _semaphore_guarded_fetch(
+            semaphore,
+            gh,
+            owner=pr_context.owner,
+            repo=pr_context.repo,
+            path=head_path,
+            ref=pr_context.head_sha,
+        ),
+    )
+    if bytes_base is None or bytes_head is None:
+        await _emit_skip(
+            file_examination_sink,
+            state=state,
+            file_path=event_path,
+            reason=SkipReason.OVERSIZED,
+        )
+        return None
+
+    content_base, skip_reason_base = await _classify_or_reserve_decode(bytes_base, byte_budget)
+    content_head, skip_reason_head = await _classify_or_reserve_decode(bytes_head, byte_budget)
+
+    # Prefer BINARY over OVERSIZED when both sides report: BINARY is content
+    # truth (intake refused to decode that side), while an OVERSIZED from a
+    # concurrent budget rejection on the other side reflects timing pressure and
+    # would mislead operator triage.
+    binary_reason = _merge_skip_reasons(skip_reason_base, skip_reason_head)
+    if binary_reason is not None:
+        # Release the clean side's reservation so it does not crowd out later
+        # valid files. Only a side with no skip reason reserved anything.
+        if skip_reason_base is None:
+            await byte_budget.release(len(bytes_base))
+        if skip_reason_head is None:
+            await byte_budget.release(len(bytes_head))
+        await _emit_skip(
+            file_examination_sink,
+            state=state,
+            file_path=event_path,
+            reason=binary_reason,
+        )
+        return None
+    return content_base, content_head
+
+
 async def _process_one_file(
     *,
     semaphore: asyncio.Semaphore,
@@ -597,172 +719,69 @@ async def _process_one_file(
     content_head: str | None = None
     try:
         if status == "added":
-            bytes_head = await _semaphore_guarded_fetch(
-                semaphore,
-                gh,
-                owner=pr_context.owner,
-                repo=pr_context.repo,
-                path=filename,
+            content_head = await _fetch_one_side(
+                semaphore=semaphore,
+                gh=gh,
+                pr_context=pr_context,
+                state=state,
+                file_examination_sink=file_examination_sink,
+                byte_budget=byte_budget,
+                event_path=filename,
+                fetch_path=filename,
                 ref=pr_context.head_sha,
             )
-            if bytes_head is None:
-                await _emit_skip(
-                    file_examination_sink,
-                    state=state,
-                    file_path=filename,
-                    reason=SkipReason.OVERSIZED,
-                )
-                return None
-            content_head, skip_reason = await _classify_or_reserve_decode(bytes_head, byte_budget)
-            if skip_reason is not None:
-                await _emit_skip(
-                    file_examination_sink,
-                    state=state,
-                    file_path=filename,
-                    reason=skip_reason,
-                )
+            if content_head is None:
                 return None
         elif status == "removed":
-            bytes_base = await _semaphore_guarded_fetch(
-                semaphore,
-                gh,
-                owner=pr_context.owner,
-                repo=pr_context.repo,
-                path=filename,
+            content_base = await _fetch_one_side(
+                semaphore=semaphore,
+                gh=gh,
+                pr_context=pr_context,
+                state=state,
+                file_examination_sink=file_examination_sink,
+                byte_budget=byte_budget,
+                event_path=filename,
+                fetch_path=filename,
                 ref=pr_context.base_sha,
             )
-            if bytes_base is None:
-                await _emit_skip(
-                    file_examination_sink,
-                    state=state,
-                    file_path=filename,
-                    reason=SkipReason.OVERSIZED,
-                )
-                return None
-            content_base, skip_reason = await _classify_or_reserve_decode(bytes_base, byte_budget)
-            if skip_reason is not None:
-                await _emit_skip(
-                    file_examination_sink,
-                    state=state,
-                    file_path=filename,
-                    reason=skip_reason,
-                )
+            if content_base is None:
                 return None
         elif status == "modified":
-            # Nested TaskGroup (NOT asyncio.gather) per the same
-            # `phase-events-bound-work` discipline as the outer
-            # per-file fan-out: if one fetch fails, the other must be
-            # cancelled BEFORE the failure propagates upward, otherwise
-            # the sibling could keep running past the outer TaskGroup's
-            # cancel-point and leak side effects.
-            bytes_base, bytes_head = await _gather_two_fetches(
-                _semaphore_guarded_fetch(
-                    semaphore,
-                    gh,
-                    owner=pr_context.owner,
-                    repo=pr_context.repo,
-                    path=filename,
-                    ref=pr_context.base_sha,
-                ),
-                _semaphore_guarded_fetch(
-                    semaphore,
-                    gh,
-                    owner=pr_context.owner,
-                    repo=pr_context.repo,
-                    path=filename,
-                    ref=pr_context.head_sha,
-                ),
+            both_sides = await _fetch_both_sides(
+                semaphore=semaphore,
+                gh=gh,
+                pr_context=pr_context,
+                state=state,
+                file_examination_sink=file_examination_sink,
+                byte_budget=byte_budget,
+                event_path=filename,
+                base_path=filename,
+                head_path=filename,
             )
-            if bytes_base is None or bytes_head is None:
-                await _emit_skip(
-                    file_examination_sink,
-                    state=state,
-                    file_path=filename,
-                    reason=SkipReason.OVERSIZED,
-                )
+            if both_sides is None:
                 return None
-            content_base, skip_reason_base = await _classify_or_reserve_decode(
-                bytes_base, byte_budget
-            )
-            content_head, skip_reason_head = await _classify_or_reserve_decode(
-                bytes_head, byte_budget
-            )
-            # Skip if either side is binary/malformed. Release the
-            # clean side's reservation so it doesn't crowd out later
-            # valid files. When both sides report skip reasons, prefer
-            # `BINARY` over `OVERSIZED` — `BINARY` reflects content
-            # truth (intake refused to decode this side), while
-            # `OVERSIZED` from a concurrent budget rejection on the
-            # other side reflects timing pressure that would mislead
-            # operator triage.
-            binary_reason = _merge_skip_reasons(skip_reason_base, skip_reason_head)
-            if binary_reason is not None:
-                if skip_reason_base is None:
-                    await byte_budget.release(len(bytes_base))
-                if skip_reason_head is None:
-                    await byte_budget.release(len(bytes_head))
-                await _emit_skip(
-                    file_examination_sink,
-                    state=state,
-                    file_path=filename,
-                    reason=binary_reason,
-                )
-                return None
+            content_base, content_head = both_sides
         elif status == "renamed":
             if previous_filename is None:
                 msg = f"GitHub returned status='renamed' for {filename!r} without previous_filename"
                 raise ValueError(msg)
-            # See modified-branch comment for the TaskGroup rationale.
-            bytes_base, bytes_head = await _gather_two_fetches(
-                _semaphore_guarded_fetch(
-                    semaphore,
-                    gh,
-                    owner=pr_context.owner,
-                    repo=pr_context.repo,
-                    path=previous_filename,
-                    ref=pr_context.base_sha,
-                ),
-                _semaphore_guarded_fetch(
-                    semaphore,
-                    gh,
-                    owner=pr_context.owner,
-                    repo=pr_context.repo,
-                    path=filename,
-                    ref=pr_context.head_sha,
-                ),
+            both_sides = await _fetch_both_sides(
+                semaphore=semaphore,
+                gh=gh,
+                pr_context=pr_context,
+                state=state,
+                file_examination_sink=file_examination_sink,
+                byte_budget=byte_budget,
+                event_path=filename,
+                base_path=previous_filename,
+                head_path=filename,
             )
-            if bytes_base is None or bytes_head is None:
-                await _emit_skip(
-                    file_examination_sink,
-                    state=state,
-                    file_path=filename,
-                    reason=SkipReason.OVERSIZED,
-                )
+            if both_sides is None:
                 return None
-            content_base, skip_reason_base = await _classify_or_reserve_decode(
-                bytes_base, byte_budget
-            )
-            content_head, skip_reason_head = await _classify_or_reserve_decode(
-                bytes_head, byte_budget
-            )
-            # Same prefer-BINARY merge as the modified branch above.
-            binary_reason = _merge_skip_reasons(skip_reason_base, skip_reason_head)
-            if binary_reason is not None:
-                if skip_reason_base is None:
-                    await byte_budget.release(len(bytes_base))
-                if skip_reason_head is None:
-                    await byte_budget.release(len(bytes_head))
-                await _emit_skip(
-                    file_examination_sink,
-                    state=state,
-                    file_path=filename,
-                    reason=binary_reason,
-                )
-                return None
+            content_base, content_head = both_sides
         else:
-            # Unknown status from GitHub — log + skip rather than
-            # crash the whole intake. Forward-compat for GitHub
-            # adding a new file status.
+            # Unknown status from GitHub — log + skip rather than crash the whole
+            # intake. Forward-compat for GitHub adding a new file status.
             logger.warning("intake skipping unknown file status %r for %r", status, filename)
             return None
     except CoordinateError:

@@ -949,12 +949,11 @@ async def test_renamed_file_releases_clean_side_when_other_side_binary() -> None
     back to the budget before the file is dropped, otherwise later
     valid files are skipped as OVERSIZED due to phantom accounting.
 
-    Sibling-coverage parity with `test_modified_file_releases_...`. The
-    renamed branch (intake.py:610) is structurally parallel to the
-    modified branch with the same release-on-binary rollback wiring;
-    without this test, a regression that dropped `await byte_budget.release`
-    from the renamed branch only (but kept it in modified) would pass
-    every existing test.
+    Sibling-coverage parity with `test_modified_file_releases_...`. Both
+    statuses now share `_fetch_both_sides`, so this pins that the renamed
+    call passes `previous_filename` as the base path and still releases the
+    clean side. It was written when the two branches were separate copies,
+    to catch a release dropped from one and not the other.
     """
     from outrider.ast_facts.models import SkipReason
 
@@ -1088,6 +1087,46 @@ async def test_aggregate_bytes_cap_emits_oversized_when_total_exceeded(
 
 
 @pytest.mark.asyncio
+async def test_removed_file_fetches_base_side_only() -> None:
+    """A `removed` file is fetched at BASE only, and its content lands in
+    `content_base` with `content_head` left None.
+
+    The branch had no coverage before the fetch consolidation, so nothing
+    would have caught it fetching the wrong ref — a head fetch for a deleted
+    path returns nothing, which the code would report as OVERSIZED rather
+    than failing loudly.
+    """
+    state = _build_state()
+    files = [_StubFileMeta(filename="gone.py", status="removed", additions=0, deletions=3)]
+    content = {("gone.py", "b" * 40): b"def gone(): pass\n"}
+    gh = _StubGitHub(files_metadata=files, content_by_key=content)
+    phase_sink = _RecordingPhaseEventSink()
+    file_sink = _RecordingFileExaminationSink()
+    session_factory = _StubSessionFactoryV2()
+
+    result = await intake(
+        state,
+        github_factory=_stub_github_factory(gh),
+        installation_authorizer=_stub_authorizer(),
+        db_factory=session_factory,  # type: ignore[arg-type]
+        phase_event_sink=phase_sink,
+        file_examination_sink=file_sink,
+    )
+
+    assert result.update is not None
+    new_ctx: PRContext = result.update["pr_context"]
+    assert [cf.path for cf in new_ctx.changed_files] == ["gone.py"]
+
+    removed_file = new_ctx.changed_files[0]
+    assert removed_file.content_base == "def gone(): pass\n"
+    assert removed_file.content_head is None
+    assert removed_file.previous_path is None
+
+    events = [e for e in file_sink.events if e.file_path == "gone.py"]
+    assert len(events) == 1
+    assert events[0].parse_status == "clean"
+
+
 async def test_unknown_status_logged_and_dropped(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
