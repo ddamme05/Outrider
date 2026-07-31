@@ -2,72 +2,47 @@
 # Planned under DECISIONS.md#056: host/profile selector + build_graph identity closure.
 """FastAPI lifespan — durable dependency construction + teardown.
 
-Constructs at startup, in dependency order:
+Constructs the application's dependencies at startup, in dependency order, and
+tears them down LIFO. The body is the authority on that order; each stage
+carries a descriptive heading and its own rationale. In outline:
 
-  1. `AsyncEngine` from `DATABASE_URL` env var.
-  1b. Severity-policy fingerprint check: compares the DB row at
-     `severity_policies.version=ACTIVE_POLICY_VERSION` to the live
-     `SEVERITY_POLICY` mapping; raises `StartupError` on miss or
-     mismatch BEFORE the rest of dependency wiring, so a drifted
-     policy never initializes downstream consumers (per §0c of
-     specs/2026-05-19-analyze-foundation.md).
-  2. `async_sessionmaker` over the engine (`expire_on_commit=False` so
-     post-commit attribute access on returned rows doesn't lazy-refresh).
-  3. `RetentionSettings()` — reads `OUTRIDER_AUDIT_*` env vars.
-  4. `AuditPersister(session_factory=..., retention_settings=...)`.
-  5. `AnthropicProvider(api_key=..., model_config=..., persister=...)`
-     (model_config built once, shared with the compiled graph below).
-  6. `build_credential_provider(session_factory=..., env=...)` (DECISIONS.md#070)
-     — `env` mode wraps a boot-validated `GitHubAppSettings()` (reads
-     `OUTRIDER_GITHUB_APP_*` env vars); `database` mode reads the
-     manifest-onboarded row and fails closed until CONFIGURED. `env`-mode
-     validation still surfaces missing / malformed env as a friendly
-     RuntimeError at boot, not a deep-stack `ValidationError` inside the
-     first intake invocation.
-  7. `github_factory = make_installation_client_factory(credential_provider)`
-     — async per-installation `GitHub` client factory over the provider;
-     each `await github_factory(iid)` resolves credentials lazily via
-     `await provider.current()`. Per `DECISIONS.md#020` + the
-     `nodes-receive-deps-via-closure` invariant, installation-token
-     minting happens at intake call-site, not at webhook receipt.
-  8. `compiled_graph = build_graph(...)` — the V1 seven-logical-node intake →
-     triage → analyze ⇄ trace → synthesize → hitl → publish graph with
-     all required deps injected at construction time (`db_factory`,
-     `github_factory`, `provider`, `model_config`, eight audit-side sink
-     Protocols + one anomaly sink, `publisher`, and
-     `import_path_resolver`).
-  9. `run_graph` async closure that the V1 `BackgroundTasksDispatcher`
-     invokes per request to call `compiled_graph.ainvoke(state)`, wrapped
-     by a process-level `asyncio.Semaphore` (`OUTRIDER_MAX_CONCURRENT_REVIEWS`,
-     default 8) so a webhook flood can't saturate the Anthropic pool
-     (FUP-164 / DECISIONS.md#045).
-  10. `register_filter_on_all_handlers()` — re-applies the log-content
-      filter to any handler uvicorn registered between `import outrider`
-      and lifespan entry. Idempotent (see `llm/logging.py`).
+  persistence — engine, severity-policy fingerprint check, session factory,
+    retention settings, durable persister;
+  LLM — host selection (`DECISIONS.md#056`), provider, host-identity triad;
+  GitHub — credential provider (`DECISIONS.md#070`), `github_factory`, and the
+    live-authorization closure (`DECISIONS.md#065`);
+  graph — the checkpointer, anomaly sink, analyze cache and Slack resolver the
+    graph needs, then the compiled seven-logical-node graph over them, then the
+    `run_graph` closure the V1 dispatcher invokes;
+  logging — re-application of the log-content filter (idempotent, FUP-006).
 
-When `app.state.demo_mode` is set (the keyless public-demo boot), the
-lifespan runs steps 1-4 only — engine, fingerprint check, session,
-retention, persister — then wires the read-side `app.state`, yields, and
-returns. The truncation secret and steps 5-10 (provider, GitHub App, graph,
-run_graph, sweeps) are skipped; the demo box serves precomputed reviews
-read-only and holds no live LLM/GitHub/Slack credentials. See the
-`if demo_mode:` branch after step 4.
+Two ordering facts are load-bearing and stated where they are enforced: the
+fingerprint check runs before the rest of dependency wiring so a drifted policy
+never initializes downstream consumers, and installation-token minting happens
+at intake call-site rather than at webhook receipt (`DECISIONS.md#020` +
+`nodes-receive-deps-via-closure`).
 
-Teardown is `AsyncExitStack` LIFO — every push_async_callback runs even
-if a prior callback raises. Closes FUP-006 (filter re-registration) and
-FUP-011 (provider aclose).
+When `app.state.demo_mode` is set (the keyless public-demo boot), the lifespan
+constructs the persistence stage only, wires the read-side `app.state`, yields,
+and returns. The truncation secret and every later stage are skipped; the demo
+box serves precomputed reviews read-only and holds no live LLM / GitHub / Slack
+credentials. See the `if demo_mode:` branch.
 
-The webhook router (`api/webhooks/router.py`) reads `app.state` bindings
-to resolve per-request dependencies: `session_factory`, `retention_settings`,
+Teardown is `AsyncExitStack` LIFO — every push_async_callback runs even if a
+prior callback raises. Closes FUP-006 (filter re-registration) and FUP-011
+(provider aclose).
+
+The webhook router (`api/webhooks/router.py`) reads `app.state` bindings to
+resolve per-request dependencies: `session_factory`, `retention_settings`,
 `credential_provider` (webhook signature secret, resolved per request via
 `await current()`), `github_factory`, `run_graph`. `compiled_graph`,
-`persister`, `provider`, `engine` are also stashed for diagnostics / future routes.
+`persister`, `provider`, `engine` are also stashed for diagnostics / future
+routes.
 
-`build_lifespan(...)` is the test seam: production callers use the
-module-level `lifespan` (which calls `build_lifespan()` with defaults);
-tests pass factories to inject mocks for engine/provider construction,
-or to inject a provider whose `aclose()` raises (the teardown-ordering
-test).
+`build_lifespan(...)` is the test seam: production callers use the module-level
+`lifespan` (which calls `build_lifespan()` with defaults); tests pass factories
+to inject mocks for engine/provider construction, or to inject a provider whose
+`aclose()` raises (the teardown-ordering test).
 """
 
 from __future__ import annotations
@@ -266,36 +241,21 @@ SeverityPolicyFingerprintCheck = Callable[[AsyncEngine], "Awaitable[None]"]
 def _default_engine_factory() -> AsyncEngine:
     """Production engine factory: read `DATABASE_URL` env, fail loud if missing.
 
-    Construction does not connect to the DB — the engine is lazy. The first
-    real query (e.g., from `persister.persist()`) opens the pool.
+    Construction does not connect — the engine is lazy, and the first real query
+    (e.g. from `persister.persist()`) opens the pool.
 
-    `hide_parameters=True` is load-bearing for `DECISIONS.md#016` (logs
-    stay metadata-only): SQLAlchemy's default exception string for
-    `IntegrityError` / `DataError` / etc. includes the bound parameters
-    of the failing statement. Without this setting, a content-INSERT
-    failure (e.g., FK violation on installations) would surface raw
-    `prompt` / `completion` text in `exc.args[0]`. The real residual
-    leak vector this setting defends against is `logger.exception(...)`
-    (or any log handler that calls `str(exc)` on the raw SQLAlchemy
-    exception BEFORE the wrapper at `anthropic_provider.py::complete()`
-    sees it) — those rendered strings bypass `RejectLLMContentFilter`
-    (key-based, doesn't pattern-match log record `message` fields, same
-    FUP-023 gap). With this set, exception strings render parameter
-    values as `?` placeholders, preserving the SQL shape for
-    diagnostics without leaking content.
+    `hide_parameters=True` is load-bearing for `DECISIONS.md#016` (logs stay
+    metadata-only). SQLAlchemy's default exception string for `IntegrityError` /
+    `DataError` includes the failing statement's bound parameters, so a
+    content-INSERT failure would otherwise surface raw `prompt` / `completion`
+    text in `exc.args[0]`. With it set, parameters render as `?` placeholders and
+    the SQL shape still survives for diagnostics.
 
-    NOTE on the wrapper-chain leak vector (now closed at the wrapper):
-    the + hardening of `anthropic_provider.py` no
-    longer leaks unknown exception text via the wrapper chain. For ANY
-    exception type not in `METADATA_ONLY_EXCEPTION_TYPES`, the wrapper
-    renders only `<TypeName>` and raises with `from None`
-    (`__suppress_context__=True` blocks traceback walking into the
-    original SQLAlchemy exception). So even without
-    `hide_parameters=True`, a raw SQLAlchemy exception reaching the
-    wrapper renders only its class name. The remaining concern this
-    setting addresses is the case where exception text is rendered by
-    some other handler BEFORE the wrapper sees it (e.g., SQLAlchemy
-    engine-level logging, third-party connection-pool error handlers).
+    What it protects is anything that renders `str(exc)` on a raw SQLAlchemy
+    exception before the LLM wrapper sees it — SQLAlchemy engine-level logging, a
+    third-party pool error handler, a stray `logger.exception(...)`. Those
+    rendered strings bypass `RejectLLMContentFilter`, which is key-based and does
+    not pattern-match a log record's `message` field (the same FUP-023 gap).
     """
     try:
         database_url = os.environ["DATABASE_URL"]
@@ -502,7 +462,7 @@ def build_lifespan(
             # leaving the production path below untouched.
             demo_mode = bool(getattr(app.state, "demo_mode", False))
 
-            # Step 0: validate the truncation-marker HMAC secret is present. It is
+            # Truncation-marker secret: validate the HMAC secret is present. It is
             # read LAZILY inside `apply_size_cap` (only when a finding body actually
             # truncates), so a deploy missing OUTRIDER_TRUNCATION_HMAC_SECRET boots
             # clean and reviews short PRs fine, then crashes the whole publish node
@@ -520,7 +480,7 @@ def build_lifespan(
             if not demo_mode:
                 require_truncation_secret()
 
-            # Step 1: construct the engine; register dispose for teardown.
+            # Engine: construct it; register dispose for teardown.
             engine = engine_factory()
             # Push dispose IMMEDIATELY after construction so the engine
             # gets cleaned up even if the validation gate below raises.
@@ -571,7 +531,7 @@ def build_lifespan(
                     "(strict `is True` check — non-bool truthy values rejected)"
                 )
 
-            # Step 1b: severity-policy fingerprint check. Compares the DB
+            # Severity-policy fingerprint check. Compares the DB
             # row at `severity_policies.version=ACTIVE_POLICY_VERSION` to
             # the live `SEVERITY_POLICY` mapping. Raises `StartupError`
             # on miss or mismatch BEFORE the rest of dependency wiring,
@@ -582,23 +542,23 @@ def build_lifespan(
             # Runs AFTER engine construction because the check requires a
             # live DB connection; runs BEFORE persister/provider so a
             # drifted policy short-circuits before any LLM/audit wiring
-            # exists. A refactorer tempted to move this above Step 1
+            # exists. A refactorer tempted to move this above the engine
             # thinking "fail loudest first" would break the contract —
             # the engine must exist for the check to run. Injectable via
             # `severity_policy_fingerprint_check=` so MagicMock-engine
             # lifespan tests can bypass with a no-op (§0c devex M-4).
             await severity_policy_fingerprint_check(engine)
 
-            # Step 2: session factory. `expire_on_commit=False` so callers
+            # Session factory. `expire_on_commit=False` so callers
             # can access returned ORM attributes after commit without a
             # lazy refresh on a closed session.
             session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
-            # Step 3: retention settings (env-driven; reads
+            # Retention settings (env-driven; reads
             # `OUTRIDER_AUDIT_LLM_CONTENT_RETENTION_TTL` if set, else default).
             retention_settings = RetentionSettings()
 
-            # Step 4: durable persister.
+            # Durable persister.
             persister = AuditPersister(
                 session_factory=session_factory,
                 retention_settings=retention_settings,
@@ -646,7 +606,7 @@ def build_lifespan(
                 app.state.slack_oauth_settings = None
                 app.state.anomaly_sink = None
                 app.state.sweep_task = None
-                # Re-apply the log-content filter (Step 10 in the full path).
+                # Re-apply the log-content filter (as the full path does at the end).
                 register_filter_on_all_handlers()
                 _LOGGER.info(
                     "DEMO_MODE: keyless boot — read-only dashboard over seed data; "
@@ -656,7 +616,7 @@ def build_lifespan(
                 return
             # ───────────────────────────────────────────────────────────────────
 
-            # Step 5: host selection (DECISIONS.md#056). OUTRIDER_LLM_HOST +
+            # Host selection (DECISIONS.md#056). OUTRIDER_LLM_HOST +
             # OUTRIDER_LLM_REASONING are read ONCE here (single authority) and
             # threaded to ModelConfig.for_host, the provider factory, AND the
             # identity triad — so the model config, the provider's stamp, and
@@ -687,17 +647,17 @@ def build_lifespan(
                 "yes",
             }
 
-            # ModelConfig built ONCE and shared with both the provider (step 5b)
-            # AND build_graph (step 8). for_host applies OUTRIDER_MODEL_* over the
+            # ModelConfig built ONCE and shared with both provider construction
+            # AND compiled-graph construction. for_host applies OUTRIDER_MODEL_* over the
             # host's defaults; reading it twice would defeat the "validated once"
             # guarantee.
             model_config = ModelConfig.for_host(llm_host)
 
-            # Step 5b: provider; lifespan teardown awaits aclose.
+            # Provider; lifespan teardown awaits aclose.
             provider = provider_factory(persister, model_config, llm_host, llm_reasoning)
             stack.push_async_callback(provider.aclose)
 
-            # Step 5c: the host-identity triad for build_graph's completion-event
+            # Host-identity triad for build_graph's completion-event
             # closure. resolve_host_identity is the SAME source the provider stamps
             # from, so per-node completion events (zero-LLM cache-serve/skip paths)
             # carry the identical triad as the provider's per-call LLMCallEvents.
@@ -705,7 +665,7 @@ def build_lifespan(
                 llm_host, reasoning=llm_reasoning
             )
 
-            # Step 6: the GitHub App CREDENTIAL PROVIDER (DECISIONS.md#070). `env` mode wraps the
+            # GitHub App CREDENTIAL PROVIDER (DECISIONS.md#070). `env` mode wraps the
             # boot-validated GitHubAppSettings triad (OUTRIDER_GITHUB_APP_ID + _APP_PRIVATE_KEY +
             # _WEBHOOK_SECRET); `database` mode reads the manifest-onboarded row and fails closed
             # (raises GitHubUnconfiguredError) until CONFIGURED — so this boots even before
@@ -716,7 +676,7 @@ def build_lifespan(
                 session_factory=session_factory, env=os.environ
             )
 
-            # Step 7: github_factory — per-installation `GitHub` client factory over the provider.
+            # github_factory — per-installation `GitHub` client factory over the provider.
             # Per `DECISIONS.md#020` + `nodes-receive-deps-via-closure`, minting happens at intake
             # call-site. Each `await github_factory(iid)` fetches a fresh credential snapshot and
             # reads `.app_private_key.get_secret_value()` at the call site so the PEM is in plain
@@ -724,7 +684,7 @@ def build_lifespan(
             # github_factory is never called before credentials exist.
             github_factory = make_installation_client_factory(credential_provider)
 
-            # Step 7b: live-authorization closure for the #065 intake gate, over the provider. Per
+            # Live-authorization closure for the #065 intake gate, over the provider. Per
             # githubkit's reusing-client guidance (0.15.3), each authorization constructs and `async
             # with`-scopes a FRESH App-JWT client for its GET+POST pair (one shared client, closed
             # on exit) rather than leaking a new per-request client. There is NO long-lived shared
@@ -735,10 +695,11 @@ def build_lifespan(
             # `(installation_id, repo_id) -> LiveAuthResult` closure intake calls first.
             installation_authorizer = make_installation_authorizer(credential_provider)
 
-            # Step 8: build the compiled graph with all deps injected
-            # at construction time. `db_factory` is the canonical first
+            # Graph dependencies: prepare configuration and injected services.
+            # They are bound at `build_graph(...)` construction time below.
+            # `db_factory` is the canonical first
             # parameter per `docs/spec.md §9.3`. `model_config` is the
-            # SAME instance already passed to the provider at step 5b —
+            # SAME instance already passed to the provider at its construction —
             # single-source guarantee. The same `persister` implements
             # seven audit-side sink Protocols (phase + file-examination +
             # analyze + publish + trace + hitl + synthesize) plus the
@@ -801,7 +762,7 @@ def build_lifespan(
 
             _dashboard_settings = DashboardSettings()
 
-            # Step 7b: durable LangGraph checkpointer. HITL `interrupt(...)`
+            # Checkpointer construction: the durable LangGraph checkpointer. HITL `interrupt(...)`
             # writes the suspended state to this checkpointer; the
             # `/decide` endpoint's `Command(resume=...)` reads it back
             # via the same checkpointer in a separate FastAPI handler
@@ -845,7 +806,7 @@ def build_lifespan(
 
             analyze_cache_store = AnalyzeCacheStore(session_factory=session_factory)
 
-            # Step 8b: per-install Slack resolver (commit 6.4c). Wired only when token
+            # Per-install Slack resolver (commit 6.4c). Wired only when token
             # decryption is possible (OUTRIDER_TOKEN_ENC_KEY present) — without it no
             # stored bot token can be decrypted, so Slack posting is impossible and the
             # graph runs with resolve_slack_target=None (no per-review config lookup).
@@ -888,6 +849,7 @@ def build_lifespan(
                 )
                 stack.push_async_callback(slack_resolver.aclose)
 
+            # Compiled graph: bind the prepared dependencies.
             compiled_graph = build_graph(
                 provider=provider,
                 model_config=model_config,
@@ -922,7 +884,7 @@ def build_lifespan(
                 profile_contract_digest=profile_contract_digest,
             )
 
-            # Step 9: `run_graph` closure for the V1 dispatcher to call
+            # `run_graph` closure for the V1 dispatcher to call
             # from BackgroundTasks. The dispatcher itself is per-request
             # (built via FastAPI Depends in the webhook handler); the
             # graph is lifespan-bound.
@@ -949,7 +911,7 @@ def build_lifespan(
             # slot as parked coroutines instead of all entering analyze at once.
             bounded_run_graph = concurrency_limited(run_graph, review_semaphore)
 
-            # Step 10: re-apply log filter post-handler-registration.
+            # Re-apply log filter post-handler-registration.
             # uvicorn registers its handlers before the lifespan body
             # runs, so by here all handler chains exist; idempotent
             # `register_filter_on_all_handlers()` adds the filter to any

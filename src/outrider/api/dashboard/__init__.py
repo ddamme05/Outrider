@@ -24,7 +24,7 @@ Sub-modules:
 This module does NOT import vendor SDKs — auth uses `hmac.compare_digest`
 from stdlib; resume dispatch reads `app.state.compiled_graph` from the
 lifespan-bound graph (the checkpointer that backs cross-process resume
-is wired at `api/lifespan.py:Step 7b`).
+is wired in the checkpointer-construction block in `api/lifespan.py`).
 """
 
 from outrider.api.dashboard.agent_view import router as agent_view_router
