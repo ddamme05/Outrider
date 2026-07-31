@@ -16,7 +16,7 @@ Validators:
   - regex: model strings must match the V1 Anthropic family pattern
     `^claude-(haiku|sonnet|opus)-\\d+(-\\d+)?(-\\d{8})?$`. Catches typos
     at construction (e.g., `OUTRIDER_MODEL_ANALYZE_MODEL=gpt-4`). The
-    optional 8-digit `YYYYMMDD` suffix accepts dated SDK-catalog pins;
+    optional 8-digit `YYYYMMDD` suffix accepts dated exact model-version IDs;
     dated forms normalize to their undated alias for pricing lookup
     (see `outrider.llm.pricing.normalize_to_pricing_key`).
   - deprecation: rejects any model string in
@@ -38,15 +38,14 @@ from outrider.llm.host_profiles import HOST_DEFAULT_MODELS
 __all__ = ["ModelConfig", "is_anthropic_family_model", "model_uses_adaptive_thinking"]
 
 # V1 Anthropic family pattern.
-# Three accepted shapes per Anthropic SDK 0.100 model catalog:
+# Three accepted Anthropic model-ID shapes:
 #   - `claude-{haiku,sonnet,opus}-{major}` (forward-compat with future
 #     major-only releases)
 #   - `claude-{haiku,sonnet,opus}-{major}-{minor}` (the canonical alias
 #     form, e.g., `claude-haiku-4-5`, `claude-sonnet-4-6`, `claude-opus-4-7`)
 #   - `claude-{haiku,sonnet,opus}-{major}-{minor}-{YYYYMMDD}` (the dated
 #     "exact pin" form, e.g., `claude-haiku-4-5-20251001`)
-# previous regex rejected the dated form
-# even though the SDK catalog publishes it as the precise model id.
+# The dated form accepts exact model-version IDs such as `claude-haiku-4-5-20251001`.
 _VALID_MODEL_PATTERN: Final = re.compile(r"^claude-(haiku|sonnet|opus)-\d+(-\d+)?(-\d{8})?$")
 # A dated slug suffix is YYYYMMDD, so exactly this many digits.
 _DATED_SUFFIX_LEN: Final[int] = 8
@@ -133,8 +132,7 @@ class ModelConfig(BaseSettings):
         frozen=True,
     )
 
-    # Model strings match the current Anthropic SDK catalog. DEEP-tier analyze
-    # runs Sonnet 5 (the adaptive-thinking generation — see
+    # DEEP-tier analyze runs Sonnet 5 (the adaptive-thinking generation — see
     # `model_uses_adaptive_thinking`; the wrapper omits sampling params and
     # disables thinking for it). triage/trace/patch/synthesize + STANDARD-tier
     # analyze run Haiku 4.5.

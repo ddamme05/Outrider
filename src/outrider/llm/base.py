@@ -337,10 +337,9 @@ class LLMRateLimitError(LLMProviderError):
 class LLMConflictError(LLMProviderError):
     """Resource conflict (HTTP 409); translated from `anthropic.ConflictError`.
 
-    Per Anthropic SDK 0.100 docs (): 409 is in the
-    SDK's default-retry set alongside 408/429/5xx. We disable SDK
-    retries (`max_retries=0`), so the calling node owns retry — same
-    layer as Timeout/RateLimit/Upstream.
+    Per the Anthropic SDK 0.100 docs, 409 is in the SDK's default-retry set
+    alongside 408/429/5xx. We disable SDK retries (`max_retries=0`), so the
+    calling node owns retry — same layer as Timeout/RateLimit/Upstream.
     """
 
     retry_at_layer: ClassVar[RetryLayer] = "node"
@@ -351,16 +350,12 @@ class LLMUpstreamError(LLMProviderError):
 
     Translated from BOTH `anthropic.InternalServerError` (5xx with
     HTTP response) AND `anthropic.APIConnectionError` (no HTTP
-    response — connect refused, DNS, SSL handshake). Per Anthropic SDK
-    0.100 docs , connection errors are in the
-    SDK's documented retry-eligible set alongside 5xx. SDK auto-retries
-    are disabled in the wrapper (`max_retries=0`), so the calling node
-    owns retry for both cases — same `retry_at_layer="node"` semantic
-    regardless of whether an HTTP response was received.
-
-    The earlier docstring "5xx after SDK retries" was doubly wrong:
-    (a) SDK retries are not enabled, and (b) it omitted the
-    connection-error branch. Both corrected in
+    response — connect refused, DNS, SSL handshake). Per the Anthropic SDK
+    0.100 docs, connection errors are in its documented retry-eligible set
+    alongside 5xx. SDK auto-retries are disabled in the wrapper
+    (`max_retries=0`), so the calling node owns retry for both cases — the
+    same `retry_at_layer="node"` semantic regardless of whether an HTTP
+    response was received.
     """
 
     retry_at_layer: ClassVar[RetryLayer] = "node"

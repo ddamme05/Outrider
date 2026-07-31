@@ -72,7 +72,7 @@ _DATED_SUFFIX_PATTERN: Final = re.compile(r"-\d{8}$")
 
 
 def normalize_to_pricing_key(model: str) -> str:
-    """Strip a trailing `-YYYYMMDD` date suffix so dated SDK-catalog pins
+    """Strip a trailing `-YYYYMMDD` date suffix so dated exact model-version IDs
     resolve to their undated pricing alias.
 
     Idempotent: undated input is returned unchanged.

@@ -198,7 +198,7 @@ def test_constructor_with_default_model_config_succeeds() -> None:
 
 
 def test_constructor_accepts_dated_model_pin_via_pricing_normalization() -> None:
-    """Round-27 fold (Copilot): dated SDK-catalog pins (e.g.,
+    """Dated exact model-version IDs (e.g.,
     `claude-haiku-4-5-20251001`) accepted by ModelConfig must normalize
     to their undated alias for pricing-coverage validation. Without
     normalization, every dated env pin would fail this check despite
