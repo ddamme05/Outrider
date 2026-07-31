@@ -98,7 +98,8 @@ def verify_lockstep() -> None:
             "FINDING_TYPE_TO_DIMENSION (dimension assignment) in the same commit.\n"
             "After fixing the lockstep, lifespan startup will additionally "
             "verify the live SEVERITY_POLICY mapping against the DB-stored row "
-            "at ACTIVE_POLICY_VERSION (api/lifespan.py Step 1b) — bump "
+            "at ACTIVE_POLICY_VERSION (api/lifespan.py, the severity-policy "
+            "fingerprint check) — bump "
             "ACTIVE_POLICY_VERSION and add a severity_policies migration row if "
             "the policy values changed. "
         )
