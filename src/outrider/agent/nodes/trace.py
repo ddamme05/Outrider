@@ -5,14 +5,17 @@ resolves via two-phase fetch (probe + content), emits
 
 Audit-first emission contract + two-phase fetch design + failure
 semantics: see `specs/2026-05-23-trace-node.md` (the spec is the
-source of truth for the audit-boundary invariants). The step-by-step
-flow is also visible inline in the `trace()` body via step comments.
+source of truth for the audit-boundary invariants). The flow reads in
+two places: `trace()` for the pass as a whole, and
+`_rank_pending_candidates` for choosing and ordering what each finding
+probes.
 
-Security-relevant: the Haiku-flatten step (in `trace()`'s step 6 +
-the comment block above `flat_candidates`) carries the candidate-
-ordering attack rationale — cross-bucket sort vs intra-bucket
-insertion order; insertion-order's PR-content influence surface;
-the FOLLOWUP for `TraceRankingRejectedEvent` audit-attribution.
+Security-relevant: `_rank_pending_candidates` carries the candidate-
+ordering attack rationale in its docstring — why intra-bucket order is
+the reducer's and not a `candidate_id` sort — with the local ordering
+mechanics beside `flat_candidates`. The residual PR-content influence
+on emission order and the FOLLOWUP for `TraceRankingRejectedEvent`
+audit-attribution are named there too.
 """
 
 from __future__ import annotations
@@ -174,9 +177,9 @@ async def trace(
     `last_trace_pass_fetched_count` is a scalar overwrite per invocation
     — the per-pass-delta signal `_trace_router` reads).
 
-    Step order matches the module docstring. The Haiku ranking call is
-    one per invocation (not per finding); the LLM sees all candidates
-    at once and orders them.
+    At most one Haiku call per invocation (never one per finding): when a
+    ranking call happens at all, the LLM sees the capped pending set at once
+    and orders it together.
     """
     # Deterministic per-invocation phase_id: same `state.analysis_rounds`
     # length on resume re-runs produces the same key, so the PhaseEventSink
@@ -206,128 +209,19 @@ async def trace(
     # 2026-07-03); module-form probes ignore it.
     finding_file_paths = _build_finding_file_paths(state)
 
-    # Step 3: already-traced set for within-graph idempotency.
-    already_traced: set[UUID] = {d.source_finding_id for d in state.trace_decisions}
-
-    # Step 4: bucket candidates by source_finding_id via the join.
-    # Unjoinable candidates are the documented forensic-only case per
-    # DECISIONS.md#025 point 6 (rejected-parent proposals whose
-    # candidates stay in state.trace_candidates for replay but produce
-    # no TraceDecisionEvent and no GitHub fetch). They are skipped here,
-    # logged at INFO inside the helper, and remain visible in state.
-    candidate_buckets = _bucket_candidates_by_finding(state.trace_candidates, join_lookup)
-
-    # Step 5: drop already-traced buckets.
-    pending_buckets = {
-        finding_id: bucket
-        for finding_id, bucket in candidate_buckets.items()
-        if finding_id not in already_traced
-    }
-
-    # Step 6: Haiku ranking. One call across the capped candidate set.
-    # Empty pending_buckets → no Haiku call, no decisions to emit.
-    #
-    # DEDUPE-THEN-CAP: each bucket is FIRST deduped by `import_string`
-    # (first-occurrence-wins, order-stable),
-    # THEN truncated to MAX_CANDIDATES_PER_FINDING. Two candidates with
-    # the same `import_string` but different `reason` are distinct
-    # `candidate_id`s (content-hash) and both survive the reducer's
-    # `append_with_dedup_by(candidate_id)`; without pre-cap dedup, a
-    # benign-but-loquacious LLM that proposed the same import 5+ times
-    # with different rationales would fill every slot with the same
-    # import_string, crowding out unique candidates from ranking,
-    # probe-fetch fanout, and the audit row's set-semantic
-    # `proposed_import_strings`. Dedupe-then-cap means
-    # MAX_CANDIDATES_PER_FINDING bounds UNIQUE imports per finding —
-    # matching the cap's stated intent + the downstream audit-event
-    # validator's set semantics. PRE-RANK (per earlier F3) is preserved:
-    # the Haiku call still receives ≤ MAX_CANDIDATES_PER_FINDING ×
-    # len(pending_buckets) candidates; the dedup tightens the bound by
-    # eliminating duplicate work. Trade-off remains: the audit row's
-    # `proposed_import_strings` carries the post-dedup-and-cap set, NOT
-    # the full admitted list. Operators wanting the full pre-cap
-    # list read `state.trace_candidates` (reducer-deduped per finding).
-    #
-    # Flatten: cross-bucket order is `sorted(pending_buckets)` (by
-    # `source_finding_id` UUID — content-derived from `proposal_hash`
-    # which #022 + M5 make collision-resistant); intra-bucket order
-    # is the reducer's insertion order (the order analyze emitted
-    # candidates into `state.trace_candidates`).
-    #
-    # Intra-bucket is deliberately NOT sorted by `candidate_id`
-    # (SHA-256 of LLM-controlled fields): a hostile analyze-LLM could
-    # grind candidate_ids to win lexicographic order, then force
-    # parser fallback (e.g., via a malformed ranking response) to
-    # smuggle attacker-chosen candidates into the top-K. Insertion
-    # order is reducer-controlled.
-    #
-    # Residual attack surface (see FOLLOWUPS — TraceRankingRejectedEvent):
-    # PR-author content can influence analyze-LLM's emission order,
-    # so insertion order is influenced (but not deterministic) by
-    # PR content. The dedicated rejected-event audit type is the V1.5
-    # mitigation that lets operators observe rejection-rate spikes.
-    ordered_candidates: tuple[TraceCandidate, ...] = ()
-    if pending_buckets:
-        # Dedupe each bucket BEFORE applying the per-finding cap so
-        # MAX_CANDIDATES_PER_FINDING bounds unique imports, not raw
-        # entries. Downstream consumers (rank, probe, audit) all see
-        # this same deduped+capped set.
-        capped_buckets: dict[UUID, tuple[TraceCandidate, ...]] = {
-            finding_id: _dedupe_by_import_string(bucket)[:MAX_CANDIDATES_PER_FINDING]
-            for finding_id, bucket in pending_buckets.items()
-        }
-        flat_candidates = tuple(
-            c for finding_id in sorted(capped_buckets) for c in capped_buckets[finding_id]
-        )
-        # Defensive: a non-empty `pending_buckets` MUST flatten non-empty.
-        # Guard against a future refactor that empties a bucket without
-        # removing the key.
-        if flat_candidates:
-            # Skip the Haiku ranking call when ranking can't change the
-            # outcome:
-            #
-            #   (a) a single flat candidate is trivially its own top-K
-            #       (the original short-circuit), and
-            #   (b) every per-finding bucket already has exactly one
-            #       candidate — ranking only reorders WITHIN buckets
-            #       (Step 7 re-groups by `source_finding_id`), so
-            #       singleton buckets get an inconsequential reordering.
-            #
-            # (b) is the common shape: many findings × 1 unique import
-            # each. Without it, every trace pass with N≥2 distinct
-            # findings (one candidate each) fires a Haiku call whose
-            # ordering output is discarded by the re-grouping. The
-            # post-cap-flatten order is preserved as-is on both
-            # short-circuits.
-            if len(flat_candidates) == 1 or all(
-                len(bucket) == 1 for bucket in capped_buckets.values()
-            ):
-                ordered_candidates = flat_candidates
-            else:
-                ordered_candidates = await _rank_candidates_via_haiku(
-                    state=state,
-                    candidates=flat_candidates,
-                    provider=provider,
-                    trace_model=trace_model,
-                )
+    # Steps 3-6: select and order pending candidates.
+    ranked_by_finding = await _rank_pending_candidates(
+        state=state,
+        join_lookup=join_lookup,
+        provider=provider,
+        trace_model=trace_model,
+    )
 
     # Step 7: process each source_finding_id bucket. Trace_decisions +
     # trace_fetched_files accumulate locally; emitted via the audit-first
     # sink per decision, returned in the state delta atomically at step 8.
     accumulated_decisions: list[TraceDecision] = []
     accumulated_fetched_files: list[TraceFetchedFile] = []
-
-    # Group the ranked-and-ordered candidates back into per-finding
-    # buckets, preserving the LLM's intra-bucket priority order.
-    ranked_by_finding: dict[UUID, list[TraceCandidate]] = {}
-    for candidate in ordered_candidates:
-        # Re-derive finding_id via the join (already validated at step 2).
-        finding_id = join_lookup.get(candidate.source_proposal_hash)
-        if finding_id is None:
-            # Unjoinable — was dropped at step 4 but defensive against
-            # mutation between bucket-build and rank-call.
-            continue
-        ranked_by_finding.setdefault(finding_id, []).append(candidate)
 
     gh_client = await github_factory(state.pr_context.installation_id)
     head_sha = state.pr_context.head_sha
@@ -535,6 +429,123 @@ async def trace(
 # ---------------------------------------------------------------------------
 # Helpers (private; tested via the trace node's unit tests).
 # ---------------------------------------------------------------------------
+
+
+async def _rank_pending_candidates(
+    *,
+    state: ReviewState,
+    join_lookup: dict[str, UUID],
+    provider: LLMProvider,
+    trace_model: str,
+) -> dict[UUID, list[TraceCandidate]]:
+    """Choose and order the candidates each un-decided finding will probe.
+
+    Buckets by source finding, drops findings already decided, dedupes each
+    bucket by import string BEFORE capping it (so the cap bounds unique
+    imports, not repeated ones), optionally ranks the flattened set when
+    ranking can affect intra-finding priority, and regroups.
+
+    Two orderings, and they are not the same one. The set is flattened by
+    `sorted(source_finding_id)` across buckets, with the reducer's insertion
+    order inside each. Ranking runs over that set only when it could change the
+    outcome — a lone candidate, or buckets that are all singletons, skip the
+    provider entirely. So the regrouped result carries the provider's priority
+    when ranking ran, and that deterministic flattened order when it did not.
+
+    The pre-ranking intra-bucket order is deliberately NOT sorted by
+    `candidate_id` — that is a SHA-256 of LLM-controlled fields, so a hostile
+    analyze-LLM could grind ids to win lexicographic position and then force a
+    parser fallback to smuggle its own candidates into the top-K. Insertion
+    order is reducer-controlled. Residual: PR-author content still influences
+    analyze's emission order (see FOLLOWUPS, TraceRankingRejectedEvent).
+    """
+    # Findings the graph already decided this run are not decided again
+    # (DECISIONS.md#025 point 5 within-graph re-entry idempotency).
+    already_traced: set[UUID] = {d.source_finding_id for d in state.trace_decisions}
+    # Step 4: bucket candidates by source_finding_id via the join.
+    # Unjoinable candidates are the documented forensic-only case per
+    # DECISIONS.md#025 point 6 (rejected-parent proposals whose
+    # candidates stay in state.trace_candidates for replay but produce
+    # no TraceDecisionEvent and no GitHub fetch). They are skipped here,
+    # logged at INFO inside the helper, and remain visible in state.
+    candidate_buckets = _bucket_candidates_by_finding(state.trace_candidates, join_lookup)
+
+    # Step 5: drop already-traced buckets.
+    pending_buckets = {
+        finding_id: bucket
+        for finding_id, bucket in candidate_buckets.items()
+        if finding_id not in already_traced
+    }
+
+    # Dedupe-then-cap: two candidates sharing an `import_string` but differing
+    # in `reason` are distinct `candidate_id`s and both survive the reducer, so
+    # deduping first is what makes MAX_CANDIDATES_PER_FINDING bound UNIQUE
+    # imports — matching the audit event's set-semantic
+    # `proposed_import_strings`. The audit row therefore carries the
+    # post-dedupe-and-cap set; the full admitted list stays in
+    # `state.trace_candidates` for operators who need it.
+    #
+    # Cross-bucket flatten order is `sorted(pending_buckets)` by
+    # `source_finding_id` (content-derived from `proposal_hash`, which #022 +
+    # M5 make collision-resistant).
+    ordered_candidates: tuple[TraceCandidate, ...] = ()
+    if pending_buckets:
+        # Dedupe each bucket BEFORE applying the per-finding cap so
+        # MAX_CANDIDATES_PER_FINDING bounds unique imports, not raw
+        # entries. Downstream consumers (rank, probe, audit) all see
+        # this same deduped+capped set.
+        capped_buckets: dict[UUID, tuple[TraceCandidate, ...]] = {
+            finding_id: _dedupe_by_import_string(bucket)[:MAX_CANDIDATES_PER_FINDING]
+            for finding_id, bucket in pending_buckets.items()
+        }
+        flat_candidates = tuple(
+            c for finding_id in sorted(capped_buckets) for c in capped_buckets[finding_id]
+        )
+        # Defensive: a non-empty `pending_buckets` MUST flatten non-empty.
+        # Guard against a future refactor that empties a bucket without
+        # removing the key.
+        if flat_candidates:
+            # Skip the Haiku ranking call when ranking can't change the
+            # outcome:
+            #
+            #   (a) a single flat candidate is trivially its own top-K
+            #       (the original short-circuit), and
+            #   (b) every per-finding bucket already has exactly one
+            #       candidate — ranking only reorders WITHIN buckets
+            #       (Step 7 re-groups by `source_finding_id`), so
+            #       singleton buckets get an inconsequential reordering.
+            #
+            # (b) is the common shape: many findings × 1 unique import
+            # each. Without it, every trace pass with N≥2 distinct
+            # findings (one candidate each) fires a Haiku call whose
+            # ordering output is discarded by the re-grouping. The
+            # post-cap-flatten order is preserved as-is on both
+            # short-circuits.
+            if len(flat_candidates) == 1 or all(
+                len(bucket) == 1 for bucket in capped_buckets.values()
+            ):
+                ordered_candidates = flat_candidates
+            else:
+                ordered_candidates = await _rank_candidates_via_haiku(
+                    state=state,
+                    candidates=flat_candidates,
+                    provider=provider,
+                    trace_model=trace_model,
+                )
+
+    # Group the ordered candidates back into per-finding buckets: the
+    # provider's intra-bucket priority when ranking ran, the deterministic
+    # flattened order otherwise.
+    ranked_by_finding: dict[UUID, list[TraceCandidate]] = {}
+    for candidate in ordered_candidates:
+        # Re-derive finding_id via the join (already validated at step 2).
+        finding_id = join_lookup.get(candidate.source_proposal_hash)
+        if finding_id is None:
+            # Unjoinable — was dropped at step 4 but defensive against
+            # mutation between bucket-build and rank-call.
+            continue
+        ranked_by_finding.setdefault(finding_id, []).append(candidate)
+    return ranked_by_finding
 
 
 def _build_proposal_hash_join(state: ReviewState) -> dict[str, UUID]:
