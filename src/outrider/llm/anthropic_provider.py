@@ -16,28 +16,29 @@ Constructor performs eager validation:
   - Privacy startup notice emits to logger `outrider.llm.privacy_notice`
     on every construction (per DECISIONS#015 point 4).
 
-`complete()` step ordering (spec §Implementation sketch):
+`complete()` runs a fixed lifecycle. In order, and several stages depend on
+that order being what it is:
 
-  1. Fail-closed pre-call: persister=None → raise immediately.
-  2. Translate `LLMRequest` to SDK kwargs (system=request.system_prompt,
-     messages=[...], stream omitted).
-  3. cache_control translation: bool → ephemeral block on system prompt.
-  4. await client.messages.create(...); catch APIError → typed subclass.
-  5. Validate response shape: exactly one TextBlock or fail-loud.
-  6. Construct LLMResponse + measure latency_ms.
-  7. Compute prompt_hash + system_prompt_hash.
-  7a. diagnostic: if `cache_control=True` AND both
-      cache_creation_input_tokens=0 AND cache_read_input_tokens=0, log a
-      WARN once per (model, system_prompt_hash) per process — the SDK
-      silently rejected caching, typically because the prompt is below
-      the model's min-cacheable threshold (authoritative values:
-      `pricing.MIN_CACHEABLE_TOKENS`). Diagnostic only; does not raise.
-  8. Compute cost_usd via pricing.compute_cost_usd() (uses
-     `normalize_to_pricing_key` so dated SDK-catalog model pins resolve
-     to their undated alias for RATE_TABLE lookup, ).
-  9. Build LLMCallEvent; await persister.persist(...); wrap failures as
-     LLMPersisterError.
- 10. Return LLMResponse.
+  - Fail closed before spending anything: a missing persister, a closed
+    provider, or an unpriced request model raises before the paid SDK call.
+  - Translate the `LLMRequest` to SDK kwargs, including the cache_control
+    bool → ephemeral block on the system prompt.
+  - Call the SDK, timed. Any `anthropic.AnthropicError` — the SDK root, NOT
+    the narrower `APIError` — translates to a typed subclass, so no vendor
+    exception escapes.
+  - Validate the response shape and build `LLMResponse` + hashes. A
+    `stop_reason="refusal"` yields an empty completion and a refusal held
+    PENDING rather than raised.
+  - Run the cache diagnostic, warn-once per (model, system_prompt_hash).
+    BEFORE cost, so a substituted-and-unpriced model still gets it.
+  - Compute cost_usd; a model outside RATE_TABLE raises here.
+  - Build `LLMCallEvent` and persist. A refused exchange is persisted too —
+    it was billed. A persister failure raises `LLMPersisterError` and
+    SUPERSEDES any pending refusal.
+  - Raise the pending refusal if one was held; otherwise return the response.
+
+The step numbers in `complete()` are the coordinates the body and its
+cross-references use; this account deliberately carries none of its own.
 """
 
 import asyncio
@@ -98,11 +99,10 @@ _LOGGER = logging.getLogger("outrider.llm.anthropic_provider")
 _ZDR_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes"})
 _ZDR_FALSY: Final[frozenset[str]] = frozenset({"", "0", "false", "no"})
 
-# Warn once per misconfigured raw value per process. V1.5 parallel-analyze
-# constructs N providers per
-# review — without this guard, a typo'd env var spams thousands of WARNING
-# records per day. The set is process-local so each worker still warns
-# once, which is the diagnostic signal we want without the spam.
+# Warn once per distinct misconfigured raw value per process. Read only by
+# `resolve_zdr_attestation`, which runs on provider construction and on every
+# `/privacy` read — so repeated resolution of one invalid env value would
+# otherwise warn every time. Process-local, so each worker still warns once.
 _WARNED_RAW_VALUES: set[str] = set()
 
 # per Anthropic SDK 0.100 prompt-caching docs: silently-
@@ -115,8 +115,9 @@ _WARNED_RAW_VALUES: set[str] = set()
 # response. Without this signal, an operator who opted into caching sees
 # no cost reduction and has no way to discover the root cause without
 # aggregating across many events. Process-local set keyed by
-# (model, system_prompt_hash) bounds spam under V1.5 parallel-analyze
-# fanout (same shape as `_WARNED_RAW_VALUES` above).
+# (model, system_prompt_hash) bounds the volume when the parallel-analyze
+# fan-out drives many calls with the same prompt (same shape as
+# `_WARNED_RAW_VALUES` above).
 _WARNED_NONCACHEABLE: set[tuple[str, str]] = set()
 
 
@@ -166,8 +167,8 @@ def resolve_zdr_attestation(zdr_enabled: bool | None) -> bool:
     Unrecognized values fail closed (no ZDR attestation) AND log a
     WARNING on `outrider.llm.privacy_notice` so the operator sees the
     misconfiguration at construction time .
-    The warning fires once per distinct raw value per process to avoid
-    log spam under V1.5's parallel-analyze fanout .
+    The warning fires once per distinct raw value per process, so repeated
+    resolution of one invalid value does not warn repeatedly.
     """
     if zdr_enabled is not None:
         return zdr_enabled
@@ -343,9 +344,9 @@ class AnthropicProvider:
     async def complete(self, request: LLMRequest) -> LLMResponse:
         """Send `request` to the Anthropic API; return `LLMResponse`.
 
-        Strict 10-step ordering — see module docstring. Failures surface
-        as typed `LLMProviderError` subclasses; the calling node reads
-        `error.retry_at_layer` to decide retry behavior.
+        Fixed lifecycle ordering — see the module docstring. Failures
+        surface as typed `LLMProviderError` subclasses; the calling node
+        reads `error.retry_at_layer` to decide retry behavior.
         """
         # Step 0: post-teardown guard. `app.state.provider` survives
         # lifespan teardown — a request handler queued by uvicorn's
@@ -389,54 +390,7 @@ class AnthropicProvider:
         # Step 2 + 3: translate request to SDK shape.
         sdk_kwargs = _build_sdk_kwargs(request)
 
-        # Step 4: SDK call + exception translation.
-        # `time.perf_counter_ns()` for monotonic, high-res latency measurement.
-        # Catch `anthropic.AnthropicError` (the SDK exception root) rather
-        # than `APIError` — the SDK's `WorkloadIdentityError` is an
-        # `AnthropicError` subclass that does NOT inherit from `APIError`,
-        # so a narrower `except APIError` would let it escape the wrapper
-        # uncaught, breaking the "no vendor SDK exception escapes
-        # complete()" contract. WorkloadIdentityError fires only on the
-        # cloud-auth path V1 doesn't use today, but the broader catch is
-        # cheap defense-in-depth against future SDK additions.
-        t_start_ns = time.perf_counter_ns()
-        try:
-            sdk_response: Message = await self._client.messages.create(**sdk_kwargs)
-        except anthropic.AnthropicError as exc:
-            # `from None` (not `from exc`): SDK exception text is NOT a
-            # trust boundary we can rely on. anthropic SDK errors render
-            # their underlying httpx response body via `str(exc)`, which
-            # could contain prompt fragments echoed back by the upstream
-            # (e.g., context-length errors that quote the offending
-            # request). Preserving the SDK exception via `__cause__` would
-            # leak that body into traceback rendering by any log handler
-            # that uses `exc_info=True`. The wrapper class identity carries
-            # the operational signal (which kind of failure); the original
-            # SDK exception is intentionally dropped. Defense-in-depth for
-            # the persister-side metadata-only contract already in place.
-            raise _translate_anthropic_error(exc) from None
-        except Exception as exc:
-            # Non-Anthropic exception leaking from the SDK call. The Step 0
-            # `_closed` check is best-effort, not atomic vs. aclose() — a
-            # close that lands between the check and the await surfaces an
-            # `httpx.RuntimeError("Cannot send a request, as the client has
-            # been closed.")` instead of an `anthropic.AnthropicError`,
-            # which would escape the typed `LLMProviderError` contract.
-            # Translate to `LLMUnknownError` with `from None` so the cause
-            # chain stays content-clean (same metadata-only rationale as
-            # the AnthropicError branch). `except Exception` (not
-            # `BaseException`) preserves KeyboardInterrupt / SystemExit
-            # propagation. The type name renders as a class-level
-            # identifier; no exception args are interpolated.
-            if self._closed:
-                raise LLMUnknownError(
-                    "AnthropicProvider.complete() raced with aclose(); "
-                    "provider is closed and cannot accept new requests"
-                ) from None
-            raise LLMUnknownError(
-                f"AnthropicProvider non-Anthropic SDK failure: <{type(exc).__name__}>"
-            ) from None
-        latency_ms = (time.perf_counter_ns() - t_start_ns) // 1_000_000
+        sdk_response, latency_ms = await self._call_sdk(sdk_kwargs)
 
         # Step 5: refusal gate (capture → persist → raise), then shape validation.
         # A safety-classifier decline returns HTTP 200 with stop_reason="refusal"
@@ -489,231 +443,88 @@ class AnthropicProvider:
         )
         system_prompt_hash = _canonical_system_prompt_hash(request.system_prompt)
 
-        # Prompt-caching silently-disabled diagnostic.
-        # Per Anthropic SDK 0.100 prompt-caching docs, prompts shorter than
-        # the model's min-cacheable threshold (authoritative per-model
-        # values: `pricing.MIN_CACHEABLE_TOKENS`) are processed without
-        # caching with NO error returned. The unambiguous signal is `cache_control=True`
-        # AND both cache_creation/read tokens at 0. The first-ever cache
-        # write has cache_creation > 0 (so doesn't trigger); cache eviction
-        # also rewrites with cache_creation > 0 (so doesn't trigger). Only
-        # the genuine "SDK refused to cache this prompt" condition matches.
-        #
-        # The dedup key uses `normalize_to_pricing_key(response.model)` so
-        # dated aliases share a warn-once budget with their undated base
-        # (e.g., `claude-haiku-4-5-20251001` and `claude-haiku-4-5` are
-        # treated as the same model for warning suppression — they share
-        # the same cache threshold by definition). The literal
-        # `response.model` is still logged in the extras for operator
-        # visibility into what actually executed. Same normalization rule
-        # as the cost-computation lookup at step 8.
-        if (
-            request.cache_control
-            and response.cache_read_tokens == 0
-            and response.cache_write_tokens == 0
-            # A refusal produces 0/0 cache tokens because the model declined, NOT because
-            # the prompt is below the cache floor — skip the spurious below-floor warning.
-            and pending_refusal is None
-        ):
-            cache_warn_key = (
-                normalize_to_pricing_key(response.model),
-                system_prompt_hash,
-            )
-            if cache_warn_key not in _WARNED_NONCACHEABLE:
-                _WARNED_NONCACHEABLE.add(cache_warn_key)
-                # Floor derived from the authoritative table rather than
-                # hardcoded prose, so a floor change can't strand a stale
-                # number in the operator-facing message. Defensive lookup:
-                # `response.model` is SDK-returned and could (in principle)
-                # be a substituted id outside the table → KeyError.
-                floor_text: str | None
-                try:
-                    floor = min_cacheable_tokens(_ANTHROPIC_PROFILE_ID, response.model)
-                except KeyError:
-                    floor_text = "see llm/pricing.py::MIN_CACHEABLE_TOKENS"
-                else:
-                    # None = the DECISIONS.md#056 unknown-floor sentinel: the model is
-                    # priced but its min-cacheable threshold is undocumented, so a cache
-                    # miss can't be attributed to a below-floor prompt. Suppress the
-                    # diagnostic (per the `min_cacheable_tokens` contract) rather than
-                    # log a confusing "None tokens" message.
-                    floor_text = (
-                        None
-                        if floor is None
-                        else f"{floor} tokens for {normalize_to_pricing_key(response.model)}"
-                    )
-                if floor_text is not None:
-                    _LOGGER.warning(
-                        "anthropic_provider cache_control=True but neither "
-                        "cache_creation_input_tokens nor cache_read_input_tokens "
-                        "fired; system prompt likely below the model's "
-                        "min-cacheable threshold (%s — see Anthropic "
-                        "prompt-caching docs). cache_control=True will produce "
-                        "no cost savings on this prompt until it grows past the "
-                        "threshold or cache_control is removed.",
-                        floor_text,
-                        extra={
-                            "model": response.model,
-                            "request_model": request.model,
-                            "system_prompt_hash": system_prompt_hash,
-                            "review_id": str(request.review_id),
-                            "node_id": request.node_id,
-                        },
-                    )
-
-        # Step 8: compute cost_usd from pricing table.
-        # KeyError unreachable in production thanks to constructor's eager
-        # pricing-coverage check; the defensive try/except below catches
-        # the case where RATE_TABLE mutates between construction and call
-        # (shouldn't happen — module-level Final dict — but typed for safety).
-        #
-        # Audit-fidelity: pass `response.model` rather than `request.model`
-        # into `compute_cost_usd()` so both costing and the persisted
-        # `LLMCallEvent.model` are anchored to the upstream-returned model
-        # identifier. Note that `compute_cost_usd()` normalizes dated model
-        # IDs internally via `normalize_to_pricing_key`, so the effective
-        # `RATE_TABLE` lookup key may be the undated alias (e.g.,
-        # `claude-sonnet-4-6`) even when `response.model` is the dated
-        # form (e.g., `claude-sonnet-4-6-20251015`). Currently identical
-        # in practice — Anthropic SDK 0.100 echoes back the request model
-        # exactly — but if a future SDK ever substitutes (alias
-        # resolution, deprecation routing), audit replay would otherwise
-        # see `event.model = response.model` paired with a cost computed
-        # from `request.model`'s rate. The eager pricing-coverage check
-        # still validates configured models; if the SDK substitutes to a
-        # model whose normalized pricing key isn't in `RATE_TABLE`, the
-        # `KeyError` fallback below surfaces it loudly as
-        # `LLMPricingMissingError` — naming both the literal
-        # `response.model` AND the normalized pricing key in the message
-        # so an operator updating the rate table fixes the actual missing
-        # entry rather than the un-normalized literal.
-        try:
-            cost_decimal: Decimal = compute_cost_usd(
-                _ANTHROPIC_PROFILE_ID,
-                response.model,
-                input_tokens=response.input_tokens,
-                cache_write_tokens=response.cache_write_tokens,
-                cache_read_tokens=response.cache_read_tokens,
-                output_tokens=response.output_tokens,
-            )
-        except KeyError as exc:
-            missing_key = pricing_key(_ANTHROPIC_PROFILE_ID, response.model)
-            raise LLMPricingMissingError(
-                f"Model {response.model!r} maps to host-qualified pricing key "
-                f"{missing_key!r}, which is not in RATE_TABLE at "
-                f"complete() step 8 (request.model={request.model!r}). "
-                f"Constructor's eager validation covers configured models "
-                f"only — this can fire if the SDK substitutes the model "
-                f"in its response (alias resolution, deprecation routing). "
-                f"Add the key to RATE_TABLE + bump "
-                f"PRICING_VERSION to fix.",
-                missing_models=[str(missing_key)],
-            ) from exc
-
-        # Step 9: build LLMCallEvent + await persister.persist().
-        event = LLMCallEvent(
-            review_id=request.review_id,
-            timestamp=datetime.now(UTC),
-            is_eval=request.is_eval,
-            # Canonical metadata-only fields per spec.md §8.3.
-            model=response.model,
-            # Mirror the provider's normalized stop reason onto the event so a refusal is
-            # distinguishable from a zero-output success on metadata-only replay
-            # (DECISIONS.md#016 Amended 2026-06-30); the persister cross-checks it.
-            finish_reason=response.finish_reason,
-            node_id=request.node_id,
-            input_tokens=response.input_tokens,
-            output_tokens=response.output_tokens,
-            cached_tokens=response.cache_read_tokens,
-            cost_usd=float(cost_decimal),
-            pricing_version=PRICING_VERSION,
-            # Triad mirrored from the response (single source) so the persister cross-check
-            # (a later step-4 commit) is trivially consistent (DECISIONS.md#056).
-            profile_id=response.profile_id,
-            reasoning_enabled=response.reasoning_enabled,
-            profile_contract_digest=response.profile_contract_digest,
-            latency_ms=response.latency_ms,
-            prompt_hash=prompt_hash,
-            cache_hit=(response.cache_read_tokens > 0),
-            context_summary=request.context_summary,
-            prompt_template_version=request.prompt_template_version,
+        _warn_if_cache_silently_disabled(
+            request=request,
+            response=response,
             system_prompt_hash=system_prompt_hash,
-            degraded_mode=request.degraded_mode,
-            # §0b: forward the typed degradation cause so metadata-only
-            # replay (post-retention or partial-content) can distinguish
-            # the `DegradationReason` causes (e.g. `parse_failed` vs the
-            # `tree_has_error_*` cases).
-            # Convergent finding from §0b (adversarial HIGH,
-            # , data-integrity F1): without this pass-
-            # through, the wrapper drops the typed cause that
-            # `LLMRequest._enforce_degradation_provenance` mandates.
-            degradation_reason=request.degradation_reason,
-            phase_key=request.phase_key,
-            # Constrained-decoding provenance (FUP-096): identical prompt
-            # bytes + template version can produce different output
-            # populations once `output_config.format` exists — metadata-only
-            # replay/ops need the request-format identity on the stream.
-            response_format_digest=request.response_format_digest,
+            refused=pending_refusal is not None,
         )
-        try:
-            await self._persister.persist(event, request, response)
-        except Exception as exc:
-            # Wrap any persister failure as LLMPersisterError so callers
-            # have one error class to pattern-match for the post-SDK-
-            # failure path. SDK call has succeeded (billing accounted);
-            # no audit row landed → calling node halts the review.
-            #
-            # If a refusal was captured (`pending_refusal`), this
-            # LLMPersisterError supersedes it — step 10's `raise pending_refusal`
-            # is never reached. The node still halts terminally (both are
-            # retry_at_layer="none"), but the surfaced cause becomes the
-            # unaudited-call, not the decline; the refusal is lost from the
-            # error. Acceptable while no caller distinguishes the two; revisit
-            # if a retry-on-persister-failure policy is ever added (it must not
-            # re-issue a refused prompt).
-            #
-            # The wrapper handles two exception classes asymmetrically
-            # per DECISIONS#016 logs-stay-metadata-only:
-            #
-            # - Known metadata-only persister exception types
-            #   (`METADATA_ONLY_EXCEPTION_TYPES`): render `str(exc)` in
-            #   the wrapper message (each type carries a contributor-
-            #   enforced metadata-only `__str__`), AND preserve the cause
-            #   chain via `from exc` so tracebacks carry useful
-            #   diagnostic context — `__cause__` is also metadata-only
-            #   by contract.
-            #
-            # - Unknown exception types (e.g., a SQLAlchemy exception
-            #   that somehow survives `hide_parameters=True`, or a
-            #   future persister exception class with content-bearing
-            #   repr): render only `<TypeName>` in the wrapper message
-            #   AND use `from None` to DROP the cause chain entirely.
-            #   Without `from None`, Python's traceback formatter would
-            #   render `__cause__` — leaking the underlying exception's
-            #   `args` / `str()` (which may carry raw prompt/completion
-            #   text) past the wrapper's sanitization. The `from None`
-            #   sets `__suppress_context__ = True`, which also hides the
-            #   implicit `__context__`. Defense in depth alongside the
-            #   engine-level `hide_parameters=True` setting; closes the
-            #   traceback-chain leak path.
-            from outrider.audit.persister import METADATA_ONLY_EXCEPTION_TYPES
 
-            if isinstance(exc, METADATA_ONLY_EXCEPTION_TYPES):
-                raise LLMPersisterError(
-                    f"Persister failed after successful SDK call: {exc}. "
-                    f"The audit row did not land; calling node halts the review."
-                ) from exc
-            raise LLMPersisterError(
-                f"Persister failed after successful SDK call: "
-                f"<{type(exc).__name__}>. "
-                f"The audit row did not land; calling node halts the review."
-            ) from None
+        cost_decimal = _compute_response_cost(request, response)
+
+        await _persist_exchange(
+            persister=self._persister,
+            request=request,
+            response=response,
+            prompt_hash=prompt_hash,
+            system_prompt_hash=system_prompt_hash,
+            cost_decimal=cost_decimal,
+        )
 
         # Step 10: a captured refusal raises AFTER the exchange is persisted (the
         # completed-but-declined exchange is now in the audit + cost); else return.
         if pending_refusal is not None:
             raise pending_refusal
         return response
+
+    async def _call_sdk(self, sdk_kwargs: dict[str, Any]) -> tuple[Message, int]:
+        """Make the paid call and return the SDK response with its latency in ms.
+
+        Anthropic errors and any other ordinary `Exception` from the SDK path leave
+        as typed `LLMProviderError` subclasses. Cancellation, `SystemExit` and
+        `KeyboardInterrupt` are not `Exception` subclasses and propagate untouched,
+        which is what keeps task cancellation and interrupt working.
+        """
+        # Step 4: SDK call + exception translation.
+        # `time.perf_counter_ns()` for monotonic, high-res latency measurement.
+        # Catch `anthropic.AnthropicError` (the SDK exception root) rather
+        # than `APIError` — the SDK's `WorkloadIdentityError` is an
+        # `AnthropicError` subclass that does NOT inherit from `APIError`,
+        # so a narrower `except APIError` would let it escape the wrapper
+        # uncaught, breaking the "no vendor SDK exception escapes
+        # complete()" contract. WorkloadIdentityError fires only on the
+        # cloud-auth path V1 doesn't use today, but the broader catch is
+        # cheap defense-in-depth against future SDK additions.
+        t_start_ns = time.perf_counter_ns()
+        try:
+            sdk_response: Message = await self._client.messages.create(**sdk_kwargs)
+        except anthropic.AnthropicError as exc:
+            # `from None` (not `from exc`): SDK exception text is NOT a
+            # trust boundary we can rely on. anthropic SDK errors render
+            # their underlying httpx response body via `str(exc)`, which
+            # could contain prompt fragments echoed back by the upstream
+            # (e.g., context-length errors that quote the offending
+            # request). Preserving the SDK exception via `__cause__` would
+            # leak that body into traceback rendering by any log handler
+            # that uses `exc_info=True`. The wrapper class identity carries
+            # the operational signal (which kind of failure); the original
+            # SDK exception is intentionally dropped. Defense-in-depth for
+            # the persister-side metadata-only contract already in place.
+            raise _translate_anthropic_error(exc) from None
+        except Exception as exc:
+            # Non-Anthropic exception leaking from the SDK call. The Step 0
+            # `_closed` check is best-effort, not atomic vs. aclose() — a
+            # close that lands between the check and the await surfaces an
+            # `httpx.RuntimeError("Cannot send a request, as the client has
+            # been closed.")` instead of an `anthropic.AnthropicError`,
+            # which would escape the typed `LLMProviderError` contract.
+            # Translate to `LLMUnknownError` with `from None` so the cause
+            # chain stays content-clean (same metadata-only rationale as
+            # the AnthropicError branch). `except Exception` (not
+            # `BaseException`) preserves KeyboardInterrupt / SystemExit
+            # propagation. The type name renders as a class-level
+            # identifier; no exception args are interpolated.
+            if self._closed:
+                raise LLMUnknownError(
+                    "AnthropicProvider.complete() raced with aclose(); "
+                    "provider is closed and cannot accept new requests"
+                ) from None
+            raise LLMUnknownError(
+                f"AnthropicProvider non-Anthropic SDK failure: <{type(exc).__name__}>"
+            ) from None
+        latency_ms = (time.perf_counter_ns() - t_start_ns) // 1_000_000
+
+        return sdk_response, int(latency_ms)
 
     async def aclose(self) -> None:
         """Close the SDK client and drain its connection pool. Closes FUP-011.
@@ -799,6 +610,267 @@ class AnthropicProvider:
                 )
         if self._close_task is task:
             self._close_task = None
+
+
+async def _persist_exchange(
+    *,
+    persister: LLMExchangePersister,
+    request: LLMRequest,
+    response: LLMResponse,
+    prompt_hash: str,
+    system_prompt_hash: str,
+    cost_decimal: Decimal,
+) -> None:
+    """Build the `LLMCallEvent` and hand it to the persister.
+
+    A failure here raises `LLMPersisterError`: the SDK call already succeeded and
+    was billed, but no audit row landed, so the calling node halts the review.
+
+    The persister arrives as an argument because `complete()`'s fail-closed guard
+    has already established it is not None; re-checking here would add a second
+    runtime gate for a condition the caller settled.
+    """
+    # Step 9: build LLMCallEvent + await persister.persist().
+    event = LLMCallEvent(
+        review_id=request.review_id,
+        timestamp=datetime.now(UTC),
+        is_eval=request.is_eval,
+        # Canonical metadata-only fields per spec.md §8.3.
+        model=response.model,
+        # Mirror the provider's normalized stop reason onto the event so a refusal is
+        # distinguishable from a zero-output success on metadata-only replay
+        # (DECISIONS.md#016 Amended 2026-06-30); the persister cross-checks it.
+        finish_reason=response.finish_reason,
+        node_id=request.node_id,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+        cached_tokens=response.cache_read_tokens,
+        cost_usd=float(cost_decimal),
+        pricing_version=PRICING_VERSION,
+        # Triad mirrored from the response (single source) so the persister cross-check
+        # (a later step-4 commit) is trivially consistent (DECISIONS.md#056).
+        profile_id=response.profile_id,
+        reasoning_enabled=response.reasoning_enabled,
+        profile_contract_digest=response.profile_contract_digest,
+        latency_ms=response.latency_ms,
+        prompt_hash=prompt_hash,
+        cache_hit=(response.cache_read_tokens > 0),
+        context_summary=request.context_summary,
+        prompt_template_version=request.prompt_template_version,
+        system_prompt_hash=system_prompt_hash,
+        degraded_mode=request.degraded_mode,
+        # §0b: forward the typed degradation cause so metadata-only
+        # replay (post-retention or partial-content) can distinguish
+        # the `DegradationReason` causes (e.g. `parse_failed` vs the
+        # `tree_has_error_*` cases).
+        # Convergent finding from §0b (adversarial HIGH,
+        # , data-integrity F1): without this pass-
+        # through, the wrapper drops the typed cause that
+        # `LLMRequest._enforce_degradation_provenance` mandates.
+        degradation_reason=request.degradation_reason,
+        phase_key=request.phase_key,
+        # Constrained-decoding provenance (FUP-096): identical prompt
+        # bytes + template version can produce different output
+        # populations once `output_config.format` exists — metadata-only
+        # replay/ops need the request-format identity on the stream.
+        response_format_digest=request.response_format_digest,
+    )
+    try:
+        await persister.persist(event, request, response)
+    except Exception as exc:
+        # Wrap any persister failure as LLMPersisterError so callers
+        # have one error class to pattern-match for the post-SDK-
+        # failure path. SDK call has succeeded (billing accounted);
+        # no audit row landed → calling node halts the review.
+        #
+        # If a refusal was captured (`pending_refusal`), this
+        # LLMPersisterError supersedes it — step 10's `raise pending_refusal`
+        # is never reached. The node still halts terminally (both are
+        # retry_at_layer="none"), but the surfaced cause becomes the
+        # unaudited-call, not the decline; the refusal is lost from the
+        # error. Acceptable while no caller distinguishes the two; revisit
+        # if a retry-on-persister-failure policy is ever added (it must not
+        # re-issue a refused prompt).
+        #
+        # The wrapper handles two exception classes asymmetrically
+        # per DECISIONS#016 logs-stay-metadata-only:
+        #
+        # - Known metadata-only persister exception types
+        #   (`METADATA_ONLY_EXCEPTION_TYPES`): render `str(exc)` in
+        #   the wrapper message (each type carries a contributor-
+        #   enforced metadata-only `__str__`), AND preserve the cause
+        #   chain via `from exc` so tracebacks carry useful
+        #   diagnostic context — `__cause__` is also metadata-only
+        #   by contract.
+        #
+        # - Unknown exception types (e.g., a SQLAlchemy exception
+        #   that somehow survives `hide_parameters=True`, or a
+        #   future persister exception class with content-bearing
+        #   repr): render only `<TypeName>` in the wrapper message
+        #   AND use `from None` to DROP the cause chain entirely.
+        #   Without `from None`, Python's traceback formatter would
+        #   render `__cause__` — leaking the underlying exception's
+        #   `args` / `str()` (which may carry raw prompt/completion
+        #   text) past the wrapper's sanitization. The `from None`
+        #   sets `__suppress_context__ = True`, which also hides the
+        #   implicit `__context__`. Defense in depth alongside the
+        #   engine-level `hide_parameters=True` setting; closes the
+        #   traceback-chain leak path.
+        from outrider.audit.persister import METADATA_ONLY_EXCEPTION_TYPES
+
+        if isinstance(exc, METADATA_ONLY_EXCEPTION_TYPES):
+            raise LLMPersisterError(
+                f"Persister failed after successful SDK call: {exc}. "
+                f"The audit row did not land; calling node halts the review."
+            ) from exc
+        raise LLMPersisterError(
+            f"Persister failed after successful SDK call: "
+            f"<{type(exc).__name__}>. "
+            f"The audit row did not land; calling node halts the review."
+        ) from None
+
+
+def _warn_if_cache_silently_disabled(
+    *,
+    request: LLMRequest,
+    response: LLMResponse,
+    system_prompt_hash: str,
+    refused: bool,
+) -> None:
+    """Warn once per (model, system_prompt_hash) when caching was asked for and
+    silently did nothing. Diagnostic only — never raises."""
+    # Prompt-caching silently-disabled diagnostic.
+    # Per Anthropic SDK 0.100 prompt-caching docs, prompts shorter than
+    # the model's min-cacheable threshold (authoritative per-model
+    # values: `pricing.MIN_CACHEABLE_TOKENS`) are processed without
+    # caching with NO error returned. `cache_control=True` AND both
+    # cache_creation/read tokens at 0 is the CANDIDATE signal: the
+    # first-ever cache write has cache_creation > 0, and eviction
+    # rewrites with cache_creation > 0, so neither reaches here. A
+    # refusal carrying 0/0 is the known counterexample — those counters
+    # arise for an unrelated reason and are excluded below. The floor lookup then
+    # decides whether to warn at all: a model with no documented floor
+    # cannot have a cache miss attributed to a short prompt.
+    #
+    # The dedup key uses `normalize_to_pricing_key(response.model)` so
+    # dated aliases share a warn-once budget with their undated base
+    # (e.g., `claude-haiku-4-5-20251001` and `claude-haiku-4-5` are
+    # treated as the same model for warning suppression — they share
+    # the same cache threshold by definition). The literal
+    # `response.model` is still logged in the extras for operator
+    # visibility into what actually executed. Same normalization rule
+    # as the cost-computation lookup at step 8.
+    if (
+        request.cache_control
+        and response.cache_read_tokens == 0
+        and response.cache_write_tokens == 0
+        # When a refusal carries 0/0 cache counters they do not establish a
+        # below-floor prompt — the model declined — so skip the spurious warning.
+        and not refused
+    ):
+        cache_warn_key = (
+            normalize_to_pricing_key(response.model),
+            system_prompt_hash,
+        )
+        if cache_warn_key not in _WARNED_NONCACHEABLE:
+            _WARNED_NONCACHEABLE.add(cache_warn_key)
+            # Floor derived from the authoritative table rather than
+            # hardcoded prose, so a floor change can't strand a stale
+            # number in the operator-facing message. Defensive lookup:
+            # `response.model` is SDK-returned and could (in principle)
+            # be a substituted id outside the table → KeyError.
+            floor_text: str | None
+            try:
+                floor = min_cacheable_tokens(_ANTHROPIC_PROFILE_ID, response.model)
+            except KeyError:
+                floor_text = "see llm/pricing.py::MIN_CACHEABLE_TOKENS"
+            else:
+                # None = the DECISIONS.md#056 unknown-floor sentinel: the model is
+                # priced but its min-cacheable threshold is undocumented, so a cache
+                # miss can't be attributed to a below-floor prompt. Suppress the
+                # diagnostic (per the `min_cacheable_tokens` contract) rather than
+                # log a confusing "None tokens" message.
+                floor_text = (
+                    None
+                    if floor is None
+                    else f"{floor} tokens for {normalize_to_pricing_key(response.model)}"
+                )
+            if floor_text is not None:
+                _LOGGER.warning(
+                    "anthropic_provider cache_control=True but neither "
+                    "cache_creation_input_tokens nor cache_read_input_tokens "
+                    "fired; system prompt likely below the model's "
+                    "min-cacheable threshold (%s — see Anthropic "
+                    "prompt-caching docs). cache_control=True will produce "
+                    "no cost savings on this prompt until it grows past the "
+                    "threshold or cache_control is removed.",
+                    floor_text,
+                    extra={
+                        "model": response.model,
+                        "request_model": request.model,
+                        "system_prompt_hash": system_prompt_hash,
+                        "review_id": str(request.review_id),
+                        "node_id": request.node_id,
+                    },
+                )
+
+
+def _compute_response_cost(request: LLMRequest, response: LLMResponse) -> Decimal:
+    """Compute from the response model; raise when its current pricing key has no rate.
+
+    The response model may differ from the requested one, and the rate table may
+    have changed since the constructor's eager check — either reaches this raise.
+    """
+    # Step 8: compute cost_usd from pricing table.
+    # KeyError unreachable in production thanks to constructor's eager
+    # pricing-coverage check; the defensive try/except below catches
+    # the case where RATE_TABLE mutates between construction and call
+    # (shouldn't happen — module-level Final dict — but typed for safety).
+    #
+    # Audit-fidelity: pass `response.model` rather than `request.model`
+    # into `compute_cost_usd()` so both costing and the persisted
+    # `LLMCallEvent.model` are anchored to the upstream-returned model
+    # identifier. Note that `compute_cost_usd()` normalizes dated model
+    # IDs internally via `normalize_to_pricing_key`, so the effective
+    # `RATE_TABLE` lookup key may be the undated alias (e.g.,
+    # `claude-sonnet-4-6`) even when `response.model` is the dated
+    # form (e.g., `claude-sonnet-4-6-20251015`). Currently identical
+    # in practice — Anthropic SDK 0.100 echoes back the request model
+    # exactly — but if a future SDK ever substitutes (alias
+    # resolution, deprecation routing), audit replay would otherwise
+    # see `event.model = response.model` paired with a cost computed
+    # from `request.model`'s rate. The eager pricing-coverage check
+    # still validates configured models; if the SDK substitutes to a
+    # model whose normalized pricing key isn't in `RATE_TABLE`, the
+    # `KeyError` fallback below surfaces it loudly as
+    # `LLMPricingMissingError` — naming both the literal
+    # `response.model` AND the normalized pricing key in the message
+    # so an operator updating the rate table fixes the actual missing
+    # entry rather than the un-normalized literal.
+    try:
+        cost_decimal: Decimal = compute_cost_usd(
+            _ANTHROPIC_PROFILE_ID,
+            response.model,
+            input_tokens=response.input_tokens,
+            cache_write_tokens=response.cache_write_tokens,
+            cache_read_tokens=response.cache_read_tokens,
+            output_tokens=response.output_tokens,
+        )
+    except KeyError as exc:
+        missing_key = pricing_key(_ANTHROPIC_PROFILE_ID, response.model)
+        raise LLMPricingMissingError(
+            f"Model {response.model!r} maps to host-qualified pricing key "
+            f"{missing_key!r}, which is not in RATE_TABLE at "
+            f"complete() step 8 (request.model={request.model!r}). "
+            f"Constructor's eager validation covers configured models "
+            f"only — this can fire if the SDK substitutes the model "
+            f"in its response (alias resolution, deprecation routing). "
+            f"Add the key to RATE_TABLE + bump "
+            f"PRICING_VERSION to fix.",
+            missing_models=[str(missing_key)],
+        ) from exc
+
+    return cost_decimal
 
 
 def _build_sdk_kwargs(request: LLMRequest) -> dict[str, Any]:

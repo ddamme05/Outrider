@@ -369,10 +369,10 @@ def test_zdr_warning_fires_only_once_per_distinct_raw_value(
     caplog: pytest.LogCaptureFixture,
     _reset_zdr_warned_set: None,
 ) -> None:
-    """Round-17 audit fold (M2): under V1.5 parallel-analyze, N providers
-    per review constructed with the same misconfigured env would spam
-    thousands of WARNINGs/day. Once-per-distinct-raw-value guard caps
-    the spam while preserving the diagnostic signal."""
+    """The once-per-distinct-raw-value guard caps warning volume while
+    preserving the diagnostic signal. This test constructs several providers
+    directly; in the app the lifespan builds one, and the guard's real value
+    is that repeated resolution of the same misconfigured env warns once."""
     saved = os.environ.pop("ANTHROPIC_ZDR_ENABLED", None)
     try:
         os.environ["ANTHROPIC_ZDR_ENABLED"] = "garbage"
@@ -783,10 +783,10 @@ async def test_cache_silently_disabled_warns_only_once_per_model_and_prompt(
     caplog: pytest.LogCaptureFixture,
     _reset_noncacheable_warned_set: None,
 ) -> None:
-    """Mirror of round-17's ZDR warn-once pattern: under V1.5 parallel-
-    analyze, N providers calling with the same too-short prompt would
-    spam thousands of WARNINGs/day. The (model, system_prompt_hash)
-    key bounds spam while preserving the diagnostic signal."""
+    """The (model, system_prompt_hash) key bounds warning volume while
+    preserving the diagnostic signal: one shared provider serves many
+    concurrent parallel-analyze calls, so an unguarded warning would fire
+    once per call rather than once per misconfiguration."""
     persister = _RecordingPersister()
     provider = AnthropicProvider(
         api_key=_api_key(),
