@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -28,6 +30,7 @@ from langgraph.graph import END
 from langgraph.types import Command
 from sqlalchemy import Select, Update
 
+from outrider.agent.nodes import intake as intake_module
 from outrider.agent.nodes.intake import _ReviewIdentityError, intake
 from outrider.agent.state import ReviewState
 from outrider.audit.events import (  # noqa: TC001 — used in runtime list[X] annotations + isinstance assertions
@@ -1986,3 +1989,197 @@ async def test_gate_skipped_then_authorized_reentry_does_not_resurrect() -> None
     assert [e.marker for e in phase_sink.events] == ["start", "end"]
     # Exactly one open: the identity SELECT. No status rewrite (terminal status untouched).
     assert session_factory.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Cancellation during failure cleanup. intake() must finish emitting phase-end
+# and writing status='failed' even while being cancelled, and must never let a
+# cancellation replace the failure that caused it.
+# ---------------------------------------------------------------------------
+
+
+class _RaisingPulls:
+    """async_list_files raises the exact exception instance it was given."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    async def async_list_files(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise self._exc
+
+
+class _RaisingGitHub:
+    def __init__(self, exc: BaseException) -> None:
+        self.rest = _StubRestAPI(
+            repos=_StubReposAPI({}),
+            pulls=_RaisingPulls(exc),  # type: ignore[arg-type]
+        )
+
+
+def _status_updates(session_factory: _StubSessionFactoryV2) -> list[str]:
+    """The status values written by every UPDATE the run issued, in order."""
+    return [
+        stmt.compile().params["status"]
+        for stmt in session_factory.recording.executed
+        if isinstance(stmt, Update)
+    ]
+
+
+def _statement_kinds(session_factory: _StubSessionFactoryV2) -> list[str]:
+    return [
+        "UPDATE" if isinstance(stmt, Update) else "SELECT"
+        for stmt in session_factory.recording.executed
+    ]
+
+
+class _CancellingPulls:
+    """Phase-1 file list that raises CancelledError instead of a normal error."""
+
+    async def async_list_files(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise asyncio.CancelledError
+
+
+class _CancellingGitHub:
+    def __init__(self) -> None:
+        self.rest = _StubRestAPI(
+            repos=_StubReposAPI({}),
+            pulls=_CancellingPulls(),  # type: ignore[arg-type]
+        )
+
+
+class _BlockingPhaseEventSink:
+    """Records phase events; the END emit waits on a caller-controlled gate.
+
+    Lets a test cancel `intake()` while cleanup is mid-await, which is the
+    condition `asyncio.shield` exists for.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[ReviewPhaseEvent] = []
+        self.end_reached = asyncio.Event()
+        self.release_end = asyncio.Event()
+
+    async def emit_phase(self, event: ReviewPhaseEvent) -> None:
+        if event.marker == "end":
+            self.end_reached.set()
+            await self.release_end.wait()
+        self.events.append(event)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_still_emits_phase_end_and_marks_failed() -> None:
+    """A cancellation raised inside intake runs the same cleanup a failure does.
+
+    `except BaseException` is what makes this true: CancelledError is not an
+    Exception, so a narrower handler would let the cancellation leave a durable
+    phase-start with no end and the review row stuck at 'running'.
+    """
+    state = _build_state()
+    phase_sink = _RecordingPhaseEventSink()
+    session_factory = _StubSessionFactoryV2()
+
+    with pytest.raises(asyncio.CancelledError):
+        await intake(
+            state,
+            github_factory=_stub_github_factory(_CancellingGitHub()),
+            installation_authorizer=_stub_authorizer(),
+            db_factory=session_factory,  # type: ignore[arg-type]
+            phase_event_sink=phase_sink,
+            file_examination_sink=_RecordingFileExaminationSink(),
+        )
+
+    assert [e.marker for e in phase_sink.events] == ["start", "end"]
+    assert _statement_kinds(session_factory) == ["SELECT", "UPDATE"], (
+        "the identity gate load, then the failed-status write"
+    )
+    assert _status_updates(session_factory) == ["failed"]
+
+
+@pytest.mark.asyncio
+async def test_second_cancellation_does_not_interrupt_cleanup() -> None:
+    """Cancelling intake while cleanup is mid-await leaves cleanup to finish.
+
+    The original failure — not the cancellation — is what propagates. Without
+    the shield, the cancellation would tear down the cleanup task partway and
+    surface itself instead, losing both the phase-end marker and the
+    status='failed' write.
+    """
+    state = _build_state()
+    phase_sink = _BlockingPhaseEventSink()
+    session_factory = _StubSessionFactoryV2()
+    original = RuntimeError("simulated GitHub failure")
+
+    task = asyncio.create_task(
+        intake(
+            state,
+            github_factory=_stub_github_factory(_RaisingGitHub(original)),
+            installation_authorizer=_stub_authorizer(),
+            db_factory=session_factory,  # type: ignore[arg-type]
+            phase_event_sink=phase_sink,
+            file_examination_sink=_RecordingFileExaminationSink(),
+        )
+    )
+    # Wait until cleanup is blocked inside the phase-end emit, then cancel.
+    await asyncio.wait_for(phase_sink.end_reached.wait(), timeout=2)
+    assert _status_updates(session_factory) == [], (
+        "the status write must not precede the phase-end emit"
+    )
+    task.cancel()
+    await asyncio.sleep(0)
+    phase_sink.release_end.set()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await task
+
+    assert exc_info.value is original, "the cancellation must not replace the failure"
+    assert [e.marker for e in phase_sink.events] == ["start", "end"], (
+        "the phase-end emit must complete despite the cancellation"
+    )
+    assert _statement_kinds(session_factory) == ["SELECT", "UPDATE"]
+    assert _status_updates(session_factory) == ["failed"]
+
+
+@pytest.mark.asyncio
+async def test_cancellation_escaping_cleanup_does_not_mask_the_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A CancelledError raised BY cleanup is logged and discarded, not surfaced.
+
+    Cleanup's inner handlers catch only Exception, so a CancelledError from one
+    of its awaits escapes the task. Draining it under `except BaseException` is
+    what stops it replacing the intake failure the caller needs to see.
+    """
+    state = _build_state()
+    phase_sink = _RecordingPhaseEventSink()
+    session_factory = _StubSessionFactoryV2()
+    original = RuntimeError("simulated GitHub failure")
+    caplog.set_level(logging.ERROR, logger="outrider.agent.nodes.intake")
+
+    async def _cancel_during_status_write(*_args: Any, **_kwargs: Any) -> None:
+        raise asyncio.CancelledError
+
+    with (
+        patch.object(intake_module, "_set_review_status", _cancel_during_status_write),
+        pytest.raises(RuntimeError) as exc_info,
+    ):
+        await intake(
+            state,
+            github_factory=_stub_github_factory(_RaisingGitHub(original)),
+            installation_authorizer=_stub_authorizer(),
+            db_factory=session_factory,  # type: ignore[arg-type]
+            phase_event_sink=phase_sink,
+            file_examination_sink=_RecordingFileExaminationSink(),
+        )
+
+    assert exc_info.value is original, "the cleanup cancellation must not replace it"
+    cascade = [
+        r
+        for r in caplog.records
+        if "failure-cleanup task did not complete cleanly" in r.getMessage()
+    ]
+    assert len(cascade) == 1, "the cascade-failure log must name the lost cleanup"
+    assert cascade[0].audit_integrity_violation is True  # type: ignore[attr-defined]
+    assert cascade[0].review_id == str(state.review_id)  # type: ignore[attr-defined]
+    assert cascade[0].node_id == "intake"  # type: ignore[attr-defined]
+    # phase_id is one of the closure's captures — pin it against the emitted marker.
+    assert cascade[0].phase_id == phase_sink.events[0].phase_id  # type: ignore[attr-defined]
