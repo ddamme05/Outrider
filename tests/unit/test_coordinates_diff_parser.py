@@ -23,6 +23,7 @@ from outrider.coordinates import (
     diff_line_to_scope,
     lookup_patched_file,
 )
+from outrider.coordinates.errors import CoordinateErrorKind
 
 # ----------------------------------------------------------------------------
 # Helpers
@@ -618,8 +619,10 @@ def test_lookup_patched_file_malformed_patch_still_raises() -> None:
     # unidiff raises "Hunk is shorter than expected" → wrapped as
     # CoordinateError("malformed patch input: ...").
     malformed = "@@ -1,5 +1,5 @@\n one line only\n"
-    with pytest.raises(CoordinateError, match="malformed patch input"):
+    with pytest.raises(CoordinateError, match="malformed patch input") as exc_info:
         lookup_patched_file(malformed, "src/foo.py")
+    # `kind` is the structured field publish routing branches on, not the message.
+    assert exc_info.value.kind is CoordinateErrorKind.MALFORMED_PATCH
 
 
 def test_lookup_patched_file_handles_utf8_bom_prefix() -> None:
@@ -652,17 +655,29 @@ def test_lookup_patched_file_handles_bom_after_whitespace() -> None:
     assert result.path == "src/foo.py"
 
 
-# NOTE: The two defensive error paths in `lookup_patched_file` —
-# malformed-unidiff wrap (`UnidiffParseError → CoordinateError`) and
-# duplicate-entries detection — are NOT pinned here because `unidiff`
-# is extremely lenient on garbage text input (silently produces an
-# empty/single PatchSet rather than raising) and consolidates duplicate
-# paths during parsing. The defensive code is correct shape but the
-# triggering inputs require lower-level injection (e.g., monkeypatching
-# `PatchSet` or constructing a `PatchSet` programmatically) rather
-# than text fixtures. The same discipline applies to `file_in_patch`
-# in `test_coordinates_file_in_patch.py`, which also doesn't try to
-# exercise those branches from text input.
+def test_lookup_patched_file_rejects_duplicate_entries() -> None:
+    """Two `+++ b/foo.py` blocks → CoordinateError (ambiguous routing input).
+
+    The sibling half of the API rejects the same shape in
+    `test_coordinates_file_in_patch.py`; both refuse to silently first-match.
+    """
+    patch_with_dups = (
+        "diff --git a/foo.py b/foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " a\n"
+        "+b\n"
+        "diff --git a/foo.py b/foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -10,1 +10,2 @@\n"
+        " x\n"
+        "+y\n"
+    )
+    with pytest.raises(CoordinateError, match="duplicate entries") as exc_info:
+        lookup_patched_file(patch_with_dups, "foo.py")
+    assert exc_info.value.kind is CoordinateErrorKind.DUPLICATE_FILE_ENTRY
 
 
 # ---------------------------------------------------------------------------

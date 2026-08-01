@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from outrider.coordinates import CoordinateError, file_in_patch
+from outrider.coordinates.errors import CoordinateErrorKind
 
 # ----------------------------------------------------------------------------
 # Fixtures
@@ -193,8 +194,9 @@ def test_malformed_patch_raises_coordinate_error() -> None:
         "@@ -1,5 +1,5 @@\n"
         " only_one_line_provided_but_five_declared\n"
     )
-    with pytest.raises(CoordinateError, match="malformed patch input"):
+    with pytest.raises(CoordinateError, match="malformed patch input") as exc_info:
         file_in_patch("x.py", malformed_patch)
+    assert exc_info.value.kind is CoordinateErrorKind.MALFORMED_PATCH
 
 
 def test_lenient_garbage_patch_returns_false() -> None:
@@ -339,8 +341,9 @@ def test_duplicate_patched_file_entries_raise() -> None:
         " x\n"
         "+y\n"
     )
-    with pytest.raises(CoordinateError, match="duplicate entries"):
+    with pytest.raises(CoordinateError, match="duplicate entries") as exc_info:
         file_in_patch("foo.py", patch_with_dups)
+    assert exc_info.value.kind is CoordinateErrorKind.DUPLICATE_FILE_ENTRY
 
 
 # ----------------------------------------------------------------------------

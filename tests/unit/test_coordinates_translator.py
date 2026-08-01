@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 from outrider.coordinates import CoordinateError, GitHubCommentLocation, tree_sitter_to_github
+from outrider.coordinates.errors import CoordinateErrorKind
 
 # ----------------------------------------------------------------------------
 # Fixtures: minimal unified diffs for common shapes
@@ -360,7 +361,7 @@ def test_malformed_hunk_raises_coordinate_error_via_unidiff_parse_error() -> Non
         "@@ -1,5 +1,5 @@\n"
         " only_one_line_provided_but_five_declared\n"
     )
-    with pytest.raises(CoordinateError, match="malformed patch input"):
+    with pytest.raises(CoordinateError, match="malformed patch input") as exc_info:
         tree_sitter_to_github(
             file_path="x.py",
             byte_start=0,
@@ -368,6 +369,7 @@ def test_malformed_hunk_raises_coordinate_error_via_unidiff_parse_error() -> Non
             head_content="only_one_line_provided_but_five_declared\n",
             patch=malformed_patch,
         )
+    assert exc_info.value.kind is CoordinateErrorKind.MALFORMED_PATCH
 
 
 def test_empty_patch_raises_coordinate_error() -> None:
@@ -835,7 +837,7 @@ def test_duplicate_patched_file_entries_rejected() -> None:
         "+y\n"
     )
     head = "a\nb\nc\nd\ne\nf\ng\nh\ni\nx\ny\n"
-    with pytest.raises(CoordinateError, match="duplicate entries"):
+    with pytest.raises(CoordinateError, match="duplicate entries") as exc_info:
         tree_sitter_to_github(
             file_path="foo.py",
             byte_start=0,
@@ -843,6 +845,7 @@ def test_duplicate_patched_file_entries_rejected() -> None:
             head_content=head,
             patch=patch_with_dups,
         )
+    assert exc_info.value.kind is CoordinateErrorKind.DUPLICATE_FILE_ENTRY
 
 
 # ----------------------------------------------------------------------------
