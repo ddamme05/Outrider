@@ -745,7 +745,7 @@ def _wrap_github_hunks_with_headers(patch: str, file_path: str) -> str:
     - The ``is_added_file`` / ``is_removed_file`` semantics derived
       from ``/dev/null`` source/target sides.
 
-    The three callers here don't consult those flags. If a future caller
+    The three consuming surfaces don't consult those flags. If a future caller
     needs rename-aware parsing, this helper must NOT be used — that
     caller should accept ``(patch, current_path, previous_path)`` and
     construct the headers accordingly, OR the producer side (intake +
@@ -769,6 +769,39 @@ def _wrap_github_hunks_with_headers(patch: str, file_path: str) -> str:
         # sees neither BOM nor leading whitespace.
         return f"--- a/{file_path}\n+++ b/{file_path}\n{leading_stripped}"
     return patch
+
+
+def _parse_and_match(patch: str, normalized_path: str) -> tuple[PatchSet, PatchedFile | None]:
+    """Parse `patch` and return it with the entry matching `normalized_path`.
+
+    The three patch-membership surfaces — `file_in_patch`,
+    `lookup_patched_file` and `translator._find_patched_file` — share this
+    parse-and-match step, so they cannot drift on the GitHub hunks-only wrap,
+    on `UnidiffParseError` translation, or on the duplicate-entry rule.
+
+    `normalized_path` is already `validate_diff_path`-normalized. Validation
+    stays with the callers because they disagree about it deliberately: a
+    membership query answers False/None for a malformed caller path, while
+    `tree_sitter_to_github` raises.
+
+    Returns at most one match: more than one is the duplicate-entry rejection
+    above, so no caller re-derives that guarantee. The `PatchSet` comes back
+    too — translator's file-not-present error reports `len(patchset)`.
+    """
+    try:
+        patchset = PatchSet(_wrap_github_hunks_with_headers(patch, normalized_path))
+    except UnidiffParseError as e:
+        raise CoordinateError(
+            f"malformed patch input: {e}",
+            kind=CoordinateErrorKind.MALFORMED_PATCH,
+        ) from e
+    matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == normalized_path]
+    if len(matches) > 1:
+        raise CoordinateError(
+            f"patch contains {len(matches)} duplicate entries for {normalized_path!r}",
+            kind=CoordinateErrorKind.DUPLICATE_FILE_ENTRY,
+        )
+    return patchset, (matches[0] if matches else None)
 
 
 def file_in_patch(file_path: str, patch: str) -> bool:
@@ -814,21 +847,8 @@ def file_in_patch(file_path: str, patch: str) -> bool:
         # `tree_sitter_to_github` is the surface that raises on bad shape;
         # routing-membership queries return False.
         return False
-    try:
-        patchset = PatchSet(_wrap_github_hunks_with_headers(patch, normalized_file_path))
-    except UnidiffParseError as e:
-        raise CoordinateError(
-            f"malformed patch input: {e}",
-            kind=CoordinateErrorKind.MALFORMED_PATCH,
-        ) from e
-
-    matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == normalized_file_path]
-    if len(matches) > 1:
-        raise CoordinateError(
-            f"patch contains {len(matches)} duplicate entries for {normalized_file_path!r}",
-            kind=CoordinateErrorKind.DUPLICATE_FILE_ENTRY,
-        )
-    return bool(matches)
+    _patchset, matched_file = _parse_and_match(patch, normalized_file_path)
+    return matched_file is not None
 
 
 class _CoordinatesImportPathResolver:
@@ -894,17 +914,5 @@ def lookup_patched_file(patch: str | None, file_path: str) -> PatchedFile | None
         normalized_file_path = validate_diff_path(file_path)
     except CoordinateError:
         return None
-    try:
-        patchset = PatchSet(_wrap_github_hunks_with_headers(patch, normalized_file_path))
-    except UnidiffParseError as e:
-        raise CoordinateError(
-            f"malformed patch input: {e}",
-            kind=CoordinateErrorKind.MALFORMED_PATCH,
-        ) from e
-    matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == normalized_file_path]
-    if len(matches) > 1:
-        raise CoordinateError(
-            f"patch contains {len(matches)} duplicate entries for {normalized_file_path!r}",
-            kind=CoordinateErrorKind.DUPLICATE_FILE_ENTRY,
-        )
-    return matches[0] if matches else None
+    _patchset, matched_file = _parse_and_match(patch, normalized_file_path)
+    return matched_file
