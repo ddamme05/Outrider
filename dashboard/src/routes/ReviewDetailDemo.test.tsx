@@ -8,10 +8,8 @@ import { useTokenStore } from "../auth/token";
 import { server } from "../test/server";
 import { ReviewDetail } from "./ReviewDetail";
 
-// Demo-mode read-only affordances: a parked review must render its gated findings
-// but lock the decision controls, because the demo box has no /decide route
-// (unmounted AND unproxied). Covers the useDemoStatus → ReviewDetail wiring the
-// code review flagged as untested (the whole affordance chain was invisible).
+// Demo and unresolved metadata keep decision controls locked while preserving
+// each finding's gated label. Exercise the useDemoStatus → ReviewDetail wiring.
 
 const BASE = "http://localhost/api/reviews/r1";
 

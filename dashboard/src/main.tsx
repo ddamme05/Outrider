@@ -9,14 +9,13 @@ import { DemoBanner } from "./components/DemoBanner";
 import { router } from "./router";
 import "./theme.css";
 
-// One-click demo access: if the shared link carries `#token=...`, adopt and strip it
-// before first render so the token-gate doesn't flash. No-op for a normal visit.
+// Adopt and remove a shared-link token before rendering the auth gate.
 adoptTokenFromUrlFragment();
 
-// No query retries: every read view already polls/refetches (2s), so a failed
-// read should render its "unavailable" state once rather than amplify a 5xx into
-// 3 retries × every poll (e.g. a replay 500 flooding the server log). Mutations
-// default to no retry already — a HITL decide must never be re-fired casually.
+// Queries default to no automatic retries; live views schedule their own
+// refetches. useDemoStatus overrides this with bounded boot-time retries.
+// Mutations keep their default no-retry policy; decision retries use the
+// accepted payload retained by ReviewDetail.
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false } },
 });

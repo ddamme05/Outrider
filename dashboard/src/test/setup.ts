@@ -4,8 +4,7 @@ import { afterAll, afterEach, beforeAll } from "vitest";
 
 import { server } from "./server";
 
-// jsdom doesn't implement scrollIntoView; the replay auto-follow (ReplayReconstruct) calls it.
-// Stub it so the passive effect is a no-op under test (production uses the real browser API).
+// Replay auto-follow calls scrollIntoView, which jsdom does not implement.
 Element.prototype.scrollIntoView = () => {};
 
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));

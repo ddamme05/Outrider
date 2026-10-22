@@ -6,9 +6,7 @@ import { AuditFeed } from "./AuditFeed";
 
 type AuditEvent = components["schemas"]["ReviewEventsResponse"]["events"][number];
 
-// event_type drives the family class under test; `fields` carries whatever
-// summarize() reads for that type so the row renders against the real wire shape
-// (llm_call reads cost_usd.toFixed, etc.) rather than a shape-blind stub.
+// Supply the fields read by summarizeEvent; event_type selects the family class.
 function ev(event_type: string, seq: number, fields: Record<string, unknown> = {}): AuditEvent {
   return {
     event_type,

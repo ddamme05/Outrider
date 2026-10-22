@@ -3,15 +3,14 @@ import { Link, useNavigate } from "react-router";
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
 import { StatusPill } from "../components/StatusPill";
+import { formatReviewCost } from "../lib/format";
 import { SEVERITY_ORDER } from "../lib/metrics";
 import { type ReviewStatus, useFilters } from "../state/filters";
 
 type ReviewListItem = components["schemas"]["ReviewListItem"];
 type SeverityCounts = components["schemas"]["SeverityCounts"];
 
-// The filter chips (mockup order). "expired" is the human label for the
-// `awaiting_approval_expired` status; "All" is the null filter. `skipped`
-// has no chip (matches the mockup) — those reviews surface only under "All".
+// Skipped reviews appear under All; expired is the short approval-expiry label.
 const STATUS_CHIPS: { label: string; status: ReviewStatus }[] = [
   { label: "running", status: "running" },
   { label: "awaiting_approval", status: "awaiting_approval" },
@@ -20,10 +19,7 @@ const STATUS_CHIPS: { label: string; status: ReviewStatus }[] = [
   { label: "failed", status: "failed" },
 ];
 
-// The mockup's tally class per severity tier (.t.c/.h/.m/.l/.i). Keyed by the
-// canonical SEVERITY_ORDER member type, so adding a tier to SEVERITY_ORDER
-// without a class here is a compile error (the tally can't drift from the rest
-// of the dashboard's severity ordering).
+// Every severity must have a tally class.
 const SEV_CLASS: Record<(typeof SEVERITY_ORDER)[number], string> = {
   critical: "c",
   high: "h",
@@ -41,26 +37,24 @@ function formatLatency(seconds: number | null): string {
     return `${total}s`;
   }
   const minutes = Math.floor(total / 60);
-  const rem = total % 60;
-  return `${minutes}m${rem.toString().padStart(2, "0")}s`;
+  const remainingSeconds = total % 60;
+  return `${minutes}m${remainingSeconds.toString().padStart(2, "0")}s`;
 }
 
 function SeverityTally({ counts }: { counts: SeverityCounts | null }) {
-  // `null` = the review hasn't reached synthesize, so there is no
-  // report-equivalent set to count (rendered as an em-dash, like cost/latency
-  // pending). A present-but-all-zero tally also renders as "—".
+  // Null means synthesis has not recorded a tally; an empty tally also shows —.
   if (counts == null) {
     return <span className="row-repo">—</span>;
   }
-  const tiers = SEVERITY_ORDER.filter((key) => counts[key] > 0);
-  if (tiers.length === 0) {
+  const visibleSeverities = SEVERITY_ORDER.filter((severity) => counts[severity] > 0);
+  if (visibleSeverities.length === 0) {
     return <span className="row-repo">—</span>;
   }
   return (
     <span className="tally">
-      {tiers.map((key) => (
-        <span key={key} className={`t ${SEV_CLASS[key]}`} title={`${counts[key]} ${key}`}>
-          {counts[key]}
+      {visibleSeverities.map((severity) => (
+        <span key={severity} className={`t ${SEV_CLASS[severity]}`} title={`${counts[severity]} ${severity}`}>
+          {counts[severity]}
         </span>
       ))}
     </span>
@@ -68,16 +62,13 @@ function SeverityTally({ counts }: { counts: SeverityCounts | null }) {
 }
 
 export function Reviews() {
-  const includeEval = useFilters((s) => s.includeEval);
-  const status = useFilters((s) => s.status);
-  const search = useFilters((s) => s.search);
-  const setStatus = useFilters((s) => s.setStatus);
+  const includeEval = useFilters((filters) => filters.includeEval);
+  const status = useFilters((filters) => filters.status);
+  const search = useFilters((filters) => filters.search);
+  const setStatus = useFilters((filters) => filters.setStatus);
   const navigate = useNavigate();
 
-  // Request the backend max in one call (limit≤200). The page is a single
-  // scrolling table with no pager, and there is no server-side text search —
-  // so client search runs over the loaded set. Past 200 we surface an honest
-  // notice (below) rather than silently truncating.
+  // Text search covers the loaded page only; request the maximum and show truncation.
   const { data, error, isLoading } = $api.useQuery(
     "get",
     "/api/reviews",
@@ -92,24 +83,23 @@ export function Reviews() {
     return <p className="error">Failed to load reviews.</p>;
   }
 
-  const loaded = data?.reviews ?? [];
-  const truncated = (data?.total ?? 0) > loaded.length;
+  const loadedReviews = data?.reviews ?? [];
+  const truncated = (data?.total ?? 0) > loadedReviews.length;
 
-  // Chip counts come from the response's status_counts (computed server-side
-  // over the base filters, independent of the active status). "All" = the sum.
+  // Server counts include every status, regardless of the active status filter.
   const statusCounts = data?.status_counts;
   const allCount = statusCounts
-    ? Object.values(statusCounts).reduce((sum, n) => sum + n, 0)
+    ? Object.values(statusCounts).reduce((sum, count) => sum + count, 0)
     : null;
 
-  const term = search.trim().toLowerCase();
-  const rows = loaded.filter((review) => {
-    if (term === "") {
+  const searchTerm = search.trim().toLowerCase();
+  const matchingReviews = loadedReviews.filter((review) => {
+    if (searchTerm === "") {
       return true;
     }
-    const haystack =
+    const searchText =
       `${review.repo_full_name ?? review.repo_id} ${review.pr_title ?? ""} ${review.pr_number} ${review.status} ${review.head_sha} ${review.id}`.toLowerCase();
-    return haystack.includes(term);
+    return searchText.includes(searchTerm);
   });
 
   return (
@@ -142,14 +132,14 @@ export function Reviews() {
 
       {truncated ? (
         <p className="queue-notice">
-          Showing {loaded.length} of {data?.total} reviews. Search covers only
+          Showing {loadedReviews.length} of {data?.total} reviews. Search covers only
           the loaded set — narrow with the status filter to reach the rest.
         </p>
       ) : null}
 
-      {rows.length === 0 ? (
+      {matchingReviews.length === 0 ? (
         <p style={{ color: "var(--muted)" }}>
-          {term !== "" && truncated
+          {searchTerm !== "" && truncated
             ? "No matches in the loaded reviews — narrow by status to search the rest."
             : "No reviews."}
         </p>
@@ -168,52 +158,60 @@ export function Reviews() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((review: ReviewListItem) => (
-                // The whole row navigates to the review (mockup parity). Inner
-                // links stopPropagation so they reach their own targets; the PR#
-                // stays a real anchor for keyboard / open-in-new-tab.
-                <tr
+              {matchingReviews.map((review: ReviewListItem) => (
+                <ReviewRow
                   key={review.id}
-                  className="review-row"
-                  onClick={() => navigate(`/reviews/${review.id}`)}
-                >
-                  <td className="row-id">
-                    <Link to={`/reviews/${review.id}`} onClick={(e) => e.stopPropagation()}>
-                      #{review.pr_number}
-                    </Link>
-                  </td>
-                  <td className="row-repo">{review.repo_full_name ?? `repo ${review.repo_id}`}</td>
-                  <td>
-                    {review.pr_title ?? <span className="row-repo">—</span>}
-                    {review.is_eval ? <span className="eval-tag mono"> is_eval</span> : null}
-                  </td>
-                  <td>
-                    <StatusPill status={review.status} />
-                    {review.status === "completed" ? (
-                      <Link
-                        to={`/reviews/${review.id}/replay`}
-                        className="abtn"
-                        style={{ marginLeft: 8 }}
-                        onClick={(e) => e.stopPropagation()}
-                        aria-label={`Open the replay reconstruction for review ${review.id}`}
-                      >
-                        ↻ replay
-                      </Link>
-                    ) : null}
-                  </td>
-                  <td>
-                    <SeverityTally counts={review.severity_counts} />
-                  </td>
-                  <td className="row-cost">
-                    {`${review.metrics.cost_complete === false ? "\u2265" : ""}$${review.metrics.total_cost_usd.toFixed(2)}`}
-                  </td>
-                  <td className="row-lat">{formatLatency(review.metrics.wall_clock_seconds)}</td>
-                </tr>
+                  review={review}
+                  onOpen={() => navigate(`/reviews/${review.id}`)}
+                />
               ))}
             </tbody>
           </table>
         </div>
       )}
     </section>
+  );
+}
+
+function ReviewRow({ review, onOpen }: { review: ReviewListItem; onOpen: () => void }) {
+  return (
+    // Links keep their own destinations and keyboard behavior inside the clickable row.
+    <tr
+      key={review.id}
+      className="review-row"
+      onClick={onOpen}
+    >
+      <td className="row-id">
+        <Link to={`/reviews/${review.id}`} onClick={(event) => event.stopPropagation()}>
+          #{review.pr_number}
+        </Link>
+      </td>
+      <td className="row-repo">{review.repo_full_name ?? `repo ${review.repo_id}`}</td>
+      <td>
+        {review.pr_title ?? <span className="row-repo">—</span>}
+        {review.is_eval ? <span className="eval-tag mono"> is_eval</span> : null}
+      </td>
+      <td>
+        <StatusPill status={review.status} />
+        {review.status === "completed" ? (
+          <Link
+            to={`/reviews/${review.id}/replay`}
+            className="abtn"
+            style={{ marginLeft: 8 }}
+            onClick={(event) => event.stopPropagation()}
+            aria-label={`Open the replay reconstruction for review ${review.id}`}
+          >
+            ↻ replay
+          </Link>
+        ) : null}
+      </td>
+      <td>
+        <SeverityTally counts={review.severity_counts} />
+      </td>
+      <td className="row-cost">
+        {formatReviewCost(review.metrics)}
+      </td>
+      <td className="row-lat">{formatLatency(review.metrics.wall_clock_seconds)}</td>
+    </tr>
   );
 }

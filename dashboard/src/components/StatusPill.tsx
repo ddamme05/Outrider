@@ -1,5 +1,4 @@
-// Maps a review status (the raw enum value from ReviewListItem.status) to the
-// Quiet-Console pill variant. Unknown values fall back to the neutral pill.
+// Unknown review statuses keep their raw label and use the completed pill style.
 const PILL_CLASS: Record<string, string> = {
   running: "status-running",
   awaiting_approval: "status-awaiting",

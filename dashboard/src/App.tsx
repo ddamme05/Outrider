@@ -5,38 +5,32 @@ import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { useNav } from "./state/nav";
 
-// Signal shell: sidebar (org-mark + icon nav + footer eval toggle) + main column
-// (topbar + scrolling content). Nav is Overview + Reviews only — Audit/Anomalies
-// are deferred (no backing endpoint; spec non-goals).
-//
-// On mobile (≤768px, CSS-gated) the sidebar becomes an off-canvas drawer: the
-// Topbar hamburger toggles `useNav.open`, the `.app.nav-open` class slides the
-// drawer in, and the scrim button / Escape / a nav-link tap closes it. On
-// desktop the drawer styles are inert and `open` stays false.
+// Shared shell: sidebar, topbar, and routed content. At the mobile breakpoint,
+// CSS turns the sidebar into a drawer controlled by useNav. The close button,
+// Escape, and sidebar links dismiss it; desktop CSS keeps the sidebar visible.
 export function App() {
-  const open = useNav((s) => s.open);
-  const setOpen = useNav((s) => s.setOpen);
+  const open = useNav((state) => state.open);
+  const setOpen = useNav((state) => state.setOpen);
 
-  // Escape closes the mobile drawer. No-op on desktop (open never becomes true).
+  // Listen for Escape only while the drawer state is open.
   useEffect(() => {
     if (!open) {
       return;
     }
-    function onKey(event: KeyboardEvent): void {
+    function onKeyDown(event: KeyboardEvent): void {
       if (event.key === "Escape") {
         setOpen(false);
       }
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, [open, setOpen]);
 
   return (
     <div className={`app${open ? " nav-open" : ""}`}>
       <Sidebar />
-      {/* Mobile-only scrim behind the open drawer; a tap anywhere off the drawer
-          closes it. Hidden (display:none) on desktop so it never enters the
-          grid; pointer-events gate it when closed on mobile. */}
+      {/* CSS hides this close button on desktop and disables pointer events
+          while the mobile drawer is closed. */}
       <button
         type="button"
         className="nav-scrim"

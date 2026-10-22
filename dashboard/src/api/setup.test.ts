@@ -10,10 +10,8 @@ import {
   startSetup,
 } from "./setup";
 
-// API-BOUNDARY tests (FUP-230). The component tests prove the operator SEES the right copy; these
-// prove the client REJECTS the wrong payload in the first place — the guarantee the UI rests on.
-// `fetchSetupStatus`/`startSetup` previously ended in `as SetupStatus` / `as SetupStartResponse`,
-// casts that TypeScript erases at compile time and which therefore validate nothing at runtime.
+// API-boundary checks (FUP-230): invalid response shapes must be rejected
+// before the setup page chooses controls or submits a manifest.
 
 const STATUS = "http://localhost/setup/status";
 const START = "http://localhost/setup";
@@ -61,9 +59,7 @@ test.each([
   ["a non-boolean configured", { ...VALID, configured: "yes" }],
   ["a missing install_known", { status: "UNCONFIGURED", configured: false }],
 ])("%s rejects as a protocol error", async (_label, body) => {
-  // `status` is a CLOSED vocabulary (SETUP_STATUSES, DB CHECK-enforced). An unknown value is not
-  // forward-compatibility — the UI's affordances are defined only over the five known states, so a
-  // sixth must fail loudly here rather than render a blank, actionless page.
+  // Unknown states cannot select valid setup controls.
   server.use(http.get(STATUS, () => HttpResponse.json(body)));
   await expect(fetchSetupStatus()).rejects.toBeInstanceOf(SetupProtocolError);
 });

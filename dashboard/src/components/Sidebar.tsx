@@ -3,21 +3,16 @@ import { NavLink } from "react-router";
 import { useFilters } from "../state/filters";
 import { useNav } from "../state/nav";
 
-// Signal sidebar: static org/brand mark (no org-switcher — single-tenant admin
-// scope, so a dropdown would imply org-switching we don't have), icon nav, and a
-// footer eval-data toggle wired to the `includeEval` filter. Nav is Overview +
-// Reviews only — Audit and Anomalies are omitted (no backing endpoint; an empty
-// nav item would imply hidden data). No theme switcher.
+// Workspace and setup links share the drawer; the footer controls eval visibility.
 function navClass({ isActive }: { isActive: boolean }): string {
   return `nav-item ${isActive ? "active" : ""}`;
 }
 
 export function Sidebar() {
-  const includeEval = useFilters((s) => s.includeEval);
-  const setIncludeEval = useFilters((s) => s.setIncludeEval);
-  // Close the mobile drawer after a nav tap (no-op on desktop). `setOpen` is a
-  // stable store action, so the selector reference is stable across renders.
-  const setNavOpen = useNav((s) => s.setOpen);
+  const includeEval = useFilters((filterState) => filterState.includeEval);
+  const setIncludeEval = useFilters((filterState) => filterState.setIncludeEval);
+  // Close drawer state after navigation; CSS owns its mobile-only presentation.
+  const setNavOpen = useNav((navState) => navState.setOpen);
   const closeNav = (): void => setNavOpen(false);
 
   return (
@@ -87,8 +82,7 @@ export function Sidebar() {
             </div>
           </div>
         </div>
-        {/* B3: persistent privacy-disclosure link → the public /privacy page
-            (same origin, served by the FastAPI app; not a SPA route). */}
+        {/* B3: /privacy is served by FastAPI, outside the SPA router. */}
         <a className="sb-privacy" href="/privacy">
           Privacy &amp; data handling
         </a>

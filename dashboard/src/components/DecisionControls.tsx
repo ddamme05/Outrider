@@ -4,15 +4,14 @@ import { type DecisionDraft, type Outcome, SEVERITIES } from "../lib/hitl";
 type FindingView = components["schemas"]["FindingView"];
 
 const OUTCOMES: Outcome[] = ["approve", "reject", "suppress", "severity_override"];
-const SEL_CLASS: Record<Outcome, string> = {
+const OUTCOME_CLASS: Record<Outcome, string> = {
   approve: "sel-approve",
   reject: "sel-reject",
   suppress: "sel-suppress",
   severity_override: "sel-override",
 };
 
-// Controlled per-finding HITL controls. Pure — owns no state; the detail view
-// holds the decisions map so the submit bar can gate on all gated findings.
+// The detail view owns the draft and validates all gated findings before submit.
 export function DecisionControls({
   finding,
   draft,
@@ -24,10 +23,10 @@ export function DecisionControls({
   disabled: boolean;
   onChange: (next: DecisionDraft) => void;
 }) {
-  const baseline = finding.severity.toLowerCase();
+  const baselineSeverity = finding.severity.toLowerCase();
   const showReason = draft.outcome !== null && draft.outcome !== "approve";
-  const showOverride = draft.outcome === "severity_override";
-  const reasonLen = draft.reason.length;
+  const showSeverityOverride = draft.outcome === "severity_override";
+  const reasonLength = draft.reason.length;
 
   return (
     <div className="hitl">
@@ -36,23 +35,23 @@ export function DecisionControls({
       </div>
 
       <div className="outcome-row">
-        {OUTCOMES.map((o) => (
+        {OUTCOMES.map((outcome) => (
           <button
-            key={o}
+            key={outcome}
             type="button"
             disabled={disabled}
-            className={`outcome-btn ${draft.outcome === o ? SEL_CLASS[o] : ""}`}
-            aria-pressed={draft.outcome === o}
+            className={`outcome-btn ${draft.outcome === outcome ? OUTCOME_CLASS[outcome] : ""}`}
+            aria-pressed={draft.outcome === outcome}
             onClick={() =>
               onChange({
-                outcome: o,
-                // Clear override fields when leaving severity_override.
+                outcome: outcome,
+                // Keep the reason; only severity_override retains a selected severity.
                 reason: draft.reason,
-                overrideSeverity: o === "severity_override" ? draft.overrideSeverity : null,
+                overrideSeverity: outcome === "severity_override" ? draft.overrideSeverity : null,
               })
             }
           >
-            {o}
+            {outcome}
           </button>
         ))}
       </div>
@@ -68,17 +67,17 @@ export function DecisionControls({
             disabled={disabled}
             value={draft.reason}
             placeholder="Why this decision?"
-            onChange={(e) => onChange({ ...draft, reason: e.target.value })}
+            onChange={(changeEvent) => onChange({ ...draft, reason: changeEvent.target.value })}
           />
-          <div className={`counter ${reasonLen > 480 ? "warn" : ""}`}>{reasonLen} / 500</div>
+          <div className={`counter ${reasonLength > 480 ? "warn" : ""}`}>{reasonLength} / 500</div>
         </div>
       ) : null}
 
-      {showOverride ? (
+      {showSeverityOverride ? (
         <div className="override-wrap show">
           <div className="field">
             <label>Original severity (read-only)</label>
-            <div className="ro">{baseline}</div>
+            <div className="ro">{baselineSeverity}</div>
           </div>
           <div className="field">
             <label htmlFor={`override-${finding.finding_id}`}>Override to</label>
@@ -87,15 +86,18 @@ export function DecisionControls({
               aria-label="Override severity"
               disabled={disabled}
               value={draft.overrideSeverity ?? ""}
-              onChange={(e) =>
-                onChange({ ...draft, overrideSeverity: e.target.value === "" ? null : e.target.value })
+              onChange={(changeEvent) =>
+                onChange({
+                  ...draft,
+                  overrideSeverity: changeEvent.target.value === "" ? null : changeEvent.target.value,
+                })
               }
             >
               <option value="">select…</option>
-              {SEVERITIES.map((s) => (
-                <option key={s} value={s} disabled={s === baseline}>
-                  {s}
-                  {s === baseline ? " (current)" : ""}
+              {SEVERITIES.map((severity) => (
+                <option key={severity} value={severity} disabled={severity === baselineSeverity}>
+                  {severity}
+                  {severity === baselineSeverity ? " (current)" : ""}
                 </option>
               ))}
             </select>

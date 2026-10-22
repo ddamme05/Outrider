@@ -7,8 +7,7 @@ import { PipelineStrip } from "./PipelineStrip";
 type TimelineData = components["schemas"]["ReplayTimelineResponse"];
 type Phase = NonNullable<TimelineData["phases"]>[number];
 
-// A single analyze llm_call. The `model` is what the pipeline card must surface — the bug
-// was collapsing a node's many calls to the last one's model.
+// Separate analyze calls let the card show every model used by the node.
 function llmCall(id: string, model: string, cost: number): Record<string, unknown> {
   return {
     event_id: id,
@@ -84,8 +83,7 @@ function analyzeCard(container: HTMLElement): HTMLElement {
 
 const ts = (sec: number) => `2026-06-01T00:00:${String(sec).padStart(2, "0")}Z`;
 
-// A DEEP-tier Sonnet worker and a STANDARD-tier Haiku worker — the exact mixed-tier review
-// (DECISIONS.md#041) whose card used to show only "Haiku" (the last call).
+// Two models exercise the mixed-tier label (DECISIONS.md#041).
 const sonnetWorker = () =>
   phase("p-deep", "file:src/a.py#0", ts(0), ts(5), [llmCall("l1", "claude-sonnet-4-6", 0.06)]);
 const haikuWorker = () =>

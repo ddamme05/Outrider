@@ -6,9 +6,7 @@ import { replayRate } from "../lib/metrics";
 import { useFilters } from "../state/filters";
 import { useNav } from "../state/nav";
 
-// Signal topbar: a mono kicker + tick, the screen title (derived from the route),
-// and a client-side search field (no backend search in V1). The eval toggle moved
-// to the sidebar footer; no avatar, no theme switcher.
+// Route title, drawer control, shared review filter and replay health.
 function screenTitle(pathname: string): string {
   if (pathname === "/") return "Overview";
   if (pathname === "/reviews") return "Reviews";
@@ -18,36 +16,33 @@ function screenTitle(pathname: string): string {
 
 export function Topbar() {
   const { pathname } = useLocation();
-  const search = useFilters((s) => s.search);
-  const setSearch = useFilters((s) => s.setSearch);
-  const navOpen = useNav((s) => s.open);
-  const toggleNav = useNav((s) => s.toggle);
-  // Brand the header on a confirmed demo deployment (fails to no-tag while loading/
-  // erroring, so a production box never flashes the demo label). Same "demo"-only
-  // discipline the read-only banner uses.
+  const search = useFilters((filterState) => filterState.search);
+  const setSearch = useFilters((filterState) => filterState.setSearch);
+  const navOpen = useNav((navState) => navState.open);
+  const toggleNav = useNav((navState) => navState.toggle);
+  // Match the banner: only confirmed demo discovery gets a label.
   const isDemo = useDemoStatus() === "demo";
 
-  // Global replay-equivalence health pill: 30d production scope, slow poll (it's on
-  // every screen and the verdict stream changes slowly). Fails CLOSED — no pill while
-  // loading, on error, or when no reviews are verdicted yet (replayRate → null), never
-  // a fabricated 0%.
-  const replay = $api.useQuery(
+  // Poll global 30d replay health. Absent data or zero verdicts produce no rate;
+  // a refetch can retain previously loaded data.
+  const replayQuery = $api.useQuery(
     "get",
     "/api/metrics/replay",
     { params: { query: { window: "30d" } } },
     { refetchInterval: 30000 },
   );
-  const rc = replay.data?.deltas.current;
-  const rate = rc ? replayRate(rc.equivalent, rc.total) : null;
-  // Demo-snapshot anchoring: the title never implies live recency on a demo box.
-  const pillWindow = replay.data?.anchored
-    ? `30d ending ${new Date(replay.data.window_end).toLocaleDateString()}`
+  const replayCounts = replayQuery.data?.deltas.current;
+  const replayPercent = replayCounts
+    ? replayRate(replayCounts.equivalent, replayCounts.total)
+    : null;
+  // Name the recorded window end when metrics use an anchored snapshot.
+  const replayWindowLabel = replayQuery.data?.anchored
+    ? `30d ending ${new Date(replayQuery.data.window_end).toLocaleDateString()}`
     : "30d";
 
   return (
     <header className="topbar">
-      {/* Mobile-only drawer toggle (hidden on desktop via CSS). aria-expanded
-          reflects the live `useNav` state so assistive tech tracks the drawer. */}
+      {/* CSS shows the drawer control on mobile; aria-expanded follows store state. */}
       <button
         type="button"
         className="nav-toggle"
@@ -73,12 +68,12 @@ export function Topbar() {
         <h1>{screenTitle(pathname)}</h1>
       </div>
       <div className="topbar-right">
-        {rc && rate !== null ? (
+        {replayCounts && replayPercent !== null ? (
           <span
             className="pill replay-pill"
-            title={`replay-equivalence over ${pillWindow} — ${rc.equivalent}/${rc.total} verified`}
+            title={`replay-equivalence over ${replayWindowLabel} — ${replayCounts.equivalent}/${replayCounts.total} verified`}
           >
-            {rate.toFixed(0)}% replay
+            {replayPercent.toFixed(0)}% replay
           </span>
         ) : null}
         <div className="cmdbar" role="search">

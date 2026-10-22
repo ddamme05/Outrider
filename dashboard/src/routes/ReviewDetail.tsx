@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 
 import { $api } from "../api/client";
+import type { components } from "../api/schema";
 import { FindingCard } from "../components/FindingCard";
 import { PipelineStrip } from "../components/PipelineStrip";
 import { PolicyModal } from "../components/PolicyModal";
@@ -10,7 +11,7 @@ import { ReplayFeed } from "../components/ReplayFeed";
 import { ReplayInfoModal } from "../components/ReplayInfoModal";
 import { StatusPill } from "../components/StatusPill";
 import { useDemoStatus } from "../lib/demo";
-import { expiresLabel } from "../lib/format";
+import { expiresLabel, formatReviewCost } from "../lib/format";
 import { SEVERITY_ORDER } from "../lib/metrics";
 import {
   type DecisionDraft,
@@ -22,8 +23,7 @@ import {
   toPayload,
 } from "../lib/hitl";
 
-// Duration for the metrics strip. wall_clock_seconds is null until the review
-// emits a SynthesizeCompletedEvent — render "pending", never a misleading zero.
+// Null means synthesis has not recorded a duration yet.
 function fmtDuration(seconds: number | null): string {
   if (seconds === null) return "pending";
   if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -31,34 +31,25 @@ function fmtDuration(seconds: number | null): string {
 }
 
 export function ReviewDetail() {
-  // The route param is `reviewId` (router.tsx); the API path param is
-  // `review_id`. useParams types it as possibly-undefined, so guard before
-  // issuing requests rather than sending `review_id: undefined`.
   const { reviewId } = useParams<{ reviewId: string }>();
 
   const enabled = typeof reviewId === "string" && reviewId.length > 0;
   const pathParams = { params: { path: { review_id: reviewId ?? "" } } };
 
-  const detail = $api.useQuery("get", "/api/reviews/{review_id}", pathParams, {
+  const detailQuery = $api.useQuery("get", "/api/reviews/{review_id}", pathParams, {
     enabled,
     refetchInterval: 2000,
   });
-  const findings = $api.useQuery("get", "/api/reviews/{review_id}/findings", pathParams, {
+  const findingsQuery = $api.useQuery("get", "/api/reviews/{review_id}/findings", pathParams, {
     enabled,
   });
-  // The grouped, replay-verified timeline (ROADMAP feature 6) — the verdict header + the
-  // playable phase timeline. Polled so a running review's timeline fills in. Subsumes the
-  // standalone replay-verdict panel (one verdict surface, not three).
-  const timeline = $api.useQuery("get", "/api/reviews/{review_id}/replay-timeline", pathParams, {
+  // The server verifies and groups the timeline used by the verdict, pipeline, and feed.
+  const timelineQuery = $api.useQuery("get", "/api/reviews/{review_id}/replay-timeline", pathParams, {
     enabled,
     refetchInterval: 2000,
   });
-  // Retained ONLY for the metrics-strip raw event COUNT (events.data.total) — the authoritative
-  // count, which includes the projected ReplayVerdictEvent the timeline omits. The pipeline cards +
-  // the timeline now read the replay-verified `.phases`/`.events` off /replay-timeline (the
-  // FUP-125 closure), so events.data.events itself is no longer consumed. Polled with the detail
-  // so a running review's count climbs live.
-  const events = $api.useQuery("get", "/api/reviews/{review_id}/events", pathParams, {
+  // The raw count includes the projected verdict event omitted from the timeline.
+  const eventsQuery = $api.useQuery("get", "/api/reviews/{review_id}/events", pathParams, {
     enabled,
     refetchInterval: 2000,
   });
@@ -69,143 +60,113 @@ export function ReviewDetail() {
   const [showReplayInfo, setShowReplayInfo] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, DecisionDraft>>({});
   const [submitted, setSubmitted] = useState(false);
-  const decide = $api.useMutation("post", "/reviews/{review_id}/decide");
+  const decisionMutation = $api.useMutation("post", "/reviews/{review_id}/decide");
 
   const [submitSeq, setSubmitSeq] = useState(0);
   const [stuck, setStuck] = useState(false);
-  // The exact payload accepted by the first 202. A stuck re-submit MUST resend
-  // this verbatim: a divergent payload hits the backend's HITLDecisionEvent
-  // natural-key conflict (different decisions_content_hash) and wedges the review
-  // pending sweep. Identical content is idempotent and safe. Editing only re-opens
-  // after the page reloads (fresh state) — see FUP-135.
+  // Retries must resend the accepted payload: changed decisions conflict with its
+  // audit record. Editing stays locked until a reload gives us fresh state.
   const [submittedPayload, setSubmittedPayload] = useState<ReturnType<typeof toPayload>[] | null>(
     null,
   );
 
-  // After a submit, arm a window: if the status hasn't advanced off the gate by
-  // then, mark the resume "stuck" so the UI re-enables submit instead of showing
-  // a permanent "submitted" (FUP-135). Re-armed on each submit via submitSeq.
+  // An accepted submit starts a new window for detecting a stuck background resume.
   useEffect(() => {
     if (submitSeq === 0) return;
     setStuck(false);
-    const t = setTimeout(() => setStuck(true), RESUME_WINDOW_MS);
-    return () => clearTimeout(t);
+    const resumeTimer = setTimeout(() => setStuck(true), RESUME_WINDOW_MS);
+    return () => clearTimeout(resumeTimer);
   }, [submitSeq]);
 
-  // Findings sorted most-severe-first (critical → info) so the reviewer leads with the
-  // findings that gate the PR. The server returns them in production/dedup order; the
-  // display order is a UI concern. Unknown severities sort last; ties keep server order
-  // (Array.sort is stable). Copy first — never mutate the cached query data.
-  const allFindings = useMemo(() => {
-    const rank = (s: string) => {
-      const i = SEVERITY_ORDER.indexOf(s as (typeof SEVERITY_ORDER)[number]);
-      return i === -1 ? SEVERITY_ORDER.length : i;
+  // Copy before sorting so cached data stays untouched; ties keep server order.
+  const sortedFindings = useMemo(() => {
+    const rank = (severity: string) => {
+      const severityRank = SEVERITY_ORDER.indexOf(severity as (typeof SEVERITY_ORDER)[number]);
+      return severityRank === -1 ? SEVERITY_ORDER.length : severityRank;
     };
-    return [...(findings.data?.findings ?? [])].sort((a, b) => rank(a.severity) - rank(b.severity));
-  }, [findings.data]);
-  const actionable = isActionable(detail.data?.status ?? "");
-  // Demo boxes have no decide route (unmounted AND unproxied): keep the gated
-  // findings RENDERING as gated (wasGated stays true — forcing actionable=false
-  // would flip FindingCard into its decided-at-review-time label, false for a
-  // parked review) but lock every control and route the sticky bar to a
-  // read-only message instead of a Submit that can only error. Tri-state: the
-  // mutation gate requires CONFIRMED production, so an unresolved/erroring meta
-  // fails closed (no live Submit) rather than defaulting to production.
+    return [...(findingsQuery.data?.findings ?? [])].sort(
+      (leftFinding, rightFinding) => rank(leftFinding.severity) - rank(rightFinding.severity),
+    );
+  }, [findingsQuery.data]);
+  const actionable = isActionable(detailQuery.data?.status ?? "");
+  // Demo and unresolved deployments lock controls without changing a finding's
+  // gated label. Only confirmed production can submit decisions.
   const demoStatus = useDemoStatus();
   const isDemo = demoStatus === "demo";
   const productionConfirmed = demoStatus === "production";
-  // Not-yet-resolved (pending, retrying, exhausted, or malformed meta). Controls
-  // fail closed either way, but a production /api/meta outage must SAY so rather
-  // than look like a silently broken review page with no Submit.
+  // A metadata outage needs an explicit message while controls stay locked.
   const demoChecking = demoStatus === "loading";
-  // Authoritative gated set from the server (ReviewDetail.findings_requiring_approval),
-  // by finding_id — never inferred from severity. The decide endpoint enforces
-  // the identical set.
-  const gatedSet = useMemo(
-    () => new Set(detail.data?.findings_requiring_approval ?? []),
-    [detail.data],
+  // The server's approval snapshot determines gating, not finding severity.
+  const gatedFindingIds = useMemo(
+    () => new Set(detailQuery.data?.findings_requiring_approval ?? []),
+    [detailQuery.data],
   );
-  const gated = useMemo(
-    () => (actionable ? allFindings.filter((f) => gatedSet.has(f.finding_id)) : []),
-    [actionable, allFindings, gatedSet],
+  const gatedFindings = useMemo(
+    () => (actionable ? sortedFindings.filter((finding) => gatedFindingIds.has(finding.finding_id)) : []),
+    [actionable, sortedFindings, gatedFindingIds],
   );
 
   if (!enabled) {
     return <p className="error">No review id in the URL.</p>;
   }
-  // Only hard-fail to the error screen on the INITIAL load (no data yet). A
-  // failed background refetch (e.g. a poll after submit) keeps the last-known
-  // data — don't blow the page away; a small banner surfaces it instead.
-  if (detail.isLoading) {
+  // Background failures keep the last loaded state and show a banner.
+  if (detailQuery.isLoading) {
     return <p>Loading…</p>;
   }
-  if (detail.error && !detail.data) {
-    // openapi-react-query throws only the parsed error body, not the Response,
-    // so we can't read the status here to distinguish 404 from 5xx — keep the
-    // message honest rather than claiming a cause we can't confirm.
+  if (detailQuery.error && !detailQuery.data) {
+    // The parsed error body doesn't tell us whether this was a 404 or a server failure.
     return (
       <p className="error">Couldn't load this review — it may not exist, or the request failed.</p>
     );
   }
 
-  const d = detail.data;
-  if (!d) {
+  const review = detailQuery.data;
+  if (!review) {
     return <p className="error">Review not found.</p>;
   }
 
-  const expires = d.status.startsWith("awaiting_approval") ? expiresLabel(d.expires_at) : null;
-  // The audit stream backs the event count, the pipeline node stats, and the feed.
-  // It fails CLOSED: until it loads we never assert a count or per-node stat — "0"
-  // would be a fabricated audit fact when we simply haven't fetched the stream.
-  const eventsLoaded = events.data !== undefined;
-  const eventCountLabel = eventsLoaded ? String(events.data.total) : events.error ? "—" : "…";
-  // Findings count fails CLOSED the same way: "…"/"—" until /findings loads, never
-  // a fabricated "0 findings". The displayed GATED count is the server-authoritative
-  // snapshot (findings_requiring_approval, from detail) — independent of the
-  // /findings load AND of actionability, so a completed review still shows how many
-  // findings gated the PR. null = gate not yet determined → "—". (`gated` below stays
-  // the currently-decidable set, used only for the live decision controls.)
-  const findingsLoaded = findings.data !== undefined;
+  const expires = review.status.startsWith("awaiting_approval") ? expiresLabel(review.expires_at) : null;
+  // Unknown counts stay visibly unknown; unavailable data does not mean zero.
+  const eventsLoaded = eventsQuery.data !== undefined;
+  const eventCountLabel = eventsLoaded ? String(eventsQuery.data.total) : eventsQuery.error ? "—" : "…";
+  const findingsLoaded = findingsQuery.data !== undefined;
   const findingCountLabel = findingsLoaded
-    ? String(allFindings.length)
-    : findings.error
+    ? String(sortedFindings.length)
+    : findingsQuery.error
       ? "—"
       : "…";
-  const reqApproval = d.findings_requiring_approval;
-  // null (no HITL-request snapshot) is distinct from [] (snapshot, nothing gated):
-  // keep it null through to the display so neither the header nor the pipeline
-  // renders a fabricated "0" when the gate set is simply unknown.
-  const gatedCount = reqApproval == null ? null : reqApproval.length;
-  const gatedCountLabel = reqApproval == null ? "—" : String(reqApproval.length);
-  const m = d.metrics;
+  const approvalSnapshot = review.findings_requiring_approval;
+  // Keep the original gated count after completion. Null means no approval
+  // snapshot; an empty snapshot means zero gated findings.
+  const gatedCount = approvalSnapshot == null ? null : approvalSnapshot.length;
+  const gatedCountLabel = approvalSnapshot == null ? "—" : String(approvalSnapshot.length);
 
-  const getDraft = (id: string): DecisionDraft => drafts[id] ?? EMPTY_DRAFT;
-  const setDraft = (id: string, next: DecisionDraft) =>
-    setDrafts((prev) => ({ ...prev, [id]: next }));
-  const decidedCount = gated.filter((f) => isDraftValid(getDraft(f.finding_id), f)).length;
-  const allGatedValid = gated.length > 0 && decidedCount === gated.length;
-  // The review advanced off the gate after our submit — the resume took.
+  const getDraft = (findingId: string): DecisionDraft => drafts[findingId] ?? EMPTY_DRAFT;
+  const setDraft = (findingId: string, nextDraft: DecisionDraft) =>
+    setDrafts((currentDrafts) => ({ ...currentDrafts, [findingId]: nextDraft }));
+  const decidedCount = gatedFindings.filter(
+    (finding) => isDraftValid(getDraft(finding.finding_id), finding),
+  ).length;
+  const allGatedValid = gatedFindings.length > 0 && decidedCount === gatedFindings.length;
   const resumed = submitted && !actionable;
-  // Submit is re-enabled if never submitted, OR the resume looks stuck.
   const canSubmit =
-    productionConfirmed && actionable && allGatedValid && !decide.isPending && (!submitted || stuck);
-  // The fixed decision bar shows whenever decisions are pending or a submit is in flight; the
-  // section reserves bottom space (.has-sticky-bar) so the last content clears the fixed bar.
-  const showHitlBar = submitted || (actionable && gated.length > 0);
+    productionConfirmed && actionable && allGatedValid && !decisionMutation.isPending && (!submitted || stuck);
+  // Reserve bottom space whenever the fixed decision bar is visible.
+  const showHitlBar = submitted || (actionable && gatedFindings.length > 0);
 
   const onSubmit = () => {
-    // First submit builds from the drafts; a stuck re-submit resends the exact
-    // accepted payload (snapshotted on the first 202) — never a divergent one.
-    const decisions = submittedPayload ?? gated.map((f) => toPayload(getDraft(f.finding_id), f));
-    decide.mutate(
+    // Reuse accepted decisions on retries; otherwise build them from the drafts.
+    const decisions = submittedPayload ?? gatedFindings.map(
+      (finding) => toPayload(getDraft(finding.finding_id), finding),
+    );
+    decisionMutation.mutate(
       { params: { path: { review_id: reviewId } }, body: { decisions } },
       {
         onSuccess: () => {
           setSubmitted(true);
-          setSubmittedPayload(decisions); // snapshot the accepted payload
-          setSubmitSeq((n) => n + 1); // (re-)arm the stuck-detection window
-          // Decide returns 202 and resumes the graph in the background; let the
-          // 2s polls surface the awaiting → running → completed transition.
+          setSubmittedPayload(decisions);
+          setSubmitSeq((sequence) => sequence + 1);
+          // The 202 resumes work in the background; polling tracks its progress.
           void queryClient.invalidateQueries();
         },
       },
@@ -218,37 +179,33 @@ export function ReviewDetail() {
         ← Reviews
       </Link>
 
-      {detail.error && detail.data ? (
+      {detailQuery.error && detailQuery.data ? (
         <p className="queue-notice" role="alert">
           Couldn't refresh — showing the last loaded state. It may be out of date.
         </p>
       ) : null}
 
-      {/* hero panel — subject identity + the "Replay · reconstruct" action + the replay
-          verdict (no author/repo-slug: not exposed by the API) */}
       <div className="panel">
         <div className="panel-b">
           <div className="rd-head">
             <div className="rd-title-block">
               <div className="rd-title-row">
                 <h1 className="rd-title">
-                  {d.repo_full_name ?? `repo ${d.repo_id}`}{" "}
-                  <span className="prnum">#{d.pr_number}</span>
+                  {review.repo_full_name ?? `repo ${review.repo_id}`}{" "}
+                  <span className="prnum">#{review.pr_number}</span>
                 </h1>
-                {/* The replay verdict sits by the title and is clickable (like the
-                    policy chip) to explain what replay-equivalence means. */}
-                {timeline.data ? (
+                {timelineQuery.data ? (
                   <button
                     type="button"
                     className={`pill verdict-pill${
-                      timeline.data.replay_equivalent ? "" : " status-expired"
+                      timelineQuery.data.replay_equivalent ? "" : " status-expired"
                     }`}
                     aria-haspopup="dialog"
                     aria-expanded={showReplayInfo}
                     onClick={() => setShowReplayInfo(true)}
                     aria-label="What replay-equivalent means"
                   >
-                    {timeline.data.replay_equivalent ? (
+                    {timelineQuery.data.replay_equivalent ? (
                       <>
                         replay-equivalent <b style={{ color: "var(--pos)" }}>✓</b>
                       </>
@@ -258,20 +215,19 @@ export function ReviewDetail() {
                       </>
                     )}
                   </button>
-                ) : timeline.error ? (
-                  // Fail loud, never silently omit: a failed verdict load reads as an
-                  // explicit "unavailable", not an absent (and so implicitly-fine) badge.
+                ) : timelineQuery.error ? (
+                  // A missing verdict must not imply a successful replay check.
                   <span className="pill status-expired" aria-label="replay verdict">
                     replay verdict unavailable
                   </span>
                 ) : null}
               </div>
-              {d.pr_title ? <div className="rd-subtitle">{d.pr_title}</div> : null}
+              {review.pr_title ? <div className="rd-subtitle">{review.pr_title}</div> : null}
               <div className="rd-meta">
                 <span>
-                  head <span className="mono">{d.head_sha.slice(0, 9)}</span>
+                  head <span className="mono">{review.head_sha.slice(0, 9)}</span>
                 </span>
-                {d.policy_version ? (
+                {review.policy_version ? (
                   <button
                     type="button"
                     className="chip policy mono"
@@ -279,17 +235,17 @@ export function ReviewDetail() {
                     aria-expanded={showPolicy}
                     onClick={() => setShowPolicy(true)}
                   >
-                    policy {d.policy_version}
+                    policy {review.policy_version}
                   </button>
                 ) : null}
-                <StatusPill status={d.status} />
+                <StatusPill status={review.status} />
                 {expires ? (
                   <span className="pill status-expired">
                     <span className="dot" aria-hidden="true" />
                     {expires}
                   </span>
                 ) : null}
-                {d.is_eval ? <span className="eval-tag mono">is_eval</span> : null}
+                {review.is_eval ? <span className="eval-tag mono">is_eval</span> : null}
               </div>
             </div>
             <div className="rd-actions">
@@ -320,73 +276,26 @@ export function ReviewDetail() {
         </div>
       </div>
 
-      {showPolicy && d.policy_version ? (
-        <PolicyModal version={d.policy_version} onClose={() => setShowPolicy(false)} />
+      {showPolicy && review.policy_version ? (
+        <PolicyModal version={review.policy_version} onClose={() => setShowPolicy(false)} />
       ) : null}
 
       {showReplayInfo ? <ReplayInfoModal onClose={() => setShowReplayInfo(false)} /> : null}
 
-      {/* this-review metrics strip — 4 cards, all server-backed */}
-      <div className="metrics-strip">
-        <div className="ms-card">
-          <div className="lab">Total cost</div>
-          <div className="ms-val">
-            {`${m.cost_complete === false ? "\u2265" : ""}$${m.total_cost_usd.toFixed(2)}`}
-            {m.cost_complete !== false ? null : (
-              <span style={{ color: "var(--faint)", fontSize: 12 }}>
-                {" "}
-                incomplete — {m.unpriced_call_count} unpriced call(s)
-              </span>
-            )}
-          </div>
-          <div className="ms-sub">
-            {d.policy_version ? `policy ${d.policy_version} · ` : ""}
-            {findingCountLabel} findings
-          </div>
-        </div>
-        <div className="ms-card">
-          <div className="lab">Tokens</div>
-          <div className="ms-val">
-            {m.total_input_tokens.toLocaleString()}
-            <span style={{ color: "var(--faint)", fontSize: 12 }}> in</span>
-          </div>
-          <div className="ms-sub">
-            <span className="mono">{m.total_output_tokens.toLocaleString()}</span> out ·{" "}
-            {m.llm_calls_made} LLM calls
-          </div>
-        </div>
-        <div className="ms-card">
-          <div className="lab">Duration · Events</div>
-          <div className="ms-val">{fmtDuration(m.wall_clock_seconds)}</div>
-          <div className="ms-sub">
-            <span className="mono">{eventCountLabel}</span> audit events
-          </div>
-        </div>
-        {/* the adaptive analyze⇄trace loop's headline output: how many files were
-            examined and how many were pulled in beyond the diff. Both null until
-            SynthesizeCompletedEvent — render "—", never a misleading 0. */}
-        <div className="ms-card">
-          <div className="lab">Files</div>
-          <div className="ms-val">
-            {m.files_examined ?? "—"}
-            <span style={{ color: "var(--faint)", fontSize: 12 }}> examined</span>
-          </div>
-          <div className="ms-sub">
-            <span className="mono">{m.files_traced_beyond_diff ?? "—"}</span> traced beyond diff
-          </div>
-        </div>
-      </div>
-
-      {/* pipeline — per-node cards from the server's replay-verified reconstruction
-          (the same verified phases the audit feed below + the Replay page render). */}
-      <PipelineStrip
-        status={d.status}
-        phases={timeline.data?.phases ?? null}
-        gatedCount={gatedCount}
-        policyVersion={d.policy_version}
+      <ReviewMetrics
+        metrics={review.metrics}
+        policyVersion={review.policy_version}
+        findingCountLabel={findingCountLabel}
+        eventCountLabel={eventCountLabel}
       />
 
-      {/* findings */}
+      <PipelineStrip
+        status={review.status}
+        phases={timelineQuery.data?.phases ?? null}
+        gatedCount={gatedCount}
+        policyVersion={review.policy_version}
+      />
+
       <div className="panel">
         <div className="panel-h">
           <h2>Findings</h2>
@@ -395,28 +304,25 @@ export function ReviewDetail() {
           </div>
         </div>
         <div className="panel-b">
-          {findings.isLoading ? (
+          {findingsQuery.isLoading ? (
             <p>Loading findings…</p>
-          ) : findings.error ? (
+          ) : findingsQuery.error ? (
             <p className="error">Failed to load findings.</p>
-          ) : allFindings.length === 0 ? (
+          ) : sortedFindings.length === 0 ? (
             <p style={{ color: "var(--muted)" }}>No findings recorded for this review.</p>
           ) : (
-            allFindings.map((f) => {
-              const wasGated = gatedSet.has(f.finding_id);
+            sortedFindings.map((finding) => {
+              const wasGated = gatedFindingIds.has(finding.finding_id);
               const decidable = actionable && wasGated;
               return (
                 <FindingCard
-                  key={f.finding_id}
-                  finding={f}
+                  key={finding.finding_id}
+                  finding={finding}
                   wasGated={wasGated}
-                  decision={decidable ? getDraft(f.finding_id) : undefined}
-                  // Lock controls while submitting and once submitted — including
-                  // the stuck state: a re-submit must resend the SAME payload
-                  // (divergent content wedges the audit row), so editing stays
-                  // closed until the page reloads with fresh state.
-                  disabled={!productionConfirmed || decide.isPending || submitted}
-                  onDecisionChange={decidable ? (next) => setDraft(f.finding_id, next) : undefined}
+                  decision={decidable ? getDraft(finding.finding_id) : undefined}
+                  // Retrying a stuck submit must preserve the accepted decisions.
+                  disabled={!productionConfirmed || decisionMutation.isPending || submitted}
+                  onDecisionChange={decidable ? (nextDraft) => setDraft(finding.finding_id, nextDraft) : undefined}
                 />
               );
             })
@@ -424,23 +330,21 @@ export function ReviewDetail() {
         </div>
       </div>
 
-      {/* audit feed — phase-grouped, replay-verified (static; the playable real-time
-          reconstruction lives on the Replay · reconstruct page reached from the hero button). */}
       <div className="panel">
         <div className="panel-h">
           <h2>Audit feed</h2>
           <div className="sub">phase-grouped · {eventCountLabel} events</div>
         </div>
-        {timeline.isLoading ? (
+        {timelineQuery.isLoading ? (
           <div className="panel-b">
             <p>Loading the audit feed…</p>
           </div>
-        ) : timeline.error ? (
+        ) : timelineQuery.error ? (
           <div className="panel-b">
             <p className="error">Failed to load the audit feed.</p>
           </div>
-        ) : timeline.data ? (
-          <ReplayFeed data={timeline.data} flat />
+        ) : timelineQuery.data ? (
+          <ReplayFeed data={timelineQuery.data} flat />
         ) : null}
       </div>
 
@@ -453,7 +357,7 @@ export function ReviewDetail() {
             ) : demoChecking ? (
               <b>Checking deployment status — decisions are unavailable until it resolves.</b>
             ) : resumed ? (
-              <b>Decision submitted — review is now {d.status}.</b>
+              <b>Decision submitted — review is now {review.status}.</b>
             ) : submitted && stuck ? (
               <b>Resume hasn't completed yet — refresh to check, or re-submit.</b>
             ) : submitted ? (
@@ -461,36 +365,36 @@ export function ReviewDetail() {
             ) : (
               <>
                 <b>
-                  {decidedCount} / {gated.length}
+                  {decidedCount} / {gatedFindings.length}
                 </b>{" "}
                 gated findings decided
               </>
             )}
           </span>
-          {gated.length > 0 && !submitted && productionConfirmed ? (
+          {gatedFindings.length > 0 && !submitted && productionConfirmed ? (
             <span className="hs-pips" aria-hidden="true">
-              {gated.map((f) => (
+              {gatedFindings.map((finding) => (
                 <span
-                  key={f.finding_id}
-                  className={`hs-pip ${isDraftValid(getDraft(f.finding_id), f) ? "done" : ""}`}
+                  key={finding.finding_id}
+                  className={`hs-pip ${isDraftValid(getDraft(finding.finding_id), finding) ? "done" : ""}`}
                 />
               ))}
             </span>
           ) : null}
-          {decide.error ? (
+          {decisionMutation.error ? (
             <span className="error" role="alert">
-              {decideErrorMessage(decide.error)}
+              {decideErrorMessage(decisionMutation.error)}
             </span>
           ) : null}
           <span className="hs-right">
             {submitted && !resumed ? (
-              <button className="btn" onClick={() => void detail.refetch()}>
+              <button className="btn" onClick={() => void detailQuery.refetch()}>
                 Refresh status
               </button>
             ) : null}
             {!resumed && productionConfirmed ? (
               <button className="btn primary" disabled={!canSubmit} onClick={onSubmit}>
-                {decide.isPending
+                {decisionMutation.isPending
                   ? "Submitting…"
                   : submitted && stuck
                     ? "Re-submit"
@@ -501,5 +405,67 @@ export function ReviewDetail() {
         </div>
       ) : null}
     </section>
+  );
+}
+
+function ReviewMetrics({
+  metrics,
+  policyVersion,
+  findingCountLabel,
+  eventCountLabel,
+}: {
+  metrics: components["schemas"]["ReviewMetricsView"];
+  policyVersion: string | null;
+  findingCountLabel: string;
+  eventCountLabel: string;
+}) {
+  return (
+    <div className="metrics-strip">
+      <div className="ms-card">
+        <div className="lab">Total cost</div>
+        <div className="ms-val">
+          {formatReviewCost(metrics)}
+          {metrics.cost_complete !== false ? null : (
+            <span style={{ color: "var(--faint)", fontSize: 12 }}>
+              {" "}
+              incomplete — {metrics.unpriced_call_count} unpriced call(s)
+            </span>
+          )}
+        </div>
+        <div className="ms-sub">
+          {policyVersion ? `policy ${policyVersion} · ` : ""}
+          {findingCountLabel} findings
+        </div>
+      </div>
+      <div className="ms-card">
+        <div className="lab">Tokens</div>
+        <div className="ms-val">
+          {metrics.total_input_tokens.toLocaleString()}
+          <span style={{ color: "var(--faint)", fontSize: 12 }}> in</span>
+        </div>
+        <div className="ms-sub">
+          <span className="mono">{metrics.total_output_tokens.toLocaleString()}</span> out ·{" "}
+          {metrics.llm_calls_made} LLM calls
+        </div>
+      </div>
+      <div className="ms-card">
+        <div className="lab">Duration · Events</div>
+        <div className="ms-val">{fmtDuration(metrics.wall_clock_seconds)}</div>
+        <div className="ms-sub">
+          <span className="mono">{eventCountLabel}</span> audit events
+        </div>
+      </div>
+      {/* Null file counts mean synthesis has not recorded them yet. */}
+      <div className="ms-card">
+        <div className="lab">Files</div>
+        <div className="ms-val">
+          {metrics.files_examined ?? "—"}
+          <span style={{ color: "var(--faint)", fontSize: 12 }}> examined</span>
+        </div>
+        <div className="ms-sub">
+          <span className="mono">{metrics.files_traced_beyond_diff ?? "—"}</span> traced beyond diff
+        </div>
+      </div>
+    </div>
   );
 }

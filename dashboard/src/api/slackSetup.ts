@@ -1,16 +1,8 @@
-// Client for the Slack "Connect Slack" install flow (DECISIONS.md#051 / #052).
-//
-// `/slack/install` IS in the generated OpenAPI schema (it mounts in production, the canonical
-// `demo_mode=False` surface), but this is still a thin, locally-typed raw-fetch client rather than
-// the openapi-fetch `$api`: the endpoint is content-negotiated (Accept: application/json → a 200
-// JSON body, else a 302) and needs custom error mapping the generated client doesn't express well —
-// the dual-503 branch (credential gate vs Slack-not-configured), 401 → clear the stale token, and
-// HTML-body topology detection. Same-origin, admin-token-authed, mirroring api/setup.ts.
-//
-// The flow: GET /slack/install with `Accept: application/json` returns the Slack authorize URL
-// (a fetch cannot follow a cross-origin 302, so we read it and navigate the browser ourselves),
-// then `navigateToSlack` sends the browser there — but only after asserting the URL is on
-// slack.com, the one origin we will ever hand off to (mirrors setup.ts's GITHUB_ORIGIN guard).
+// Slack OAuth start (DECISIONS.md#051 / #052). Request JSON from /slack/install
+// instead of following its browser redirect. Raw fetch preserves the typed
+// recovery errors used by ConnectSlack; api/client.ts supplies the normal
+// schema-based query client. Attach the admin token, clear it on 401, and
+// validate the response before handing navigation to the Slack origin guard.
 
 import { clearToken, getToken } from "../auth/token";
 
@@ -23,12 +15,11 @@ const SLACK_ORIGIN = "https://slack.com";
 /** Typed errors so the page can distinguish the flow's failures from generic ones. */
 export class SlackSetupError extends Error {}
 
-/** The peer answered, but not as the Outrider API (HTML shell / wrong shape). In practice a
- *  TOPOLOGY fault: the Vite dev server or a proxy with no `/slack` rule answered, or this is the
- *  demo box (Slack OAuth is production-only). Same class as setup.ts's SetupProtocolError. */
+/** Invalid JSON or an unexpected response shape, often from a dev/static
+ * server. Slack OAuth is absent in demo mode and not proxied by Vite. */
 export class SlackSetupProtocolError extends SlackSetupError {}
 
-/** The request never reached a server (connection refused, DNS, offline). */
+/** Fetch rejected without a usable response (offline, DNS, connection failure). */
 export class SlackSetupUnreachableError extends SlackSetupError {}
 
 /** Slack OAuth is not configured on this instance (OUTRIDER_SLACK_CLIENT_ID unset → 503). */
@@ -39,11 +30,11 @@ export interface SlackInstallURL {
   authorize_url: string;
 }
 
-function isSlackInstallURL(v: unknown): v is SlackInstallURL {
+function isSlackInstallURL(value: unknown): value is SlackInstallURL {
   return (
-    typeof v === "object" &&
-    v !== null &&
-    typeof (v as Record<string, unknown>).authorize_url === "string"
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).authorize_url === "string"
   );
 }
 
@@ -54,9 +45,9 @@ function authHeaders(): Headers {
   return headers;
 }
 
-async function _detail(resp: Response): Promise<string> {
+async function _detail(response: Response): Promise<string> {
   try {
-    const body: unknown = await resp.json();
+    const body: unknown = await response.json();
     if (body && typeof body === "object" && "detail" in body) {
       const detail = (body as { detail: unknown }).detail;
       if (typeof detail === "string") return detail;
@@ -64,21 +55,14 @@ async function _detail(resp: Response): Promise<string> {
   } catch {
     /* non-JSON body — fall through to a status-code message */
   }
-  // Neutral fallback: must NOT contain "Slack", or a bodyless 503 would match the 503
-  // classifier's Slack branch and mislabel an infra outage as a Slack-config problem.
-  return `Install request failed (${resp.status}).`;
+  // Keep a bodyless failure neutral so it cannot imply a configuration problem.
+  return `Install request failed (${response.status}).`;
 }
 
-/**
- * `GET /slack/install` (admin) — begin connecting Slack for `installationId` + `channelId`.
- * Returns the Slack authorize URL to navigate to. Maps the flow's HTTP contract onto typed errors:
- *   - 401 → clears the stale token + SlackSetupError (TokenGate re-prompts)
- *   - 503 whose detail names Slack → SlackNotConfiguredError; otherwise (the #070 credential gate)
- *     → SlackSetupError pointing at GitHub App setup
- *   - other non-2xx → SlackSetupError with the backend's detail
- *   - non-JSON / wrong-shape body → SlackSetupProtocolError (wrong topology / demo box)
- *   - transport rejection → SlackSetupUnreachableError
- */
+/** Fetch an authorize URL for this installation/channel. A 401 clears the key;
+ * 503 details distinguish missing Slack config, incomplete GitHub setup (#070),
+ * and an unavailable backend. Other HTTP, protocol, and transport failures
+ * keep their separate typed errors. */
 export async function startSlackInstall(
   installationId: number,
   channelId: string,
@@ -87,9 +71,9 @@ export async function startSlackInstall(
     installation_id: String(installationId),
     channel_id: channelId,
   });
-  let resp: Response;
+  let response: Response;
   try {
-    resp = await fetch(`${baseUrl}/slack/install?${query.toString()}`, {
+    response = await fetch(`${baseUrl}/slack/install?${query.toString()}`, {
       headers: authHeaders(),
       // The response carries a short-lived signed state; never let a cache serve one at all.
       cache: "no-store",
@@ -99,21 +83,15 @@ export async function startSlackInstall(
       "couldn't reach the Outrider API (no response). Is the backend running?",
     );
   }
-  if (resp.status === 401) {
-    // Stale/rejected admin key — drop it so TokenGate re-prompts (mirrors api/setup.ts + the
-    // openapi-fetch authMiddleware). The error still propagates as the query's failure.
+  if (response.status === 401) {
+    // Clear the key and still propagate the rejected request.
     clearToken();
     throw new SlackSetupError("Admin key was rejected. Enter it again.");
   }
-  if (resp.status === 503) {
-    // THREE distinct 503s share this route, and each wants a different fix — so classify on the
-    // SPECIFIC backend detail, never a loose "slack" match (the fallback detail contains "Slack"):
-    //   - Slack-not-configured ("Slack OAuth is not configured") → set OUTRIDER_SLACK_*;
-    //   - the #070 credential gate ("setup incomplete", returned BEFORE Slack config is evaluated)
-    //     → finish GitHub App setup;
-    //   - anything else, incl. a bodyless infra/gateway 503 → the backend is unavailable, retry.
-    // Handing any of these the wrong recovery instruction is worse than a generic one.
-    const detail = await _detail(resp);
+  if (response.status === 503) {
+    // Known backend details select recovery guidance. Unknown/bodyless 503s
+    // stay unavailable; the #070 credential gate runs before Slack settings.
+    const detail = await _detail(response);
     if (/not configured/i.test(detail)) {
       throw new SlackNotConfiguredError(
         "Slack isn’t configured on this instance. Set the OUTRIDER_SLACK_* variables and restart.",
@@ -128,14 +106,14 @@ export async function startSlackInstall(
       "Outrider is temporarily unavailable (the backend may be starting up or down). Try again in a moment.",
     );
   }
-  if (!resp.ok) {
-    throw new SlackSetupError(await _detail(resp));
+  if (!response.ok) {
+    throw new SlackSetupError(await _detail(response));
   }
   let body: unknown;
   try {
-    body = await resp.json();
+    body = await response.json();
   } catch {
-    const isHtml = (resp.headers.get("content-type") ?? "").includes("text/html");
+    const isHtml = (response.headers.get("content-type") ?? "").includes("text/html");
     throw new SlackSetupProtocolError(
       isHtml
         ? "GET /slack/install returned an HTML page instead of JSON. The request reached a " +
@@ -151,21 +129,17 @@ export async function startSlackInstall(
   return body;
 }
 
-/**
- * Navigate the browser to Slack's authorize page. REFUSES any URL not on `https://slack.com`
- * (defence-in-depth: the URL is backend-built, but this is the one hand-off origin we allow, the
- * same posture as setup.ts's `submitManifestToGitHub`). Returns nothing on success (the browser
- * leaves the page); throws `SlackSetupError` on a non-Slack origin so the caller can surface it.
- */
+/** Hand the browser to the exact https://slack.com origin. Reject malformed
+ * or foreign URLs before navigation so ConnectSlack can show the error. */
 export function navigateToSlack(authorizeUrl: string): void {
-  let parsed: URL;
+  let authorizeURL: URL;
   try {
-    parsed = new URL(authorizeUrl);
+    authorizeURL = new URL(authorizeUrl);
   } catch {
     throw new SlackSetupError("Slack returned an unparseable authorize URL.");
   }
-  if (parsed.origin !== SLACK_ORIGIN) {
-    throw new SlackSetupError(`refusing to navigate to a non-slack.com origin (${parsed.origin}).`);
+  if (authorizeURL.origin !== SLACK_ORIGIN) {
+    throw new SlackSetupError(`refusing to navigate to a non-slack.com origin (${authorizeURL.origin}).`);
   }
   window.location.assign(authorizeUrl);
 }

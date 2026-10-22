@@ -1,12 +1,8 @@
 import { $api } from "../api/client";
 import { Modal } from "./Modal";
 
-// The FindingType → severity table for a review's policy_version (FUP-132),
-// rendered as a modal dialog opened by the policy chip. Fetched from
-// GET /api/policy/{version} — the STORED versioned policy, so a historical review
-// shows the table it was actually classified under. Severity is policy-set +
-// versioned; the model never sets it. Shell (backdrop/Escape/close) is shared
-// via Modal; this component owns only the policy-table body.
+// Read the stored policy for the review's version, including historical reviews (FUP-132).
+// Modal owns closing behavior; this component loads and displays the policy table.
 export function PolicyModal({ version, onClose }: { version: string; onClose: () => void }) {
   const { data, error, isLoading } = $api.useQuery("get", "/api/policy/{version}", {
     params: { path: { version } },
@@ -36,14 +32,14 @@ export function PolicyModal({ version, onClose }: { version: string; onClose: ()
             </tr>
           </thead>
           <tbody>
-            {data.entries.map((e) => (
-              <tr key={e.finding_type}>
-                <td className="ft mono">{e.finding_type}</td>
-                <td className="muted">{e.dimension}</td>
+            {data.entries.map((policyEntry) => (
+              <tr key={policyEntry.finding_type}>
+                <td className="ft mono">{policyEntry.finding_type}</td>
+                <td className="muted">{policyEntry.dimension}</td>
                 <td>
-                  <span className={`pill sev-pill sev-${e.severity}`}>
+                  <span className={`pill sev-pill sev-${policyEntry.severity}`}>
                     <span className="dot" aria-hidden="true" />
-                    {e.severity}
+                    {policyEntry.severity}
                   </span>
                 </td>
               </tr>

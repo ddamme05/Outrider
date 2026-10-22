@@ -1,14 +1,11 @@
-// Client for the App-Manifest onboarding surface (DECISIONS.md#070).
-//
-// The `/setup*` endpoints mount ONLY in `database` credential mode, so they are deliberately NOT in
-// the generated OpenAPI schema (the canonical schema is the env-mode surface, and shifting it to the
-// database-mode superset would ripple through the freshness guard). This is therefore a thin,
-// locally-typed raw-fetch client for that one surface — same-origin, admin-token-authed, mirroring
-// the openapi-fetch `authMiddleware` (attach Bearer; drop a stale key on 401).
+// GitHub App manifest onboarding (DECISIONS.md#070). These endpoints mount
+// in database credential mode and are absent from the canonical env-mode
+// OpenAPI schema. This raw-fetch client validates their responses locally
+// and applies the same bearer-token/401 policy as api/client.ts.
 
 import { clearToken, getToken } from "../auth/token";
 
-// Same-origin by default (co-deployed / dev proxy); matches `api/client.ts`.
+// Same-origin by default; matches api/client.ts.
 const baseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
 
 /** `GITHUB_ORIGIN` is the ONLY origin the manifest form may POST to (see `submitManifestToGitHub`). */
@@ -22,15 +19,8 @@ export interface SetupStartResponse {
   manifest: Record<string, unknown>;
 }
 
-/**
- * The setup state machine's CLOSED vocabulary — mirrors `SETUP_STATUSES` in
- * `src/outrider/db/models/setup_state.py`, which a DB CHECK constraint enforces. `router.py`
- * annotates the field `str`, but the wire value is one of exactly these five: the UI's affordances
- * (Start / Retry / Reset / installed) are defined only over them. A status outside this set means
- * the client is talking to something it does not understand, so it fails loudly rather than render
- * a blank, actionless page — and a future backend state must be taught here before the client can
- * drive it.
- */
+/** Known setup states mirror the DB CHECK vocabulary in src/outrider/db/models/setup_state.py.
+ * Reject unknown states before the page chooses Start, Retry, or Reset controls. */
 export const SETUP_STATUSES = [
   "UNCONFIGURED",
   "AWAITING_CALLBACK",
@@ -53,56 +43,49 @@ export interface SetupStatus {
 /** Typed error for the onboarding flow so callers can distinguish it from generic failures. */
 export class SetupError extends Error {}
 
-/**
- * The peer answered, but not as the Outrider API: unparseable body or the wrong shape. In practice
- * this is a TOPOLOGY error, not a backend fault — the SPA dev server (or a proxy with no `/setup`
- * rule) answered with its own HTML shell. `/setup*` mounts only in `database` credential mode and is
- * deliberately NOT proxied by the Vite dev server, so the full onboarding flow is supported ONLY
- * when FastAPI serves the built SPA (`OUTRIDER_SERVE_SPA=1`). See `dashboard/vite.config.ts`.
- */
+/** Invalid JSON or an unexpected response shape. Often a dev/static server
+ * answered instead of the API: /setup is not proxied by Vite. The supported
+ * onboarding flow uses FastAPI serving the built SPA (OUTRIDER_SERVE_SPA=1). */
 export class SetupProtocolError extends SetupError {}
 
-/** The request never reached a server at all (connection refused, DNS, offline). */
+/** Fetch rejected without a usable response (offline, DNS, connection failure). */
 export class SetupUnreachableError extends SetupError {}
 
-/** Runtime shape guard — `as` casts are erased at compile time and cannot validate a wire payload. */
-function isSetupStatus(v: unknown): v is SetupStatus {
-  if (typeof v !== "object" || v === null) return false;
-  const o = v as Record<string, unknown>;
+/** Validate the wire payload; TypeScript casts cannot check it at runtime. */
+function isSetupStatus(value: unknown): value is SetupStatus {
+  if (typeof value !== "object" || value === null) return false;
+  const payload = value as Record<string, unknown>;
   return (
-    typeof o.status === "string" &&
-    (SETUP_STATUSES as readonly string[]).includes(o.status) &&
-    typeof o.configured === "boolean" &&
-    typeof o.install_known === "boolean"
+    typeof payload.status === "string" &&
+    (SETUP_STATUSES as readonly string[]).includes(payload.status) &&
+    typeof payload.configured === "boolean" &&
+    typeof payload.install_known === "boolean"
   );
 }
 
-function isSetupStartResponse(v: unknown): v is SetupStartResponse {
-  if (typeof v !== "object" || v === null) return false;
-  const o = v as Record<string, unknown>;
+function isSetupStartResponse(value: unknown): value is SetupStartResponse {
+  if (typeof value !== "object" || value === null) return false;
+  const payload = value as Record<string, unknown>;
   return (
-    typeof o.target_url === "string" &&
-    typeof o.manifest === "object" &&
-    o.manifest !== null &&
-    !Array.isArray(o.manifest)
+    typeof payload.target_url === "string" &&
+    typeof payload.manifest === "object" &&
+    payload.manifest !== null &&
+    !Array.isArray(payload.manifest)
   );
 }
 
-/**
- * Parse a success body as JSON, or raise `SetupProtocolError`. NEVER surfaces peer-supplied content
- * — not the body, and not headers either: both are peer-controlled and unbounded, and neither is
- * signal for the operator. The `content-type` is read ONLY to pick between two fixed messages.
- */
-async function _json(resp: Response, what: string): Promise<unknown> {
+/** Parse JSON without exposing an invalid body or peer-controlled headers.
+ * Content type only selects between fixed protocol-error messages. */
+async function _json(response: Response, requestName: string): Promise<unknown> {
   try {
-    return await resp.json();
+    return await response.json();
   } catch {
-    const isHtml = (resp.headers.get("content-type") ?? "").includes("text/html");
+    const isHtml = (response.headers.get("content-type") ?? "").includes("text/html");
     throw new SetupProtocolError(
       isHtml
-        ? `${what} returned an HTML page instead of JSON. The request reached a static/dev server ` +
+        ? `${requestName} returned an HTML page instead of JSON. The request reached a static/dev server ` +
           `rather than the Outrider API — onboarding requires FastAPI serving the built SPA.`
-        : `${what} returned a body that is not valid JSON, so the peer is not the Outrider API.`,
+        : `${requestName} returned a body that is not valid JSON, so the peer is not the Outrider API.`,
     );
   }
 }
@@ -126,9 +109,9 @@ function authHeaders(extra?: Record<string, string>): Headers {
   return headers;
 }
 
-async function _detail(resp: Response): Promise<string> {
+async function _detail(response: Response): Promise<string> {
   try {
-    const body: unknown = await resp.json();
+    const body: unknown = await response.json();
     if (body && typeof body === "object" && "detail" in body) {
       const detail = (body as { detail: unknown }).detail;
       if (typeof detail === "string") return detail;
@@ -136,40 +119,33 @@ async function _detail(resp: Response): Promise<string> {
   } catch {
     /* non-JSON body — fall through to the status-code message */
   }
-  return `setup request failed (${resp.status})`;
+  return `setup request failed (${response.status})`;
 }
 
-/**
- * `GET /setup/status` — PUBLIC (no auth). Returns `null` on 404: the `/setup` router is absent, i.e.
- * this instance uses `env` credentials and App-Manifest onboarding does not apply.
- */
+/** Public status read. Treat 404 as an absent setup router (env credentials). */
 export async function fetchSetupStatus(): Promise<SetupStatus | null> {
-  const resp = await _fetch(`${baseUrl}/setup/status`);
-  // 404 is the ACCEPTED production contract: the router is absent => `env` credential mode. Kept
-  // ahead of every other branch, and never conflated with the protocol errors below.
-  if (resp.status === 404) return null;
-  if (!resp.ok) throw new SetupError(await _detail(resp));
-  const body = await _json(resp, "GET /setup/status");
+  const response = await _fetch(`${baseUrl}/setup/status`);
+  // Handle the accepted 404 contract before HTTP or payload validation.
+  if (response.status === 404) return null;
+  if (!response.ok) throw new SetupError(await _detail(response));
+  const body = await _json(response, "GET /setup/status");
   if (!isSetupStatus(body)) {
     throw new SetupProtocolError("GET /setup/status returned JSON of an unexpected shape.");
   }
   return body;
 }
 
-/**
- * `POST /setup` (admin) — begin onboarding for `org`. Returns the GitHub target URL + the manifest
- * to submit there. The admin token rides the `Authorization` header (same-origin) and NEVER leaves
- * in the GitHub-bound form.
- */
+/** Begin admin-authenticated setup. The returned form sends only the manifest
+ * to GitHub; the admin key stays in the API request header. */
 export async function startSetup(org: string): Promise<SetupStartResponse> {
-  const resp = await _fetch(`${baseUrl}/setup`, {
+  const response = await _fetch(`${baseUrl}/setup`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ org }),
   });
-  if (resp.status === 401) clearToken(); // mirror authMiddleware: stale key → the token-gate re-prompts
-  if (!resp.ok) throw new SetupError(await _detail(resp));
-  const body = await _json(resp, "POST /setup");
+  if (response.status === 401) clearToken(); // Clear a rejected key so TokenGate reopens.
+  if (!response.ok) throw new SetupError(await _detail(response));
+  const body = await _json(response, "POST /setup");
   if (!isSetupStartResponse(body)) {
     throw new SetupProtocolError("POST /setup returned JSON of an unexpected shape.");
   }
@@ -181,28 +157,20 @@ export async function startSetup(org: string): Promise<SetupStartResponse> {
  * retried. Returns the new status. 409 if the instance is not in a resettable (ORPHANED) state.
  */
 export async function resetSetup(): Promise<SetupStatus> {
-  const resp = await _fetch(`${baseUrl}/setup/reset`, { method: "POST", headers: authHeaders() });
-  if (resp.status === 401) clearToken();
-  if (!resp.ok) throw new SetupError(await _detail(resp));
-  const body = await _json(resp, "POST /setup/reset");
+  const response = await _fetch(`${baseUrl}/setup/reset`, { method: "POST", headers: authHeaders() });
+  if (response.status === 401) clearToken();
+  if (!response.ok) throw new SetupError(await _detail(response));
+  const body = await _json(response, "POST /setup/reset");
   if (!isSetupStatus(body)) {
     throw new SetupProtocolError("POST /setup/reset returned JSON of an unexpected shape.");
   }
   return body;
 }
 
-/**
- * Auto-submit the manifest to GitHub via a POST form. GitHub's App-Manifest flow REQUIRES the
- * manifest as a form field (it is too large + structured for a URL), so a plain link cannot do this.
- *
- * SECURITY — a form whose `action` is attacker-controlled can exfiltrate whatever it carries, so:
- *   1. REFUSE to submit unless `targetUrl` is exactly the `https://github.com` origin. A compromised
- *      or misconfigured backend therefore cannot make the browser POST the manifest + signed `state`
- *      to any other host.
- *   2. Field values are set via the DOM `.value` property — NEVER `innerHTML` — so nothing in the
- *      manifest is ever parsed as HTML (no injection from manifest content).
- * Call ONLY from an explicit user action (never on load), so it can't be driven as a silent CSRF.
- */
+/** Submit from an explicit user action: GitHub requires a POST form carrying
+ * the manifest. Require the exact https://github.com origin before creating
+ * the form: its action also carries signed state. Assign DOM values so manifest
+ * text cannot become HTML. */
 export function submitManifestToGitHub(
   targetUrl: string,
   manifest: Record<string, unknown>,
@@ -224,7 +192,7 @@ export function submitManifestToGitHub(
   const field = document.createElement("input");
   field.type = "hidden";
   field.name = "manifest";
-  field.value = JSON.stringify(manifest); // `.value` assignment — never parsed as HTML
+  field.value = JSON.stringify(manifest); // DOM value assignment keeps manifest text out of HTML parsing.
   form.appendChild(field);
   document.body.appendChild(form);
   form.submit();

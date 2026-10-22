@@ -33,9 +33,8 @@ function review(overrides: Record<string, unknown>) {
   };
 }
 
-// A DashboardMetricsResponse fixture (DECISIONS#039). Defaults mirror the mockup's
-// example window; the current totals deliberately differ from the previous window
-// so delta polarity (up-good / up-bad) is exercised.
+// DashboardMetricsResponse (DECISIONS#039): different current and previous totals
+// exercise whether an increasing metric is favorable or unfavorable.
 function metrics(overrides: Record<string, unknown> = {}) {
   return {
     window: "7d",

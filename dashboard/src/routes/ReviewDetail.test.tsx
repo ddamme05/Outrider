@@ -55,8 +55,7 @@ function finding(overrides: Record<string, unknown> = {}) {
     suggested_fix: "Use parameterized queries.",
     query_match_id: "sql_string_format.scm",
     trace_path: null,
-    // The wire value is LOWERCASE (PublishDestination StrEnum) — the fixture must match the
-    // real API shape, not the uppercase display form (the bug the previous fixture masked).
+    // Use the lowercase wire value; the display label is checked below.
     publish_destination: "inline_comment",
     eligibility: "withheld",
     eligibility_reason: "hitl_required_node_absent",
@@ -65,9 +64,8 @@ function finding(overrides: Record<string, unknown> = {}) {
   };
 }
 
-// The replay-timeline DTO (ROADMAP feature 6): metadata-only, replay-verified, phase-grouped.
-// `phases` is non-null only on an equivalent verdict (FUP-125); a non-equivalent verdict
-// carries phases:null and the flat `events` stream is rendered as the AuditFeed fallback.
+// Replay-verified phases feed the pipeline and replay view (FUP-125).
+// Divergent verdicts carry phases:null and use the flat AuditFeed fallback.
 function timelineData(overrides: Record<string, unknown> = {}) {
   return {
     review_id: "r1",
@@ -385,9 +383,8 @@ test("policy chip opens the versioned policy table from the endpoint", async () 
 });
 
 test("pipeline node cards derive per-node model and cost from the verified phases", async () => {
-  // Completed review so analyze/triage are "done" and show their derived stats. The
-  // per-node stats now come from the server's replay-verified phases (the FUP-125
-  // closure), not from a client re-grouping of the raw /events stream.
+  // Completed node statistics come from server-verified phases (FUP-125),
+  // rather than regrouping the raw /events response in the client.
   const triageEv = llmEvent("triage", 0.01);
   const analyzeEv = llmEvent("analyze", 0.27);
   mount({
@@ -497,11 +494,9 @@ test("findings header fails CLOSED when /findings is unavailable — no fabricat
       </MemoryRouter>
     </QueryClientProvider>,
   );
-  // The findings tab surfaces the load error explicitly…
+  // The findings panel surfaces the load error explicitly.
   expect(await screen.findByText("Failed to load findings.")).toBeInTheDocument();
-  // …and the findings count fails closed to "—", never a fabricated "0 findings"
-  // (asserted on the metrics card, which is unique — the pipeline's "paused · N
-  // findings" is a separate gate count from the detail snapshot).
+  // The metrics count stays unknown; the pipeline uses a separate approval snapshot.
   expect(screen.getByText(/policy v3 · — findings/)).toBeInTheDocument();
 });
 

@@ -10,33 +10,16 @@ import {
   type SetupStatus,
 } from "../api/setup";
 
-// F5 (DECISIONS.md#070): the click-through "Set up GitHub App" action. It reads the public
-// GET /setup/status and, when the instance is not yet configured, POSTs /setup (admin-authed) and
-// auto-submits the returned App manifest to GitHub. The dangerous step (a cross-origin form POST
-// carrying the manifest + signed state) is hardened in `api/setup.ts::submitManifestToGitHub`: it
-// refuses any target that is not exactly the https://github.com origin and sets field values via the
-// DOM `.value` (never innerHTML). The whole page sits behind the dashboard's admin TokenGate.
-//
-// The UI is state-machine-aware (#070 recovery states):
-//   - UNCONFIGURED → Start.
-//   - AWAITING_CALLBACK / CONVERTING → RETRY, which re-POSTs /setup — that is the actual repair
-//     path (begin_setup resets an expired AWAITING_CALLBACK and orphans a stale CONVERTING; a plain
-//     status refresh would NOT, so it would be a dead end). A genuinely in-flight attempt returns a
-//     409 with a clear message.
-//   - ORPHANED → Reset, GATED on the operator confirming they deleted the partial App on GitHub
-//     first (spec F4): GitHub creates the App before redirecting, so a failed attempt leaves a real
-//     App holding root credentials; resetting without deleting it accumulates orphaned Apps.
-//   - CONFIGURED → distinguish credentials-obtained from App-installed via the install-known flag.
+// F5 (DECISIONS.md#070): read setup status, start or retry onboarding, then submit the
+// manifest to GitHub through api/setup.ts's origin-checked form. TokenGate requires a token;
+// the backend authorizes setup writes.
+// Retry asks the backend to repair abandoned attempts (#070). ORPHANED requires GitHub-side
+// deletion before Reset (spec F4); CONFIGURED distinguishes credentials from installation.
 
-// `topology` is distinct from `error` on purpose: it means the reply did not come from the Outrider
-// API at all (an HTML shell / wrong shape), which is a deployment-topology fault, not a backend one.
-// Collapsing it into `error` produced the misleading "you can still try below" — Start fails
-// identically, so the page must say WHY rather than offer an action that cannot work.
+// A protocol failure hides Start; an ordinary request error leaves it available for retry.
 type Phase = "loading" | "unavailable" | "error" | "topology";
 type StatusState = SetupStatus | Phase;
 
-// Badge tone per lifecycle state — reuses the dashboard's semantic palette so the status chip
-// reads at a glance (configured = pos, failed/orphaned = neg, in-flight = warn, fresh = info).
 function statusTone(status: string): string {
   if (status === "CONFIGURED") return "pos";
   if (status === "ORPHANED") return "neg";
@@ -44,38 +27,21 @@ function statusTone(status: string): string {
   return "info";
 }
 
-/**
- * Terminate a sentence exactly once. Neither assumption holds on its own: a backend `detail` is
- * usually unpunctuated ("setup incomplete") while our own messages sometimes end in their own
- * punctuation ("...Is the backend running?"), so blindly appending "." yields "running?." and
- * blindly omitting it yields "incomplete You can still try below."
- */
+/** Add a period only when the message lacks terminal punctuation. */
 function sentence(text: string): string {
   return /[.?!]$/.test(text) ? text : `${text}.`;
 }
 
-// Post-install confirmation. GitHub redirects here after the operator finishes installing the App,
-// but the `installation` webhook that populates `install_known` is a SEPARATE delivery and can land
-// after the browser does — so a single status read momentarily reports "not installed" for an App
-// that is. Poll briefly to close that gap. Bounded on purpose: this is a nicety, and an unbounded
-// poll on a public, unauthenticated page is a liability.
+// GitHub's installation webhook can arrive after the browser returns. Poll briefly
+// for the display hint, with a fixed limit if the webhook never arrives.
 const INSTALL_POLL_ATTEMPTS = 10;
 const INSTALL_POLL_INTERVAL_MS = 1000;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Consume GitHub's post-install redirect hint, if present, and scrub it from the URL.
- *
- * GitHub appends `?installation_id=…&setup_action=install` to the App's Setup URL. The
- * `installation_id` is NEVER trusted — GitHub's own docs warn it can be spoofed, and this page is
- * public — so it is read ONLY to decide "an install probably just happened, start polling". It is
- * never stored, sent, or displayed, and no code path derives an installation from it.
- * `GET /setup/status` re-derives `install_known` from the local installations table, which is fed
- * by the signature-verified installation webhook; that stays the authority.
- *
- * Scrubbing (same treatment as `auth/token.ts` gives the token fragment) keeps a reload from
- * re-entering the polling path, and keeps a spoofable value out of the address bar and referrers.
+ * Use the untrusted redirect hint only to start status polling, then remove it from the URL.
+ * The id is never stored or sent. install_known reads the backend's active installation rows.
  */
 function consumeInstallHint(): boolean {
   const params = new URLSearchParams(window.location.search);
@@ -84,61 +50,55 @@ function consumeInstallHint(): boolean {
   }
   params.delete("setup_action");
   params.delete("installation_id");
-  const qs = params.toString();
-  window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
+  const remainingQuery = params.toString();
+  window.history.replaceState(
+    null,
+    "",
+    window.location.pathname + (remainingQuery ? `?${remainingQuery}` : ""),
+  );
   return true;
 }
 
 export function SetupGitHubApp() {
-  const [state, setState] = useState<StatusState>("loading");
-  const [org, setOrg] = useState("");
+  const [setupState, setSetupState] = useState<StatusState>("loading");
+  const [organizationLogin, setOrganizationLogin] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [confirmDeleted, setConfirmDeleted] = useState(false);
   const [confirmingInstall, setConfirmingInstall] = useState(false);
 
-  const refresh = useCallback(async (): Promise<SetupStatus | null> => {
+  const refreshSetupStatus = useCallback(async (): Promise<SetupStatus | null> => {
     try {
-      const s = await fetchSetupStatus();
-      setState(s ?? "unavailable");
+      const setupStatus = await fetchSetupStatus();
+      setSetupState(setupStatus ?? "unavailable");
       setStatusError(null);
-      return s;
-    } catch (err) {
-      // Bind the error and route on TYPE. A protocol error is never a backend fault, so it must not
-      // render as one; only `SetupError` messages are surfaced (they are ours), never a raw body.
-      setState(err instanceof SetupProtocolError ? "topology" : "error");
-      setStatusError(err instanceof SetupError ? err.message : null);
+      return setupStatus;
+    } catch (refreshError) {
+      // Surface typed SetupError messages; other exceptions use the page's generic fallback.
+      setSetupState(refreshError instanceof SetupProtocolError ? "topology" : "error");
+      setStatusError(refreshError instanceof SetupError ? refreshError.message : null);
       return null;
     }
   }, []);
 
-  // Consumed in the EFFECT, never during render. Two constraints pull in opposite directions and
-  // only this placement satisfies both:
-  //   - `consumeInstallHint` calls `history.replaceState`, a side effect. React requires render to
-  //     be pure, and in dev StrictMode double-invokes the render function and DISCARDS the first
-  //     pass's hook state — so a render-time scrub runs on pass 1 while the surviving pass 2 reads
-  //     an already-clean URL, records no hint, and never polls. Exactly the protection inverted.
-  //   - StrictMode ALSO re-runs effects (setup → cleanup → setup) on the same instance. Refs
-  //     survive that, so latching the hint in a ref keeps the second setup from re-reading the
-  //     scrubbed URL and skipping the poll the first setup started (then cancelled).
-  // NO TEST WILL CATCH a move back into render: the double-render is dev-only and Vitest runs
-  // React's test build (probed — one invocation, not two). This placement is the whole guard.
+  // Scrub the URL in an effect to keep render pure. The ref retains the hint across
+  // StrictMode's effect cleanup/setup, when the URL has already been cleaned.
   const installHint = useRef<boolean | null>(null);
 
   useEffect(() => {
     installHint.current ??= consumeInstallHint();
     if (!installHint.current) {
-      void refresh();
+      void refreshSetupStatus();
       return;
     }
     let cancelled = false;
     setConfirmingInstall(true);
     void (async () => {
       for (let attempt = 0; attempt < INSTALL_POLL_ATTEMPTS; attempt += 1) {
-        const s = await refresh();
+        const setupStatus = await refreshSetupStatus();
         if (cancelled) return;
-        if (s?.install_known) break;
+        if (setupStatus?.install_known) break;
         if (attempt < INSTALL_POLL_ATTEMPTS - 1) {
           await sleep(INSTALL_POLL_INTERVAL_MS);
           if (cancelled) return;
@@ -149,29 +109,28 @@ export function SetupGitHubApp() {
     return () => {
       cancelled = true;
     };
-  }, [refresh]);
+  }, [refreshSetupStatus]);
 
-  async function onStart(e: FormEvent): Promise<void> {
-    e.preventDefault();
-    const trimmed = org.trim();
-    if (!trimmed) {
+  async function onStart(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    const ownerLogin = organizationLogin.trim();
+    if (!ownerLogin) {
       setError("Enter the GitHub organization that will own the App.");
       return;
     }
     setError(null);
     setBusy(true);
     try {
-      const { target_url, manifest } = await startSetup(trimmed);
-      // On success this navigates the browser to GitHub (form POST) and the component unmounts;
-      // `busy` is only reset on the error path below.
+      const { target_url, manifest } = await startSetup(ownerLogin);
+      // Keep the form busy during navigation; failures below unlock it.
       submitManifestToGitHub(target_url, manifest);
-    } catch (err) {
-      setError(err instanceof SetupError ? err.message : "Setup failed — check the server logs.");
-      // A rejected Start may have TRANSITIONED the machine: begin_setup commits a stale
-      // CONVERTING → ORPHANED in its own transaction BEFORE the 409 (see state_machine.begin_setup).
-      // Re-sync so the UI shows the real state (ORPHANED → the reset/cleanup flow) instead of the
-      // pre-click one with its now-wrong "Retry will proceed" affordance.
-      await refresh();
+    } catch (startError) {
+      setError(
+        startError instanceof SetupError ? startError.message : "Setup failed — check the server logs.",
+      );
+      // begin_setup can commit stale CONVERTING → ORPHANED before rejecting Start.
+      // Refresh so the page offers the cleanup/reset flow for that committed state.
+      await refreshSetupStatus();
       setBusy(false);
     }
   }
@@ -182,28 +141,21 @@ export function SetupGitHubApp() {
     try {
       await resetSetup();
       setConfirmDeleted(false);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof SetupError ? err.message : "Reset failed.");
+      await refreshSetupStatus();
+    } catch (resetError) {
+      setError(resetError instanceof SetupError ? resetError.message : "Reset failed.");
     } finally {
       setBusy(false);
     }
   }
 
-  const status = typeof state === "object" ? state.status : null;
-  const configured = typeof state === "object" && state.configured;
-  const installed = typeof state === "object" && state.install_known;
+  const status = typeof setupState === "object" ? setupState.status : null;
+  const configured = typeof setupState === "object" && setupState.configured;
+  const installed = typeof setupState === "object" && setupState.install_known;
   const inFlight = status === "AWAITING_CALLBACK" || status === "CONVERTING";
-  // The Start/Retry form: a fresh instance, an in-flight one (retry re-POSTs /setup = the repair
-  // path), or a transient status-read error. NOT for ORPHANED (Start 409s until reset), CONFIGURED,
-  // or `topology` — there POST /setup would hit the same non-API peer, so offering Start would be a
-  // convincing but nonfunctional control.
-  //
-  // `error` DOES keep Start, and the distinction from `topology` is deliberate: an unreachable or
-  // erroring backend can recover between the status fetch and the click (it was starting up, the
-  // network blipped), so retrying is a real action. A peer that answered as not-the-API cannot
-  // recover by being clicked at — that needs a config change. Recoverable ⇒ offer; misconfigured ⇒ explain.
-  const showStart = status === "UNCONFIGURED" || inFlight || state === "error";
+  // Offer Start for fresh, retryable, or request-error states. Orphans need Reset;
+  // protocol failures need a working API, and configured instances need no new App.
+  const showStart = status === "UNCONFIGURED" || inFlight || setupState === "error";
   const startLabel = inFlight ? "Retry setup" : "Set up GitHub App";
 
   return (
@@ -226,16 +178,16 @@ export function SetupGitHubApp() {
           </div>
         )}
 
-        {state === "loading" && <p className="setup-muted">Checking setup status&hellip;</p>}
+        {setupState === "loading" && <p className="setup-muted">Checking setup status&hellip;</p>}
 
-        {state === "unavailable" && (
+        {setupState === "unavailable" && (
           <p className="setup-note">
             This instance uses environment credentials, so App-Manifest onboarding isn&rsquo;t
             available here.
           </p>
         )}
 
-        {state === "topology" && (
+        {setupState === "topology" && (
           <p className="setup-note setup-note--error">
             This page isn&rsquo;t reaching the Outrider API &mdash; something else answered. The
             onboarding flow is supported only when FastAPI serves the built dashboard (
@@ -245,9 +197,8 @@ export function SetupGitHubApp() {
           </p>
         )}
 
-        {/* Start STAYS available here, unlike `topology` — see `showStart`. The message may end in
-            its own punctuation, so it is rendered as its own sentence rather than spliced into one. */}
-        {state === "error" && (
+        {/* Render the status error as its own sentence before the retry guidance. */}
+        {setupState === "error" && (
           <p className="setup-note setup-note--error">
             {sentence(
               statusError
@@ -258,9 +209,7 @@ export function SetupGitHubApp() {
           </p>
         )}
 
-        {/* Post-install: GitHub bounced the operator back here. `install_known` flips only once the
-            separate installation webhook lands, so say we are waiting rather than briefly claiming
-            the App isn't installed. */}
+        {/* A returning browser may still be waiting for the installation webhook. */}
         {confirmingInstall && !installed && (
           <p className="setup-note">
             Confirming the installation&hellip; GitHub delivers the install event separately, so this
@@ -268,8 +217,7 @@ export function SetupGitHubApp() {
           </p>
         )}
 
-        {/* CONFIGURED: credentials obtained — but the operator may not have finished GitHub's
-            separate install step, so distinguish configured from installed (spec §Land). */}
+        {/* Credentials and installation are separate steps (spec §Land). */}
         {configured &&
           !confirmingInstall &&
           (installed ? (
@@ -284,9 +232,7 @@ export function SetupGitHubApp() {
             </p>
           ))}
 
-        {/* In-flight: an attempt was started but not completed. Retry re-POSTs /setup, which is the
-            repair path (an expired AWAITING_CALLBACK is reset and a stale CONVERTING is orphaned);
-            a genuinely in-progress attempt returns a clear 409 below. */}
+        {/* Retry invokes backend repair; a live attempt can still return 409. */}
         {inFlight && (
           <p className="setup-note">
             An onboarding attempt is already in progress. If you didn&rsquo;t finish it on GitHub,
@@ -295,9 +241,7 @@ export function SetupGitHubApp() {
           </p>
         )}
 
-        {/* ORPHANED: a failed attempt. GitHub already created the App, so it must be deleted before
-            resetting (spec F4) — otherwise repeated resets accumulate orphaned root-credential Apps.
-            The reset is gated on an explicit deletion confirmation. */}
+        {/* Require explicit GitHub-side deletion confirmation before Reset (spec F4). */}
         {status === "ORPHANED" && (
           <div className="setup-block">
             <p className="setup-note setup-note--error">
@@ -311,7 +255,7 @@ export function SetupGitHubApp() {
                 type="checkbox"
                 className="setup-check__box"
                 checked={confirmDeleted}
-                onChange={(e) => setConfirmDeleted(e.target.checked)}
+                onChange={(event) => setConfirmDeleted(event.target.checked)}
                 disabled={busy}
               />
               <span className="setup-check__text">I have deleted the orphaned App on GitHub.</span>
@@ -336,8 +280,8 @@ export function SetupGitHubApp() {
               <input
                 id="setup-org"
                 className="setup-field__input"
-                value={org}
-                onChange={(e) => setOrg(e.target.value)}
+                value={organizationLogin}
+                onChange={(event) => setOrganizationLogin(event.target.value)}
                 placeholder="acme-inc"
                 autoComplete="off"
                 spellCheck={false}

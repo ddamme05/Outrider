@@ -1,11 +1,7 @@
 import { type AuditEvent, eventFamily, eventNode, summarizeEvent } from "../lib/auditEvent";
 
-// The audit-feed flat table: the review's event stream, ordered as returned (by
-// sequence_number). Rendered as a labeled table — a 1-based per-review index (#),
-// event type, node, detail, time. The "#" is a display index (the Nth event in
-// THIS review), not the raw global audit sequence_number — that's confusing across
-// reviews (a review's events can start at e.g. 108); the raw value is kept on hover
-// for traceability. This is the literal audit record, surfaced (FUP-133).
+// Keep the supplied audit order (FUP-133). Number rows within this review;
+// preserve the global sequence number on hover for traceability.
 export function AuditFeed({ events }: { events: AuditEvent[] }) {
   if (events.length === 0) {
     return <p style={{ color: "var(--muted)" }}>No audit events recorded for this review.</p>;
@@ -19,22 +15,25 @@ export function AuditFeed({ events }: { events: AuditEvent[] }) {
         <span>Detail</span>
         <span>Time</span>
       </div>
-      {events.map((e, i) => {
-        const node = eventNode(e);
-        const summary = summarizeEvent(e);
+      {events.map((auditEvent, eventIndex) => {
+        const node = eventNode(auditEvent);
+        const summary = summarizeEvent(auditEvent);
         return (
           <div
-            className={`afrow ev-c-${eventFamily(e.event_type)}`}
-            key={`${e.sequence_number ?? i}-${e.event_type}-${i}`}
+            className={`afrow ev-c-${eventFamily(auditEvent.event_type)}`}
+            key={`${auditEvent.sequence_number ?? eventIndex}-${auditEvent.event_type}-${eventIndex}`}
           >
-            <span className="af-seq mono" title={`audit sequence ${e.sequence_number ?? i}`}>
-              {i + 1}
+            <span
+              className="af-seq mono"
+              title={`audit sequence ${auditEvent.sequence_number ?? eventIndex}`}
+            >
+              {eventIndex + 1}
             </span>
-            <span className="af-type mono">{e.event_type}</span>
+            <span className="af-type mono">{auditEvent.event_type}</span>
             <span className="af-node mono">{node ?? ""}</span>
             <span className="af-summary">{summary}</span>
             <span className="af-ts mono">
-              {e.timestamp ? e.timestamp.slice(0, 19).replace("T", " ") : ""}
+              {auditEvent.timestamp ? auditEvent.timestamp.slice(0, 19).replace("T", " ") : ""}
             </span>
           </div>
         );

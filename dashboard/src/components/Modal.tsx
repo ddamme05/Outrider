@@ -1,10 +1,6 @@
 import { useEffect, type ReactNode } from "react";
 
-// Shared modal shell: the backdrop (click-to-close), Escape-to-close, dialog
-// semantics (role="dialog" + aria-modal + aria-label), and the header/close
-// chrome. Each modal supplies only its title, sub-line, aria-label, and body —
-// behavior and structure live here once so the two never drift. Deliberately
-// no focus-trap or portal: this is a shell extraction, not a behavior change.
+// Dialog callers supply content; this shell owns backdrop/Escape closing and labels.
 export function Modal({
   title,
   sub,
@@ -21,11 +17,11 @@ export function Modal({
   children: ReactNode;
 }) {
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+    const handleKeyDown = (keyEvent: KeyboardEvent) => {
+      if (keyEvent.key === "Escape") onClose();
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
   return (
@@ -36,7 +32,7 @@ export function Modal({
       aria-label={ariaLabel}
       onClick={onClose}
     >
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal" onClick={(clickEvent) => clickEvent.stopPropagation()}>
         <div className="modal-h">
           <div>
             <h2>{title}</h2>

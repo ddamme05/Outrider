@@ -1,9 +1,6 @@
 import { Modal } from "./Modal";
 
-// Static explainer for the replay-equivalent verdict, opened by clicking the
-// verdict pill in the review header. No fetch — the concept is fixed; the
-// per-review ✓/✗ verdict lives on the pill. Shell (backdrop/Escape/close) is
-// shared via Modal; this component owns only the explanatory prose.
+// Static explanation; the review header owns the per-review verdict.
 export function ReplayInfoModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal

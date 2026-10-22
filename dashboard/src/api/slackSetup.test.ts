@@ -12,14 +12,12 @@ import {
   startSlackInstall,
 } from "./slackSetup";
 
-// API-boundary tests: the client maps the `/slack/install` HTTP contract onto typed errors, and
-// `navigateToSlack` refuses any origin but slack.com. The component test proves the operator sees
-// the right copy; this proves the client rejects the wrong payload / destination first.
+// Check typed HTTP/protocol errors and the Slack navigation origin guard.
 
 const INSTALL = "http://localhost/slack/install";
 
-// jsdom's window.location.assign is non-configurable (vi.spyOn can't wrap it), so swap the whole
-// location object with a stub carrying a mock assign. Restored after each test.
+// Stub the whole location object because jsdom cannot spy on assign.
+// Restore it after each test.
 const realLocation = window.location;
 function stubAssign(): ReturnType<typeof vi.fn> {
   const assign = vi.fn();
@@ -69,8 +67,7 @@ test("503 whose detail names Slack maps to SlackNotConfiguredError", async () =>
 });
 
 test("the #070 credential-gate 503 is NOT misreported as a Slack-config problem", async () => {
-  // GET /slack/install sits behind require_credentials_configured, which 503s with
-  // "setup incomplete" BEFORE Slack config is evaluated — a different fix than "set OUTRIDER_SLACK_*".
+  // The credential gate returns setup incomplete before checking Slack config.
   server.use(
     http.get(INSTALL, () => HttpResponse.json({ detail: "setup incomplete" }, { status: 503 })),
   );
@@ -81,8 +78,7 @@ test("the #070 credential-gate 503 is NOT misreported as a Slack-config problem"
 });
 
 test("a bodyless / infra 503 gets a GENERIC unavailable message, not Slack-config or GitHub-setup", async () => {
-  // A gateway/proxy 503 (backend down) has no JSON detail → the fallback must not be mislabeled as
-  // either a Slack-config problem or a GitHub-setup problem. It should say "temporarily unavailable".
+  // A bodyless gateway failure must offer generic recovery guidance.
   server.use(http.get(INSTALL, () => new HttpResponse(null, { status: 503 })));
   const err = await startSlackInstall(42, "C0ABCDE").catch((e: unknown) => e);
   expect(err).toBeInstanceOf(SlackSetupError);

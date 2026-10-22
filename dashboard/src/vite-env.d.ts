@@ -1,8 +1,7 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  /** API origin when the SPA and API are different origins. Empty/undefined =
-   * same-origin (dev proxy or co-deployed). */
+  /** Optional API origin; empty or absent uses the current origin. */
   readonly VITE_API_BASE_URL?: string;
 }
 

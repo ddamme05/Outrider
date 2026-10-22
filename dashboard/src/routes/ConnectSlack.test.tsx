@@ -131,8 +131,7 @@ test("an HTML response (wrong topology / demo box) shows the topology note, not 
   await fillAndConnect();
   expect(await screen.findByText(/isn.t reaching the Outrider API/i)).toBeInTheDocument();
   expect(assign).not.toHaveBeenCalled();
-  // Fail closed: once we know the peer isn't the API, the form is gone (connecting again
-  // would fail identically), mirroring the GitHub setup page dropping Start on topology.
+  // A protocol rejection hides the form until the page can reach a working API.
   expect(screen.queryByRole("button", { name: /^connect slack$/i })).not.toBeInTheDocument();
   expect(screen.queryByLabelText(/github installation id/i)).not.toBeInTheDocument();
 });
