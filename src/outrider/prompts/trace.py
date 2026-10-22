@@ -1,58 +1,13 @@
 # See specs/2026-05-23-trace-node.md M6 + Q4.
-"""Trace-node prompt template, version, knobs, and render helper.
+"""Render the selected imports for one trace ranking call.
 
-The trace node consumes `state.trace_candidates` (the deterministic
-request channel populated by analyze pass 0; `analyze_parser` gates
-`_collect_trace_candidates_for` on `pass_index == 0` so pass-1
-post-trace analyze calls cannot re-populate the channel) and uses a
-single Haiku call to rank the candidates by likelihood that resolving
-them will improve a finding's INFERRED-tier proof. The ranking is one call per
-trace invocation (not per finding): the LLM sees the full per-finding
-context for every candidate at once, picks an ordered subset, and the
-deterministic pipeline downstream (resolver probes, audit emission,
-GitHub content fetch) consumes that ordering.
+Analyze pass 0 supplies candidates; trace deduplicates and caps each finding's
+group before calling this renderer. The model must rank every selected ID
+exactly once. Ranking changes priority, while deterministic probes decide
+resolution and file fetching.
 
-This module owns the prompt surface for that ranking call. Mirrors
-`prompts/triage.py`'s shape — simple system + user prompts, frozen
-dataclass result, pure `render()`.
-
-Surfaces:
-
-- `SYSTEM_PROMPT: Final[str]` — fully static instructions + JSON output
-  schema. Goes into `LLMRequest.system_prompt` (cached per
-  `cache_control: ephemeral`); reused across the analyze ⇄ trace loop.
-- `USER_TEMPLATE: Final[str]` — per-invocation `str.format` template
-  with structural placeholders (`{candidate_list}`). Values filled at
-  `render()` time; placeholder names are template STRUCTURE.
-- `TEMPLATE` — alias for `USER_TEMPLATE`.
-- `VERSION: Final[str] = "trace-v1"` — flows to
-  `LLMRequest.prompt_template_version`.
-- `MAX_TOKENS: Final[int] = 8192` — output cap for the ranking JSON.
-  Sized to cover the worst-case bucket flatten: analyze caps findings
-  at 50 per file and trace caps each finding's bucket at
-  `MAX_CANDIDATES_PER_FINDING=5` unique imports, so a single-file PR
-  with many findings can yield up to 50 × 5 = 250 candidate ids in
-  the flat ranking input. Each candidate id is a 64-char SHA-256 hex
-  string; the ranking output is a JSON array of those ids
-  (`["<64>", "<64>", ...]`), ~70 chars per entry including delimiters.
-  Worst-case output ≈ 250 × 70 + brackets ≈ 17.5 KB ≈ ~4500 tokens at
-  ~4 chars/token. 8192 gives a 80% safety margin and stays inside
-  Haiku 4.5's per-response output limit. Truncation here surfaces as
-  `TraceRankingRejected(reason="raw_response_unparseable")` (the
-  ranking parser falls back to input order, deterministic) — sized
-  to avoid that failure path under realistic load.
-- `TEMPERATURE: Final[float] = 0.0` — deterministic-leaning; minimizes
-  replay drift.
-- `TracePromptParts` — frozen dataclass result. NOT a NamedTuple, so
-  positional unpacking `(sys, usr) = render(...)` fails loud rather
-  than silently masking a field swap.
-- `render(candidates)` — build the (system, user) pair from a list of
-  `TraceCandidate` records.
-
-Per `webhook-strings-are-data-not-format-strings`: candidate fields
-(`import_string`, `reason`) are inserted as structured list items,
-NOT as f-string format-target inputs.
-"""
+Static instructions and request data remain separate. Candidate imports and
+reasons use dynamic fences (`webhook-strings-are-data-not-format-strings`)."""
 
 from __future__ import annotations
 
@@ -67,9 +22,8 @@ if TYPE_CHECKING:
     from outrider.schemas.trace_candidate import TraceCandidate
 
 VERSION: Final[str] = "trace-v1"
-# Sized to cover the worst-case flat ranking output (~4500 tokens at
-# 250 ids × 70 chars/id ÷ 4 chars/token) with safety margin. See
-# module docstring for the derivation.
+# Output budget for the ranking JSON. Truncation is rejected by trace_parser;
+# the trace node then retains the supplied order.
 MAX_TOKENS: Final[int] = 8192
 TEMPERATURE: Final[float] = 0.0
 
@@ -143,12 +97,7 @@ TEMPLATE: Final[str] = USER_TEMPLATE
 
 @dataclass(frozen=True, slots=True)
 class TracePromptParts:
-    """Render output: the (system, user) pair plus the cache-boundary contract.
-
-    Dataclass (not NamedTuple) for the same reason as TriagePromptParts —
-    positional unpacking `(system, user) = render(...)` raises TypeError
-    rather than silently masking a swap.
-    """
+    """Named system and user prompt fields; positional unpacking is unsupported."""
 
     system_prompt: str
     user_prompt: str
@@ -167,7 +116,7 @@ def render(candidates: Sequence[TraceCandidate]) -> TracePromptParts:
     `.format()` interpolation targets — defends against the
     `webhook-strings-are-data-not-format-strings` invariant.
     """
-    candidate_list = "\n".join(_format_candidate(c) for c in candidates)
+    candidate_list = "\n".join(_format_candidate(candidate) for candidate in candidates)
     user_prompt = USER_TEMPLATE.format(
         n_candidates=len(candidates),
         candidate_list=candidate_list,
@@ -176,15 +125,9 @@ def render(candidates: Sequence[TraceCandidate]) -> TracePromptParts:
 
 
 def _format_candidate(candidate: TraceCandidate) -> str:
-    """Format one candidate as a structured list item.
+    """Render one candidate, fencing its import and reason as untrusted data.
 
-    `import_string` and `reason` are wrapped in dynamic-length code
-    fences via `safe_code_fence` — both are LLM-author-derived strings
-    in their original PRs, so they could contain markdown control
-    characters that would otherwise forge prompt structure. The
-    `candidate_id` is a SHA-256 hex string (content-derived, no
-    injection surface) and goes verbatim.
-    """
+    The content-derived candidate_id is a SHA-256 hex value."""
     fenced_import = safe_code_fence(candidate.import_string, lang="text")
     fenced_reason = safe_code_fence(candidate.reason, lang="text")
     return (

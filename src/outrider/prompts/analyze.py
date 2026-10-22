@@ -1,92 +1,19 @@
 # See specs/2026-05-19-analyze-node.md §5
-"""Analyze prompt template, version, knobs, and render helpers.
+"""Render file context for clean, degraded and post-trace analyze calls.
 
-The analyze node runs one Sonnet call per eligible file. Prompts split
-into:
+Clean and degraded calls share SYSTEM_PROMPT_STABLE_PREFIX. Post-trace calls
+append a static INFERRED-admission suffix. Per-file scopes, query IDs, diff hunks
+and source-finding context stay in the user prompt, allowing system bytes to
+remain stable across files. The provider owns actual cache behavior.
 
-- **System prompt** (cacheable, CROSS-FILE stable): Outrider-wide
-  invariants (output schema, `FindingType` enum, `EvidenceTier` proof
-  rules, severity-set-by-policy and confidence-is-computed reminders)
-  PLUS the worked exemplars block — `SYSTEM_PROMPT_STABLE_PREFIX`,
-  byte-identical for every pass-0 and degraded call in a review, so
-  the provider's `cache_control: ephemeral` caches the prefix ONCE per
-  review per tier-model instead of once per file (the analyze
-  cache-packing spec; pre-v4 packing carried per-file scope context
-  here, keying the cache per file). Pass-1 (post-trace) appends
-  `POST_TRACE_SYSTEM_PROMPT_SUFFIX` — still static, so pass-1 calls
-  share a SECOND stable cache entry across files (exact-prefix
-  matching: the suffix-bearing system cannot hit the pass-0 entry).
-- **User prompt** (volatile, per-file + per-pass): file-scoped context
-  (path + fenced scope units with same-file callers/callees, imports,
-  decorators + pre-fired `query_match_id` set) + pass directives +
-  scope-unit-clipped diff hunks. Outside the cache boundary; moving
-  per-file context here is what makes the system prefix cross-file
-  stable.
+Degraded calls use bounded hunks and JUDGED-only instructions, with a provenance
+sentence for the DegradationReason. The node bounds hunks before rendering.
+Post-trace context covers the whole fetched file rather than changed scopes.
 
-For degraded calls (parse failure, `has_error` nodes intersecting
-changed regions, or the clean-parse module-scope route
-`module_level_observed_match`), the prompt swaps to a `judged`-only
-directive set with a reason-aware provenance sentence; the registry/walk
-context is empty by construction, so the user prompt carries bounded
-changed hunks instead of scope-unit-clipped ones. The
-system prompt is the SAME stable prefix — degraded calls share the
-pass-0 cache entry.
-
-Surfaces:
-
-- `SYSTEM_PROMPT_INVARIANTS` — fully static invariants head.
-- `SYSTEM_PROMPT_EXEMPLARS` — fully static worked flag/don't-flag
-  exemplars per `FindingType`; grows the cached prefix past the
-  per-model min-cacheable floor (`llm/pricing.py::MIN_CACHEABLE_TOKENS`
-  — below the floor the API silently skips caching).
-- `SYSTEM_PROMPT_CALIBRATION` — fully static broad anti-over-eagerness
-  rule ("clean code is common; an empty findings list is valid and
-  correct; don't manufacture findings") appended to the cached prefix
-  at the v8 bump; validated by the conservatism probe. No `{placeholder}`
-  markers.
-- `SYSTEM_PROMPT_STABLE_PREFIX` — INVARIANTS + EXEMPLARS + CALIBRATION;
-  THE cached block. Never `.format()`ed: INVARIANTS and CALIBRATION have
-  zero `{placeholder}` markers; EXEMPLARS' braces are allowlisted static
-  example text. All enforced by test.
-- `FILE_CONTEXT_TEMPLATE` — diff-scoped per-file context rendered into
-  the USER prompt by `render` (says "the file's CHANGED scope units";
-  correct for pass-0 on PR-diff files, NOT for post-trace whole-file
-  context).
-- `POST_TRACE_FILE_CONTEXT_TEMPLATE` — whole-file analogue rendered
-  into the USER prompt by `render_post_trace` (drops "changed"
-  wording; trace-fetched files live outside the PR diff).
-- `POST_TRACE_SYSTEM_PROMPT_SUFFIX` — pass-1 INFERRED-admission section
-  appended to the stable prefix by `render_post_trace`.
-- `POST_TRACE_USER_TEMPLATE` — pass-1 user-prompt body naming the
-  source finding (id + fenced title/description/evidence) and the
-  source path; consumed by `render_post_trace`.
-- `USER_TEMPLATE` — pass directives + diff hunks for clean calls.
-- `DEGRADED_USER_TEMPLATE` — directives + bounded hunks for degraded calls
-  (admits only `evidence_tier="judged"`).
-- `TEMPLATE = USER_TEMPLATE` — spec-named alias.
-- `VERSION = "analyze-v10"` — flows to `LLMRequest.prompt_template_version`.
-  Bump on any template change.
-- `MAX_TOKENS = 8192` — the output-token cap, distinct from the schema's
-  50-finding runaway ceiling (`AnalyzeResponseRaw.findings` max_length). At the
-  measured Sonnet 5 rate (~284 output tok/finding, the ~30%-denser tokenizer;
-  ~221 on Sonnet 4.6) it holds ~28 findings — intentionally below the 50 ceiling,
-  since real responses run ~10% of the cap (largest observed ~800 tok / 3
-  findings) and an over-cap file truncates gracefully via the max_tokens path.
-- `TEMPERATURE = 0.0` — deterministic-leaning; minimizes replay drift on
-  models that honor it. NOTE: the adaptive-thinking generation (the DEEP-tier
-  `claude-sonnet-5` default) rejects non-default sampling, so the wrapper omits
-  temperature for it and that tier runs at the model's default sampling
-  (`config.model_uses_adaptive_thinking` / `AnthropicProvider._build_sdk_kwargs`).
-- `AnalyzePromptParts` — frozen dataclass result. NOT a NamedTuple, so
-  positional unpacking `(sys, usr) = render(...)` fails loud rather
-  than silently masking a field swap.
-- `render` / `render_post_trace` / `render_degraded` — build the
-  (system, user) pair for each pass shape.
-
-Per `webhook-strings-are-data-not-format-strings`: PR-sourced content
-enters via `str.format(**kwargs)` against structural placeholders;
-attacker-controlled content cannot escape the template structure.
-"""
+PR-derived text uses dynamic fences (`webhook-strings-are-data-not-format-strings`).
+The prompt reminds the model of severity-set-by-policy and confidence-is-computed;
+schema/parser gates enforce admission. VERSION attributes the exact templates,
+and MAX_TOKENS is an output-token budget, not a finding or character guarantee."""
 
 from __future__ import annotations
 
@@ -718,15 +645,12 @@ SYSTEM_PROMPT_CALIBRATION: Final[str] = (
 SYSTEM_PROMPT_STABLE_PREFIX: Final[str] = (
     SYSTEM_PROMPT_INVARIANTS + SYSTEM_PROMPT_EXEMPLARS + SYSTEM_PROMPT_CALIBRATION
 )
-"""THE cached system block: byte-identical across every pass-0 and
-degraded analyze call, regardless of file. `cache_control: ephemeral`
-on this prefix caches it once per review per tier-model. Must stay
-above `llm/pricing.py::MIN_CACHEABLE_TOKENS` for the configured tier
-models (below the floor the API silently skips caching) and is never
-`.format()`ed — INVARIANTS and CALIBRATION carry zero `{placeholder}`
-markers (exact-empty, enforced by test) and EXEMPLARS' brace markers
-stay within an allowlisted CEILING of static f-string EXAMPLE variables
-({owner}, {x}) — the test blocks new markers, not removals."""
+"""Static system block shared by pass-0 and degraded calls.
+
+The provider owns cache eligibility and write/read timing; identical bytes allow
+reuse but do not guarantee one write per review. Per-model floors still apply.
+Never format this block: invariant/calibration text has no placeholders, and
+exemplar braces are allowlisted static example text checked by tests."""
 
 
 FILE_CONTEXT_TEMPLATE: Final[str] = """\
@@ -834,21 +758,10 @@ def render(
     diff_hunks: str,
     pass_index: int,
 ) -> AnalyzePromptParts:
-    """Build the (system, user) prompt pair for a clean-outcome call.
+    """Render changed-scope context and clipped hunks with a stable system prefix.
 
-    `system_prompt` is the cross-file stable prefix
-    (`SYSTEM_PROMPT_STABLE_PREFIX`, byte-identical for every pass-0 and
-    degraded call); the provider's `cache_control: ephemeral` caches it
-    once per review per tier-model. `user_prompt` carries everything
-    per-file and per-pass: the file-scoped scope-unit/query context,
-    the pass index, and the scope-unit-clipped diff hunks.
-
-    Wraps `diff_hunks` in a dynamic-length `diff`-fence and
-    `scope_unit_context` in a `text`-fence via `safe_code_fence` — both
-    are PR-controlled; a line containing `## Heading` or ` ``` `
-    markdown would forge sections that mimic the prompt's own
-    structure. See `webhook-strings-are-data-not-format-strings`.
-    """
+    Fence both PR-controlled blocks before filling template values
+    (`webhook-strings-are-data-not-format-strings`)."""
     from outrider.prompts import safe_code_fence
 
     user_prompt = FILE_CONTEXT_TEMPLATE.format(
@@ -1006,40 +919,11 @@ def render_post_trace(
     source_finding_evidence: str,
     pass_index: int,
 ) -> AnalyzePromptParts:
-    """Build the (system, user) prompt pair for a pass-1 (post-trace) call.
+    """Render whole-file context and the finding that led trace to fetch it.
 
-    Sibling of `render()` for the trace-fetched-file path: trace
-    resolved this file via M8's two-phase fetch, and analyze pass 1
-    examines the WHOLE file (no diff intersection) looking for INFERRED
-    findings that connect the source finding's evidence to behavior in
-    this file.
-
-    The system prompt = the cross-file stable prefix + the post-trace
-    INFERRED-admission suffix — byte-identical for every pass-1 call,
-    forming a second stable cache entry distinct from pass-0's. The
-    user prompt carries the WHOLE-FILE post-trace file context (NOT
-    `FILE_CONTEXT_TEMPLATE`, which is diff-scoped and would falsely
-    tell the model "changed scope units"), names the source finding by
-    id AND includes its title + description + evidence so the model can
-    connect the trace-fetched file back to the originating finding —
-    `source_finding_id` alone is opaque to the model and drives generic
-    whole-file review.
-
-    `source_finding_id` is `UUID` — typed strictly so a caller passing
-    `None` (which would render the literal string `"None"` into the
-    prompt) is caught at the type-checker or at Pydantic boundaries
-    upstream, not at the model call.
-
-    `source_finding_title`, `source_finding_description`, and
-    `source_finding_evidence` are ALL prior-model output from the pass-0
-    analyze call that produced the source finding. Each is wrapped in a
-    dynamic-length `text`-fence via `safe_code_fence` before formatting
-    so any markdown / heading / triple-backtick / instruction-shaped
-    text in the source can't change pass-1's structure or directives.
-    Fencing only `evidence` and leaving `title` (≤120 chars) and
-    `description` (≤1000 chars) raw would let any structural payload
-    that fits in those fields rewrite the pass-1 directives.
-    """
+    Append the static INFERRED-admission suffix. Fence scope context and source
+    title, description and evidence before filling values; the source text may
+    come from either deterministic query metadata or prior model output."""
     from outrider.prompts import safe_code_fence
 
     user_prompt = POST_TRACE_FILE_CONTEXT_TEMPLATE.format(
@@ -1067,25 +951,11 @@ def render_degraded(
     pass_index: int,
     degradation_reason: DegradationReason,
 ) -> AnalyzePromptParts:
-    """Build the (system, user) prompt pair for a degraded-outcome call.
+    """Render pre-bounded hunks with reason-aware JUDGED-only instructions.
 
-    `degradation_reason` is the shared `DegradationReason` member (the
-    single-source vocabulary, audit/events.py) that also rides
-    `LLMRequest.degradation_reason`; it appears in the prompt so the model
-    knows structural-tier claims will reject, with a reason-aware provenance
-    sentence (`_DEGRADATION_CONTEXT`, indexed fail-loud — an unmapped member
-    is a KeyError, pinned by the totality test).
-
-    `bounded_hunks` MUST already satisfy the per-file degraded budget
-    cap (≤100 unidiff Line objects AND ≤8192 chars). The node body
-    bounds before calling; this function does not re-enforce.
-
-    Wraps `bounded_hunks` in a dynamic-length `diff`-fence via
-    `safe_code_fence` because diff content is PR-controlled — a diff
-    line containing `## Heading` or ` ``` ` markdown would otherwise
-    forge sections that mimic the prompt's own structure. See
-    `webhook-strings-are-data-not-format-strings`.
-    """
+    The caller enforces the 100-Line/8192-character limits. The closed
+    _DEGRADATION_CONTEXT mapping rejects an unmapped reason with KeyError.
+    Dynamic fences preserve the data block (`webhook-strings-are-data-not-format-strings`)."""
     from outrider.prompts import safe_code_fence
 
     user_prompt = DEGRADED_USER_TEMPLATE.format(

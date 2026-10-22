@@ -1,18 +1,10 @@
 # See DECISIONS.md#040 — the suggested-patch generation prompt.
-"""Patch-generation prompt (DECISIONS.md#040).
+"""Render selected findings and target lines for single-line fix proposals.
 
-Terse and schema-bound. The model does NOT decide eligibility, routing, severity,
-or whether to use markdown — those are fixed by the caller. For each ALREADY-
-SELECTED finding it fills exactly two meaningful fields: `original_line` (an EXACT
-echo of the target line we sent — the cheap anchor check) and `replacement_line`
-(one bare corrected line, or null). The parser (`agent/nodes/patch_generation.py`)
-enforces every rule and fails closed; this prompt only asks for the right shape.
-
-Injection defense: the target line is literal PR source (attacker-controlled), and
-finding title/description paraphrase PR content, so all of it is `safe_code_fence`-
-wrapped — the model treats it as data to echo, never as instructions
-(`webhook-strings-are-data-not-format-strings`, input boundary #5).
-"""
+Eligibility, severity and routing belong to the caller and deterministic parser
+(DECISIONS.md#040). Dynamic fences keep PR-controlled target lines and finding
+text inside their data blocks (`webhook-strings-are-data-not-format-strings`,
+input boundary #5). patch_generation.py validates the model's response."""
 
 from __future__ import annotations
 
@@ -25,9 +17,7 @@ if TYPE_CHECKING:
     from outrider.schemas.review_finding import ReviewFinding
 
 VERSION: Final[str] = "patch-v1"
-# Bounded: at most MAX_PATCH_SUGGESTIONS_PER_REVIEW items, each a short JSON object
-# (id + one line + a short reason). 2048 covers the cap comfortably without inviting
-# multi-line essays (output bills ~5x input — keep it tight).
+# Output budget for one batched set of short, single-line proposals.
 MAX_TOKENS: Final[int] = 2048
 # Deterministic: a single-line code fix is not a creative task.
 TEMPERATURE: Final[float] = 0.0

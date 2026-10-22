@@ -1,48 +1,15 @@
 # FastAPI router for the GitHub webhook endpoint per intake-and-webhook spec.
-"""`POST /webhooks/github` — webhook receiver.
+"""Receive GitHub events and start reviews at `POST /webhooks/github`.
 
-Sequence:
+Verify the signature on size-bounded raw bytes before interpreting the payload.
+Installation events update the local cache. Eligible non-draft PR events pass
+the local authorization check, reuse an existing review for the same commit or
+commit a review row and initial audit event, then enqueue graph execution.
 
-  1. `received_at = datetime.now(UTC)` — capture as early as possible,
-     BEFORE any input-validation work. Held in a local; only attached
-     to the seed ReviewState once signature/membership/idempotency clear.
-  2. Read `X-Hub-Signature-256`; missing → 401 WITHOUT reading the
-     request body. Presence is only a precondition; authenticity is
-     established by HMAC verification at step 4.
-  2b. Content-Length precheck against `_MAX_WEBHOOK_BODY_BYTES` (1 MiB).
-     `Content-Length` exceeding cap → 413 BEFORE `await request.body()`.
-     Malformed or negative Content-Length → 400.
-  3. `body = await request.body()` — raw bytes captured BEFORE any
-     model binding; rejected with 413 after buffering if `len(body)`
-     exceeds the cap. Streaming protection remains FUP-034 part 1.
-     FastAPI's default `Request.body()` caches internally (Starlette
-     `_body`); a second call returns the same bytes.
-  4. `verify_signature(secret, body, signature_header)` via the
-     route-facing module that delegates to `github/webhooks.py`. Returns
-     False → 401. Unexpected raises propagate as 5xx (verifier
-     programming errors are operator-visible, not auth-failure-shaped).
-  5. Parse JSON payload via `PullRequestEventPayload`.
-  6. Event/action allowlist (opened/synchronize/reopened) — others 2xx no-op.
-  7. Active-membership SELECT — `installations.tombstoned_at IS NULL`
-     AND `installation_repositories.removed_at IS NULL` for
-     `(installation_id, repo_id)`. Absent/inactive → 4xx.
-  8. Idempotency fast-path SELECT on `(repo_id, pr_number, head_sha)`;
-     if found → 200 with existing `review_id`.
-  9. Single transaction: INSERT review + INSERT AgentTransitionEvent
-     (direct SQL, the documented exception to the persister-only rule).
-     Commit. On IntegrityError with `uq_review_natural_key` → duplicate;
-     return existing review. On other IntegrityError → fall back to
-     natural-key SELECT (user-approved defensive pattern; deviates from
-     spec's narrow-introspection-only rule), then re-raise only if no
-     natural-key row exists.
- 10. Construct seed `ReviewState(review_id, pr_context, received_at,
-     is_eval=False)`; call `await dispatcher.dispatch(state)`. Dispatch
-     failure → mark review failed via a shielded cleanup task (drained
-     under `except BaseException` so the original failure isn't masked),
-     then re-raise.
- 11. Return 202 Accepted with `review_id`.
-
-`X-GitHub-Delivery` is logged for traceability; never persisted.
+New work returns 202 with its review_id; duplicate deliveries return 200 with
+the existing id. Dispatch failures attempt to mark the new review failed, then propagate.
+`_PULL_REQUEST_ACTION_ALLOWLIST` defines triggers. `X-GitHub-Delivery` is logged,
+not persisted. Full streaming protection remains FUP-034.
 """
 
 from __future__ import annotations
@@ -94,9 +61,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# Arc B2 autorun: `ready_for_review` fires when a draft PR becomes ready — the
-# trigger to review a PR that opened as a draft. Draft PRs themselves are skipped
-# by the draft-check below (a draft `opened`/`synchronize` is a 2xx no-op).
+# Draft events are ignored; ready_for_review starts work when the PR becomes ready.
 _PULL_REQUEST_ACTION_ALLOWLIST: frozenset[str] = frozenset(
     {"opened", "synchronize", "reopened", "ready_for_review"}
 )
@@ -286,27 +251,10 @@ async def receive_pull_request_webhook(
                 "review_id": str(existing.id),
             }
 
-        # Defensive fallback. **NOTE: this deviates from the canonical
-        # spec's narrow-introspection-only rule** (which mandates
-        # re-raise when `_is_reviews_natural_key_conflict` returns
-        # False). The deviation is user-approved and documented in the
-        # spec's Actual Outcome section.
-        #
-        # The rationale: primary introspection returned False could
-        # mean (a) genuine audit-side conflict / FK violation that must
-        # re-raise, OR (b) psycopg / driver shape change made
-        # `exc.orig.diag.constraint_name` unreadable. (b) is a
-        # silent-misclassification risk: every duplicate delivery
-        # surfaces as 5xx → shows failed on GitHub and invites manual
-        # redelivery → loss of idempotency under a dependency upgrade.
-        #
-        # Cheap defense: SELECT the natural-key row. If it exists, the
-        # failed INSERT was a duplicate delivery; return 200. If not,
-        # the failure was on the audit-side / FK / unrelated constraint
-        # and re-raise is correct. The corner case of a concurrent
-        # committer also masking a TRUE audit collision is acceptable —
-        # the audit-side error surfaces in monitoring; GitHub-side
-        # duplicate detection is preserved.
+        # Driver changes can make constraint-name inspection fail. Check the
+        # natural key before treating this as an unrelated insert error.
+        # This approved fallback may also mask a concurrent audit conflict;
+        # see the intake-and-webhook spec's Actual Outcome.
         async with session_factory() as session:
             fallback_row = await session.execute(
                 _review_by_natural_key(
@@ -332,8 +280,7 @@ async def receive_pull_request_webhook(
                 "status": fallback_existing.status,
                 "review_id": str(fallback_existing.id),
             }
-        # No natural-key row exists — genuine audit-side conflict, FK
-        # violation, or other. Re-raise so GitHub retries.
+        # No matching review exists; preserve the original insert error.
         raise
 
     # Step 10: construct seed ReviewState and dispatch.
@@ -350,58 +297,18 @@ async def receive_pull_request_webhook(
     try:
         await dispatcher.dispatch(seed_state)
     except BaseException:
-        # `BaseException` (not `Exception`) so `asyncio.CancelledError`
-        # — which inherits from BaseException in Python 3.8+ — doesn't
-        # bypass the cleanup. Lifespan shutdown / client disconnect /
-        # supervisor abort during dispatch would otherwise strand the
-        # review at 'running' with no failure signal.
-        #
-        # The review row + initial AgentTransitionEvent committed; if
-        # dispatch fails (event-loop shutdown, JSON-serialize crash,
-        # broker unreachable in V2), the row would sit at 'running'
-        # forever and a GitHub retry would short-circuit through the
-        # natural-key fast path returning the stranded review. Mark
-        # `status='failed'` so the row reflects reality, then re-raise
-        # so the handler returns 5xx and operators see the error.
-        #
-        # Trade-off (acknowledged in spec): GitHub's retry will then
-        # see the existing 'failed' row via the natural-key fast path
-        # and return 200 — the failed delivery does not auto-retry the
-        # graph. The user must push a new commit (new head_sha →
-        # different natural key) to get a fresh review. The full
-        # durable-recovery story (dispatched_at column with conditional
-        # re-dispatch) is FUP-eligible per the spec's idempotency bullet.
-        #
-        # The failed-status write is wrapped in its own try/except so a
-        # DB error during cleanup doesn't mask the original dispatch
-        # failure. Bare `raise` re-raises the original exception
-        # (including CancelledError); the cleanup-failure log line is
-        # distinct from the dispatch-failure log so operators can tell
-        # which path went wrong.
-        #
-        # The cleanup is spawned as a task and awaited via
-        # `asyncio.shield` so a SECOND cancellation arriving while the
-        # status write is in flight doesn't interrupt the write and
-        # strand the review at 'running'. `await asyncio.shield(coro)`
-        # alone is insufficient — the outer task still observes the
-        # CancelledError; we explicitly catch it and `await cleanup_task`
-        # to drain the shielded write before re-raising the original
-        # dispatch failure.
+        # The review already committed. Cancellation also needs failed-status
+        # cleanup, hence BaseException. Cleanup errors must not mask dispatch's
+        # original failure. Redelivery reuses this row; it does not restart work.
+        # Shield and drain cleanup so a second cancellation cannot abandon it.
         async def _mark_failed() -> None:
             try:
                 async with session_factory() as failure_session, failure_session.begin():
                     from sqlalchemy import and_ as _and  # noqa: PLC0415
                     from sqlalchemy import update as _update  # noqa: PLC0415
 
-                    # WHERE-on-status guards against stomping a row that
-                    # already advanced past `running` (V2 Celery dispatch
-                    # may enqueue successfully then raise on the return
-                    # path; an opportunistic worker that picks up the job
-                    # AND moves the row to `awaiting_approval` BEFORE
-                    # this cleanup task runs would otherwise see its
-                    # state overwritten to `failed`). rowcount=0 path
-                    # logs explicitly so the dispatch-failure-vs-row-
-                    # advancement ambiguity is observable.
+                    # A dispatcher may enqueue work before raising. Do not
+                    # overwrite a review that already advanced beyond running.
                     result = await failure_session.execute(
                         _update(Review)
                         .where(_and(Review.id == review_id, Review.status == "running"))

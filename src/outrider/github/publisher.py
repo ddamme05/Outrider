@@ -1,43 +1,15 @@
 # GitHub PR-review publisher per specs/2026-05-21-publish-node.md §6 + §3h.
-"""GitHubPublisher Protocol + GitHubKitPublisher concrete implementation.
+"""Post a GitHub review or find a prior successful post during crash recovery.
 
-The publish node consumes `GitHubPublisher` to post inline review
-comments to GitHub. This module is the only place in the codebase that
-calls `gh.arequest("POST", "/repos/{owner}/{repo}/pulls/{n}/reviews",
-json=request_payload)` — per the established githubkit escape hatch (cookbook
-recommends `arequest` over guessing generated method names that may
-not exist).
+The publish node supplies sanitized comments and a marker-first review body.
+create_review makes one POST and normalizes the response into GitHubReviewCreated
+(vendor-payloads-normalized-at-boundary). HTTP 422 becomes a typed validation or
+secondary-rate-limit failure; there is no per-comment retry.
 
-Two surfaces:
-
-  - `create_review(...)` — POST the review with inline comments. The
-    `body_marker` (e.g., `<!-- outrider-review-id:{review_id} -->`)
-    is embedded in the review body for crash-after-success recovery.
-    Returns `GitHubReviewCreated` on success (HTTP 200; this endpoint
-    returns 200, not 201, under apiVersion 2026-03-10).
-
-  - `find_existing_review_on_head_sha(...)` — GET reviews on the PR
-    + filter by body containing `body_marker` to detect a prior
-    matching review on retry. Defends against the crash-after-GitHub-
-    success race (prior process succeeded at the POST but died before
-    persisting `PublishEvent`).
-
-GitHub atomically rejects multi-comment reviews where ANY comment has
-an invalid position / path / commit_id (verified via sandbox probe).
-HTTP 422 + zero reviews created + zero comments posted. The publisher
-does NOT attempt per-comment retry on 422; the atomicity is the
-contract V1 relies on (Q2a confirmed). On 422, raise a typed exception
-and let the publish node emit `PublishAttemptEvent(outcome=failed,
-failure_class="GitHubReviewValidationError")`.
-
-Per `vendor-payloads-normalized-at-boundary`: githubkit's `arequest`
-response.text is JSON; we parse and extract `id` + `comments` count
-inside this wrapper, then return a frozen `GitHubReviewCreated`. The
-publish node never sees the raw response shape.
-
-All requests carry `X-GitHub-Api-Version: 2026-03-10` per spec §4.1.7
-+ MCP doc verification. The wrapper is the only place this header is
-set; downstream consumers don't see it.
+find_existing_review_on_head_sha walks bounded review pages and matches the
+body prefix, head commit, and Bot author. This recovers a POST that succeeded
+before its PublishEvent was recorded. Every request here pins the REST version
+required by specs/2026-05-21-publish-node.md §6 and docs/spec.md §4.1.7.
 """
 
 from __future__ import annotations
@@ -119,25 +91,11 @@ class GitHubReviewValidationError(GitHubPublishError):
 
 
 class GitHubSecondaryRateLimitError(GitHubPublishError):
-    """HTTP 422 from `POST .../pulls/{n}/reviews` — SECONDARY-RATE-LIMIT.
+    """HTTP 422 classified as a secondary-rate-limit failure.
 
-    GitHub returns the SAME 422 status code for two distinct failure
-    classes: per-comment validation failures (atomic rejection) AND
-    secondary-rate-limit (abuse-detection throttle). Per `docs/spec.md`
-    §VI, the publisher MUST distinguish the two from the response
-    body. This exception carries the rate-limit case so the publish
-    node's audit row records the right `failure_class` for retry-
-    diagnosis dashboards.
-
-    The discriminator: a 422 body containing the literal token
-    `"secondary rate limit"` (GitHub's documented abuse-detection
-    phrasing — case-insensitive match per the docs). Anything else
-    classified as `GitHubReviewValidationError`.
-
-    Treated as a TRANSIENT failure for audit purposes (`failure_class
-    = "GitHubSecondaryRateLimitError"`); V1 does NOT auto-retry —
-    the dispatcher's retry-after-cooldown logic (V1.5 scope) reads
-    the failure_class to decide whether to retry.
+    Classification requires a recognized phrase and no errors envelope; see
+    _looks_like_secondary_rate_limit and docs/spec.md §VI. The publish audit records
+    the exception type as failure_class. V1 does not automatically retry.
     """
 
     def __init__(self, message: str, *, status_code: int, body_text: str) -> None:
@@ -146,18 +104,9 @@ class GitHubSecondaryRateLimitError(GitHubPublishError):
         self.body_text = body_text
 
 
-# GitHub's secondary-rate-limit phrasings — present in the 422 body
-# when the throttle fires. Multiple phrasings are documented across
-# GitHub's REST API + create-review prose under apiVersion 2026-03-10.
-# Case-insensitive substring match; the publisher checks ALL phrasings
-# to defend against wording drift across GitHub deployments.
-#
-# Future failure mode: if GitHub introduces a new phrasing not in this
-# tuple, the publisher silently mis-classifies the throttle as a
-# validation failure. Mitigation: also gate on the JSON envelope check
-# in `_looks_like_secondary_rate_limit` below — a body with a single
-# top-level `message` field AND no `errors[]` array is rate-limit-shaped
-# regardless of exact phrasing (validation 422s always include `errors`).
+# Recognized throttle phrases. A phrase match is required; the separate errors
+# check can reject a match but cannot identify a throttle by itself. New upstream
+# wording needs an explicit marker update (docs/spec.md §VI).
 _SECONDARY_RATE_LIMIT_MARKERS: Final[tuple[str, ...]] = (
     "secondary rate limit",  # canonical phrasing per GitHub's docs
     "secondary-rate limit",  # hyphenated variant
@@ -167,31 +116,11 @@ _SECONDARY_RATE_LIMIT_MARKERS: Final[tuple[str, ...]] = (
 
 
 def _looks_like_secondary_rate_limit(body_text: str) -> bool:
-    """Discriminate 422 secondary-rate-limit from 422 validation failure.
+    """Require a rate-limit phrase and reject validation-shaped errors envelopes.
 
-    Per `docs/spec.md` §VI: 422 is ambiguous between per-comment validation
-    failure and secondary-rate-limit (abuse throttle); the publisher MUST
-    distinguish from the response body, not status code alone.
-
-    Two-check defense:
-
-    1. **Phrase check**: body contains ANY of the documented rate-limit
-       phrasings (case-insensitive). Multiple phrasings defend against
-       wording drift across GitHub deployments.
-
-    2. **Envelope check**: body is rate-limit-SHAPED, NOT validation-
-       shaped. Validation 422s always carry `errors[]`
-       (`{"message":"Unprocessable Entity","errors":["..."]}`).
-       Rate-limit 422s carry only `message` (per GitHub's documented
-       abuse-detection response). Substring match on `'"errors"'` reliably
-       distinguishes the two envelopes regardless of exact phrasing.
-
-    Returns True iff EITHER check confirms rate-limit AND the envelope
-    check doesn't refute it. The two checks together close the attacker-
-    echo vector: an attacker who manages to inject `"secondary rate
-    limit"` into a file path that gets echoed into a validation-422
-    body still trips the `"errors":` envelope check and gets classified
-    as validation (correct).
+    HTTP 422 alone is ambiguous (docs/spec.md §VI). The errors check prevents a
+    validation body echoing attacker-controlled rate-limit wording from being
+    classified as a throttle.
     """
     if not body_text:
         return False
@@ -226,53 +155,17 @@ class GitHubPublisher(Protocol):
         body: str | None = None,
         comments: tuple[InlineComment, ...],
     ) -> GitHubReviewCreated:
-        """POST a new review with inline comments.
+        """Post one review pinned to head_sha with sanitized comments and review_status.
 
-        Args:
-            gh: Installation-authenticated githubkit client (minted by
-                `github_factory(installation_id)` per
-                `nodes-receive-deps-via-closure`).
-            owner, repo: Repository identifiers (validated upstream
-                in the webhook handler via `PRContext`).
-            pull_number: PR number from `PRContext`.
-            head_sha: HEAD commit SHA to pin the review to. Required —
-                without it, GitHub may post against a stale ref if
-                the PR has been force-pushed.
-            review_status: One of `"APPROVE"`, `"REQUEST_CHANGES"`,
-                `"COMMENT"`. V1 publish derives this from the highest-
-                severity finding that actually posted (per docs/spec.md
-                §V "GitHub review status"). Must be one of these three
-                strings exactly — bounded by `PublishEvent.review_status`'s
-                Literal upstream.
-            body_marker: HTML comment to embed in the review body for
-                crash-after-success recovery (e.g.,
-                `<!-- outrider-review-id:{review_id} -->`).
-            body: Optional full review-body markdown, composed + sanitized +
-                size-capped by the publish node (DECISIONS.md#050). MUST start
-                with `body_marker` (offset 0): crash-recovery's
-                `find_existing_review_on_head_sha` matches
-                `startswith(body_marker)`, so a body not beginning with the
-                marker breaks recovery and is rejected. When None, the request
-                body falls back to `body_marker` alone (inline-only behavior).
-            comments: Sanitized inline comments (path / line /
-                side=RIGHT / body). Atomic — any invalid comment
-                triggers 422 + zero reviews created.
+        The publish node supplies the status and coordinates (nodes-receive-deps-via-closure;
+        docs/spec.md §V). body must begin with body_marker for crash recovery; None uses
+        the marker alone. Body composition, sanitization, and size caps belong to the node
+        (DECISIONS.md#050).
 
-        Returns:
-            `GitHubReviewCreated(github_review_id, comments_posted)`.
-
-        Raises:
-            `ValueError`: `body` was provided but does not start with
-                `body_marker` (a node-side composition bug — the marker
-                must be at offset 0 for crash-recovery).
-            `GitHubReviewValidationError`: HTTP 422 with a validation-
-                failure body (atomic rejection per Q6).
-            `GitHubSecondaryRateLimitError`: HTTP 422 with a
-                secondary-rate-limit body. Per `docs/spec.md` §VI,
-                422 is ambiguous between the two cases; the publisher
-                discriminates by inspecting the response body.
-            `GitHubPublishError`: any other HTTP error (403 permission,
-                404 PR not found, 5xx upstream) — the base class.
+        Return GitHubReviewCreated with the review id and posted count. A misplaced marker
+        raises ValueError. HTTP 422 raises GitHubReviewValidationError or
+        GitHubSecondaryRateLimitError according to the body (docs/spec.md §VI); other
+        request or success-payload failures raise GitHubPublishError.
         """
         ...
 
@@ -286,38 +179,17 @@ class GitHubPublisher(Protocol):
         head_sha: str,
         body_marker: str,
     ) -> int | None:
-        """GET reviews on the PR; return `github_review_id` of the
-        first review whose body contains `body_marker` AND whose
-        `commit_id` matches `head_sha`.
+        """Return a prior Bot review id matching body-marker prefix and head_sha.
 
-        Crash-after-GitHub-success defense: if the prior process
-        successfully POSTed the review but died before persisting
-        `PublishEvent`, the retry must NOT re-POST. This query is
-        how the retry detects the prior success.
-
-        Returns `None` if no matching review is found. Distinguishes:
-          - Maintainer-deleted prior bot review → `None` (no match;
-            no false positive).
-          - Different-installation Outrider review on same head_sha
-            → `None` (different review_id → different body_marker).
-          - Human review on same head_sha → `None` (no body_marker).
+        Return None after exhausting the list without a match; request, malformed-page,
+        and page-cap failures raise. Recovery checks this before repeating a POST whose
+        success may have preceded the local PublishEvent write.
         """
         ...
 
 
 class GitHubKitPublisher:
-    """Concrete `GitHubPublisher` wrapping githubkit's `arequest` surface.
-
-    No state — all coordination happens via the per-call `gh` client
-    argument. The publish node constructs ONE `GitHubKitPublisher`
-    instance per process at `build_graph` time; multiple reviews share
-    it.
-
-    Why a class instead of module-level functions? The Protocol shape
-    is the contract; a class lets test fixtures swap in alternate
-    implementations without touching call sites. Same pattern as the
-    `LLMProvider` Protocol in `llm/base.py`.
-    """
+    """Implement GitHubPublisher using the per-call client, with no shared state."""
 
     async def create_review(
         self,
@@ -347,19 +219,21 @@ class GitHubKitPublisher:
         # (APPROVE / REQUEST_CHANGES / COMMENT); `body` carries the marker
         # (+ optional "Related concerns" / dashboard-only note); `comments[]`
         # are sanitized.
+        inline_comment_payloads: list[dict[str, Any]] = []
+        for inline_comment in comments:
+            inline_comment_payloads.append(
+                {
+                    "path": inline_comment.path,
+                    "line": inline_comment.line,
+                    "side": inline_comment.side,
+                    "body": inline_comment.body,
+                }
+            )
         request_payload: dict[str, Any] = {
             "commit_id": head_sha,
             "event": review_status,
             "body": review_body,
-            "comments": [
-                {
-                    "path": c.path,
-                    "line": c.line,
-                    "side": c.side,
-                    "body": c.body,
-                }
-                for c in comments
-            ],
+            "comments": inline_comment_payloads,
         }
         try:
             response = await gh.arequest(
@@ -434,33 +308,12 @@ class GitHubKitPublisher:
         head_sha: str,
         body_marker: str,
     ) -> int | None:
-        """Implementation per Protocol docstring above.
+        """Search bounded pages for a marker-first Bot review on the requested head.
 
-        Walks paginated review list (GET .../pulls/{n}/reviews) until
-        either: (a) a matching review is found, (b) pagination
-        exhausts, or (c) `_REVIEWS_LIST_MAX_PAGES` is hit (raises).
-
-        **Matcher hardening:** the body marker alone is forgeable — a
-        PR author with `pull_requests:write` could post a human review
-        carrying a copy of the marker and trick a retry into
-        `idempotently_skipped_external_record`, silently suppressing
-        the legitimate findings. Defenses applied:
-
-          1. The marker must appear at the START of the review body
-             (line-anchored, not substring) so a marker embedded inside
-             prose elsewhere in a review can't match.
-          2. The review's `user.type` must be `"Bot"` (Outrider runs
-             as a GitHub App; App-posted reviews always carry `Bot`).
-          3. The `commit_id` must equal `head_sha` (preserved from
-             prior shape).
-
-        A human review on the same head_sha that pastes the marker
-        text fails check (2). A Bot-posted review on the same head_sha
-        that ISN'T Outrider (e.g., a different App with a borrowed
-        marker) fails check (1) iff it puts the marker mid-body, AND
-        the marker carries `state.review_id` (high-entropy UUID) so
-        cross-App marker collision requires the UUID to leak — defense
-        in depth.
+        All three checks are required: a copied marker in human review prose must not
+        suppress publication. The Bot check does not identify a specific App; the
+        review-specific marker supplies the additional identity. Exhaustion returns
+        None; reaching the page cap raises rather than claiming no match.
         """
         for page in range(1, _REVIEWS_LIST_MAX_PAGES + 1):
             try:
@@ -510,8 +363,7 @@ class GitHubKitPublisher:
                 review_body = raw_body if isinstance(raw_body, str) else ""
                 raw_commit = review.get("commit_id")
                 review_commit = raw_commit if isinstance(raw_commit, str) else ""
-                # Hardened matcher: line-anchored marker + Bot author +
-                # commit match. See method docstring "Matcher hardening".
+                # Require the marker prefix, Bot author, and requested head together.
                 review_user = review.get("user")
                 user_type = review_user.get("type") if isinstance(review_user, dict) else None
                 if (

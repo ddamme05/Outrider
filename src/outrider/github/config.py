@@ -1,32 +1,13 @@
 # GitHub App settings, env-backed.
-"""`GitHubAppSettings` — env-backed GitHub App identity + webhook secret.
+"""Env-mode GitHub App identity and webhook secret.
 
-Backs the input-boundary invariants `webhook-signature-constant-time-compare`
-and `webhook-strings-are-data-not-format-strings` by routing secret material
-through `pydantic.SecretStr` rather than plain `str`. `.get_secret_value()`
-is called only at the wrapper call site (`auth.make_installation_client_factory`'s
-inner closure for the private key; `api/webhooks/signature.verify_signature`
-for the webhook secret) — never at log or audit construction.
+Read OUTRIDER_GITHUB_APP_ID, OUTRIDER_GITHUB_APP_PRIVATE_KEY (raw PEM), and
+OUTRIDER_GITHUB_WEBHOOK_SECRET. Frozen settings validate the selected env source
+at boot. SecretStr masks accidental string representations; consumers unwrap
+credentials at authentication and signature-verification boundaries.
 
-Co-located in `github/` rather than `api/webhooks/config.py` because:
-  1. `auth.make_installation_client_factory(settings)` returns a callable
-     that reads `settings.app_id` + `settings.app_private_key.get_secret_value()`
-     per call; if those settings lived under `api/webhooks/`, the github/
-     wrapper would import from the api/ layer — an inverted dependency.
-  2. `webhook_secret` is logically App-scoped (one secret per App); it
-     belongs with the App identity it pairs with.
-
-The spec text suggests `api/webhooks/config.py` but explicitly allows
-"extension of existing settings module"; this is the closest
-existing-module-shaped placement that avoids the dependency inversion.
-
-Env vars (prefix `OUTRIDER_GITHUB_`):
-  - `OUTRIDER_GITHUB_APP_ID` (int) — the App's numeric id from GitHub.
-  - `OUTRIDER_GITHUB_APP_PRIVATE_KEY` (SecretStr) — raw PEM contents.
-    Repo precedent at `llm/anthropic_provider.py:180` + `api/lifespan.py:160`:
-    secrets land in env as raw values (no file-secret pattern yet).
-  - `OUTRIDER_GITHUB_WEBHOOK_SECRET` (SecretStr) — per-App signing secret
-    for HMAC verification.
+Signature verification enforces webhook-signature-constant-time-compare; GitHub
+payload handling enforces webhook-strings-are-data-not-format-strings.
 """
 
 from pydantic import SecretStr, field_validator
@@ -52,16 +33,7 @@ _PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
 
 
 class GitHubAppSettings(BaseSettings):
-    """GitHub App identity + webhook secret, env-backed.
-
-    `frozen=True` matches the `ModelConfig` and `RetentionSettings`
-    precedents at `llm/config.py:48` and `audit/config.py:35`:
-    construction-time-only configuration; per-tier runtime overrides go
-    via re-construction with explicit kwargs in tests, NOT mutation.
-
-    `extra="forbid"` so a typo'd env var fails loudly at app start rather
-    than silently selecting a default.
-    """
+    """Validate immutable env-mode credentials; reject unknown explicit fields."""
 
     model_config = SettingsConfigDict(
         env_prefix="OUTRIDER_GITHUB_",
@@ -76,17 +48,10 @@ class GitHubAppSettings(BaseSettings):
     @field_validator("app_private_key", "webhook_secret", mode="after")
     @classmethod
     def _reject_empty_or_whitespace(cls, v: SecretStr) -> SecretStr:
-        """Empty / whitespace-only `app_private_key` or `webhook_secret`
-        would silently admit broken state at the consumer sites:
+        """Reject blank or placeholder credentials before consumers use them.
 
-          - Empty `webhook_secret` → `hmac.compare_digest(b"", b"")` is
-            True, so unsigned webhooks (empty signature header) would
-            authenticate as valid. Critical input-boundary defense.
-          - Empty `app_private_key` → JWT signing in `github/auth.py`
-            would fail at install-token mint time with an opaque
-            cryptography error; fail-loud at startup is clearer.
-
-        Mirrors the `DashboardSettings.admin_api_key` validator.
+        Check a trimmed copy, but return the original SecretStr so validation does not
+        rewrite private-key or signing-secret bytes.
         """
         raw = v.get_secret_value()
         stripped = raw.strip()

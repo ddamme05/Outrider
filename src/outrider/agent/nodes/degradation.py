@@ -1,17 +1,8 @@
-"""Pure analyze degradation decision — skip / degraded / clean.
+"""Choose skip, degraded or clean analysis from a file's parse and patch.
 
-The analyze node's outcome determination (does a changed file get skipped,
-reviewed in degraded mode, or reviewed cleanly?) extracted as a pure, LLM-free
-function so structural eval scenarios — which validate `ast_facts`/`coordinates`
-without an LLM — can exercise it directly. `decide_degradation` returns a typed
-`DegradationDecision`; the analyze node is the ONLY place that turns that decision
-into node behavior (`_emit_skip`, `render_degraded`, `render`).
-
-This module imports no LLM or prompt machinery (that is exactly why it is
-separate from `analyze.py`, whose module-level `llm`/`prompts` imports would
-otherwise be pulled into a structural test). It consumes a `ParseResult` and the
-file's `PatchedFile` — both domain models — and touches no raw `tree_sitter.Node`.
-"""
+The decision carries changed scope units and their clipped hunks. analyze.py
+turns it into examination events and prompt selection. This module has no
+model calls or raw tree-sitter nodes, so structural scenarios can use it directly."""
 
 from __future__ import annotations
 
@@ -32,14 +23,11 @@ if TYPE_CHECKING:
 
     from outrider.ast_facts.models import ParseResult, ScopeUnit
 
-# The reason vocabulary is the shared `DegradationReason` StrEnum
-# (audit/events.py — the single source; the old three-Literal lockstep is
-# gone). Member semantics live on the enum docstring; the route→behavior
-# mapping lives on `DegradationDecision`'s properties below, next to the
-# decision that produces the reasons.
+# DegradationReason owns the reason vocabulary; the decision properties below
+# map those reasons to analysis gates.
 
-# `FileExaminationEvent.parse_status` values for the analyze node.
-# `"failed"` is V1-unreachable for the same reason as `"parse_failed"` above.
+# FileExaminationEvent statuses. Intake admits decoded strings, so analysis's
+# string-to-bytes round-trip cannot produce a failed decode in the current path.
 _ParseStatus = Literal["clean", "failed", "degraded", "skipped"]
 
 
@@ -69,12 +57,8 @@ class DegradationDecision:
 
     @property
     def runs_observed_producer(self) -> bool:
-        # Route→behavior, owned by the decision so a future reason cannot
-        # silently inherit the wrong gates: the OBSERVED producer runs on
-        # the clean route and on the ONE clean-parse degraded route
-        # (module-scope); every error-caused degraded route keeps it off —
-        # an error-recovered tree is not trusted for structural proof.
-        # Skip routes never reach the producer gates.
+        # Structural proof is allowed only for clean parses, including the
+        # module-scope route. Error-caused degradation keeps the producer off.
         return self.mode == "clean" or self.is_module_level_route
 
     @property
@@ -102,27 +86,19 @@ def _intersect_changed_scope_units(
     scope_units: tuple[ScopeUnit, ...],
     patched_file: PatchedFile,
 ) -> tuple[tuple[ScopeUnit, ...], tuple[tuple[str, ...], ...]]:
-    """Return `(included_units, clipped_hunks_per_unit)` for the intersection.
+    """Return changed scopes and clipped hunks in matching tuple positions.
 
-    A scope unit is "included" iff `coordinates.scope_unit_has_added_lines`
-    returns True AND `coordinates.scope_unit_diff_hunks` returns non-empty. The
-    two tuples share indices: `included_units[i]` has clipped hunks
-    `clipped_hunks_per_unit[i]`. Empty inputs / no intersection returns `((), ())`.
-
-    Composition of two coordinates surfaces — the orchestration lives here
-    (the decision picks which units feed which prompt), the coordinate math lives
-    there. Backs the `outcome="skipped+NO_CHANGED_SCOPE_UNITS"` discriminator and
-    the `clean+full_llm` prompt's `diff_hunks` block.
-    """
+    Include a scope only when it has added lines and non-empty clipped hunks.
+    Coordinate calculations stay in coordinates; this function selects prompt input."""
     included: list[ScopeUnit] = []
     hunks: list[tuple[str, ...]] = []
-    for su in scope_units:
-        if not scope_unit_has_added_lines(su, patched_file):
+    for scope_unit in scope_units:
+        if not scope_unit_has_added_lines(scope_unit, patched_file):
             continue
-        clipped = scope_unit_diff_hunks(su, patched_file)
+        clipped = scope_unit_diff_hunks(scope_unit, patched_file)
         if not clipped:
             continue
-        included.append(su)
+        included.append(scope_unit)
         hunks.append(clipped)
     return tuple(included), tuple(hunks)
 
@@ -224,7 +200,9 @@ def decide_degradation(
         return DegradationDecision(
             mode="skip", parse_status="clean", skip_reason=SkipReason.NO_CHANGED_SCOPE_UNITS
         )
-    if any(parse_result.has_error.get(su.unit_id, False) for su in included_scope_units):
+    if any(
+        parse_result.has_error.get(scope_unit.unit_id, False) for scope_unit in included_scope_units
+    ):
         return DegradationDecision(
             mode="degraded",
             parse_status="degraded",

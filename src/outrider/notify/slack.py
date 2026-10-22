@@ -1,12 +1,8 @@
-"""slack_sdk-backed `SlackNotifier` — the ONLY module that imports slack_sdk.
+"""Slack SDK transport for posting and updating notification messages.
 
-Confines `import slack_sdk` per the `vendor-sdks-only-in-wrappers` boundary
-(enforced by `scripts/check_import_boundaries.py` + the `check-trust-boundaries`
-skill, both allowlisting `notify/`). Translates slack_sdk's `SlackApiError` into
-the project's typed `SlackNotifyError` hierarchy from `notify/base.py`; the
-notify subsystem consumes the `SlackNotifier` Protocol, never this class or the
-SDK directly. V1 posting is best-effort: the caller catches `SlackNotifyError`
-and degrades to the dashboard fallback.
+Translate SDK failures into the SlackNotifyError hierarchy for the orchestrator
+to contain. Calls have a bounded timeout; OAuth exchange uses its own wrapper in
+slack_oauth.py. SDK imports remain in notify (vendor-sdks-only-in-wrappers).
 """
 
 from __future__ import annotations

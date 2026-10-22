@@ -1,19 +1,11 @@
-"""HITL node configuration: timeout window + timeout-action mode.
+"""Startup settings for human-approval expiry (docs/spec.md §4.1.6 and §16).
 
-Canonical configuration setting per `docs/spec.md` §4.1.6
-("Timeout handling") + §16 (demo overrides at line 1421). V1 ships
-the `HITL_TIMEOUT_ACTION` knob with `expire_only` as the only
-ACCEPTED value: the enum carries `auto_post` for forward-compatibility
-with V1.5 but the startup validator raises `ValueError` if the env
-var is set to `auto_post`. This preserves the `hitl-gates-high-severity`
-absolute guarantee while shipping the canonical knob.
+V1 accepts only expire_only. The enum reserves auto_post, but construction
+rejects it to preserve `hitl-gates-high-severity`.
 
-Closure-injected at `build_graph(...)` time per the
-`nodes-receive-deps-via-closure` invariant; the HITL node reads
-`hitl_config.timeout_minutes` for the deterministic
-`expires_at = state.received_at + timedelta(minutes=...)` derivation
-that's load-bearing for replay equivalence (per Q4 of the spec).
-"""
+build_graph injects these settings (`nodes-receive-deps-via-closure`). HITL
+derives expiry from state.received_at plus timeout_minutes, so retries keep
+the same request window (Q4 of the spec)."""
 
 from __future__ import annotations
 
@@ -25,38 +17,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class HITLTimeoutAction(StrEnum):
-    """Action the sweep takes when an `HITLRequest` expires.
-
-    Per `docs/spec.md` §4.1.6 "Timeout handling": the V1 implementation
-    accepts ONLY `EXPIRE_ONLY` at startup; `AUTO_POST` exists in the
-    enum for forward-compatibility but the startup validator raises
-    if it's configured (V1 lifts the rejection when the `auto_post`
-    impl lands).
-    """
+    """Expiry modes; V1 construction accepts only EXPIRE_ONLY."""
 
     EXPIRE_ONLY = "expire_only"
     AUTO_POST = "auto_post"
 
 
 class HITLConfig(BaseSettings):
-    """Closure-injected HITL config (timeout window + action mode).
+    """Frozen settings from OUTRIDER_HITL_TIMEOUT_MINUTES (default 30) and
+    OUTRIDER_HITL_TIMEOUT_ACTION (default expire_only).
 
-    Reads `OUTRIDER_HITL_TIMEOUT_MINUTES` (default 30) and
-    `OUTRIDER_HITL_TIMEOUT_ACTION` (default `expire_only`) from the
-    environment per the demo `.env` override pattern at `docs/spec.md`
-    §16. Startup validator (`_enforce_v1_expire_only`) raises
-    `ValueError` if `timeout_action == AUTO_POST` — V1's
-    `hitl-gates-high-severity` guarantee depends on no
-    auto-post-on-expiry path existing.
-
-    Tests construct `HITLConfig(timeout_minutes=1, ...)` directly and
-    inject through `build_graph(...)` to exercise expiry paths without
-    waiting 30 minutes; combined with a clock injection, expiry can be
-    forced without sleeping. `timeout_minutes=0` is rejected by the
-    field's `gt=0` constraint (see field comment below) — the zero-
-    minute production misconfiguration would silently time out every
-    gated finding under `expire_only`.
-    """
+    Timeout must be positive; auto_post is rejected before the graph is built.
+    Tests can inject a short positive timeout without changing production defaults."""
 
     model_config = SettingsConfigDict(
         env_prefix="OUTRIDER_HITL_",
@@ -65,28 +37,15 @@ class HITLConfig(BaseSettings):
         frozen=True,
     )
 
-    # `gt=0` (not `ge=0`): zero would set `expires_at == created_at` so
-    # every HITL gate fires expired immediately, and under `expire_only`
-    # (the V1 default + only legal value per the validator below) every
-    # CRITICAL/HIGH finding silently times out without a successful
-    # publish path. Production misconfiguration via
-    # `OUTRIDER_HITL_TIMEOUT_MINUTES=0` would be a silent quality
-    # regression with no error signal. Tests inject a clock or use a
-    # short positive value (e.g., `timeout_minutes=1`) rather than zero.
+    # Zero expires the request immediately; expiry tests use a positive timeout.
     timeout_minutes: int = Field(default=30, gt=0)
     timeout_action: HITLTimeoutAction = Field(default=HITLTimeoutAction.EXPIRE_ONLY)
 
     @model_validator(mode="after")
     def _enforce_v1_expire_only(self) -> Self:
-        """V1 supports only `expire_only`; `auto_post` raises at startup.
+        """Reject auto_post: V1 has no approved publication path for expiry.
 
-        The enum admits `AUTO_POST` for forward-compatibility but the
-        V1 implementation has no auto-post-on-expiry path. Raising at
-        startup is fail-loud per the `hitl-gates-high-severity`
-        absolute-guarantee story: a misconfigured env var should
-        prevent process boot, not silently admit unapproved
-        CRITICAL/HIGH findings to GitHub on expiry.
-        """
+        Fail at construction to preserve `hitl-gates-high-severity`."""
         if self.timeout_action != HITLTimeoutAction.EXPIRE_ONLY:
             raise ValueError(
                 f"HITLConfig.timeout_action={self.timeout_action.value!r} is not "
@@ -98,10 +57,7 @@ class HITLConfig(BaseSettings):
         return self
 
 
-# `HITL_TIMEOUT_MINUTES` is the canonical env-var name per `docs/spec.md`
-# §16 line 1421; we keep the canonical naming on `OUTRIDER_HITL_TIMEOUT_MINUTES`
-# (Pydantic prefix `OUTRIDER_HITL_` + field `timeout_minutes`). The
-# default of 30 minutes matches the canonical record.
+# The OUTRIDER_HITL_ prefix supplies the spec's timeout settings (§16).
 __all__ = ["HITLConfig", "HITLTimeoutAction"]
 
 

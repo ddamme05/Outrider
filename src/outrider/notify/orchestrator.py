@@ -1,27 +1,14 @@
-"""Slack notification orchestrator — the notify subsystem's coordination service.
+"""Coordinate Slack cards with the durable review journey.
 
-Ties the transport (`SlackNotifier`), the metadata-first message builders, the
-deep-link, and the audit sink (`SlackEventSink`) into the V1 notification
-flows: the HITL-pending card (review gated on critical/high), the compact
-review-posted FYI (review published without gating), and the terminal status mirror
-that `chat.update`s the HITL card once publish completes. The mirror has exactly ONE
-rendering and exactly one writer (the publish node): `chat.update` replaces the whole
-message with no compare-and-set, so concurrent writers are safe only while they render
-the same thing. Decision-time, expiry, and auth-revoked states were all removed for
-that reason and return with a monotonic lifecycle mechanism — see FUP-252.
+For HITL, check prior posts, build the approval card, post it, then record its
+message id. Reviews without a prior approval card receive a compact posted notice.
+Publication can update the original approval card with one terminal rendering;
+concurrent writers must agree because chat.update has no compare-and-set (FUP-252).
 
-Best-effort and fire-and-forget (`degrades-gracefully`): every public method
-swallows transport + audit failures so a Slack outage NEVER blocks or raises
-into the graph — the dashboard stays the system of record. Dedup is a best-effort
-PRE-POST check on `(review_id, channel_id, kind)`; because `message_ts` exists
-only after the post, the audit row is written post-side-effect, so a crash in
-that window can re-post once on replay (V1 accepts this). The two message
-classes are mutually exclusive per review: `notify_review_posted` skips when a
-`hitl_pending` row already exists.
-
-Deps are constructor-injected (`nodes-receive-deps-via-closure`): `build_graph`
-constructs the orchestrator and closes over it in the hitl / publish nodes
-(commit 5c-c); it is never part of `ReviewState` (`state-is-pure-data`).
+Ordinary transport and audit failures are logged and contained (degrades-gracefully);
+cancellation propagates. Posting before recording leaves a crash window that can duplicate a
+notification on replay. Dependencies come from the per-install resolver and stay
+outside ReviewState (nodes-receive-deps-via-closure, state-is-pure-data).
 """
 
 from __future__ import annotations
@@ -56,11 +43,10 @@ logger = logging.getLogger(__name__)
 
 
 class SlackNotificationOrchestrator:
-    """Coordinates dedup -> build -> post -> record for the two V1 Slack flows.
+    """Check deduplication, build, post, and record without raising ordinary failures.
 
-    Fire-and-forget: public methods never raise. They return the `SlackPostResult`
-    on a successful post, or `None` when the post was skipped (dedup / mutual
-    exclusion) or failed (degraded to the dashboard fallback, logged).
+    Post methods return SlackPostResult or None; mirror_status returns whether the
+    existing card was updated. These calls are awaited and cancellation propagates.
     """
 
     def __init__(

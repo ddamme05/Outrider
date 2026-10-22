@@ -1,12 +1,7 @@
-"""Outrider ORM models — public re-exports.
+"""Public ORM re-exports; importing them registers tables on Base.metadata.
 
-Import order matters for SQLAlchemy's metadata: parent tables before tables
-that FK into them. Within independent tables (severity_policies, installations),
-order is alphabetical for stability.
-
-The `Base` and the two PG ENUMs live in `_base.py` to keep `__init__.py` free
-of declarative state and avoid any circular-import risk via the model files'
-`from outrider.db.models._base import Base` pattern.
+The declarative base and PostgreSQL enums live in _base.py so individual models
+can import them without cycling through this package's re-exports.
 """
 
 from outrider.db.models._base import Base, anomaly_status_enum, review_status_enum

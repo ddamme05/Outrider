@@ -1,78 +1,22 @@
 # See specs/2026-05-16-audit-persister.md + DECISIONS.md#014/#016.
-"""AuditPersister — one class implementing every audit sink Protocol.
+"""Durable writes and idempotency reads for every audit sink protocol.
 
-Implements `LLMExchangePersister` (`llm/base.py`) plus every Protocol in
-`audit/sinks.py` — `PhaseEventSink`, `FileExaminationSink`, `AnalyzeEventSink`,
-`PublishEventSink`, `TraceEventSink`, `HITLEventSink`, `SynthesizeEventSink`,
-`SlackEventSink` — from one body, sharing transaction lifecycle and
-session-per-call discipline. The
-non-phase events route through a shared `_persist_non_phase_event`
-helper so the idempotency + payload-mismatch discipline is uniform
-across event types; natural-key-mode events
-(`TraceDecisionEvent`, `HITLRequestEvent`, `HITLDecisionEvent`) route
-through `_persist_keyed_by_natural_key` per `DECISIONS.md#026`. The
-PublishEventSink surface was added per DECISIONS.md #023 (publish
-routing and eligibility are separate decisions); HITLEventSink + the
-generalized natural-key dispatch landed per
-`specs/2026-05-26-hitl-node.md`.
+Each write opens a fresh session and transaction. `_persist_non_phase_event`
+handles event-ID retries with payload equality; `_persist_keyed_by_natural_key`
+returns the canonical trace/HITL event after identity-subset comparison
+(`DECISIONS.md#026`). Phase markers and replay verdicts have their own keys.
 
-Key invariants:
+LLM events and raw content commit together (`DECISIONS.md#016`); findings
+and their content do too (`#014`). Retry paths verify surviving content but
+never recreate content already purged by retention. Audit rows are insert-only;
+the database trigger blocks UPDATE/DELETE.
 
-- **Append-only.** Only INSERT statements; PG trigger on `audit_events` blocks
-  UPDATE/DELETE. The persister never issues mutating SQL outside of INSERT.
-- **Idempotent on `event_id`.** PK conflicts treated as "already persisted";
-  payload-equality verification on conflict raises
-  `AuditPersisterIdempotencyConflict` on mismatch (loud-failure shape per
-  the append-only invariant's spirit — a same-`event_id` re-emit with
-  different content is a producer-side bug, not a silent discard).
-- **Atomic LLMCallEvent + llm_call_content write** per `DECISIONS.md#016`.
-  Both rows commit together via `session.begin()` or neither does.
-- **Post-retention content-resurrection guard.** An audit-row conflict ALWAYS
-  exits by `return` or `raise` and never falls through to a content INSERT — a
-  check-then-INSERT would race the retention sweep. Content INSERT is reachable
-  only from the freshly-inserted-audit branch, where no prior content can exist
-  for this `event_id` because the audit PK would have caught it. The three
-  outcomes of comparing against an existing content row live on
-  `_verify_stored_llm_content`, called by the ordinary audit-row conflict path and
-  by the defensive content-insert conflict path.
-- **Metadata-only exception contract.** `AuditPersisterIdempotencyConflict`
-  carries `event_id`, `mismatched_fields`, and `FieldDigest` (SHA-256 + length
-  per field) — never raw `prompt`/`completion`/`payload`. Reason: logger
-  formatting flows `str(exception)` into log records' `message`, which
-  `RejectLLMContentFilter` (key-based) does not catch.
-- **SQLAlchemy parameter-leak defense.** Raw SQLAlchemy exceptions
-  (`IntegrityError`, `DataError`, etc.) include bound parameter values
-  in their string representation by default — for a failing content
-  INSERT, that surface would carry raw `prompt`/`completion` text. The
-  persister relies on `hide_parameters=True` on the engine (set in
-  `api/lifespan.py::_default_engine_factory`) to strip bound values
-  from exception strings.
-
-  Two complementary defenses converge here. The wrapper at
-  `anthropic_provider.py::complete()` already type-narrows on
-  `METADATA_ONLY_EXCEPTION_TYPES`: for any persister exception class
-  listed in that tuple it renders `str(exc)` (each carries a
-  contributor-enforced metadata-only `__str__`) and preserves the cause
-  chain via `from exc`; for ANY OTHER exception (including raw
-  SQLAlchemy errors that somehow surface), it renders only
-  `<TypeName>` and uses `from None` to drop the cause chain entirely
-  (`__suppress_context__` set, no traceback walk into the original).
-  Allowlist completeness is structurally enforced by
-  `test_every_persister_exception_is_metadata_only_listed`
-  (`inspect`-based discovery; a new exception class added to this
-  module without being added to the tuple fails the test).
-  So even WITHOUT `hide_parameters=True`, a raw SQLAlchemy exception
-  reaching the wrapper would render only its class name + suppressed
-  cause. `hide_parameters=True` is defense-in-depth for the case where
-  the SQLAlchemy exception's text was rendered elsewhere (a log
-  formatter that called `str()` on the exception before the wrapper
-  re-raised). Tests that construct their own engine outside the
-  lifespan MUST honor the same setting to preserve the layered
-  defense — the wrapper's type-narrow is the primary gate; the
-  engine's `hide_parameters` is the secondary.
-
-Design choices documented in the persister spec; reading the spec is the
-faster path to context than re-deriving from this docstring.
+Conflict errors expose identifiers, field names, hashes, and lengths only.
+Provider wrappers preserve causes only for `METADATA_ONLY_EXCEPTION_TYPES`,
+suppressing unknown exception text and chains. Engine `hide_parameters=True`
+adds protection wherever SQLAlchemy errors are rendered outside the wrapper.
+Keep new persister exceptions metadata-only and add them to the allowlist;
+`test_every_persister_exception_is_metadata_only_listed` checks completeness.
 """
 
 from __future__ import annotations
@@ -1355,7 +1299,11 @@ def _diff_field_names(
     on the other still surfaces as a mismatch.
     """
     keys = sorted(set(existing.keys()) | set(attempted.keys()))
-    return tuple(k for k in keys if existing.get(k, _MISSING) != attempted.get(k, _MISSING))
+    return tuple(
+        field_name
+        for field_name in keys
+        if existing.get(field_name, _MISSING) != attempted.get(field_name, _MISSING)
+    )
 
 
 def _compute_field_digests(
@@ -1695,7 +1643,9 @@ def _strip_absent_pricing_context(payload: dict[str, Any]) -> dict[str, Any]:
     a digest rotation must either bump the digest or be handled here explicitly — do not
     read this helper as making cross-upgrade re-emits equal in general."""
     return {
-        k: v for k, v in payload.items() if not (k in _PRICING_CONTEXT_NULLABLE_KEYS and v is None)
+        field_name: value
+        for field_name, value in payload.items()
+        if not (field_name in _PRICING_CONTEXT_NULLABLE_KEYS and value is None)
     }
 
 
@@ -1928,9 +1878,9 @@ def _finding_row_mismatches(
     disagrees with the incoming finding. Empty tuple = match."""
     expected = _finding_verify_values(finding, is_eval=is_eval, installation_id=installation_id)
     return tuple(
-        col
-        for col, new_value in expected.items()
-        if _finding_row_db_value(db_row, col) != new_value
+        column_name
+        for column_name, new_value in expected.items()
+        if _finding_row_db_value(db_row, column_name) != new_value
     )
 
 
@@ -1950,10 +1900,10 @@ def _finding_field_digests(
     """
     expected = _finding_verify_values(finding, is_eval=is_eval, installation_id=installation_id)
     digests: dict[str, FieldDigest] = {}
-    for col in mismatched:
-        existing_text = repr(_finding_row_db_value(db_row, col))
-        attempted_text = repr(expected[col])
-        digests[col] = FieldDigest(
+    for column_name in mismatched:
+        existing_text = repr(_finding_row_db_value(db_row, column_name))
+        attempted_text = repr(expected[column_name])
+        digests[column_name] = FieldDigest(
             existing_sha256=_sha256_text(existing_text),
             attempted_sha256=_sha256_text(attempted_text),
             existing_length=len(existing_text.encode("utf-8")),

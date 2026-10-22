@@ -279,7 +279,10 @@ def _validate_protocols(
         # Compute the actually-missing member(s) rather than naming one — the
         # Protocol surface is {complete, aclose} (aclose added DECISIONS.md#035, retained #058),
         # so a hardcoded "missing complete" misdiagnoses an aclose-only gap.
-        missing = [m for m in ("complete", "aclose") if not hasattr(provider, m)]
+        missing: list[str] = []
+        for member_name in ("complete", "aclose"):
+            if not hasattr(provider, member_name):
+                missing.append(member_name)
         raise BuildGraphError(
             f"provider does not satisfy LLMProvider Protocol "
             f"(passed type: {type(provider).__name__}; "

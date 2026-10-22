@@ -1,84 +1,25 @@
 # Synthesize-output cross-boundary models per docs/spec.md §7.2 (lines 1099-1114).
-"""Synthesize envelope: ReviewMetrics / ReviewReport.
+"""Synthesize's sorted findings, summary prose, and measured review metrics.
 
-These models are the typed output contract of the synthesize node (specs/
-2026-05-28-synthesize-node.md). Synthesize aggregates findings from all
-analysis rounds into a single ReviewReport, computes deterministic metrics
-from audit_events + analysis_rounds, and runs one config-routed LLM call
-(Haiku default per DECISIONS.md#043) for the free-form summary prose.
-Downstream nodes (hitl, publish) consume the ReviewReport; they do NOT
-walk state.analysis_rounds[*].findings any more.
+HITL and publish consume this report rather than walking analysis rounds.
+Synthesize deduplicates by content_hash and rejects cross-round severity or
+policy-version divergence. The schema rejects duplicate hashes and sorts
+findings by severity, location, and finding_id for stable checkpoint bytes.
 
-ReviewReport.summary is LLM output: untrusted prose. V1's only summary
-surface is the dashboard (publish does NOT compose it into the GitHub
-review body — FUP-149 tracks that surface); when it lands, the
-deterministic publish-time gate (policy/output_sanitizer.py::
-sanitize_display_string + apply_size_cap) sanitizes the prose at the
-review-body builder per docs/trust-boundaries.md §6.
-Field-level Field(max_length=2000) is the schema-side
-codepoint cap that mirrors spec.md:1101 — note that this counts codepoints,
-not graphemes or UTF-8 bytes; publish-time `apply_size_cap` is the
-authoritative byte-budget gate. Sanitization happens at publish, not at
-synthesize-node construction.
+Summary is untrusted LLM prose, displayed on the dashboard; publish currently
+builds its GitHub review body from deterministic finding sections. Metrics
+come from state and audit aggregates, not numbers in summary text. Summary
+model routing follows DECISIONS.md#043; retained audit metrics remain separate
+from expiring content per DECISIONS.md#014.
 
-ReviewReport.findings is the deduplicated set keyed by content_hash. Same-
-content_hash + same finding_type + same policy_version => same severity by
-construction (severity-set-by-policy + severity-policy-versioned-for-replay
-+ ReviewFinding._verify_baseline_severity + compute_finding_content_hash
-recipe). Synthesize fails loud on cross-round divergence for the same
-content_hash on EITHER axis (severity OR policy_version — both are
-corruption signals, same recovery action) via SynthesizeAggregationError +
-paired AnomalySink.emit_anomaly(rule_name=CROSS_ROUND_SEVERITY_DIVERGENCE)
-emission. See pre-spec gate #7 in specs/_2026-05-27-synthesize-pre-spec-
-gates.md.
-
-Order of findings is canonicalized at the schema layer per spec.md:1103
-("deduplicated, sorted by severity"). The `_canonicalize_findings`
-validator sorts by `(severity_sort_key, file_path, line_start, line_end,
-finding_id)` — severity descending (CRITICAL first), then by location for
-within-tier stability. Producer order is irrelevant; the schema produces
-the canonical order. Sibling precedent:
-`TriageResult._canonicalize_relevant_dimensions` (canonical-sorts
-relevant_dimensions for the same JSON-payload-identity reason). Two
-ReviewReport instances built from the same set of findings (regardless of
-emission order from analyze rounds) serialize to byte-identical JSON.
-
-Canonical-shape note: spec.md §7.3 originally declared `findings: list[
-ReviewFinding]`, but the canonical record was amended by
-`DECISIONS.md#030-reviewreport-tuple-not-list-findings-field` (Accepted
-2026-05-28) to make `tuple[ReviewFinding, ...]` permanent — matches the
-established precedent at `PRContext.changed_files`, `HITLDecision.decisions`
-(#014), and `AnalysisRound.findings`. The frozen contract on `ReviewReport`
-is shallow over a `list` field; tuple closes the gap. Spec.md §7.3 carries
-an `Amended 2026-05-28 — see DECISIONS.md#030` pointer at the canonical
-declaration site.
-
-policy_version is intentionally OMITTED from ReviewReport per pre-spec gate
-#1: the field is scoped to SynthesizeCompletedEvent (audit-event mirror)
-and per-finding ReviewFinding.policy_version, not promoted to the
-ReviewReport state slot. Per-finding versioning + audit-event versioning
-together provide the replay-correctness the
-`severity-policy-versioned-for-replay` invariant requires. The omission is
-a deliberate scoping decision from the synthesize-node pre-spec gates; not
-covered by an existing accepted DECISIONS entry — would need its own
-amendment if the canonical record's silence on ReviewReport.policy_version
-ever became load-bearing. Today it's the documented-silent-deferral path
-(the canonical shape has no `policy_version` on ReviewReport, and the impl
-matches the canonical shape — no divergence to anchor).
-
-Frozen=True on both models: ReviewReport rides on ReviewState through every
-LangGraph checkpoint after synthesize lands; mutation after construction
-would break checkpoint-replay equivalence. NOTE: frozen on the envelope is
-SHALLOW — ReviewFinding is intentionally NOT frozen (uses
-validate_assignment=True per its own module docstring). A holder of
-`report.findings[i]` can still execute `report.findings[i].severity = ...`
-and the assignment runs through ReviewFinding's validator chain. Treat
-findings inside a ReviewReport as logically-immutable-by-convention; do
-NOT mutate them downstream. If a downstream node needs a modified version
-of a finding (e.g., publish_destination set), construct a fresh
-ReviewFinding via `model_validate({**finding.model_dump(), **{...}})`
-rather than mutating in place.
-"""
+The findings tuple is permanent per
+`DECISIONS.md#030-reviewreport-tuple-not-list-findings-field`. The frozen
+envelope is shallow: nested ReviewFinding objects remain lifecycle-mutable.
+Treat report findings as logically immutable; clone through model_validate
+for downstream changes. Per-finding policy_version and the synthesize audit
+event carry the snapshot for severity-policy-versioned-for-replay; the
+report deliberately has no policy_version field. Baseline severity remains
+severity-set-by-policy."""
 
 from collections.abc import Mapping
 from types import MappingProxyType

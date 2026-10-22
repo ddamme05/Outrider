@@ -1,19 +1,10 @@
-"""Outrider — agentic PR review.
+"""Outrider: review GitHub pull requests through the agent pipeline.
 
-This module's import-time side effect is **wiring the LLM-content
-logging filter** onto every reachable handler in the logger chain
-(`RejectLLMContentFilter`, per
-`specs/2026-05-05-llm-provider-wrapper.md` AC#23 + DECISIONS#016 point 4).
-
-The filter is the defense-in-depth backup to the schema-level
-default-redaction on `LLMRequest`/`LLMResponse`/`LLMMessage`. Wiring it
-at `import outrider` time means the filter is active before any agent /
-LLM / audit code runs — production code paths import `outrider` at
-process startup before any review-handling code.
-
-Re-invocable: call `register_filter_on_all_handlers()` again after
-later handler registration (e.g., FastAPI/uvicorn registering theirs at
-app startup). The function is idempotent.
+Import installs the LLM-content logging filter before review work
+(specs/2026-05-05-llm-provider-wrapper.md AC#23; DECISIONS.md#016 point 4).
+The lifespan reapplies it after later handler registration. Forced policy imports
+also run the finding/dimension lockstep and subsumption guards at startup
+(specs/2026-05-19-analyze-foundation.md §6; DECISIONS.md#055).
 """
 
 from outrider.llm.logging import register_filter_on_all_handlers

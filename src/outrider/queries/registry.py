@@ -718,7 +718,11 @@ def match(
     # DECISIONS.md#057 + docs/trust-boundaries.md §1.
     predicate = VALUE_PREDICATES.get(query_match_id)
     if predicate is not None:
-        raw_matches = [m for m in raw_matches if predicate.evaluate(m, source)]
+        filtered_matches: list[QueryMatchSpan] = []
+        for query_match in raw_matches:
+            if predicate.evaluate(query_match, source):
+                filtered_matches.append(query_match)
+        raw_matches = filtered_matches
 
     # Sort matches by (byte_start, byte_end) with captures-projection tiebreaker
     # per Internal contracts (Pydantic models lack a default `__lt__`).

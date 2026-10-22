@@ -221,9 +221,10 @@ export interface paths {
         };
         /**
          * Get Agent View
-         * @description Structured, read-only review for an AI agent. 404 if the review is absent
-         *     (holding the id suffices, like `get_review`). Reuses `_assemble_finding_views`
-         *     then maps each finding to the agent shape. Every audit read is `is_eval`-scoped.
+         * @description Read an authenticated review projection; return 404 for an unknown ID.
+         *
+         *     Shared finding assembly supplies content/proof and retention behavior.
+         *     Audit reads use the stored review's production/eval scope.
          */
         get: operations["get_agent_view_api_reviews__review_id__agent_view_get"];
         put?: never;
@@ -413,16 +414,12 @@ export interface components {
     schemas: {
         /**
          * AgentFindingView
-         * @description One finding in the agent shape. `severity` is the EFFECTIVE severity an agent
-         *     should act on — the post-HITL-override value (matching the S1 `outrider:severity`
-         *     marker); a `severity_override` decision swaps the policy value for the reviewer's,
-         *     and `reviewer_decision.original_severity` keeps the pre-override (policy) value.
-         *     `severity` / `evidence_tier` are policy/human-decided, never model output.
-         *     `title` / `description` are model-generated content (`None` on a retention-redacted
-         *     stub). `github_comment_url` AND the feature-2 `suggested_fix` are omitted in V1: the
-         *     patch (DECISIONS.md#040) is rendered as a GitHub ```suggestion at publish but is not
-         *     persisted to the finding row, so it is not readable here — gated projection is a
-         *     deferred follow-up.
+         * @description An admitted finding with effective severity and its recorded decision.
+         *
+         *     Severity comes from policy or a human override; original_severity preserves
+         *     the policy value. Evidence tier comes from the validated finding record.
+         *     Title and description may come from query metadata or a model, and can be
+         *     absent after retention. V1 omits per-comment URLs and suggested fixes.
          */
         AgentFindingView: {
             /**
@@ -452,8 +449,7 @@ export interface components {
         };
         /**
          * AgentPublishEvent
-         * @description The review's GitHub publish outcome. `None` when publish never ran
-         *     (zero-eligible / no-op).
+         * @description A recorded GitHub review and its posted comment count.
          */
         AgentPublishEvent: {
             /** Github Review Id */
@@ -468,8 +464,7 @@ export interface components {
         };
         /**
          * AgentReviewView
-         * @description The structured agent-view of a review (ROADMAP §3 / S2). `schema_version` is
-         *     the versioned contract handle so agents can branch on future shape changes.
+         * @description Stored review state for agents; schema_version identifies the contract.
          */
         AgentReviewView: {
             /**
@@ -495,12 +490,11 @@ export interface components {
         };
         /**
          * AgentReviewerDecision
-         * @description One finding's HITL decision, for an agent. Projected from the canonical
-         *     HITLDecisionEvent (DECISIONS.md#034); `reviewer_id` is `"admin"` in V1
-         *     (DECISIONS.md#011). Present only when the finding was decided (gated + reached).
-         *     `original_severity` / `override_severity` are non-null ONLY when
-         *     `outcome == "severity_override"` (the policy value vs the reviewer's value); the
-         *     finding's `severity` already reflects the override, these carry the provenance.
+         * @description A finding's recorded human decision and severity-override provenance.
+         *
+         *     Projected from HITLDecisionEvent (DECISIONS.md#034); V1 reviewer_id is "admin"
+         *     (DECISIONS.md#011).
+         *     Original and override severities are present only for severity overrides.
          */
         AgentReviewerDecision: {
             /** Outcome */
@@ -577,11 +571,11 @@ export interface components {
         };
         /**
          * AnalyzeCompletedEvent
-         * @description Per-pass aggregate emitted at the end of each analyze ⇄ trace iteration.
+         * @description Per-pass aggregate for each analyze/trace iteration.
          *
-         *     Counter fields are cross-validated by two model validators so a counter
-         *     that lies (`n_findings_emitted=5` with only 3 findings actually fired)
-         *     fails Pydantic construction, not just reads weird. See §5 of
+         *     Validators check the counter accounting equations, including findings from
+         *     cache and deterministic producers that have no model proposal. They do not
+         *     query the audit stream to verify each underlying emission. See §5 of
          *     `specs/2026-05-19-analyze-foundation.md`.
          */
         AnalyzeCompletedEvent: {
@@ -1816,8 +1810,7 @@ export interface components {
          * PerFindingDecision
          * @description One reviewer's decision on one finding.
          *
-         *     Frozen: a per-finding decision is final at construction. Reviewer-state
-         *     revisions produce a new decision, not a mutation.
+         *     Frozen: a per-finding decision is final at construction and cannot be mutated.
          *
          *     Canonical source of HITL override provenance: the `findings`-table override
          *     columns are read-model projections of this (carried on `HITLDecisionEvent`),
@@ -1980,11 +1973,10 @@ export interface components {
         PublishAttemptOutcome: "success" | "failed" | "idempotently_skipped" | "idempotently_skipped_external_record" | "no_op_empty" | "not_published_auth_revoked";
         /**
          * PublishDestination
-         * @description Where a finding lands when published, per spec §4.1.7.
+         * @description Publish destination selected from coordinate translation, per spec §4.1.7.
          *
-         *     Set by `coordinates.tree_sitter_to_github` after computing the
-         *     GitHub-comment-location translation; the analyze node leaves the
-         *     field None at construction time. Backs `publish-routes-through-coordinates`.
+         *     Publish assigns the field after coordinates resolves the location;
+         *     analyze leaves it None. Backs publish-routes-through-coordinates.
          * @enum {string}
          */
         PublishDestination: "inline_comment" | "review_body" | "dashboard_only";

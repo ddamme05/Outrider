@@ -1,41 +1,17 @@
 # See DECISIONS.md#013-llmprivacy-contract-anthropic-egress-retention-zdr
 # See DECISIONS.md#015-zdr-is-an-operator-attestation-not-a-runtime-opt-in
 # See DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only
-"""Public privacy-disclosure surface (Arc B3).
+"""Render the public privacy disclosure for the configured deployment.
 
-Renders the MANDATED user-facing privacy statement — fixed by `DECISIONS.md#013`
-point 6 → `#015` point 5 → `#016` point 6 — on a public, unauthenticated page
-(`GET /privacy`): the GitHub App listing's privacy-policy URL target, readable while
-a user is deciding whether to install, AND the dashboard footer target.
+The existing clauses implement DECISIONS.md#013 point 6, #015 point 5, and #016
+point 6; changing their facts requires the recorded supersession process.
+This module selects and escapes those clauses without authoring new terms.
 
-The statement is CONFIG-AWARE — it matches the deployment's real egress + attestation
-so a public disclosure cannot overstate what a deployment actually does (`#056` host
-selection + `#015` ZDR attestation):
-
-  - Provider-NEUTRAL clauses (self-hosted egress shape, local storage + TTL/purge,
-    metadata-only logs, HIPAA) ALWAYS render — they hold regardless of host.
-  - ANTHROPIC-specific clauses (Anthropic retention terms + the ZDR clause) render
-    ONLY when the configured host is Anthropic, and their wording flips on
-    `ANTHROPIC_ZDR_ENABLED`, read through `resolve_zdr_attestation` — the SAME
-    truthy/falsy/warn-once parser `AnthropicProvider` uses — so the rendered statement
-    cannot drift from runtime attestation (`#015`).
-  - A configured NON-Anthropic OpenAI-compatible host (`OUTRIDER_LLM_HOST`) SUPPRESSES
-    every Anthropic-specific claim and renders that host's `HostPrivacy` provenance
-    (`#056`) as the authoritative retention source.
-  - An UNRECOGNIZED host NEVER falls back to the Anthropic disclosure — it renders the
-    neutral clauses plus an explicit "host not recognized" notice (fail-loud, not
-    fail-Anthropic). A running app crashes at startup on an unknown host
-    (`build_graph` → `resolve_host_identity`), so this branch is defense-in-depth for
-    demo mode / misconfiguration.
-
-The mandated FACTS are canonical (mirrored in README.md:5); changing a mandated clause
-is a supersession decision (`#016` point 6's own change rule), not an edit here. This
-module RENDERS; it authors no privacy facts
-(`memory/feedback_no_unverified_external_citations`).
-
-No trust boundaries: a read-only render of existing canonical text + existing
-`HostPrivacy` provenance + the shared ZDR parser. Mounted ALWAYS (including demo mode)
-because it must be reachable before any install exists.
+Neutral clauses always render. Anthropic terms use the provider's shared ZDR
+attestation parser; other recognized hosts use HostPrivacy provenance
+(DECISIONS.md#056). Unknown hosts show a notice, never Anthropic's terms.
+GET /privacy stays public in production and demo mode so users can read it
+before installing the App or entering dashboard credentials.
 """
 
 from __future__ import annotations

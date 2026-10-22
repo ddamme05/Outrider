@@ -107,11 +107,12 @@ class EnvCredentialProvider:
 
 @dataclass(frozen=True)
 class DatabaseCredentialProvider:
-    """`database` mode — the one active `github_app_credentials` row, decrypted per operation.
+    """Read a configured instance's one active encrypted credential per operation.
 
-    Read per-operation (not cached) so activation takes effect with no restart; the row is small
-    and Fernet decryption is microsecond-cheap. Raises `GitHubUnconfiguredError` when no row is
-    active (the setup-only state) — never falls back to `env`.
+    An unconfigured state raises GitHubUnconfiguredError. A missing singleton or an
+    invalid active-row count under CONFIGURED raises GitHubCredentialIntegrityError;
+    decryption can also fail. There is no env fallback. Activation takes effect
+    without a restart.
     """
 
     session_factory: async_sessionmaker[AsyncSession]

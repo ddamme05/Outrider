@@ -1,29 +1,15 @@
 # HITL-expiry sweep per specs/2026-05-26-hitl-node.md Group 8.
-"""HITL-expiry sweep job — two sub-jobs sharing the SWEEP_LOCK_ID
-advisory lock.
+"""Recover interrupted approvals, then expire undecided requests.
 
-  1. `transition_expired_hitl_reviews` — for rows in `awaiting_approval`
-     past their `expires_at`, emit the canonical `hitl_timeout` anomaly
-     FIRST, then flip status to `awaiting_approval_expired`. The
-     anomaly-FIRST ordering is durability-critical (per
-     `docs/spec.md` §4.1.6 + the spec's Group 8 prescription): if the
-     status flip happened first and the anomaly emit then failed, the
-     sweep's predicate `status='awaiting_approval'` would no longer
-     match on the retry and the canonical anomaly would be permanently
-     lost. Anomaly-first reverses that durability gap.
+`reclaim_stuck_hitl_states` resumes saved decisions from immutable audit rows
+(`audit-events-append-only`);
+without a decision or checkpoint, it can mark an old waiting review failed.
+`transition_expired_hitl_reviews` records `hitl_timeout` before changing status,
+so an anomaly-write failure leaves the review eligible for retry.
 
-  2. `reclaim_stuck_hitl_states` — detects and recovers rows whose HITL
-     decision crashed part-way through. Its two scans, and the crash
-     window each one addresses, are documented on the scan helpers.
-
-The spec-locked order is reclaim BEFORE transition: a row that reclaim
-leaves alone may be flipped to `awaiting_approval_expired` by the
-transition sub-job in the same tick, and reclaim's candidate predicate
-admits that state so the row is still reachable on the next tick.
-
-`run_once` acquires `SWEEP_LOCK_ID` once and holds it across both HITL
-sub-jobs. When invoked through `run_all_sweeps`, that outer transaction keeps
-the lock held for the wider sweep sequence.
+`run_once` holds `SWEEP_LOCK_ID` once across both jobs. Reclaim runs first so
+saved decisions are recovered before timeout handling. `run_all_sweeps` keeps
+the same transaction lock through the wider maintenance sequence.
 """
 
 from __future__ import annotations
@@ -82,44 +68,16 @@ async def transition_expired_hitl_reviews(
     review_status_sink: ReviewStatusSink,
     audit_persister: AuditPersister,
 ) -> int:
-    """Sub-job 1: expire reviews past their HITL deadline.
+    """Expire production approvals after recording their timeout anomaly.
 
-    Per the anomaly-FIRST ordering contract:
-      1. Query rows in `awaiting_approval` with `expires_at < NOW()`.
-      2. For each row:
-         a. Check the audit layer for a persisted `HITLDecisionEvent`.
-            A row in `awaiting_approval + expires_at < NOW()` carrying
-            an orphaned `HITLDecisionEvent` is a window-(f) crash
-            (reviewer DID decide; mark_running never landed), NOT a
-            timeout — skip without emitting `hitl_timeout` or flipping
-            status. `reclaim_stuck_hitl_states` (which runs FIRST in
-            `run_once`) is the canonical recovery for these rows; if
-            it failed to drive the graph this tick, the next sweep
-            tick retries. Without this skip, a reclaim-failed window-
-            (f) row would land in the anomaly queue as a hitl_timeout
-            despite the reviewer having decided.
-         b. Emit the `hitl_timeout` anomaly via `anomaly_sink`.
-         c. ONLY if (b) succeeded, flip status to
-            `awaiting_approval_expired` via `review_status_sink`.
+    A saved `HITLDecisionEvent` means the reviewer decided: skip timeout handling
+    and leave graph recovery to reclaim. Otherwise emit `hitl_timeout` first,
+    then mark `awaiting_approval_expired`. Per-row errors leave the next tick
+    able to retry; anomaly inserts deduplicate by review and rule.
 
-    If anomaly emit RAISES, the loop body for that row short-circuits
-    without the status flip. The row stays in `awaiting_approval` and
-    the next sweep tick retries — the partial unique index on
-    `(anomalies.review_id) WHERE rule_name='hitl_timeout'` makes the
-    retried emit a no-op via `on_conflict_do_nothing`, so the second
-    attempt succeeds AND flips the status.
-
-    Returns the number of rows that successfully transitioned to
-    `awaiting_approval_expired`. Rows that errored on the anomaly
-    emit do NOT count (they're retried next tick).
-
-    **Lock-acquisition contract: this sub-job DOES NOT acquire
-    `SWEEP_LOCK_ID` itself.** The caller (typically `run_once`)
-    acquires the lock once and holds it across both sub-jobs in a
-    single transaction. This is load-bearing for the reclaim-before-
-    transition ordering: each sub-job acquiring its own lock would
-    free + reacquire between sub-jobs, letting a concurrent process
-    sneak in and break the order.
+    Count status-sink calls that return, including conditional-update no-ops.
+    The caller must already hold
+    `SWEEP_LOCK_ID` across reclaim and transition in one transaction.
     """
     # Query expired rows. Uses the partial index
     # `ix_reviews_awaiting_approval_expires_at` from Group 3.
@@ -242,30 +200,18 @@ async def reclaim_stuck_hitl_states(
     compiled_graph: CompiledStateGraph[Any, Any, Any, Any],
     grace_period: timedelta = _DEFAULT_RECLAIM_GRACE_PERIOD,
 ) -> dict[str, int]:
-    """Sub-job 2: detect + recover stuck HITL states.
+    """Recover saved decisions, then check running rows still paused at HITL.
 
-    Two scans, run in order and reported together.
-    `_reclaim_awaiting_approval_rows` handles rows still sitting in an
-    awaiting-approval state; then `_reclaim_running_rows_stuck_at_hitl`
-    handles rows whose decision landed but whose graph never advanced. Each
-    helper carries the crash-window rationale it enforces.
+    The awaiting scan can either resume a canonical audit decision or mark an
+    old row failed when neither decision nor checkpoint exists. The running
+    scan resumes only saved decisions still waiting at the HITL node.
+    Return `recovered` across both scans and `failed` from the awaiting scan.
 
-    Returns `{"recovered": N, "failed": M}` for telemetry. `recovered`
-    aggregates both scans, since each advances the graph the same way, via
-    `Command(resume=...)`; the `hitl_reclaim_recovered_*` structured-log
-    discriminator is what tells them apart afterwards. Only the awaiting scan
-    can mark a row failed, so `failed` comes from it alone.
-
-    **Lock-acquisition contract: this sub-job DOES NOT acquire
-    `SWEEP_LOCK_ID` itself.** The caller (typically `run_once`) acquires once
-    and holds across both sub-jobs.
+    The caller must hold `SWEEP_LOCK_ID`; direct callers also need a positive
+    grace period. Each scan reads its own clock for its distinct age check.
     """
-    # Defense-in-depth at the leaf reclaim function. `run_all_sweeps`
-    # and `run_once` both validate at their entry points, but this
-    # sub-job is independently exported in `__all__` and a direct
-    # caller (test, future CLI, operator-triage script) bypassing the
-    # outer layers would otherwise inherit the same mass-mark-failed
-    # footgun. See `run_all_sweeps`/`run_once` for the full rationale.
+    # This public entry point can be called without the validating runner.
+    # A non-positive grace period moves the failure cutoff into the future.
     if grace_period <= timedelta(0):
         msg = (
             f"reclaim_stuck_hitl_states: grace_period must be > timedelta(0); "
@@ -305,70 +251,23 @@ async def _reclaim_awaiting_approval_rows(
     compiled_graph: CompiledStateGraph[Any, Any, Any, Any],
     grace_cutoff: datetime,
 ) -> tuple[int, int]:
-    """Scan `awaiting_approval*` rows: recover window (f), fail window (c).
+    """Recover saved decisions from awaiting states; fail old rows with no checkpoint.
 
-    Returns `(recovered, failed)`. The two crash windows are distinguished by
-    an AUDIT-ROW check rather than a checkpointer-only heuristic: a window-(f)
-    row retains its interrupt checkpoint, so checkpoint presence alone cannot
-    tell a crashed decision from a live one.
+    Both `awaiting_approval` and `awaiting_approval_expired` remain candidates,
+    so a prior timeout transition cannot orphan a saved decision.
 
-      - **Window (f)** (`emit_hitl_decision` succeeded but
-        `mark_running` never landed): an audit row with
-        `event_type='hitl_decision'` exists for this `review_id`,
-        but `reviews.hitl_decision IS NULL`. The audit row IS the
-        canonical decision per `audit-events-append-only`. Recovery:
-        reconstruct the `HITLDecision` domain object from the audit
-        event and invoke `compiled_graph.ainvoke(Command(resume=...),
-        config={thread_id})`. The body re-runs from the top,
-        idempotent emits no-op via natural-key match, `mark_running`
-        INSIDE the body writes JSONB + flips status, phase end fires,
-        state delta returns, graph routes to publish, publish runs
-        against the recovered finding set. Direct `mark_running`
-        writes from the sweep are deliberately NOT used: they would
-        flip the lifecycle column but leave the graph suspended at
-        the interrupt forever, with the endpoint's JSONB-cache
-        preflight 409-rejecting every retry. Counted under `recovered`.
+    Window (f): a canonical `HITLDecisionEvent` exists. Resume the graph with it
+    immediately, without a grace gate. A direct lifecycle update would leave the
+    graph paused and make dashboard retries reject its cached decision.
 
-      - **Window (c)** (`mark_awaiting_approval` succeeded but
-        `interrupt()` never landed): no audit row exists AND the
-        LangGraph checkpointer has no record for this `thread_id`.
-        Recovery: mark the review `failed`. Operator triages from
-        logs + the failed status row. Counted under `failed`.
-
-    Rows where the audit row is absent AND a checkpoint exists are
-    treated as "still in flight" — the body is suspended at the
-    interrupt waiting for resume; skip.
-
-    **Candidate-row predicate.** The scan admits
-    `status IN ('awaiting_approval', 'awaiting_approval_expired')`. It is
-    broader than `awaiting_approval` alone so reclaim catches window-(f) rows
-    that
-    `transition_expired_hitl_reviews` already flipped to
-    `awaiting_approval_expired` in a prior sweep tick (or even the
-    same tick: the spec-locked sub-job order is reclaim BEFORE
-    transition, but a row near its `expires_at` boundary could be
-    skipped by reclaim's grace-period gate and immediately flipped
-    by transition; without the broader filter, the audit row would
-    orphan permanently).
-
-    **Audit-row presence is the canonical signal — no grace gate.**
-    When a `HITLDecisionEvent` exists for the review, the emit ran;
-    the audit row is canonical per `audit-events-append-only`. The
-    `expires_at < grace_cutoff` gate ONLY applies to the no-audit-row
-    branch (window c): there we need the grace period to avoid
-    false-positive reclaim of a row that just transitioned to
-    `awaiting_approval` (the body might still be running, the
-    langgraph checkpoint might be in flight). For window (f),
-    immediate recovery is safe.
+    Window (c): no audit decision exists. Only after `expires_at < grace_cutoff`,
+    check the checkpoint; any checkpoint protects the row from this failure
+    classification. With neither, conditionally mark the awaiting row failed.
+    Count only matched updates, since another actor can change status after
+    the candidate read. Return `(recovered, failed)`.
     """
-    # Query candidate rows: status IN ('awaiting_approval',
-    # 'awaiting_approval_expired'). Broader than the natural-HITL
-    # set so post-transition orphans (window-f rows already flipped
-    # to awaiting_approval_expired by the transition sub-job) stay
-    # reachable for audit-row recovery. See docstring rationale.
-    # `is_eval=False` filter per `docs/testing.md:59` contract — see
-    # the sibling filter on `transition_expired_hitl_reviews` for the
-    # full rationale.
+    # Keep expired awaiting rows reachable for canonical-decision recovery.
+    # Production maintenance must never mutate eval review lifecycles.
     result = await conn.execute(
         select(Review.id, Review.expires_at).where(
             Review.status.in_(("awaiting_approval", "awaiting_approval_expired")),
@@ -382,9 +281,7 @@ async def _reclaim_awaiting_approval_rows(
     for row in candidate_rows:
         review_id = row.id
         row_expires_at = row.expires_at
-        # Step 1: check the audit layer for an orphaned
-        # HITLDecisionEvent. Window-(f) detection — audit row
-        # presence is the canonical signal, no grace gate needed.
+        # The audit decision, rather than checkpoint presence, selects recovery.
         try:
             audit_decision_event = await audit_persister.query_hitl_decision_event(
                 review_id=review_id,
@@ -397,18 +294,7 @@ async def _reclaim_awaiting_approval_rows(
             continue
 
         if audit_decision_event is not None:
-            # Window (f) recovery: the audit row is canonical, but
-            # the graph is still suspended at the HITL interrupt.
-            # We MUST drive the graph through `Command(resume=...)`
-            # so the body completes: mark_running fires INSIDE the
-            # body (writing the canonical JSONB), phase end emits,
-            # state delta returns, graph routes to publish, publish
-            # runs against the recovered finding set. A direct
-            # `mark_running` write from here would advance the
-            # lifecycle column but leave the graph permanently
-            # suspended — `/decide` would 409-reject all retries
-            # (preflight sees hitl_decision != NULL) and the gated
-            # finding never reaches GitHub.
+            # Resume the graph; updating only the lifecycle would leave HITL paused.
             canonical_decision = HITLDecision(
                 reviewer_id=audit_decision_event.reviewer_id,
                 decisions=audit_decision_event.decisions,
@@ -422,10 +308,8 @@ async def _reclaim_awaiting_approval_rows(
                     config=recovery_config,
                 )
             except Exception:
-                # Graph drive failed; lifecycle stays in
-                # awaiting_approval. Next sweep tick retries — the
-                # audit row is still canonical, and the body re-run
-                # is idempotent.
+                # The audit decision stays canonical even if graph drive fails
+                # after a lifecycle write; the next tick rechecks the resulting state.
                 logger.exception(
                     "hitl_reclaim_graph_drive_failed",
                     extra={
@@ -450,18 +334,11 @@ async def _reclaim_awaiting_approval_rows(
             )
             continue
 
-        # Step 2: no audit row. Apply grace gate explicitly — the
-        # candidate query is broader (status IN ('awaiting_approval',
-        # 'awaiting_approval_expired')) and doesn't filter by
-        # expires_at, so we re-check here to avoid window-c false
-        # positives. If expires_at >= grace_cutoff (or NULL), the
-        # natural HITL window hasn't lapsed past grace; skip.
+        # No saved decision: wait beyond expiry plus grace before classifying failure.
         if row_expires_at is None or row_expires_at >= grace_cutoff:
             continue
 
-        # Step 3: check the LangGraph checkpointer. If a checkpoint
-        # exists, the body is suspended at the interrupt waiting
-        # for resume — NOT stuck. Skip.
+        # Any checkpoint protects this row from the no-checkpoint failure path.
         thread_config = {"configurable": {"thread_id": str(review_id)}}
         try:
             checkpoint = await checkpointer.aget(thread_config)  # type: ignore[arg-type]
@@ -473,27 +350,12 @@ async def _reclaim_awaiting_approval_rows(
             continue
 
         if checkpoint is not None:
-            # No audit row + checkpoint exists = genuinely suspended,
-            # still in flight. Skip.
+            # Checkpoint presence alone does not prove the graph is stuck.
             continue
 
-        # Window (c) recovery: no audit row, no checkpoint, past
-        # grace period. Mark `failed` for operator triage. Predicate
-        # admits both source states so the mark-failed write works
-        # whether the row was already flipped to
-        # awaiting_approval_expired by transition or still sits in
-        # awaiting_approval.
-        #
-        # Concurrent-actor defense: between the candidate SELECT and
-        # this UPDATE, another actor (a parallel sweep, a manual SQL
-        # operator triage, the dashboard) could have changed the
-        # status (e.g., to `running` via a window-(f) graph-driven
-        # recovery on a peer process). The UPDATE's WHERE clause
-        # filters to the two admitted source states, so a status
-        # change would land rowcount=0 — incrementing `failed` and
-        # logging "reclaimed as failed" without a matched row would
-        # be a phantom signal. Gate the counter + log on the actual
-        # rowcount.
+        # No decision or checkpoint after grace: conditionally fail the awaiting
+        # row. Count/log only matched writes to avoid reporting a concurrent
+        # recovery as failure.
         async with session_factory() as session, session.begin():
             update_result = await session.execute(
                 update(Review)
@@ -503,12 +365,7 @@ async def _reclaim_awaiting_approval_rows(
                 )
                 .values(status="failed")
             )
-        # `AsyncSession.execute(...)` returns `Result[Any]` per the
-        # async stubs; `CursorResult` (the runtime type for UPDATE/
-        # INSERT/DELETE) carries `rowcount` but mypy's `Result` base
-        # type doesn't expose it. `getattr` keeps the static check
-        # honest without a cast (the runtime attribute is reliable
-        # across SQLAlchemy 2.x).
+        # Async stubs expose Result; the runtime UPDATE result supplies rowcount.
         update_rowcount: int = getattr(update_result, "rowcount", 0) or 0
         if update_rowcount > 0:
             failed += 1
@@ -547,141 +404,84 @@ async def _reclaim_running_rows_stuck_at_hitl(
     compiled_graph: CompiledStateGraph[Any, Any, Any, Any],
     grace_period: timedelta,
 ) -> int:
-    """Scan `running` rows still suspended at the HITL interrupt: window (g).
+    """Resume post-decision running rows whose graph still waits at HITL (window g).
 
-    Returns the count recovered. Reads its own `datetime.now(UTC)` rather than
-    taking the awaiting scan's cutoff: this scan gates on
-    `decided_at + grace_period`, and it runs after the awaiting scan, so the
-    two clocks are deliberately separate reads.
+    The row must have `hitl_decision`, a canonical audit decision older than the
+    grace period, and `hitl` in the graph's next nodes. This excludes pre-HITL
+    work and graphs that already advanced to publish. Resume with the immutable
+    audit decision so the HITL body can finish its phase end and state delta;
+    its natural-key audit writes and lifecycle predicates make retries safe.
 
-    - **Window (g)** (`mark_running` succeeded but `emit_phase(end)`
-      / state delta return never landed): per spec line 215, "after
-      `mark_running`, before `emit_phase(end)`: dangling-start
-      convention catches it on next replay; sweep eventually
-      reclaims." The row's lifecycle column reads `status='running'`
-      with `hitl_decision IS NOT NULL`, the canonical
-      `HITLDecisionEvent` exists in audit, AND the LangGraph
-      checkpoint is still suspended at the HITL interrupt (the
-      body crashed AFTER `mark_running`'s commit but BEFORE the
-      state delta returned — the resume value never propagated
-      through the graph). Normal retry paths are closed: `/decide`
-      rejects (status != awaiting), `mark_running` predicate
-      misses (`hitl_decision IS NOT NULL`). Discriminator:
-      `compiled_graph.aget_state(...).next` contains `hitl`
-      (graph is still at the HITL interrupt — publish has not
-      started). Recovery: same `Command(resume=audit_canonical)`
-      graph drive as window (f). The body re-runs from the top;
-      steps 6–11 no-op idempotently (audit emits return existing
-      events; both `mark_*` predicates miss because the row is
-      already in the post-mark_running state); steps 12–13 fire
-      phase end + return the state delta, advancing the graph to
-      publish. Counted under `recovered`.
+    Return the successful graph-drive count. Read a fresh clock after the
+    awaiting scan: this age check uses `decided_at`, rather than `expires_at`.
     """
-    # Second scan: window (g) candidates. `status='running'` rows
-    # whose `hitl_decision` JSONB is populated AND the canonical
-    # `HITLDecisionEvent` exists in audit AND the LangGraph state is
-    # still suspended at the HITL interrupt (i.e., `mark_running`
-    # committed but the body crashed before `emit_phase(end)` /
-    # state-delta-return advanced the graph).
-    #
-    # The `hitl_decision IS NOT NULL` discriminator is load-bearing —
-    # `status='running' + hitl_decision IS NULL` is the pre-HITL
-    # running state (intake / triage / analyze / trace). Including
-    # those rows would have the sweep query audit for HITLDecisionEvent
-    # on every pre-HITL row (mostly absent — pure noise) AND risk a
-    # `Command(resume=...)` drive against a graph that hasn't yet
-    # interrupted (raises). `IS NOT NULL` narrows to the post-HITL
-    # window.
-    g_candidate_result = await conn.execute(
+    # A cached decision distinguishes post-HITL running rows from earlier work.
+    candidate_result = await conn.execute(
         select(Review.id).where(
             Review.status == "running",
             Review.hitl_decision.is_not(None),
             Review.is_eval.is_(False),
         )
     )
-    g_candidate_rows = list(g_candidate_result.all())
+    candidate_rows = list(candidate_result.all())
 
-    now_for_grace = datetime.now(UTC)
+    checked_at = datetime.now(UTC)
 
     recovered = 0
-    for g_row in g_candidate_rows:
-        g_review_id = g_row.id
+    for row in candidate_rows:
+        review_id = row.id
 
-        # Step 1: query audit. Window (g) requires the canonical
-        # `HITLDecisionEvent` row (it was emitted in step 10 of the
-        # body, BEFORE the crash). Absence means this is NOT a
-        # window-g pattern — could be a direct DB write that bypassed
-        # the body, a producer bug, or a missing-audit-row anomaly
-        # outside this sub-job's recovery scope.
+        # The cached decision needs its canonical immutable audit row.
         try:
-            g_audit_event = await audit_persister.query_hitl_decision_event(
-                review_id=g_review_id,
+            decision_event = await audit_persister.query_hitl_decision_event(
+                review_id=review_id,
             )
         except Exception:
             logger.exception(
                 "hitl_reclaim_g_audit_query_failed",
-                extra={"review_id": str(g_review_id)},
+                extra={"review_id": str(review_id)},
             )
             continue
-        if g_audit_event is None:
+        if decision_event is None:
             continue
 
-        # Step 2: grace gate. `audit_event.decided_at` is the precise
-        # write timestamp of the canonical decision; `grace_period`
-        # past that is the earliest point a healthy graph would
-        # have reached publish. Recovering sooner risks racing with
-        # an in-flight publish whose status flip hasn't happened yet.
-        if g_audit_event.decided_at + grace_period > now_for_grace:
+        # Give a healthy resumed graph time to advance before attempting recovery.
+        if decision_event.decided_at + grace_period > checked_at:
             continue
 
-        # Step 3: LangGraph state introspection. `compiled_graph
-        # .aget_state(config).next` returns the tuple of nodes that
-        # will run next from the current checkpoint. A graph
-        # suspended at the HITL interrupt has `"hitl"` in `next`;
-        # a graph that advanced past HITL would have `"publish"` (in
-        # flight) OR an empty `next` (terminal). The `"hitl" in next`
-        # check rules out both "publish in flight" (no recovery
-        # needed) and "publish completed but status-flip lost" (a
-        # separate failure mode this sub-job does not address).
-        g_thread_config: RunnableConfig = {"configurable": {"thread_id": str(g_review_id)}}
+        # Resume only a graph that still waits at HITL, not publish or terminal work.
+        thread_config: RunnableConfig = {"configurable": {"thread_id": str(review_id)}}
         try:
-            g_state_snapshot = await compiled_graph.aget_state(g_thread_config)
+            state_snapshot = await compiled_graph.aget_state(thread_config)
         except Exception:
             logger.exception(
                 "hitl_reclaim_g_state_read_failed",
-                extra={"review_id": str(g_review_id)},
+                extra={"review_id": str(review_id)},
             )
             continue
-        next_nodes = getattr(g_state_snapshot, "next", ()) or ()
+        next_nodes = getattr(state_snapshot, "next", ()) or ()
         if "hitl" not in next_nodes:
-            # Graph advanced past hitl — publish in flight or
-            # terminal. Window (g) does not apply; skip.
+            # Publish may be running or complete; this recovery does not apply.
             continue
 
-        # Step 4: drive Command(resume=). Body re-runs from the top;
-        # the natural-key audit emits return existing events, both
-        # `mark_*` predicate misses (row is already post-mark_running)
-        # no-op cleanly, phase end fires, state delta returns, graph
-        # advances to publish. Same recovery mechanism as window (f);
-        # the difference is the entry state (status='running'
-        # already + hitl_decision populated already).
-        g_canonical_decision = HITLDecision(
-            reviewer_id=g_audit_event.reviewer_id,
-            decisions=g_audit_event.decisions,
-            annotation=g_audit_event.annotation,
-            decided_at=g_audit_event.decided_at,
+        # Replay the canonical decision through the idempotent HITL body.
+        canonical_decision = HITLDecision(
+            reviewer_id=decision_event.reviewer_id,
+            decisions=decision_event.decisions,
+            annotation=decision_event.annotation,
+            decided_at=decision_event.decided_at,
         )
         try:
             await compiled_graph.ainvoke(
-                Command(resume=g_canonical_decision.model_dump(mode="json")),
-                config=g_thread_config,
+                Command(resume=canonical_decision.model_dump(mode="json")),
+                config=thread_config,
             )
         except Exception:
             logger.exception(
                 "hitl_reclaim_g_graph_drive_failed",
                 extra={
-                    "review_id": str(g_review_id),
-                    "audit_event_id": str(g_audit_event.event_id),
+                    "review_id": str(review_id),
+                    "audit_event_id": str(decision_event.event_id),
                 },
             )
             continue
@@ -689,8 +489,8 @@ async def _reclaim_running_rows_stuck_at_hitl(
         logger.warning(
             "hitl_reclaim_recovered_window_g_via_command_resume",
             extra={
-                "review_id": str(g_review_id),
-                "audit_event_id": str(g_audit_event.event_id),
+                "review_id": str(review_id),
+                "audit_event_id": str(decision_event.event_id),
                 "note": (
                     "Row at status='running' + hitl_decision populated with "
                     "LangGraph state still at hitl interrupt past grace "
@@ -715,42 +515,14 @@ async def run_once(
     compiled_graph: CompiledStateGraph[Any, Any, Any, Any],
     grace_period: timedelta = _DEFAULT_RECLAIM_GRACE_PERIOD,
 ) -> dict[str, int]:
-    """Run both HITL-expiry sub-jobs in canonical order, under a
-    single advisory-lock window.
+    """Run reclaim before expiry under one transaction-scoped advisory lock.
 
-    Order is locked: `reclaim_stuck_hitl_states` BEFORE
-    `transition_expired_hitl_reviews`. Rationale (spec line 566): a
-    stuck row past `expires_at` would otherwise be classified as
-    "reviewer never decided" (expired) when the actual cause is
-    "process crashed" (reclaimed -> recovered-from-audit OR failed).
-    Reclaim-first preserves the diagnostic distinction in the
-    resulting row state.
-
-    **Advisory lock is acquired ONCE** by this wrapper. The
-    transaction-scoped `pg_try_advisory_xact_lock` holds for the
-    duration of the `conn`'s transaction, which spans both sub-jobs
-    AND the SELECT/UPDATE statements inside them. Each sub-job
-    deliberately does NOT self-acquire — otherwise reclaim could
-    return early (lock held by a peer), then the lock could free
-    before transition runs, breaking the reclaim-before-transition
-    ordering.
-
-    Returns `{"reclaim_recovered": N, "reclaim_failed": M,
-    "transitioned": K}` for telemetry. `(N + M)` is the reclaim
-    sub-job's total; `K` is the expiry sub-job's transition count.
-
-    On lock contention (another sweep process holds it): returns all
-    zeros without running either sub-job.
+    Acquire `SWEEP_LOCK_ID` once for both jobs; the caller's transaction must
+    span the sequence. Recover saved decisions before timeout classification.
+    Return reclaim/transition counts, or all zeros when the lock is held by a
+    peer. Reject non-positive grace periods even for direct callers.
     """
-    # Defense-in-depth: reject non-positive `grace_period` at this
-    # layer too. `run_all_sweeps` already validates at the runner-tier
-    # entry point, but `run_once` is independently exported and a
-    # direct caller (a test, a future CLI one-shot, an operator-triage
-    # script) bypassing the runner would otherwise inherit the same
-    # mass-mark-failed footgun the runner guards against. A negative
-    # `timedelta` computes `grace_cutoff = now() - grace_period =
-    # now() + |Δ|`, putting the cutoff in the future and admitting
-    # every awaiting-approval row. Reclaim then mass-marks-failed.
+    # Direct callers also need the positive-grace guard before any recovery write.
     if grace_period <= timedelta(0):
         msg = (
             f"hitl_expiry.run_once: grace_period must be > timedelta(0); "

@@ -1,20 +1,11 @@
 # See specs/2026-05-19-analyze-foundation.md §1.
-"""Single chokepoint for canonical identity-bearing hash inputs.
+"""Shared recipes for identity-bearing hashes.
 
-Per the spec's "Canonical identity encoding" recipe, all identity hashes
-use canonical JSON serialization (sort_keys=True, compact separators,
-ensure_ascii=False) encoded as UTF-8. Defining the recipe in ONE module
-prevents per-call-site drift — the C1 finding
-(\\n-separator collisions) recurred because the recipe was repeated
-in each schema's prose. This module is the durable fix.
-
-Consumed by `AnalysisRound.round_id`, `TraceCandidate.candidate_id`,
-and downstream proposal/response hashes in the analyze-implementation
-sister spec. Callers chain `compute_identity_hash(payload)` for a hex
-digest; `canonicalize_for_hash(payload)` is exposed for tests that
-pin the BYTE OUTPUT (not just digest) so a future `json.dumps`
-semantics change fails loudly with a visible diff.
-"""
+Structured identities use sorted, compact JSON with UTF-8 text and no
+NaN/Infinity. `canonicalize_for_hash` validates inputs and exposes the bytes;
+`compute_identity_hash` returns their SHA-256 digest. Typed wrappers below
+build each identity's payload so callers share its fields and encoding.
+Raw response text and older persisted hashes keep their distinct recipes."""
 
 from __future__ import annotations
 
@@ -57,8 +48,7 @@ SHA256_HEX_PATTERN: Final[str] = r"^[a-f0-9]{64}$"
 SHA256_HEX_PATTERN_SHORT: Final[str] = r"^[a-f0-9]{16}$"
 
 
-# Pre-existing canonical encodings NOT routed through this module
-# (, accepted-asymmetry option):
+# Older persisted encodings keep their existing recipes:
 #
 # - `outrider.audit.events.compute_finding_content_hash` — JSON-array
 #   payload `[file_path, line_start, line_end, finding_type.value]`,
@@ -80,12 +70,8 @@ SHA256_HEX_PATTERN_SHORT: Final[str] = r"^[a-f0-9]{16}$"
 # `response_hash` (on `AnalyzeResponseRejectedEvent`) is a separate
 # case: it hashes the FULL raw response BYTES (UTF-8 encoded) directly
 # via `sha256(text.encode("utf-8")).hexdigest()`, NOT through
-# `canonicalize_for_hash` — the input shape isn't a structured dict but
-# a single text blob, so JSON canonicalization doesn't apply. The
-# `compute_response_hash` wrapper below implements that recipe. Post-PR
-# review fold: prior comment claimed `response_hash` used
-# `compute_identity_hash`; that was prose drift — the implementation is
-# correct, the comment is being corrected here.
+# `canonicalize_for_hash`: it is text, not a structured payload.
+# `compute_response_hash` implements that distinct recipe.
 
 
 def canonicalize_for_hash(payload: dict[str, Any]) -> bytes:
@@ -133,22 +119,12 @@ def canonicalize_for_hash(payload: dict[str, Any]) -> bytes:
 
 
 def _validate_hash_payload(value: Any, path: str) -> None:
-    """Recursively enforce the canonical-hash payload contract.
+    """Reject unsupported containers, keys, and values before JSON encoding.
 
-    Per `canonicalize_for_hash`'s docstring contract: values must be
-    JSON-native primitives (`str` / `int` / `bool` / `None` / `list` /
-    `dict`), `dict` keys at EVERY level must be `str`, and Pydantic
-    BaseModel instances are rejected with a typed pointer at the
-    `model_dump(mode='json')` escape hatch.
-
-    Non-JSON-native containers like `set` / `frozenset` are rejected
-    explicitly here even though `json.dumps` would also reject them:
-    the diagnostic message naming the offending path is more actionable
-    than the stack trace `json.dumps` produces, AND `set` carries a
-    silent reordering risk because Python's set iteration order is
-    insertion-derived but not stable across processes. Treating sets as
-    canonical inputs would defeat the deterministic-encoding promise.
-    """
+    Check every nested key for str, and require explicit conversion of
+    BaseModel, tuple, set/frozenset, and float inputs. Sets have no stable
+    cross-process order. Errors identify the offending payload path;
+    Pydantic callers should use model_dump(mode='json') first."""
     # Local import keeps the module load light — see `_validate_hash_payload`
     # invocation site for rationale.
     from pydantic import BaseModel  # noqa: PLC0415
@@ -183,7 +159,10 @@ def _validate_hash_payload(value: Any, path: str) -> None:
             f"silently serialize tuples as arrays."
         )
     if isinstance(value, dict):
-        bad_keys = [k for k in value if not isinstance(k, str)]
+        bad_keys: list[Any] = []
+        for payload_key in value:
+            if not isinstance(payload_key, str):
+                bad_keys.append(payload_key)
         if bad_keys:
             raise TypeError(
                 f"canonicalize_for_hash requires str keys at every dict "
@@ -200,19 +179,9 @@ def _validate_hash_payload(value: Any, path: str) -> None:
         for i, item in enumerate(value):
             _validate_hash_payload(item, f"{path}[{i}]")
         return
-    # Reject `float` even though it's JSON-native: float serialization
-    # is implementation-dependent in subtle ways (trailing zero
-    # truncation, exponent vs decimal notation, locale-sensitive
-    # libraries) and `0.1 + 0.2 != 0.3` means content-derived hashes
-    # over float arithmetic results are unstable across producers.
-    # `allow_nan=False` catches NaN/Inf but not finite floats. The
-    # contract says str/int/bool/None/list/dict only; callers with a
-    # float MUST convert via `str(...)` (or `Decimal(str(value))`) so
-    # the encoding decision is explicit at the call site. Post-PR
-    # review fold (high confidence, runtime-contract issue).
-    #
-    # `bool` is a subclass of `int` in Python; `isinstance(True, float)`
-    # is False — so this rejection doesn't accidentally reject booleans.
+    # Finite floats also require an explicit stable string representation;
+    # allow_nan=False alone only rejects NaN/Infinity. This check leaves
+    # bool values intact despite bool being an int subclass.
     if isinstance(value, float):
         raise TypeError(
             f"canonicalize_for_hash got a float at {path}: {value!r}. "
@@ -245,14 +214,8 @@ def compute_identity_hash(payload: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Typed wrappers for the four foundation-defined identity hashes.
-# Per the proposal_hash / response_hash /
-# round_id / candidate_id payload shapes are in spec prose only — without
-# typed wrappers, a sister-spec parser author can typo a field name,
-# forget a key, or stringify a Span incorrectly and the resulting hash
-# still matches `SHA256_HEX_PATTERN`. The wrappers move each recipe into
-# code so mypy catches missing kwargs and the canonical encoding lives
-# in ONE place per hash type.
+# Typed wrappers make each identity's required fields explicit. A valid
+# hex digest alone cannot reveal a missing field or a different payload shape.
 # ---------------------------------------------------------------------------
 
 
@@ -269,53 +232,21 @@ def compute_proposal_hash(
     line_start: int,
     line_end: int,
 ) -> str:
-    """SHA-256 hex of an `AnalyzeFindingProposalRaw`'s file-scoped identity.
+    """Hash a raw proposal together with its canonical source file.
 
-    Per `DECISIONS.md#022` (Accepted 2026-05-20; span-key amended
-    2026-06-01 / FUP-126): proposal identity is PR/file-scoped, not
-    raw-proposal-shape-global. The recipe folds 9 keys: `source_file_path`
-    (the file the proposal came from), plus the 8 raw-proposal keys
-    (finding_type, evidence_tier, query_match_id, trace_path, title,
-    description, evidence, and the location as a `line_range` of
-    `{line_start, line_end}` — amended from byte `{byte_start, byte_end}`
-    when proposals became line-based). `trace_candidates` is deliberately
-    excluded (model child-output, not parent identity).
+    Per `DECISIONS.md#022` (span-key amendment FUP-126), the payload has
+    source_file_path plus the eight proposal keys, with location represented
+    by line_range. trace_candidates are child output and excluded. Empty
+    trace_path and None represent no trace and hash alike.
 
-    All keyword-only — finding_type/evidence_tier are both raw `str`
-    (not enum-coerced) because the hash is computed AT the raw layer,
-    BEFORE admission.
+    Validate source_file_path before hashing so path aliases share an identity;
+    identical proposals from different files remain distinct. Raw type/tier
+    strings are hashed before admission. Used by rejection events and
+    TraceCandidate.source_proposal_hash for provenance joins.
 
-    `source_file_path` runs through `coordinates.validate_diff_path`
-    BEFORE entering the hash payload. Per the path-canonicalization
-    rule (spec.md §1: "All `files_examined`, `files_skipped`, and
-    file-path-bearing strings entering identity hashes MUST be in
-    canonical form"), `source_file_path` is a path-bearing input to
-    a hash recipe and inherits the same rule. Without this gate,
-    `"src/foo.py"`, `"./src/foo.py"`, and `"src//foo.py"` (the same
-    file under different aliases) would produce distinct
-    `proposal_hash` values — reopening the dedup false-negative that
-    DECISIONS.md#022 was specifically designed to close.
-    Canonicalization here + at the carrier-schema layers means alias
-    paths produce a SINGLE canonical hash. The pedagogical placement
-    of `source_file_path` as the first dict key remains —
-    `canonicalize_for_hash`'s `sort_keys=True` makes position
-    hash-irrelevant.
-
-    Used by `FindingProposalRejectedEvent.proposal_hash` and by
-    `TraceCandidate.source_proposal_hash`. Per DECISIONS.md#022,
-    proposal identity is PR/file-scoped, so two analyze passes over
-    DIFFERENT source files emitting logically-identical proposals
-    produce DISTINCT hashes — preserving per-source-file audit
-    provenance on the candidate trail. Per DECISIONS.md#024 (Accepted
-    2026-05-24, Amended 2026-05-24 for M8), trace candidates are dotted
-    Python import strings, not file paths; V1 trace per M8 + FUP-209
-    resolves each candidate via a suffix-strip probe ladder in
-    `agent/nodes/trace.py` (module-form paths first, then symbol-form
-    fallback levels gated by symbol verification; every path through
-    `coordinates.validate_diff_path`, fetch-probed via
-    `github.fetch.fetch_file_content_at`). The filesystem-aware
-    `coordinates.resolve_candidate_paths` is the V1.5+ future shape.
-    """
+    Trace candidates use import strings per `DECISIONS.md#024`. V1 resolves
+    them with API probes in agent/nodes/trace.py (FUP-209); the filesystem-aware
+    coordinates.resolve_candidate_paths is a separate future caller path."""
     if line_end < line_start:
         # Fail loud on a transposed range. The sole V1 caller passes a
         # raw proposal already validated by `_line_end_not_before_start`,
@@ -327,12 +258,7 @@ def compute_proposal_hash(
     from outrider.coordinates import validate_diff_path  # noqa: PLC0415
 
     canonical_source_file_path = validate_diff_path(source_file_path)
-    # Normalize "no trace path" to None — `trace_path=()` and
-    # `trace_path=None` represent the same logical state ("the proposal
-    # did not name a trace path") but would otherwise produce distinct
-    # digests because `[]` and `None` serialize differently. Producers
-    # that build their tuple from `getattr(raw, "trace_path", ())` would
-    # disagree with producers that use the raw `None` directly.
+    # No trace must hash alike whether the raw carrier uses () or None.
     normalized_trace_path = list(trace_path) if trace_path else None
     return compute_identity_hash(
         {
@@ -412,33 +338,13 @@ def compute_candidate_id(
     import_string: str,
     reason: str,
 ) -> str:
-    """SHA-256 hex identifying a `TraceCandidate`.
+    """Hash a trace candidate's proposal reference, import string, and reason.
 
-    Per spec §1: content-derived from the candidate's payload so
-    re-emission of the same logical candidate produces the same id and
-    collapses on the dedup-by-candidate_id reducer.
-
-    `import_string` MUST be the canonical `coordinates.is_valid_trace_import_string`
-    output per `TraceCandidate._enforce_canonical_import_string`.
-    `source_proposal_hash` matches `FindingProposalRejectedEvent.proposal_hash`
-    for the audit join — caller passes the same string that landed on
-    the rejection event (or would land, if the proposal were rejected).
-
-    Per `DECISIONS.md#024` (Accepted 2026-05-24, Amended 2026-07-03),
-    trace candidates carry one of two syntactically-partitioned forms —
-    dotted Python import string or JS/TS relative specifier; the id
-    stays content-derived over the form-tagged-by-syntax string, so no
-    recipe change accompanied the two-form amendment. The recipe input
-    was renamed from `candidate_path` to `import_string` in the same
-    DECISIONS-aligned commit; the canonical-encoding shape uses the
-    new key name. Callers that previously passed `candidate_path=...`
-    must update to `import_string=...`.
-
-    The payload dict's key order is IRRELEVANT — `canonicalize_for_hash`
-    applies `sort_keys=True` so any ordering produces identical canonical
-    bytes. A future refactor reordering the literal below cannot drift
-    the digest.
-    """
+    The import string must be canonical coordinates.is_valid_trace_import_string
+    output; source_proposal_hash must match the proposal's rejection/audit hash.
+    Per `DECISIONS.md#024` (two-form amendment), syntax distinguishes dotted
+    Python imports from JS/TS relative specifiers without another recipe key.
+    Canonical JSON makes literal field order irrelevant."""
     return compute_identity_hash(
         {
             "source_proposal_hash": source_proposal_hash,

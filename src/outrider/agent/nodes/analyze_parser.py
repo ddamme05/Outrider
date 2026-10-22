@@ -1,31 +1,12 @@
 # See specs/2026-05-19-analyze-node.md §6
-"""Analyze parser — proof-boundary admission for model proposals.
+"""Admit model-proposed findings through deterministic proof and location checks.
 
-**Boundary contract.** Pure function. Takes a raw provider response
-plus the per-file context the node body already assembled, applies
-the spec §6 10-step admission flow, and returns a `ParserResult`:
+This pure parser returns findings, trace candidates, rejection payloads, and
+counters. The analyze node owns persistence and state updates.
 
-- admitted `ReviewFinding`s (one per proposal passing every gate),
-- collected `TraceCandidate`s (from both admitted and proposal-rejected
-  raw proposals; response-level rejections produce none),
-- proposal-level rejection payloads (one per proposal that failed
-  admission — finding-type-not-in-enum, evidence-tier-not-in-enum,
-  query-match-id-not-in-registry, trace-path-not-admissible,
-  span-outside-scope-unit, span-outside-file, schema-construction-
-  failed),
-- a single optional response-level rejection (set iff step 0 —
-  `AnalyzeResponseRaw.model_validate_json` — failed),
-- counters for `AnalyzeCompletedEvent`.
-
-**No IO.** The parser does NOT call the persister and does NOT emit
-events. The node body lifts each `ProposalRejection` to a
-`FindingProposalRejectedEvent` and each `ResponseRejection` to an
-`AnalyzeResponseRejectedEvent` by adding audit-context fields at
-construction. The parser is exercisable as a pure-data transformation
-independent of the persister mock surface.
-
-Spec uses "emit" in step descriptions; the shipped shape reads that as
-"produces the event content," with persistence owned by the node body.
+Candidates survive proposal rejection, but a rejected response has no proposals
+to collect from. OBSERVED and INFERRED require supplied query or trace proof
+beyond the model's tier label.
 """
 
 from __future__ import annotations
@@ -73,50 +54,20 @@ if TYPE_CHECKING:
     from outrider.ast_facts.parameterized_calls import ParameterizedCallScan
     from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw
 
-# Versions the analyze node's admitted-findings semantics for the
-# analyze-cache key (specs/2026-06-11-file-hash-analyze-cache.md; FUP-166):
-# bump on ANY change to what ends up in `admitted_findings` OR
-# `trace_candidates` — the parser's §6 admission flow (rejection rules,
-# span gates, schema construction, candidate admission) AND the node's
-# post-parse OBSERVED merge — so cached payloads can never be served
-# under rules that no longer produce them. v3 (DECISIONS.md#054):
-# prefer-OBSERVED evicts a JUDGED proposal colliding with an OBSERVED
-# finding, so a pre-v3 cache row would serve the stale JUDGED survivor.
-# v4 (DECISIONS.md#055): cross-type subsumption drops an admitted OBSERVED
-# finding under a same-span JUDGED subsumer, again changing the admitted set;
-# this version pins the mechanism, while the SUBSUMES relation's CONTENT is
-# keyed separately via SUBSUMES_DIGEST in the cache key for future edge edits.
-# v5: from-import candidate correction — a trace candidate whose module
-# prefix the analyzed file's from-imports contradict gains a corrected
-# module-form sibling (`_correct_against_from_imports`, emitted alongside
-# the original — never instead), changing the `trace_candidates` stored
-# in cache rows. The map itself is a cache-key input
-# (`from_import_map_digest`) because corrected siblings depend on imports
-# the rendered prompt doesn't carry.
-# v6: multi-language dispatch — `collect_trace_candidates=False`
-# suppresses candidate collection for files whose language has no import
-# resolver (JS/TS until the resolver spec), changing what lands in
-# `trace_candidates` for those files. Python semantics are unchanged,
-# but the bump rule is ANY trace-candidate semantics change — the rule
-# stays unnarrowed rather than exploiting "JS/TS had no prior rows".
-# v7: relative-specifier admission (DECISIONS.md#024 Amended 2026-07-03)
-# — `trace_candidate_form` partitions admission per language: Python
-# stays module-form, JS/TS admit leading-dot relative specifiers
-# (validated + repo-escape-contained against the analyzed file's
-# directory at admission), changing the `trace_candidates` stored for
-# JS/TS files from always-empty to populated. The from-import
-# correction remains module-form-only.
-# Code-pinned adjacent to what it versions, never injectable (the
-# TRIVIAL_FILTER_VERSION precedent).
+# Versions the findings and trace candidates stored in the analyze cache
+# (specs/2026-06-11-file-hash-analyze-cache.md; FUP-166).
+# Bump on any change to `admitted_findings` or `trace_candidates`: rejection
+# rules, span gates, schema construction, candidate admission/correction,
+# language dispatch, or the node's post-parse OBSERVED merge.
+# Merge rules: DECISIONS.md#054 and DECISIONS.md#055.
+# Relative trace specifiers: DECISIONS.md#024.
+# SUBSUMES_DIGEST and from_import_map_digest separately key the subsumption
+# relation and import map; this version covers the rules that use them.
+# Keep this version beside the parser, never injected through configuration.
 ANALYZE_PARSER_VERSION: Final = "analyze-parser-v7"
 
-# Mirrors `FindingProposalRejectedEvent.rejection_reason` literal in
-# `audit/events.py`. Duplicated here so this module doesn't depend
-# on `audit/events.py` at import time (keeps the parser's pure-data
-# discipline visible at the import graph). If these drift, parser-
-# produced `ProposalRejection.rejection_reason` values that the event
-# rejects at construction fire at node-lift time — the wide audit
-# test suite catches the drift on first run.
+# Keep these values aligned with `FindingProposalRejectedEvent.rejection_reason`
+# in `audit/events.py`; the node lifts parser rejections into that event.
 _ProposalRejectionReason = Literal[
     "query_match_id_not_in_registry",
     "trace_path_not_admissible",
@@ -156,14 +107,10 @@ class ProposalRejection:
 
 @dataclass(frozen=True, slots=True)
 class ResponseRejection:
-    """Parser output for a response that failed `AnalyzeResponseRaw` parsing.
+    """One parser call failed to validate its response envelope.
 
-    Lifted to `AnalyzeResponseRejectedEvent` by the node body. Same
-    audit-context fields added at lift time as for `ProposalRejection`.
-    At most one `ResponseRejection` per analyze pass — parser step 0
-    either parses the response (then `ParserResult.response_rejection
-    is None`) or fails (then it's set and no proposals exist).
-    """
+    No proposals or candidates exist for that call. The node adds audit context
+    when lifting this payload to AnalyzeResponseRejectedEvent."""
 
     file_path: str
     response_hash: str
@@ -224,24 +171,12 @@ class ParserCounters:
 
 @dataclass(frozen=True, slots=True)
 class ParserResult:
-    """Per-call parser output. The node body consumes this to:
+    """Findings, candidates, rejection payloads and counters from one model call.
 
-    - persist a `FindingEvent` per `admitted_findings` entry,
-    - append `trace_candidates` to `ReviewState.trace_candidates`,
-    - persist a `FindingProposalRejectedEvent` per `proposal_rejections` entry,
-    - persist a `AnalyzeResponseRejectedEvent` if `response_rejection is not None`,
-    - sum `counters` into the per-pass `AnalyzeCompletedEvent`.
-
-    The parser populates fields in one of two shapes:
-
-    1. Response-level rejection (parser step 0 failed):
-       `admitted_findings == ()`, `trace_candidates == ()`,
-       `proposal_rejections == ()`, `response_rejection is not None`,
-       counters all zero except `n_responses_rejected = 1`.
-    2. Proposal-by-proposal (parser step 0 succeeded):
-       `response_rejection is None`; the other tuples carry the
-       per-proposal outcomes.
-    """
+    The node audits rejections and retains candidates, merges deterministic findings,
+    then emits kept findings after the round cap. Response rejection returns empty
+    tuples and zero proposal counters, with n_responses_rejected=1; successful
+    envelope parsing returns the per-proposal admission outcomes."""
 
     admitted_findings: tuple[ReviewFinding, ...]
     trace_candidates: tuple[TraceCandidate, ...]
@@ -271,102 +206,31 @@ def parse_analyze_response(
     collect_trace_candidates: bool = True,
     trace_candidate_form: Literal["module", "specifier"] = "module",
 ) -> ParserResult:
-    """Apply the spec §6 10-step admission flow to a raw analyze response.
+    """Validate the response envelope, then admit proposals in their original order.
 
-    Pure function — no IO. All inputs are passed; outputs go into the
-    returned `ParserResult`. The node body owns persistence and state
-    updates.
+    Gates run in order: evidence tier, finding type, structural proof, location,
+    parameterized-call veto, and finding schema. The node persists the returned
+    rejection payloads and supplies all file context and the policy version.
 
-    Inputs:
+    Clean locations use the included scope units' line ranges. Degraded locations
+    use full source, its precomputed UTF-8 byte length, and deterministic diff-byte
+    ranges; an empty degraded context admits no findings. Degraded callers must
+    supply no parameterized-call scan because their parse tree is untrustworthy.
 
-    - `response_text` — raw text from `LLMResponse.text` for this file.
-    - `review_id` — for `ReviewFinding.review_id` on admitted proposals.
-    - `installation_id` — for `ReviewFinding.installation_id`.
-    - `file_path` — repo-relative path; goes into every emitted
-      payload, already canonicalized at intake.
-    - `file_content` — full file source as `str`. Needed for the degraded
-      path's `coordinates.line_range_to_span(...)` file-bounds translation.
-    - `file_byte_length` — `len(file_content.encode("utf-8"))`
-      computed ONCE in the node body and passed here; the parser does
-      NOT recompute per proposal.
-    - `included_scope_units` — the scope units this call's prompt
-      included (their 1-indexed line ranges define the
-      `line_range_within_scope_unit` check for clean outcomes).
-    - `query_match_id_set` — the pre-fired registry IDs the prompt
-      supplied; OBSERVED admission rejects any claimed id not in this
-      set. Empty for degraded outcomes.
-    - `degraded_mode` — branches parser step 5: clean uses line-space
-      `line_range_within_scope_unit`, degraded translates to bytes
-      (`line_range_to_span`) and gates on `span_within_file` AND
-      `span_within_degraded_context` (FUP-138).
-    - `degraded_context_byte_ranges` — the deterministic addable-diff byte
-      ranges (`coordinates.added_line_byte_ranges`, supplied by the node from the
-      patch) a degraded JUDGED span must intersect. Empty `()` for clean outcomes
-      (unused) and is the correct value when there is no degraded context — every
-      degraded proposal then rejects with `span_outside_degraded_context`.
-    - `active_policy_version` — closure-captured per
-      `nodes-receive-deps-via-closure`; goes into
-      `ReviewFinding.policy_version` on admitted proposals.
-    - `parameterized_call_scan` — the FUP-162 veto's structural facts (the
-      parameterized-call scan over the head content — derived via the FUP-170
-      analyze bundle on pass 0 and the public `scan_parameterized_calls` on
-      pass 1; both produce the same `ParameterizedCallScan`), supplied by the
-      node for CLEAN outcomes only; `None` (the default) disables the veto —
-      degraded files have no trustworthy parse tree
-      (`parse-errors-degrade-to-judged`), so the node must not pass a scan for
-      them.
-
-    The node body owns `pass_index` for `AnalyzeCompletedEvent.pass_index`
-    and threads it here for INFERRED admission: pass 0 (the original
-    PR-diff analyze pass) rejects every INFERRED proposal — no trace
-    context exists yet — while pass 1+ (post-trace re-entry per M8 loop)
-    admits INFERRED proposals whose `trace_path` is grounded in
-    deterministic trace context.
-
-    `valid_trace_path_elements` is the deterministic-proof source per
-    the `evidence-tier-schema-enforced` invariant: a frozenset of the
-    EXACT rendered scope-unit labels (one per scope unit —
-    `qualified_name` when set, else bare `name`; matches what the
-    prompt actually shows the model) from the file's
-    `included_scope_units`, supplied by the node body for pass-1 calls.
-    Pass-1 INFERRED admission requires EVERY element of the model-
-    proposed `trace_path` to appear in this set — the model cannot
-    claim to have walked a scope unit that doesn't exist in the file
-    trace fetched. An empty `valid_trace_path_elements` (the default,
-    used for pass-0 calls) means no trace-grounded admission can fire,
-    matching the pass-0 reject-all semantic.
-
-    Shape-level validation runs first (`_raw_trace_path_is_admissible`
-    + the mirror at `policy/findings.py::_trace_path_is_valid`);
-    deterministic-proof validation runs second.
+    Pass 0 collects trace candidates unless disabled and rejects INFERRED claims.
+    Later INFERRED claims require a valid trace-path shape and every element to match an
+    exact rendered scope-unit label in valid_trace_path_elements. OBSERVED claims
+    require an ID in the supplied query-match registry set.
     """
-    # pass_index is a non-negative integer per the analyze-node contract
-    # (`agent/nodes/analyze.py::analyze` derives it from
-    # `len(state.analysis_rounds)`). A negative value here would silently
-    # fall into the post-trace branch below (`pass_index >= 1`) and admit
-    # INFERRED proposals without any trace context — the exact bypass the
-    # pass-0 vs post-trace gate exists to prevent. Fail loud at the
-    # parser boundary.
+    # Reject negative pass indexes before parsing or admitting structural evidence.
     if pass_index < 0:
         raise ValueError(f"pass_index must be >= 0; got {pass_index}")
 
     try:
-        # Strip a single outer ```json...``` wrapper if present — the
-        # model sometimes adds one despite the system-prompt instruction.
-        # Without this, fenced output rejects as `raw_response_unparseable`
-        # and every finding for the file is lost. Malformed wrappers fall
-        # through unchanged so Pydantic produces a clean ResponseRejection.
-        raw = AnalyzeResponseRaw.model_validate_json(strip_outer_json_fence(response_text))
+        # Normalize only an outer fence; malformed envelopes remain response rejections.
+        raw_response = AnalyzeResponseRaw.model_validate_json(strip_outer_json_fence(response_text))
     except ValidationError as e:
-        # When the provider reports `finish_reason == "max_tokens"`, the JSON is
-        # incomplete because the output was cut at the token limit — truncation
-        # is the root cause, not a malformed model response. Surface that
-        # directly instead of the opaque downstream ValidationError (which only
-        # shows where the truncated JSON happened to break). Still degrades to a
-        # `raw_response_unparseable` rejection (truncated JSON IS unparseable) so
-        # the review continues; the detail just names the real cause. The detail
-        # stays short to fit `FindingProposalRejectedEvent.rejection_detail`'s
-        # `max_length=500` when this rejection is lifted into the audit event.
+        # Name token truncation directly; otherwise record bounded schema-error metadata.
         if finish_reason == "max_tokens":
             rejection_detail = (
                 "LLM response truncated at the max_tokens limit; output is "
@@ -394,27 +258,16 @@ def parse_analyze_response(
             ),
         )
 
-    # Per-proposal admission. Evidence-tier admission runs FIRST (spec §6
-    # step 2) so the bidirectional cross-field validator on the lifted
-    # `FindingProposalRejectedEvent` holds: `claimed_evidence_tier is None`
-    # iff `rejection_reason == "evidence_tier_not_in_enum"`. Finding-type
-    # admission runs SECOND (spec §6 step 3) and carries the parsed enum
-    # value through to its rejection event when it fires.
+    # Evidence tier precedes finding type: only an invalid tier records a missing tier.
     admitted_findings: list[ReviewFinding] = []
     proposal_rejections: list[ProposalRejection] = []
     trace_candidates: list[TraceCandidate] = []
     n_proposals_seen = 0
     n_trace_candidates_dropped_malformed = 0
     n_trace_candidates_module_corrected = 0
-    # Built once per response (pass 0 only — candidate collection is
-    # pass-0-gated below; `collect_trace_candidates=False` remains the
-    # opt-out for a future language without a resolver, and
-    # `trace_candidate_form` selects the admitted syntax per language
-    # since the resolver spec): the analyzed file's from-import
-    # name→module map, the deterministic ground truth candidate
-    # admission emits corrected siblings against (module form only).
-    _collecting = pass_index == 0 and collect_trace_candidates
-    from_import_modules = _build_from_import_map(import_refs) if _collecting else {}
+    # Build correction context once. Later passes cannot feed another trace round.
+    collecting_trace_candidates = pass_index == 0 and collect_trace_candidates
+    from_import_modules = _build_from_import_map(import_refs) if collecting_trace_candidates else {}
 
     def reject_proposal(
         *,
@@ -444,15 +297,51 @@ def parse_analyze_response(
         )
         trace_candidates.extend(candidates)
 
-    for raw_proposal in raw.findings:
+    def _structural_evidence_rejection(
+        proposal: AnalyzeFindingProposalRaw,
+        evidence_tier: EvidenceTier,
+    ) -> tuple[_ProposalRejectionReason, str] | None:
+        """Require registry proof for OBSERVED and trace proof for INFERRED.
+
+        JUDGED needs no structural artifact. Return safe rejection metadata;
+        the main loop owns recording the rejection and retaining candidates.
+        """
+        if evidence_tier == EvidenceTier.OBSERVED:
+            claimed_id = proposal.query_match_id
+            if claimed_id is None or claimed_id not in query_match_id_set:
+                # The raw schema bounds length but not characters (FUP-046).
+                return (
+                    "query_match_id_not_in_registry",
+                    _sanitize_query_match_id_for_detail(claimed_id),
+                )
+        elif evidence_tier == EvidenceTier.INFERRED:
+            inferred_rejection_detail: str | None = None
+            if pass_index == 0:
+                inferred_rejection_detail = "INFERRED rejected on pass 0 (no trace context yet)"
+            elif not _raw_trace_path_is_admissible(proposal.trace_path):
+                inferred_rejection_detail = (
+                    "INFERRED requires non-empty trace_path of non-empty strs"
+                )
+            else:
+                ungrounded = _trace_path_elements_not_in_proof(
+                    proposal.trace_path, valid_trace_path_elements
+                )
+                if ungrounded:
+                    # Record counts, not model-supplied trace labels, in the audit detail.
+                    inferred_rejection_detail = (
+                        f"INFERRED trace_path has {len(ungrounded)} element(s) "
+                        f"not in the trace-fetched file's scope-unit set "
+                        f"(valid_trace_path_elements has "
+                        f"{len(valid_trace_path_elements)} entries)"
+                    )
+            if inferred_rejection_detail is not None:
+                return "trace_path_not_admissible", inferred_rejection_detail
+        return None
+
+    for raw_proposal in raw_response.findings:
         n_proposals_seen += 1
 
-        # Pre-compute `proposal_hash` once per iteration. The same hash
-        # feeds the rejection payload (if any) AND the trace-candidate
-        # collection's `source_proposal_hash` — the audit-trail join
-        # between rejection events and trace candidates depends on
-        # both using the identical hash value. Folds the raw LINE range
-        # per `DECISIONS.md#022` (span-key amended 2026-06-01 / FUP-126).
+        # One hash joins this raw proposal's finding/rejection and trace candidates.
         proposal_hash = compute_proposal_hash(
             source_file_path=file_path,
             finding_type=raw_proposal.finding_type,
@@ -466,34 +355,22 @@ def parse_analyze_response(
             line_end=raw_proposal.line_end,
         )
 
-        # Trace candidates are collected from BOTH admitted and
-        # proposal-level-rejected raw proposals (spec §6 step 10) so
-        # a rejected JUDGED-claim might still surface a legitimate
-        # cross-file signal. Pre-compute here and `.extend(...)` on
-        # whichever branch the iteration takes.
-        #
-        # Pass-1 (post-trace) is contractually trace_candidates-empty:
-        # `prompts/analyze.py::render_post_trace` instructs the model
-        # not to emit them, and `agent/graph.py::_analyze_router`
-        # never routes pass-1 output back to trace. A pass-1 model
-        # contract violation would otherwise persist dead candidates
-        # into `state.trace_candidates` and inflate
-        # `n_trace_candidates_emitted` for work the graph cannot
-        # execute. Gate at the parser boundary instead.
+        # Collect before admission: candidates survive a proposal-level rejection.
         proposal_trace_candidates: list[TraceCandidate] = []
-        if _collecting:
-            proposal_trace_candidates, n_dropped, n_corrected = _collect_trace_candidates_for(
-                raw_proposal,
-                proposal_hash=proposal_hash,
-                from_import_modules=from_import_modules,
-                candidate_form=trace_candidate_form,
-                source_file_path=file_path,
+        if collecting_trace_candidates:
+            proposal_trace_candidates, n_candidates_dropped, n_candidates_corrected = (
+                _collect_trace_candidates_for(
+                    raw_proposal,
+                    proposal_hash=proposal_hash,
+                    from_import_modules=from_import_modules,
+                    candidate_form=trace_candidate_form,
+                    source_file_path=file_path,
+                )
             )
-            n_trace_candidates_dropped_malformed += n_dropped
-            n_trace_candidates_module_corrected += n_corrected
+            n_trace_candidates_dropped_malformed += n_candidates_dropped
+            n_trace_candidates_module_corrected += n_candidates_corrected
 
-        # Step 2: evidence_tier enum admission (runs first per the
-        # bidirectional-validator requirement above).
+        # Step 2: admit the evidence-tier enum before any other proposal gate.
         try:
             evidence_tier = EvidenceTier(raw_proposal.evidence_tier)
         except ValueError:
@@ -507,8 +384,7 @@ def parse_analyze_response(
             )
             continue
 
-        # Step 3: finding_type enum admission (runs second so
-        # claimed_evidence_tier carries the parsed enum value).
+        # Step 3: type rejections carry the evidence tier already admitted above.
         try:
             finding_type = FindingType(raw_proposal.finding_type)
         except ValueError:
@@ -522,106 +398,24 @@ def parse_analyze_response(
             )
             continue
 
-        # Step 4: producer admission for OBSERVED / INFERRED. JUDGED
-        # skips the producer check (model can claim JUDGED unilaterally;
-        # carries no structural artifact).
-        if evidence_tier == EvidenceTier.OBSERVED:
-            claimed_id = raw_proposal.query_match_id
-            if claimed_id is None or claimed_id not in query_match_id_set:
-                reject_proposal(
-                    proposal=raw_proposal,
-                    proposal_hash=proposal_hash,
-                    candidates=proposal_trace_candidates,
-                    rejection_reason="query_match_id_not_in_registry",
-                    # Spec §3 names `[A-Za-z0-9_./:-]+` as the
-                    # safety pattern for storing query_match_id
-                    # verbatim in rejection_detail, BUT the raw
-                    # schema at `schemas/llm/analyze.py:87` only
-                    # ships `max_length=256` — no pattern. Without
-                    # sanitization, ANSI escapes / Trojan-Source /
-                    # XSS payloads would land verbatim. Apply the
-                    # spec-named pattern here as a sanitization
-                    # step: replace any out-of-class char with
-                    # `?` so the structural shape is preserved for
-                    # operator visibility while the dangerous
-                    # bytes are stripped. Tracked as FUP-046 to
-                    # align the raw schema with spec §3 intent.
-                    rejection_detail=_sanitize_query_match_id_for_detail(claimed_id),
-                    claimed_evidence_tier=evidence_tier,
-                )
-                continue
-        elif evidence_tier == EvidenceTier.INFERRED:
-            # Pass-conditional admission per the trace-node arc (M8 loop).
-            # Pass 0: trace hasn't run yet — no trace context exists —
-            # so every INFERRED proposal is rejected. The model should
-            # emit JUDGED for cross-file or walk-derived reasoning on
-            # pass 0 (mirrors the pass-0 prompt instruction at
-            # prompts/analyze.py).
-            # Pass 1+: trace ran + fetched files; INFERRED is admitted
-            # ONLY when:
-            #   (a) trace_path shape is valid (non-empty list of non-
-            #       empty strs — proof-boundary mirror at
-            #       `policy/findings.py::_trace_path_is_valid`), AND
-            #   (b) every trace_path element appears in the deterministic-
-            #       proof set `valid_trace_path_elements` (scope-unit
-            #       names from the trace-fetched file's
-            #       `included_scope_units`). The model cannot claim to
-            #       have walked a scope unit that doesn't exist in the
-            #       file trace fetched. Per
-            #       `evidence-tier-schema-enforced`: structural-tier
-            #       claims require deterministic proof.
-            inferred_rejection_detail: str | None = None
-            if pass_index == 0:
-                inferred_rejection_detail = "INFERRED rejected on pass 0 (no trace context yet)"
-            elif not _raw_trace_path_is_admissible(raw_proposal.trace_path):
-                inferred_rejection_detail = (
-                    "INFERRED requires non-empty trace_path of non-empty strs"
-                )
-            else:
-                ungrounded = _trace_path_elements_not_in_proof(
-                    raw_proposal.trace_path, valid_trace_path_elements
-                )
-                if ungrounded:
-                    # Don't echo the model-supplied ungrounded elements
-                    # verbatim into the audit row (would let a hostile
-                    # LLM ship arbitrary text into rejection_detail).
-                    # The count + the size of the valid set is the
-                    # operator-actionable signal.
-                    inferred_rejection_detail = (
-                        f"INFERRED trace_path has {len(ungrounded)} element(s) "
-                        f"not in the trace-fetched file's scope-unit set "
-                        f"(valid_trace_path_elements has "
-                        f"{len(valid_trace_path_elements)} entries)"
-                    )
-            if inferred_rejection_detail is not None:
-                reject_proposal(
-                    proposal=raw_proposal,
-                    proposal_hash=proposal_hash,
-                    candidates=proposal_trace_candidates,
-                    rejection_reason="trace_path_not_admissible",
-                    rejection_detail=inferred_rejection_detail,
-                    claimed_evidence_tier=evidence_tier,
-                )
-                continue
-            # Pass 1+ with valid trace_path grounded in the proof set:
-            # fall through to step 5 (span admission). The proof-boundary
-            # validator at `policy/findings.py::enforce_proof_boundary`
-            # runs again at ReviewFinding construction.
-        # JUDGED falls through to step 5 (span admission).
+        # Step 4: structural claims need deterministic proof before location checks.
+        structural_rejection = _structural_evidence_rejection(raw_proposal, evidence_tier)
+        if structural_rejection is not None:
+            rejection_reason, rejection_detail = structural_rejection
+            reject_proposal(
+                proposal=raw_proposal,
+                proposal_hash=proposal_hash,
+                candidates=proposal_trace_candidates,
+                rejection_reason=rejection_reason,
+                rejection_detail=rejection_detail,
+                claimed_evidence_tier=evidence_tier,
+            )
+            continue
 
-        # Step 5: line-range admission (per-outcome branch). The model returns a
-        # 1-indexed source LINE range (FUP-126); `ReviewFinding` is line-based, so
-        # the range IS the finding's location — no byte span is needed on the
-        # clean path. The raw schema guarantees `line_end >= line_start >= 1`.
-        # Containment is checked in LINE space — indentation-robust, unlike a
-        # whole-line byte span against an indented scope unit's token `byte_start`.
+        # Step 5: check raw source lines. Clean containment stays indentation-robust.
         line_start, line_end = raw_proposal.line_start, raw_proposal.line_end
         if degraded_mode:
-            # No scope-unit context (file didn't parse / had has_error nodes). The
-            # deterministic guard is "within file": translate to a byte span —
-            # `line_range_to_span` raises past EOF (→ span_outside_file) — then run
-            # the existing within-file + non-empty floor on it (a trailing empty
-            # line translates to a zero-width span the gate must reject).
+            # Translate degraded ranges to bytes; reject past EOF or an empty span.
             try:
                 span = line_range_to_span(line_start, line_end, file_content)
             except CoordinateError:
@@ -651,12 +445,7 @@ def parse_analyze_response(
                     claimed_evidence_tier=evidence_tier,
                 )
                 continue
-            # FUP-138: a degraded JUDGED finding must anchor inside the deterministic
-            # addable-diff context — content the patch actually added/modified — not
-            # arbitrary in-file bytes the model fabricated from prompt context. The
-            # ranges are supplied by analyze (from the patch via
-            # `coordinates.added_line_byte_ranges`), never recomputed from prompt text
-            # or trusted from a model-provided span.
+            # Degraded evidence must intersect deterministic diff context (FUP-138).
             if not span_within_degraded_context(span, degraded_context_byte_ranges):
                 reject_proposal(
                     proposal=raw_proposal,
@@ -670,10 +459,7 @@ def parse_analyze_response(
         elif not any(
             line_range_within_scope_unit(line_start, line_end, su) for su in included_scope_units
         ):
-            # Clean outcome — the line range must land inside an included scope
-            # unit. No match → span_outside_scope_unit (which subsumes a past-EOF
-            # range — it is in no scope — preserving today's single-reason
-            # clean-path taxonomy; per the spec's status-quo decision).
+            # Clean ranges outside all included units share this reason, including past EOF.
             reject_proposal(
                 proposal=raw_proposal,
                 proposal_hash=proposal_hash,
@@ -684,15 +470,8 @@ def parse_analyze_response(
             )
             continue
 
-        # FUP-162 parameterized-call veto (specs/2026-06-12-sqli-parameterized-
-        # call-veto.md; See DECISIONS.md#041 Amended 2026-06-12 — the
-        # deterministic half of the over-flag remediation): a JUDGED
-        # sql_injection whose claimed lines land on a provably-parameterized
-        # execute call is structurally impossible at that site — reject
-        # deterministically, independent of prompt wording.
-        # Runs LAST among the gates so its reason fires only on proposals that
-        # would otherwise admit. Clean-mode only: degraded callers pass
-        # scan=None (`parse-errors-degrade-to-judged` — no trustworthy tree).
+        # Veto JUDGED SQL injection on a provably parameterized call (FUP-162).
+        # Run after proof/location gates; degraded callers supply no trusted scan.
         if (
             parameterized_call_scan is not None
             and finding_type is FindingType.SQL_INJECTION
@@ -711,19 +490,8 @@ def parse_analyze_response(
             )
             continue
 
-        # Steps 6-9: admission succeeded; construct `ReviewFinding` (line-based).
-        # `line_start`/`line_end` are the model's raw lines (identity-preserved
-        # per the proposal schemas' line-preservation invariant).
-
-        # Severity from `SEVERITY_POLICY[finding_type]` per
-        # `severity-set-by-policy`. Dimension from
-        # `FINDING_TYPE_TO_DIMENSION[finding_type]` per
-        # `evidence-tier-schema-enforced` + the dimensions table. Both
-        # lookups are total (totality is pinned by
-        # `policy.dimensions.verify_lockstep` at import time) — a
-        # missing key here means the lockstep guard was bypassed,
-        # which is a load-bearing module-load assertion failure, not
-        # a parser fallback.
+        # Steps 6-9: preserve raw lines; derive severity and dimension from policy.
+        # Mapping totality is guarded at import time, so missing keys must propagate.
         try:
             finding = ReviewFinding(
                 review_id=review_id,
@@ -741,14 +509,7 @@ def parse_analyze_response(
                 evidence=raw_proposal.evidence,
                 query_match_id=raw_proposal.query_match_id,
                 trace_path=raw_proposal.trace_path,
-                # Per DECISIONS.md#025: admitted findings carry the
-                # `proposal_hash` for trace's join contract. Same value
-                # the rejected branch (proposal_rejections.append(...))
-                # passes to FindingProposalRejectedEvent — both branches
-                # use the SAME pre-computed `proposal_hash` from the
-                # per-proposal compute_proposal_hash call above. Provenance
-                # link between TraceCandidate.source_proposal_hash and
-                # admitted finding_id is closed at admission time.
+                # Preserve the same proposal identity as its trace candidates (#025).
                 proposal_hash=proposal_hash,
                 content_hash=compute_finding_content_hash(
                     file_path=file_path,
@@ -758,12 +519,7 @@ def parse_analyze_response(
                 ),
             )
         except ValidationError as exc:
-            # Spec §6 step 8 fallback: Pydantic ValidationError after
-            # passing every parser step is structurally unexpected —
-            # fold to `schema_construction_failed` so the rejection is
-            # auditable rather than crashing the whole pass. Narrowed
-            # to `ValidationError` so genuinely-unexpected failures
-            # (MemoryError, RecursionError, etc.) propagate as bugs.
+            # Only schema failures become rejections; unexpected errors remain bugs.
             reject_proposal(
                 proposal=raw_proposal,
                 proposal_hash=proposal_hash,
@@ -775,9 +531,7 @@ def parse_analyze_response(
             continue
 
         admitted_findings.append(finding)
-        # Step 10: collect trace candidates from THIS admitted proposal.
-        # Same shape as the rejection branches above; only the
-        # accumulator updates differ.
+        # Step 10: retain candidates from admitted proposals as well as rejected ones.
         trace_candidates.extend(proposal_trace_candidates)
 
     return ParserResult(
@@ -827,7 +581,11 @@ def _trace_path_elements_not_in_proof(
     """
     if not isinstance(trace_path, (list, tuple)):
         return []  # defensive — shape-check should have rejected
-    return [element for element in trace_path if element not in valid_trace_path_elements]
+    ungrounded_elements: list[str] = []
+    for trace_element in trace_path:
+        if trace_element not in valid_trace_path_elements:
+            ungrounded_elements.append(trace_element)
+    return ungrounded_elements
 
 
 def _raw_trace_path_is_admissible(trace_path: object) -> bool:
@@ -1002,57 +760,19 @@ def _collect_trace_candidates_for(
     candidate_form: Literal["module", "specifier"] = "module",
     source_file_path: str = "",
 ) -> tuple[list[TraceCandidate], int, int]:
-    """Build the `TraceCandidate` list from a raw proposal's
-    `trace_candidates`. Each candidate's `candidate_id` is content-
-    derived via `compute_candidate_id`, `source_proposal_hash` is the
-    parent proposal's hash (same value whether the parent was admitted
-    or proposal-level-rejected — the audit-trail join is preserved
-    across both outcomes per spec §6 step 10).
+    """Return candidates, malformed-count and corrected-sibling count for a proposal.
 
-    `candidate_form` selects the single admitted syntactic form for the
-    analyzed file's language per `DECISIONS.md#024` (Amended 2026-07-03):
-    `"module"` (Python — dotted import strings) or `"specifier"` (JS/TS —
-    leading-dot relative specifiers). The wrong-form candidate drops
-    into the malformed counter: a dotted candidate from a JS file has
-    no V1 resolution path (the "dotted-JS forms" fallback is explicit
-    future work in the resolver spec), and a leading-dot candidate from
-    a Python file is inadmissible by the amendment's language gate.
+    Candidate IDs bind content to source_proposal_hash whether the parent is admitted
+    or rejected (spec §6 step 10). Response-level rejection has no proposals here.
 
-    Specifier-form admission additionally enforces repo-escape
-    CONTAINMENT here — the first of the two enforcement sites (the
-    second is `relative_specifier_candidate_paths` at probe
-    construction, defense in depth): a specifier whose leading `../`
-    chain escapes the repo root relative to `source_file_path` drops
-    into the same forensic counter, so nothing uncontained ever reaches
-    state or audit rows.
+    Python admits dotted modules; JS/TS admits leading-dot specifiers. Wrong forms
+    and specifiers escaping the repository count as malformed (DECISIONS.md#024,
+    Amended 2026-07-03). Probe construction checks containment again.
 
-    On the module branch, each candidate whose module prefix the
-    file's from-imports contradict gains a corrected module-form
-    SIBLING (`_correct_against_from_imports` — emitted alongside, never
-    instead); the third return element counts emitted siblings. The
-    correction is module-form-only — specifier candidates never enter
-    it.
-
-    Returns a list (caller extends its accumulator). Response-level
-    rejections never reach this helper because no proposals exist at
-    that point.
-    """
-    # Canonicalize `import_string_raw` ONCE up-front and use the result
-    # for both `compute_candidate_id` and `TraceCandidate(...)`. Two
-    # failure shapes are guarded:
-    #
-    # - Malformed import string (path separator, shell metachar, empty
-    #   part, Python keyword, non-identifier part) →
-    #   `is_valid_import_string` raises `ValueError`.
-    # - Decomposed-Unicode import (e.g. `café.bar` in NFD) canonicalizes
-    #   successfully via NFC normalization, but feeding the RAW value
-    #   to `compute_candidate_id` would produce an id the schema's
-    #   recomputation rejects (since the schema validator NFC-normalizes
-    #   first; raw NFD bytes hash differently from NFC bytes).
-    #
-    # Without the up-front canonicalize + try/except, a single bad
-    # candidate crashes the whole pass and breaks the
-    # `n_proposals_seen == admitted + rejected` accounting equation.
+    Python from-import correction adds a module-form sibling beside the original,
+    never replaces it. The final counter counts emitted synthetic siblings."""
+    # Validate first, then hash and store the same canonical import. Raw NFD
+    # bytes would produce an ID that the schema's NFC recomputation rejects.
     out: list[TraceCandidate] = []
     n_dropped_malformed = 0
     n_module_corrected = 0
@@ -1063,27 +783,15 @@ def _collect_trace_candidates_for(
             else:
                 canonical_import = is_valid_relative_specifier(raw_cand.import_string_raw)
         except ValueError:
-            # Malformed / wrong-form import string — drop silently AND
-            # increment the forensic counter (sharp-edges F1 audit-fold).
-            # Per spec §6 step 10 trace candidates are advisory; dropping
-            # one bad candidate is preferable to crashing the whole
-            # parser pass. The dropped candidate's parent proposal still
-            # produces its own rejection/admission outcome independently.
-            # The counter surfaces aggregate drift so operators can
-            # distinguish "model proposed nothing" from "every proposal
-            # was malformed" without sanitizing raw model output into an
-            # audit row.
+            # Count malformed advisory candidates without rejecting their parent
+            # proposal or copying raw model output into audit (sharp-edges F1).
             n_dropped_malformed += 1
             continue
         if candidate_form == "specifier" and not relative_specifier_candidate_paths(
             canonical_import, source_file_path
         ):
-            # Repo-escape containment at admission — the first of the
-            # two enforcement sites (`DECISIONS.md#024` Amended
-            # 2026-07-03). Shape-valid specifiers whose `../` chain
-            # escapes the repo root (or whose importing path is itself
-            # invalid) construct zero candidate paths; drop into the
-            # same forensic bucket so nothing uncontained persists.
+            # Reject repository escapes at admission (DECISIONS.md#024,
+            # Amended 2026-07-03). Probe construction checks containment again.
             n_dropped_malformed += 1
             continue
         try:
@@ -1098,22 +806,13 @@ def _collect_trace_candidates_for(
                 import_string=canonical_import,
             )
         except ValidationError:
-            # Defense-in-depth: should not fire given `canonical_import`
-            # just passed `is_valid_import_string` AND the candidate_id
-            # is computed canonically. If it does, drop AND count as
-            # malformed (same forensic bucket).
+            # Keep schema failures in the same malformed-candidate counter.
             n_dropped_malformed += 1
             continue
         out.append(candidate)
 
-        # Non-destructive from-import correction: when the file's own
-        # imports contradict the candidate's module prefix, EMIT a
-        # corrected module-form SIBLING alongside the original (never
-        # instead of it — the trailing-name match is a heuristic and a
-        # coincidental collision must not clobber a valid candidate;
-        # the probe ladder resolves whichever path exists). Module-form
-        # only — a relative specifier has no dotted module prefix to
-        # correct (DECISIONS.md#024 Amended 2026-07-03).
+        # Add a corrected module sibling; the trailing-name match is a heuristic,
+        # so keep the original for the probe ladder (DECISIONS.md#024).
         if candidate_form != "module":
             continue
         suggested_module = _correct_against_from_imports(canonical_import, from_import_modules)
@@ -1130,14 +829,8 @@ def _collect_trace_candidates_for(
                     import_string=suggested_module,
                 )
             except ValidationError:
-                # Defensive-only (map values are pre-validated at
-                # `_build_from_import_map`; the other inputs already
-                # constructed the original). Deliberately NOT counted:
-                # `n_trace_candidates_dropped_malformed` means "raw model
-                # candidate rejected for malformed import_string_raw",
-                # and the sibling is synthetic — the raw candidate
-                # survived above. Dropping just the sibling degrades to
-                # exactly the pre-correction behavior.
+                # Only rejected raw candidates count as malformed. This sibling
+                # is synthetic, and its original candidate already survived.
                 continue
             out.append(sibling)
             n_module_corrected += 1

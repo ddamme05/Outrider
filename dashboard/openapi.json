@@ -456,7 +456,7 @@
           "agent"
         ],
         "summary": "Get Agent View",
-        "description": "Structured, read-only review for an AI agent. 404 if the review is absent\n(holding the id suffices, like `get_review`). Reuses `_assemble_finding_views`\nthen maps each finding to the agent shape. Every audit read is `is_eval`-scoped.",
+        "description": "Read an authenticated review projection; return 404 for an unknown ID.\n\nShared finding assembly supplies content/proof and retention behavior.\nAudit reads use the stored review's production/eval scope.",
         "operationId": "get_agent_view_api_reviews__review_id__agent_view_get",
         "parameters": [
           {
@@ -915,7 +915,7 @@
           "reviewer_decision"
         ],
         "title": "AgentFindingView",
-        "description": "One finding in the agent shape. `severity` is the EFFECTIVE severity an agent\nshould act on \u2014 the post-HITL-override value (matching the S1 `outrider:severity`\nmarker); a `severity_override` decision swaps the policy value for the reviewer's,\nand `reviewer_decision.original_severity` keeps the pre-override (policy) value.\n`severity` / `evidence_tier` are policy/human-decided, never model output.\n`title` / `description` are model-generated content (`None` on a retention-redacted\nstub). `github_comment_url` AND the feature-2 `suggested_fix` are omitted in V1: the\npatch (DECISIONS.md#040) is rendered as a GitHub ```suggestion at publish but is not\npersisted to the finding row, so it is not readable here \u2014 gated projection is a\ndeferred follow-up."
+        "description": "An admitted finding with effective severity and its recorded decision.\n\nSeverity comes from policy or a human override; original_severity preserves\nthe policy value. Evidence tier comes from the validated finding record.\nTitle and description may come from query metadata or a model, and can be\nabsent after retention. V1 omits per-comment URLs and suggested fixes."
       },
       "AgentPublishEvent": {
         "properties": {
@@ -945,7 +945,7 @@
           "comments_posted"
         ],
         "title": "AgentPublishEvent",
-        "description": "The review's GitHub publish outcome. `None` when publish never ran\n(zero-eligible / no-op)."
+        "description": "A recorded GitHub review and its posted comment count."
       },
       "AgentReviewView": {
         "properties": {
@@ -1015,7 +1015,7 @@
           "publish_event"
         ],
         "title": "AgentReviewView",
-        "description": "The structured agent-view of a review (ROADMAP \u00a73 / S2). `schema_version` is\nthe versioned contract handle so agents can branch on future shape changes."
+        "description": "Stored review state for agents; schema_version identifies the contract."
       },
       "AgentReviewerDecision": {
         "properties": {
@@ -1070,7 +1070,7 @@
           "override_severity"
         ],
         "title": "AgentReviewerDecision",
-        "description": "One finding's HITL decision, for an agent. Projected from the canonical\nHITLDecisionEvent (DECISIONS.md#034); `reviewer_id` is `\"admin\"` in V1\n(DECISIONS.md#011). Present only when the finding was decided (gated + reached).\n`original_severity` / `override_severity` are non-null ONLY when\n`outcome == \"severity_override\"` (the policy value vs the reviewer's value); the\nfinding's `severity` already reflects the override, these carry the provenance."
+        "description": "A finding's recorded human decision and severity-override provenance.\n\nProjected from HITLDecisionEvent (DECISIONS.md#034); V1 reviewer_id is \"admin\"\n(DECISIONS.md#011).\nOriginal and override severities are present only for severity overrides."
       },
       "AgentTransitionEvent": {
         "properties": {
@@ -1409,7 +1409,7 @@
           "analyze_model"
         ],
         "title": "AnalyzeCompletedEvent",
-        "description": "Per-pass aggregate emitted at the end of each analyze \u21c4 trace iteration.\n\nCounter fields are cross-validated by two model validators so a counter\nthat lies (`n_findings_emitted=5` with only 3 findings actually fired)\nfails Pydantic construction, not just reads weird. See \u00a75 of\n`specs/2026-05-19-analyze-foundation.md`."
+        "description": "Per-pass aggregate for each analyze/trace iteration.\n\nValidators check the counter accounting equations, including findings from\ncache and deterministic producers that have no model proposal. They do not\nquery the audit stream to verify each underlying emission. See \u00a75 of\n`specs/2026-05-19-analyze-foundation.md`."
       },
       "AnalyzeResponseRejectedEvent": {
         "properties": {
@@ -3356,7 +3356,7 @@
           "reason"
         ],
         "title": "PerFindingDecision",
-        "description": "One reviewer's decision on one finding.\n\nFrozen: a per-finding decision is final at construction. Reviewer-state\nrevisions produce a new decision, not a mutation.\n\nCanonical source of HITL override provenance: the `findings`-table override\ncolumns are read-model projections of this (carried on `HITLDecisionEvent`),\nnever the other way around. See DECISIONS.md#034."
+        "description": "One reviewer's decision on one finding.\n\nFrozen: a per-finding decision is final at construction and cannot be mutated.\n\nCanonical source of HITL override provenance: the `findings`-table override\ncolumns are read-model projections of this (carried on `HITLDecisionEvent`),\nnever the other way around. See DECISIONS.md#034."
       },
       "PerFindingDecisionPayload": {
         "properties": {
@@ -3631,7 +3631,7 @@
           "dashboard_only"
         ],
         "title": "PublishDestination",
-        "description": "Where a finding lands when published, per spec \u00a74.1.7.\n\nSet by `coordinates.tree_sitter_to_github` after computing the\nGitHub-comment-location translation; the analyze node leaves the\nfield None at construction time. Backs `publish-routes-through-coordinates`."
+        "description": "Publish destination selected from coordinate translation, per spec \u00a74.1.7.\n\nPublish assigns the field after coordinates resolves the location;\nanalyze leaves it None. Backs publish-routes-through-coordinates."
       },
       "PublishEligibility": {
         "type": "string",

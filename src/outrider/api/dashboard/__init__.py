@@ -1,30 +1,13 @@
-"""Dashboard routers — FastAPI surface for HITL approvals + the read-API.
+"""Dashboard reads, human decisions, and scoped agent review data.
 
-Sub-modules:
-  - `config` — pydantic-settings `DashboardSettings` (`OUTRIDER_ADMIN_API_KEY`).
-  - `auth` — `require_admin_api_key` FastAPI dependency. HMAC-constant-time
-    compare against the lifespan-bound admin key; raises HTTP 401 on
-    mismatch. Same `compare_digest` idiom as
-    `api/webhooks/signature.py` per the input-boundary invariant.
-  - `hitl` — `POST /reviews/{review_id}/decide` endpoint (the one write
-    path). M12 step-order is load-bearing: auth -> state -> mismatch.
-    Enqueues `graph.ainvoke(Command(resume=...))` via FastAPI
-    BackgroundTasks behind the failure wrapper that catches
-    divergent-content concurrent decide races without flipping
-    `reviews.status`.
-  - `reviews` — the read-only dashboard read-API under `/api/reviews`
-    (queue + detail + findings + replay + events; metrics computed
-    read-through from the audit stream, never the zeroed `reviews.*`
-    columns). Pure consumer — no mutation.
-  - `policy` — `GET /api/policy/{version}` exposing the versioned
-    `FindingType` → severity table via `load_policy_for_version` (the
-    STORED versioned policy, never the active in-code `SEVERITY_POLICY`).
-    Read-only.
+reviews.py reads queue, detail, findings, and audit replay; metrics.py aggregates
+that history; policy.py loads the stored severity version. hitl.py accepts one
+human decision and queues graph resume after auth, state, and mismatch checks.
+The lifespan supplies the durable graph and database dependencies.
 
-This module does NOT import vendor SDKs — auth uses `hmac.compare_digest`
-from stdlib; resume dispatch reads `app.state.compiled_graph` from the
-lifespan-bound graph (the checkpointer that backs cross-process resume
-is wired in the checkpointer-construction block in `api/lifespan.py`).
+Admin bearer auth protects review reads and decisions. agent_view.py has a separate
+read-only key; meta.py exposes only public deployment flags. Vendor SDKs stay
+outside these routers.
 """
 
 from outrider.api.dashboard.agent_view import router as agent_view_router

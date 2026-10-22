@@ -284,22 +284,9 @@ def source_line_to_github(
             f"line_end {line_end} must be >= line_start {line_start}",
             kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
         )
-    # Validate `line_end` is REACHABLE AND has content in head_content
-    # BEFORE the half-open byte_end lookup. The two-step check
-    # distinguishes:
-    #   (a) line_end IS the last content line → byte_end = end-of-buffer
-    #   (b) line_end is PAST the last content line → raise
-    #       BYTE_OFFSET_INVALID. An over-broad `except CoordinateError`
-    #       here would silently truncate past-EOF findings to EOF and
-    #       let them publish, so the explicit bounds check is required.
-    #
-    # The `byte_at_line_end >= len(head_bytes)` check additionally
-    # rejects the "trailing empty line" case: a file ending with `\n`
-    # has a structurally-reachable line N+1 at position end-of-buffer
-    # with zero content, which is not legitimately commentable. The
-    # naive `_line_to_byte_offset(line_end)` check alone would admit
-    # this case because the position IS computable (= EOB); the
-    # content-presence check rejects.
+    # Prove line_end exists and contains text before treating the next-line
+    # lookup's EOF as legitimate. Otherwise a past-EOF range could be clamped
+    # into a comment. A reachable trailing empty line is also not commentable.
     byte_at_line_end = _line_to_byte_offset(head_bytes, line_end)
     if byte_at_line_end >= len(head_bytes):
         raise CoordinateError(

@@ -1,21 +1,14 @@
 # See DECISIONS.md#051-slack-bot-tokens-are-encrypted-at-rest
-"""Slack bot-token encryption boundary (DECISIONS.md#051).
+"""Encrypt persisted Slack bot tokens and decrypt at notifier construction.
 
-A Slack bot token is a long-lived bearer credential. Unlike the GitHub
-installation token — minted on demand from the App private key and never persisted
-(`github/auth.py`; the private key lives only as an env `SecretStr`) — a Slack bot
-token has no short-lived-mint equivalent: it must be STORED to post across process
-restarts. So it is encrypted at rest — the `installations` row stores ciphertext,
-never plaintext, and decryption is confined to this module plus the Slack-notifier
-construction site.
+installations stores ciphertext, never plaintext (DECISIONS.md#051). Read
+OUTRIDER_TOKEN_ENC_KEY as comma-separated Fernet keys: the first encrypts and all
+decrypt, allowing rotation. Missing or malformed keys raise; there is no plaintext
+fallback. Return decrypted tokens as SecretStr and keep them out of state, audit,
+logs, and API responses.
 
-All `cryptography` use is confined here (the one boundary module, enforced by the
-import lint). The key is `OUTRIDER_TOKEN_ENC_KEY` — one or more comma-separated
-urlsafe-base64 Fernet keys (the FIRST encrypts, ALL decrypt: `MultiFernet`
-rotation). A missing / empty / malformed key FAILS CLOSED (raises) so a
-misconfigured deploy can never silently persist plaintext or post. The decrypted
-token is returned as `SecretStr` and held only as a local at the use site — never
-in audit events, graph state, logs, or API responses.
+GitHub App credentials have a separate encryption boundary and dedicated key in
+github/credential_crypto.py (DECISIONS.md#070).
 """
 
 from __future__ import annotations
@@ -86,7 +79,10 @@ def _multifernet() -> MultiFernet:
                 "cryptography.fernet.Fernet.generate_key()."
             )
     try:
-        keys = [Fernet(p.encode("utf-8")) for p in parts if p]
+        keys: list[Fernet] = []
+        for key_part in parts:
+            if key_part:
+                keys.append(Fernet(key_part.encode("utf-8")))
     except (ValueError, TypeError) as exc:
         raise TokenCryptoError(f"{TOKEN_ENC_KEY_ENV} is not a valid Fernet key set") from exc
     if not keys:

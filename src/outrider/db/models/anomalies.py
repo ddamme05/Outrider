@@ -1,20 +1,10 @@
-"""ANOMALIES.
+"""Persistent operations findings emitted through anomaly/persister.py.
 
-Forensic-tier table populated by `anomaly/scanner.py` (when written) reading the
-audit stream. Anomalies are not retention-bound — they keep their value
-indefinitely as the operations record of "did the agent behave correctly?"
-
-`review_id → reviews.id` ON DELETE SET NULL (column is nullable). When a review
-purges through retention, anomalies survive as a forensic trail with the FK set
-to NULL, marked logically as "associated with a since-purged review." This is
-acceptable for anomalies because they don't carry the every-event-has-review-id
-invariant that audit_events does — the anomaly is keyed off a `rule_name` which
-gives it standalone meaning.
-
-`status` uses the `anomaly_status_enum` PG-native ENUM type (open, acknowledged,
-resolved). Distinct from `review_status_enum` per docs/schema.md "Two distinct
-PG ENUM types" — both happen to use a column named `status` but the value sets
-don't overlap.
+Anomalies survive review retention: ON DELETE SET NULL removes their review link
+while rule_name retains their meaning. They are not retention-bound audit events.
+Their lifecycle uses a separate PostgreSQL enum from review status
+(docs/schema.md, "Two distinct PG ENUM types"). Partial unique indexes enforce
+per-rule idempotency.
 """
 
 from datetime import datetime
@@ -39,15 +29,9 @@ class Anomaly(Base):
             "severity",
             desc("created_at"),
         ),
-        # Partial unique indexes — per-rule_name natural-key idempotency for
-        # `AnomalyPersister.emit_anomaly` `on_conflict_do_nothing` arbiter
-        # inference. Declared in metadata to keep `alembic revision
-        # --autogenerate` clean (the migrations actually create them via
-        # CREATE INDEX CONCURRENTLY for production-safety — see
-        # `33f8fe051bec_hitl_node_indexes.py` and
-        # `7c4d8e2a1b5f_synthesize_node_indexes.py`). Per Pass-1 multi-lens
-        # audit DB-lens §4. Mirrors `reviews.py` precedent for partial-index
-        # metadata declaration.
+        # Match emit_anomaly's per-rule ON CONFLICT targets. Migrations create these
+        # concurrently; ORM declarations keep autogenerate in sync. See
+        # 33f8fe051bec_hitl_node_indexes.py and 7c4d8e2a1b5f_synthesize_node_indexes.py.
         Index(
             "uq_anomalies_hitl_timeout_natural_key",
             "review_id",

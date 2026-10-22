@@ -1,24 +1,10 @@
-"""Audit event hierarchy + discriminated union per docs/spec.md §7.2.1 + §8.2.
+"""Shared audit imports: events, persistence, replay, sinks, and retention.
 
-Re-exports the cross-boundary audit symbols other subsystems consume: the
-event hierarchy + the `AuditEvent` union, the persister + its error types, the
-replay reconstruction types, the node sinks, and `RetentionSettings`. This is
-NOT a full mirror of `events.py`'s `__all__` — the publish-node event details
-(`PublishAttemptEvent` / `PublishEligibilityEvent` + their
-`PublishAttemptOutcome` / `PublishEligibility` / `*Reason` enums and the
-`compute_publish_*` hashers) are imported directly from `audit/events.py` by
-the publish node and `policy/publish_eligibility.py`, so they are intentionally
-absent from this package surface. The emitter
-(`audit/emitter.py`, separate spec) constructs concrete events; replay
-(`audit/replay.py`) reconstructs them via `AuditEvent` and exposes
-`AuditReplayer` (re-exported below).
-The durable persister (`audit/persister.py`) implements four Protocol
-contracts atomically per `DECISIONS.md#016`: `LLMExchangePersister`
-(`llm/base.py`) plus `PhaseEventSink`, `FileExaminationSink`, and
-`AnalyzeEventSink` (all in `audit/sinks.py`).
-
-Also re-exports `RetentionSettings` from `audit/config.py` for callers
-that wire retention-aware persisters at lifespan-construction time.
+Nodes and providers construct typed events. `AuditPersister` implements
+`LLMExchangePersister` and the protocols in `audit/sinks.py`; `AuditReplayer`
+reconstructs and verifies the stored stream. `PublishEligibilityEvent` and
+`PublishAttemptEvent` remain direct imports from `audit/events.py`.
+LLM event/content writes commit together under `DECISIONS.md#016`.
 """
 
 from outrider.audit.config import RetentionSettings

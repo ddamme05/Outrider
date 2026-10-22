@@ -61,20 +61,10 @@ class ProofBoundaryViolationError(ValueError):
 
 
 def _trace_path_is_valid(trace_path: object) -> bool:
-    """A trace_path is valid iff it's a non-empty list-or-tuple of non-empty strs.
+    """Require a non-empty list or tuple of non-empty scope-id strings.
 
-    The list-or-tuple check rejects strings (sequences but neither list
-    nor tuple) and other sequence-likes (dict, set, etc.); the non-empty
-    check rejects sequences with no walked-scope-unit identifiers; the
-    per-element check rejects `[42]`, `[None]`, `[""]`, etc. — anything
-    that isn't a real scope-unit identifier string. Each gate is
-    necessary; no single gate is sufficient.
-
-    Accepting both list and tuple matches the schemas-layer canonical
-    type for ReviewFinding.trace_path (`tuple[str, ...] | None` for
-    true post-construction immutability) while preserving back-compat
-    with direct callers passing `list[str]`.
-    """
+    Tuples match ReviewFinding's immutable field; lists remain valid for
+    direct callers. Strings and other sequence-like inputs are rejected."""
     if not isinstance(trace_path, (list, tuple)) or not trace_path:
         return False
     return all(isinstance(item, str) and item for item in trace_path)
@@ -85,32 +75,15 @@ def enforce_proof_boundary(
     query_match_id: str | None,
     trace_path: list[str] | tuple[str, ...] | None,
 ) -> None:
-    """Validate that ``evidence_tier`` admits given the supplied proof artifacts.
+    """Validate artifact presence for a recognized EvidenceTier.
 
-    Raises ``ProofBoundaryViolationError`` with the failing condition
-    named. JUDGED admits regardless — it's the explicit no-structural-
-    claim path. Invalid tiers (anything not in the EvidenceTier enum)
-    raise; the previous "implicit admission for unrecognized values"
-    behavior was a real correctness gap surfaced by the audit pass on
-    commit c632a53.
+    Per docs/trust-boundaries.md §1 and spec §7.3, OBSERVED requires a
+    non-empty string query_match_id; INFERRED requires a non-empty list or
+    tuple of non-empty scope-id strings. JUDGED requires neither artifact.
+    Unknown tiers raise ProofBoundaryViolationError rather than default-admit.
 
-    Per docs/trust-boundaries.md §1 + spec §7.3:
-      - evidence_tier MUST be an EvidenceTier member.
-      - OBSERVED requires a non-empty `str` query_match_id pointing
-        into the queries registry.
-      - INFERRED requires a non-empty `list[str]` or `tuple[str, ...]`
-        trace_path where every element is a non-empty str (a scope-unit
-        identifier). Tuple admits because schemas-layer ReviewFinding
-        types the field as `tuple[str, ...] | None` for true immutability;
-        direct callers passing `list[str]` continue to work.
-      - JUDGED admits without either artifact; the tier itself signals
-        that no structural claim is made.
-
-    The runtime checks matter because the validator is exposed publicly
-    (any caller, not just Pydantic via ReviewFinding, can invoke it).
-    Type hints alone don't enforce at runtime; the validator must
-    defend itself.
-    """
+    This gate checks shapes. Registry membership and finding hashes are
+    verified by replay; source rematching remains future scope (DECISIONS.md#031)."""
     if not isinstance(evidence_tier, EvidenceTier):
         raise ProofBoundaryViolationError(
             f"evidence_tier must be an EvidenceTier member; got "
@@ -146,6 +119,4 @@ def enforce_proof_boundary(
             "right path is to downgrade the tier to JUDGED, not to admit "
             "the finding."
         )
-    # JUDGED admits with neither artifact; isinstance check above
-    # already gated on tier validity, so falling through here means
-    # the tier is JUDGED specifically, not an unrecognized value.
+    # Valid tiers fall through after their artifact check; JUDGED needs none.

@@ -374,12 +374,6 @@ def _check_proposal_equation(outcome: AnalyzeWorkerOutcome) -> None:
     pins each worker. Parser source only.
     """
     if outcome.source == "parser":
-        # The exact per-worker proposal equation, every term an identity
-        # count (no derived counters to trust): worker-locally, emitted
-        # is the admitted set, observed is the producer list, served is
-        # zero — so seen == (admitted - producer) + rejected +
-        # superseded. Aggregate-only accounting would let invalid
-        # tallies cancel across files; this pins each worker.
         lhs = outcome.n_proposals_seen
         rhs = (
             len(outcome.admitted_findings)

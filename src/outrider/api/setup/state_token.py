@@ -128,9 +128,11 @@ def sign_state(*, nonce: str, ttl_seconds: int) -> str:
 
 
 def verify_state(state: str) -> SetupStateToken:
-    """Verify a callback `state`: signature (constant-time), then expiry, then field shape. Raises
-    `SetupStateError` on any failure. The returned nonce — NOT the callback query — is the trusted
-    single-use token the caller hashes and atomically consumes."""
+    """Check the ASCII carrier and signature, parse and validate fields, then expiry.
+
+    Return the trusted nonce or raise SetupStateError. This function does not consume
+    it; state_machine.consume_callback supplies the atomic single-use check.
+    """
     if not state or "." not in state:
         raise SetupStateError("missing or malformed state")
     # ASCII gate BEFORE the compare: `hmac.compare_digest` raises TypeError on non-ASCII `str`

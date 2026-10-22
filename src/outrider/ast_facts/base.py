@@ -101,9 +101,8 @@ class ImportPathResolver(Protocol):
     for all those validations; `ast_facts/` consumes already-validated
     paths and joins them with `import_root` for the symlink-safe stat.
 
-    The Protocol is shipped from `ast_facts/base.py`; the V1
-    implementation lives elsewhere (eventually `coordinates/`) and is
-    out of scope for this module.
+    The Protocol lives here; coordinates.diff_parser supplies the
+    implementation and its COORDINATES_IMPORT_PATH_RESOLVER singleton.
 
     Two construction members, one per candidate form per
     `DECISIONS.md#024` (Amended 2026-07-03): `resolve_candidate_paths`

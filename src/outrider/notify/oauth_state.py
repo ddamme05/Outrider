@@ -1,15 +1,9 @@
-"""Slack OAuth install `state` — a stateless, HMAC-signed CSRF token.
+"""Sign and verify the stateless Slack OAuth callback state.
 
-The `state` round-trips through Slack's authorize → callback redirect, so it MUST
-be unforgeable AND bound to the originating admin's choices. It carries the
-`installation_id`, the admin principal, the chosen `channel_id`, a random nonce,
-and an expiry, HMAC-signed with `OUTRIDER_SLACK_STATE_SECRET`. The callback
-verifies the signature + expiry and reads installation_id / admin / channel FROM
-THE VERIFIED STATE — never from the (attacker-controllable) callback query params.
-
-Stateless by design (dashboard-in-Slack spec): no pending-state table; the nonce +
-expiry bound OAuth CSRF replay for this phase. A missing secret fails CLOSED
-(raises) so a misconfigured deploy can't mint/accept unsigned state.
+The HMAC binds installation, admin, channel, random nonce, and expiry. The callback
+uses these verified choices, never unsigned identity query parameters. The nonce
+is not stored or consumed: a token can be verified repeatedly until expiry. Missing
+or weak signing configuration fails closed.
 """
 
 from __future__ import annotations
@@ -147,9 +141,11 @@ def sign_state(
 
 
 def verify_state(state: str) -> SlackInstallState:
-    """Verify a callback `state`: signature (constant-time), then expiry, then field
-    shape. Raises `SlackStateError` on any failure. The returned values — NOT the
-    callback query params — are the trusted installation_id / admin / channel."""
+    """Check signature, parse fields, check expiry, then validate the channel.
+
+    The signed nonce is not consumed; this stateless token is reusable within
+    its validity window.
+    """
     if not state or "." not in state:
         raise SlackStateError("missing or malformed state")
     body, _, sig = state.partition(".")

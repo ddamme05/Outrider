@@ -1,8 +1,7 @@
-"""LLM provider wrapper — public surface.
+"""Shared model-call types, native Anthropic provider, logging, and pricing.
 
-Full export set per `specs/2026-05-05-llm-provider-wrapper.md`
-§Commit boundary (commit 2 extension: adds `AnthropicProvider` +
-pricing surfaces).
+The OpenAI-compatible provider and host profiles are imported from their
+own modules. Vendor SDK access stays within `llm/`.
 """
 
 from outrider.llm.anthropic_provider import AnthropicProvider

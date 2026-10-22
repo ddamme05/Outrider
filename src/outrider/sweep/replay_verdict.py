@@ -47,7 +47,7 @@ _VERDICT_EVENT_TYPE: str = ReplayVerdictEvent.model_fields["event_type"].default
 # phase-end become durable first — the sweep-family grace-period idiom (`hitl_expiry.py`).
 _DEFAULT_SETTLE_GRACE: Final[timedelta] = timedelta(seconds=60)
 
-# Per-tick candidate cap. `_candidate_reviews` returns EVERY un-verdicted completed review, so
+# Per-tick candidate cap. Without it, all un-verdicted completed reviews could be selected, so
 # a first deploy (or a tick after a long projector outage) would otherwise backfill the entire
 # production history in ONE tick (N reviews x ~6 sequential DB round-trips), blocking the sweep
 # loop. The work is idempotent + the anti-join excludes already-verdicted reviews, so a bounded
@@ -62,19 +62,12 @@ async def project_replay_verdicts(
     settle_grace: timedelta = _DEFAULT_SETTLE_GRACE,
     batch_limit: int = _DEFAULT_BATCH_LIMIT,
 ) -> dict[str, int]:
-    """Project a replay verdict for each completed PRODUCTION review lacking one.
+    """Append verdicts for a bounded batch of completed production reviews.
 
-    Candidates: `status='completed'`, `is_eval=False` (the sweep contract,
-    docs/testing.md — eval reviews are not projected, so eval Replay-% is
-    production-scoped), `completed_at` older than `settle_grace` (the publish
-    two-transaction completion race — see `_DEFAULT_SETTLE_GRACE`), and no
-    `replay_verdict` event yet (an anti-join optimization; correctness holds without
-    it since `emit_replay_verdict` is idempotent). Bounded to `batch_limit`
-    oldest-completed candidates per tick (the backlog drains across ticks; see
-    `_DEFAULT_BATCH_LIMIT`). Per review: target = `max(sequence_number)` over the
-    NON-verdict rows (so a re-projection excludes any prior verdict), reconstruct over
-    that prefix + assert_equivalent, build the verdict, emit. Per-row try/except so one
-    bad review never aborts the tick. Returns `{"projected": N, "failed": M}`.
+    Select oldest completed rows past the settle grace that lack a verdict.
+    For each, reconstruct and verify through the last non-verdict sequence.
+    The natural-key insert counts only fresh projections; ordinary per-review
+    failures are logged and counted. Return `projected` and `failed` totals.
     """
     replayer = AuditReplayer(session_factory=session_factory)
     projected = 0
@@ -175,13 +168,10 @@ async def _compute_verdict(
 
 
 def _reconstruct_failure_reason(exc: ReplayError | ValidationError) -> str:
-    """A metadata-only reason for a reconstruct failure.
+    """Render only validation error codes or a metadata-only ReplayError.
 
-    A `pydantic.ValidationError` (a corrupt audit row) is SANITIZED to its error
-    LOCATIONS + CODES — never `str(exc)`, whose message can echo the offending
-    `input` value, i.e. raw payload content, into this metadata-only verdict event
-    (`DECISIONS.md#014`/`#016`: audit events carry no content). `ReplayError` messages
-    are already metadata (field names, ids, sequence numbers).
+    Validation locations, input, and messages can contain attacker-controlled
+    keys or values, so none belongs in the verdict (`DECISIONS.md#014/#016`).
     """
     if isinstance(exc, ValidationError):
         # ONLY the error `type` slugs (fixed programmatic identifiers like

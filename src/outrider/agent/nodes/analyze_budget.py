@@ -1,41 +1,17 @@
 # Pre-flight budget planner per specs/2026-07-05-parallel-analyze.md.
-"""Pure pre-flight budget allocation for the parallel-analyze fan-out.
+"""Allocate file budgets before parallel analyze workers start.
 
-The sequential analyze loop enforces its cost cap post-hoc: each file's
-gate reads the pools as drawn down by every earlier file. N concurrent
-workers cannot share that running state, so the fan-out allocates BEFORE
-dispatch: `plan_file_budgets` mirrors the sequential FUNDING DECISION —
-cap-rejects-not-clamps, reserved-then-general draw, estimate-debited —
-once per file in the caller-supplied order, and each worker later
-enforces its own allocation instead of a shared remainder. Two accepted
-divergences from the sequential drawdown (spec Non-goals): allocations
-debit the PROXY estimate up front, so a file the worker later skips
-(budget, cache serve, coverage) still holds its allocation where the
-sequential loop would have debited 0 and let later files benefit; and
-unspent allocations are never redistributed. No-overspend
-is structural — sum of allocations can never exceed the pools (the
-accounting equation is asserted at construction) and a worker never
-exceeds its allocation — so it does not depend on estimate quality.
+Funding follows caller order: reject estimates above the per-file cap or the
+remaining class budget. High-risk files draw reserved tokens before general
+tokens; other files draw only general tokens. A funded allocation equals the
+estimate, and an unfunded worker spends nothing.
 
-Sequential semantics mirrored (analyze.py cost gate + drawdown):
+Allocations are final. A cache hit or coverage skip does not release its reserved
+allocation to later workers, and unused tokens are not redistributed. Workers
+check their rendered estimate against the allocation; the proxy estimator is a
+calibrated heuristic, not the enforcement boundary.
 
-- A file is funded iff its estimate fits BOTH the per-file cap and the
-  remaining budget for its class (general + reserved for high-risk,
-  general only otherwise). The cap REJECTS, it does not clamp.
-- A funded file's allocation equals its estimate (the sequential loop
-  debits the estimate, not actual usage), drawn reserved-first for
-  high-risk files, general-only for benign files.
-- An unfunded file gets zero allocation; the worker emits the
-  COST_BUDGET_EXHAUSTED skip (single-emission-point-per-file holds).
-
-One dynamic is deliberately NOT mirrored (spec Non-goals): sequential
-later-files-benefit-from-underspend. Allocations here are final; unspent
-tokens are not redistributed in V1.5.
-
-This module is pure and import-light (no LLM, prompt, or ast_facts
-machinery) so planner tests and structural scenarios exercise it
-directly — the `decide_degradation` precedent.
-"""
+This module stays free of model and prompt imports for structural scenarios."""
 
 from __future__ import annotations
 
@@ -161,25 +137,28 @@ class BudgetPlan:
     reserved_remainder_tokens: int
 
     def __post_init__(self) -> None:
-        # Per-allocation validation FIRST: the totals equation alone admits
-        # compensating negatives (one allocation drawing -100 while another
-        # over-draws +100 balances the books while a worker overspends), so
-        # no-overspend is proven locally, then summed.
-        for a in self.allocations:
-            if a.from_reserved_tokens < 0 or a.from_general_tokens < 0:
-                raise ValueError(f"budget accounting violated: negative draw for {a.path!r}")
-            if not a.funded and a.allocation_tokens != 0:
-                raise ValueError(f"budget accounting violated: unfunded draw for {a.path!r}")
-            if a.funded and a.allocation_tokens != a.estimate_tokens:
+        # Validate each draw before totals: compensating negative and excess
+        # draws could balance the pools while assigning an invalid allocation.
+        for allocation in self.allocations:
+            if allocation.from_reserved_tokens < 0 or allocation.from_general_tokens < 0:
                 raise ValueError(
-                    f"budget accounting violated: funded allocation != estimate for {a.path!r}"
+                    f"budget accounting violated: negative draw for {allocation.path!r}"
                 )
-            if not a.is_high_risk and a.from_reserved_tokens != 0:
+            if not allocation.funded and allocation.allocation_tokens != 0:
                 raise ValueError(
-                    f"budget accounting violated: benign file drew reserve for {a.path!r}"
+                    f"budget accounting violated: unfunded draw for {allocation.path!r}"
                 )
-        drawn_general = sum(a.from_general_tokens for a in self.allocations)
-        drawn_reserved = sum(a.from_reserved_tokens for a in self.allocations)
+            if allocation.funded and allocation.allocation_tokens != allocation.estimate_tokens:
+                raise ValueError(
+                    "budget accounting violated: funded allocation != estimate for "
+                    f"{allocation.path!r}"
+                )
+            if not allocation.is_high_risk and allocation.from_reserved_tokens != 0:
+                raise ValueError(
+                    f"budget accounting violated: benign file drew reserve for {allocation.path!r}"
+                )
+        drawn_general = sum(allocation.from_general_tokens for allocation in self.allocations)
+        drawn_reserved = sum(allocation.from_reserved_tokens for allocation in self.allocations)
         if drawn_general + self.general_remainder_tokens != self.general_pool_tokens:
             raise ValueError(
                 f"budget accounting violated (general): drawn {drawn_general} + "
@@ -203,19 +182,11 @@ def plan_file_budgets(
     reserved_pool_tokens: int,
     per_file_cap_tokens: int,
 ) -> BudgetPlan:
-    """Allocate per-file budgets in the CALLER-SUPPLIED request order.
+    """Allocate in caller order, rejecting duplicate paths before funding.
 
-    Order is load-bearing, not cosmetic: who wins under budget pressure is
-    decided by iteration position, and the analyze planner passes the
-    tier-descending worklist (DEEP before STANDARD) so higher-tier files
-    fund first — "fixing" the order to alphabetical or input-file order
-    would silently reshuffle starvation. Funding decision per file: funded iff
-    `estimate <= per_file_cap_tokens` AND estimate fits the remaining
-    class budget (general + reserved for high-risk; general only
-    otherwise); funded files draw their FULL estimate (reserved-first for
-    high-risk). Raises `DuplicatePlannedPathError` on a repeated
-    canonical path — before any allocation.
-    """
+    Order decides which files receive scarce tokens; analyze supplies DEEP before
+    STANDARD. A funded estimate must fit both the per-file cap and its class budget.
+    High-risk funding draws reserved tokens first. Allocations are not clamped."""
     if general_pool_tokens < 0 or reserved_pool_tokens < 0 or per_file_cap_tokens < 0:
         raise ValueError("pools and per-file cap must be non-negative")
     seen: set[str] = set()

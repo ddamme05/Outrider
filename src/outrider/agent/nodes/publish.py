@@ -1,49 +1,25 @@
 # Publish node per specs/2026-05-21-publish-node.md §V + DECISIONS.md #023.
 # See DECISIONS.md#065-authorization-is-a-live-github-check-the-local-install-db-is-a-cache
-"""Publish node: post inline-review comments to GitHub via githubkit.
+"""Route admitted findings, apply eligibility, and publish a GitHub review.
 
-Per DECISIONS.md #023 (publish routing and eligibility are separate
-decisions, not one combined gate): this node interleaves routing +
-eligibility per finding in a single loop, emits the four publish event
-types per the spec, and orchestrates the GitHub POST through a
-`GitHubPublisher` injected at `build_graph` time.
+Routing and eligibility are separate decisions (DECISIONS.md#023). The node
+emits their per-finding events and uses an injected `GitHubPublisher`; it makes
+no LLM calls.
 
-**No LLM calls.** Verified by absence of `LLMCallEvent` emission AND
-an import-graph unit test pinning that `agent.nodes.publish` doesn't
-transitively import `outrider.llm`.
+After routing, the pre-flight order is: prior local `PublishEvent`, empty
+eligible tiers, existing GitHub review with the body marker, then POST.
+The local check handles committed success; the external check handles a crash
+after POST but before the local event. A per-review lock serializes contenders.
 
-Failure discipline matches analyze: phase-start emits at entry,
-phase-end emits at successful exit, mid-execution failures propagate
-WITHOUT emitting end (the dangling-start is the audit signal for
-"publish interrupted"). The per-finding `try/except` around routing
-emission catches into `PublishEligibilityEvent(withheld,
-routing_emission_failed)` so the per-finding audit contract holds
-even when routing emit fails — but a genuine failure of a publish GitHub call
-(422 / 5xx / network) propagates after emitting `PublishAttemptEvent(failed)`.
-A 401/403/404 at EITHER publish GitHub call — the external-record GET
-(`find_existing_review_on_head_sha`) or the review POST (`create_review`) — is
-authorization revoked (DECISIONS.md#065), NOT a failure: it emits
-`PublishAttemptEvent(not_published_auth_revoked)` and RETAINS the review (marked
-`completed`) instead of propagating (shared `_emit_auth_revoked_and_retain`).
+Routing-sink failures withhold that finding with `routing_emission_failed`.
+Other GitHub failures emit a failed attempt and propagate, except 401/403/404
+from either the external-record GET or review POST: those record authorization
+revocation and retain the review as completed (DECISIONS.md#065).
 
-Pre-flight order (intra-Outrider + external):
-  1. Per-finding routing + eligibility loop (always).
-  2. Intra-Outrider idempotency: prior `PublishEvent` for this
-     `review_id` → emit `PublishAttemptEvent(idempotently_skipped)`,
-     return `PublishResult.skipped()`.
-  3. All publish tiers empty (no eligible inline / review-body /
-     surfaced dashboard-only findings) → emit
-     `PublishAttemptEvent(no_op_empty)`, return `PublishResult.empty()`.
-  4. External-record check: `find_existing_review_on_head_sha` via
-     body marker → emit
-     `PublishAttemptEvent(idempotently_skipped_external_record)`,
-     return `PublishResult.skipped_external(...)`.
-  5. POST review → on success, emit `PublishAttemptEvent(success)` +
-     `PublishEvent(...)`, return `PublishResult.success(...)`. On GitHub
-     401/403/404 (auth revoked, DECISIONS.md#065): emit
-     `PublishAttemptEvent(not_published_auth_revoked)`, mark the review
-     `completed`, return `PublishResult.not_published_auth_revoked()` — retained,
-     NOT re-raised. Any other status → `PublishAttemptEvent(failed)` + re-raise.
+Successful exits mark completion and run best-effort Slack finalization before
+phase-end. A raised failure leaves phase-start dangling as the interruption
+signal. See `_publish_body` for the ordered checks and the rendering helpers
+for output sanitization, byte limits, and machine-readable markers.
 """
 
 from __future__ import annotations
@@ -106,45 +82,26 @@ if TYPE_CHECKING:
 __all__ = ["publish"]
 
 
-# Body-marker template per spec §V + DECISIONS.md #023's crash-after-
-# success defense. The marker rides on the review body so a retry can
-# query GitHub for an existing review carrying this exact marker on
-# the same head_sha. Per Q6 + 4d sandbox verification, GitHub preserves
-# the body text verbatim under apiVersion 2026-03-10.
+# The review-body marker lets a retry find a successful POST on the same head_sha
+# when its local PublishEvent is missing (spec §V, DECISIONS.md#023).
 logger = logging.getLogger(__name__)
 
 _BODY_MARKER_TEMPLATE = "<!-- outrider-review-id:{review_id} -->"
 
-# Agent-readable marker template per ROADMAP.md section 3 / S1. Each marker is a
-# `<!-- outrider:KEY VALUE -->` HTML comment appended to inline-comment bodies so
-# AI coding agents can parse findings by ID + structured fields without
-# LLM-reading the prose. Values are deterministic, already-decided fields (never
-# model output, boundary #6); not model prose, so they bypass the display
-# sanitizer. Distinct prefix from _BODY_MARKER_TEMPLATE's review-body marker — and
-# these live on inline-comment bodies, a different GitHub surface, so they cannot
-# affect find_existing_review_on_head_sha's review-body startswith matcher. See
-# _build_agent_markers + specs/2026-06-06-agent-readable-markers.md.
+# Inline-comment markers expose decided fields for agents (ROADMAP §3 / S1).
+# They bypass the prose sanitizer; `_build_agent_markers` handles free strings.
+# Their prefix and GitHub surface differ from the review-body recovery marker,
+# so they cannot affect its startswith matcher.
 _AGENT_MARKER_TEMPLATE = "<!-- outrider:{key} {value} -->"
 
-# GitHub statuses that mean "authorization revoked at GitHub's gate" (DECISIONS.md#065):
-# the App was uninstalled / suspended / lost repo access. A publish GitHub call (the
-# external-record GET or the review POST) rejected with one of these is NOT a FAILED error —
-# it is authorized-away, recorded as NOT_PUBLISHED_AUTH_REVOKED (review retained + marked
-# completed), not re-raised. Any other status (422 validation, 5xx, network) stays FAILED
-# and propagates.
+# Both GET and POST treat these as authorization revocation: retain and complete
+# the review without re-raising (DECISIONS.md#065). Other failures propagate.
 _AUTH_REVOKED_STATUS_CODES: frozenset[int] = frozenset({401, 403, 404})
 
 
-# Outcomes for which the non-gated review-posted FYI is TRUE. Deliberately narrower
-# than the mirror's "every non-failed outcome": the FYI asserts "this review posted to
-# the PR", so it may only fire where a GitHub review exists — freshly created
-# (`success`) or confirmed already created (the two idempotent-skip paths, which are
-# also the repair path for an FYI whose first post failed).
-# Both exclusions are CORRECTNESS, not volume: under `not_published_auth_revoked` and
-# `empty` alike, no GitHub review was created, so a `review_posted` FYI would be a false
-# claim about the PR. A clean-review notification is a legitimate thing to want, but it
-# is a DIFFERENT message with different semantics ("review completed — no findings"),
-# not this one relaxed to fire on `empty`.
+# A review-posted FYI requires a created or previously confirmed GitHub review.
+# Replays can repair a failed notification; empty and revoked outcomes cannot
+# truthfully claim that a review posted.
 _FYI_TRUTHFUL_OUTCOMES: Final[frozenset[str]] = frozenset(
     {"success", "idempotently_skipped", "idempotently_skipped_external_record"}
 )
@@ -157,27 +114,13 @@ async def _finalize_slack_notifications(
     publish_event_sink: PublishEventSink,
     delta: dict[str, object],
 ) -> None:
-    """Best-effort Slack terminal finalization, shared by BOTH message classes.
+    """Finalize Slack on every non-failed exit, including idempotent replay.
 
-    `publish` funnels its whole body through this ONE call, so no return path can
-    silently skip its Slack surface. That single exit is the point — both defects this
-    replaced were "a return path that forgot the notification":
-      - the gated mirror fired only on fresh success, so rejecting every gated finding
-        (→ `NO_OP_EMPTY` short-circuit) left the card reading "Review needs approval"
-        forever, and a failed `chat.update` was unrepairable because replay
-        short-circuits at the prior-`PublishEvent` check;
-      - the non-gated FYI had the same shape, so a failed first post could never be
-        repaired despite the orchestrator carrying replay dedup precisely for that.
-
-    The two classes are mutually exclusive per review and branch on `hitl_request`
-    (None ⇒ the review never gated). Their outcome predicates differ: the FYI runs only
-    where a GitHub review actually exists (see `_FYI_TRUTHFUL_OUTCOMES`), while the
-    mirror runs on every non-failed outcome EXCEPT `not_published_auth_revoked` — the
-    one outcome whose rendering diverges from the rest, which `chat.update` cannot
-    order safely (see the guard below).
-
-    FAILED paths raise rather than return, so they never reach here — the card
-    correctly stays at its prior state pending a sweep-driven retry.
+    Reviews without a HITL request use the FYI for `_FYI_TRUTHFUL_OUTCOMES`.
+    Gated reviews use the terminal mirror, including an empty result after all
+    findings were rejected, except on revocation (see its ordering guard below).
+    Keeping this outside the success branch lets replay repair a failed post or
+    update. Raised publish failures leave the existing card unchanged.
     """
     if resolve_slack_target is None:
         return
@@ -194,19 +137,11 @@ async def _finalize_slack_notifications(
             return
         repo = f"{state.pr_context.owner}/{state.pr_context.repo}"
         if gated_request is None:
-            # Never gated: the compact FYI is the whole Slack surface. The
-            # orchestrator's own `review_posted` dedup makes the replay call a no-op
-            # when the first post succeeded, and a real repair when it did not.
-            #
-            # Held under the SAME per-review advisory lock the publish body uses
-            # (`DECISIONS.md#027`). That dedup is query-then-post-then-record, so it is
-            # only sound while same-review invocations are serialized: unlocked,
-            # concurrent resumes can both query, both miss, and both post — turning the
-            # spec's narrow post-then-record crash-window residual into an ordinary
-            # concurrency race. The body released its lock before this runs, so the
-            # finalizer re-acquires rather than inheriting. The gated mirror below needs
-            # no lock: `chat.update` is idempotent for a given rendering, so a
-            # concurrent duplicate is a no-op rather than a second message.
+            # FYI dedup is query → post → record, so concurrent retries must share
+            # the per-review lock (DECISIONS.md#027). The body already released it;
+            # re-acquire here to prevent two misses from posting twice. The accepted
+            # post-before-record crash window remains. The gated mirror needs no
+            # lock because duplicate chat.update calls use the same rendering.
             if result.outcome in _FYI_TRUTHFUL_OUTCOMES:
                 async with publish_event_sink.acquire_publish_lock(review_id=state.review_id):
                     await slack_target.orchestrator.notify_review_posted(
@@ -220,19 +155,11 @@ async def _finalize_slack_notifications(
                     )
             return
         if result.outcome == "not_published_auth_revoked":
-            # No terminal mirror on the revoked path, deliberately. It is the ONLY
-            # outcome whose rendering diverges from the others (they all derive their
-            # counts from the same durable state and converge), and `chat.update` has
-            # no compare-and-set. A concurrent pair — A revoked (emits no PublishEvent,
-            # so nothing durable records it), then B recovering and succeeding — can
-            # land A's delayed "access revoked" edit AFTER B's terminal one, leaving
-            # the card claiming a publish failure for a review that published. Locking
-            # the write does not fix it: mutual exclusion is not ordering, and lock
-            # acquisition can still happen in the wrong order. Gating on a prior
-            # `PublishEvent` does not fix it either — external-record recovery emits
-            # none. The card therefore stays at "Review needs approval" for a revoked
-            # review: stale, but never actively false. FUP-252 restores this together
-            # with the monotonic mechanism it needs.
+            # A delayed revoked edit could overwrite a later successful rendering:
+            # chat.update has no compare-and-set, and a lock cannot impose lifecycle
+            # order. A prior-PublishEvent check also misses external-record recovery,
+            # which emits no such event. Leave the pending card until monotonic
+            # status updates exist (FUP-252); all other terminal renderings converge.
             return
         approved_count, gated_count = count_gated_approvals(
             gated_finding_ids=gated_request.findings_requiring_approval,
@@ -274,10 +201,7 @@ async def publish(
     dashboard_base_url: str | None = None,
     resolve_slack_target: SlackTargetResolver | None = None,
 ) -> dict[str, object]:
-    """Publish node. Thin wrapper over `_publish_body` that routes EVERY non-failed
-    outcome through the shared Slack terminal finalization (see
-    `_finalize_slack_notifications` for why neither notification can live inside the
-    success branch)."""
+    """Run publish, finalize Slack on every non-failed outcome, then close the phase."""
     delta = await _publish_body(
         state,
         publisher=publisher,
@@ -294,13 +218,9 @@ async def publish(
         publish_event_sink=publish_event_sink,
         delta=delta,
     )
-    # Phase-end LAST. `phase-events-bound-work` requires a node's observable work to sit
-    # INSIDE its start/end bracket, and Slack finalization is publish-node work — emitting
-    # phase-end from inside `_publish_body` left every Slack resolve/lock/post/update
-    # outside its own causal phase, which replay groups by. `compute_phase_id` is
-    # deterministic, so this closes exactly the bracket the body opened. A FAILED path
-    # raises out of `_publish_body` and never reaches here, preserving the dangling-start
-    # "publish interrupted" signal; the same holds for a `mark_completed` failure.
+    # Close the body's deterministic phase only after Slack work completes
+    # (`phase-events-bound-work`). Publish or completion-write failures never
+    # reach this point, preserving the dangling-start interruption signal.
     await _emit_phase_end(
         phase_event_sink=phase_event_sink,
         review_id=state.review_id,
@@ -319,56 +239,22 @@ async def _publish_body(
     publish_event_sink: PublishEventSink,
     phase_event_sink: PhaseEventSink,
     review_status_sink: ReviewStatusSink,
-    # `InstallationGitHubClient` is the typed `GitHub[AppInstallationAuthStrategy]`
-    # alias from `outrider.github.auth`; the TYPE_CHECKING import keeps
-    # the runtime free of the githubkit wrapper-module dependency (the
-    # node never references the type at runtime — it just calls the
-    # factory and passes the result to the publisher).
+    # TYPE_CHECKING keeps the vendor-wrapper type out of runtime node imports.
     github_factory: Callable[[int], Awaitable[InstallationGitHubClient]],
     dashboard_base_url: str | None = None,
     resolve_slack_target: SlackTargetResolver | None = None,
 ) -> dict[str, object]:
-    """Run the V1 publish flow over admitted findings.
+    """Publish the synthesized report using injected publisher, sinks, and client factory.
 
-    Args:
-        state: `ReviewState` with `analysis_rounds` populated.
-        publisher: `GitHubPublisher` Protocol implementation
-            (production: `GitHubKitPublisher`; test:
-            hand-rolled stub).
-        publish_event_sink: `PublishEventSink` for the four publish
-            event types (production: `AuditPersister`).
-        phase_event_sink: `PhaseEventSink` for the start/end phase
-            event bracket.
-        review_status_sink: `ReviewStatusSink` used at terminal-success
-            paths to write `reviews.status='completed'` +
-            `completed_at=NOW()` per canonical lifecycle (`docs/spec.md`
-            §3.3 step 10; `docs/architecture.md` step 10). The write
-            is predicate-gated on `status='running'`; a re-run sees
-            `completed` already and no-ops.
-        github_factory: per-installation githubkit client factory
-            per `nodes-receive-deps-via-closure`.
-        dashboard_base_url: optional dashboard base URL injected via
-            `build_graph`; the review-body "Related concerns" links + the
-            aggregate dashboard-only note link use it. None (unconfigured)
-            or malformed → graceful no-link fallback (DECISIONS.md#050).
-        resolve_slack_target: optional per-install Slack resolver injected via
-            `build_graph` (`async (installation_id) -> SlackNotifyTarget | None`).
-            On a successful publish the node resolves the install's target and, if
-            present, posts a compact "review-posted" FYI (best-effort, no-raise);
-            the orchestrator self-skips for gated reviews (a `hitl_pending` row
-            exists) and on replay. None (or a None target) → no FYI (FUP-186).
+    Returns `{"publish_result": PublishResult}` for the state overwrite reducer.
+    Terminal paths call `mark_completed`, which no-ops for an already completed
+    review. A missing or malformed dashboard URL renders concerns without links
+    (DECISIONS.md#050). Slack finalization and phase-end belong to `publish`.
 
-    Returns:
-        `{"publish_result": PublishResult}` for LangGraph's default
-        overwrite reducer to merge into `state.publish_result`.
-
-    Raises:
-        Propagates any uncaught exception (GitHub HTTP failure,
-        publisher contract violation, persister conflict) AFTER
-        emitting `PublishAttemptEvent(outcome=failed,
-        failure_class=type(exc).__name__)`. The phase-start event
-        remains dangling — that's the audit signal for "publish
-        interrupted" per the analyze convention.
+    The per-review lock covers local idempotency, empty-tier handling, the external
+    recovery check, and POST. Each wrapped failure records a failed attempt before
+    propagating; GitHub authorization revocation uses the retained outcome instead.
+    Completion-write failures leave phase-start dangling and can retry on replay.
     """
     phase_id = compute_phase_id(
         review_id=str(state.review_id),
@@ -390,29 +276,14 @@ async def _publish_body(
         )
     )
 
-    # Step 2: collect admitted findings from state.review_report
-    # (canonical post-synthesize). Per the spec's "intra-execution
-    # drift detection" test, defend against producer regression that
-    # emits duplicate finding_ids — even though synthesize's
-    # content_hash dedup makes this redundant for well-formed reports,
-    # the assert is belt-and-suspenders against forged ReviewReport
-    # construction bypassing synthesize.
+    # Step 2: use the synthesized report, with a duplicate-ID defense for reports
+    # constructed outside synthesize's content-hash dedup path.
     admitted_findings = _collect_admitted_findings(state)
     _assert_no_duplicate_finding_ids(admitted_findings)
 
-    # Build the body marker once — embedded in the review body for
-    # crash-after-success recovery. Explicit `str(...)` (rather than
-    # implicit f-string `__str__`) defends against silent format drift
-    # if `ReviewState.review_id` is ever retyped from UUID to a
-    # different identity type: the matcher at
-    # `find_existing_review_on_head_sha` does a literal `startswith`
-    # so the marker shape MUST be deterministic across producer +
-    # consumer. `UUID.__str__` is the canonical 8-4-4-4-12 hex form;
-    # any other identity type would land here with a different shape
-    # and break crash-recovery silently. Cast via `str(...)` makes the
-    # stringification explicit so a future type change surfaces as a
-    # test failure (test_body_marker_shape_pinned) rather than silently
-    # at runtime.
+    # Recovery matches literal startswith(body_marker). Require UUID formatting
+    # and stringify explicitly so producer and matcher retain the pinned shape
+    # (`test_body_marker_shape_pinned`).
     if not isinstance(state.review_id, UUID):
         raise TypeError(
             f"state.review_id must be UUID (got {type(state.review_id).__name__}); "
@@ -421,11 +292,7 @@ async def _publish_body(
         )
     body_marker = _BODY_MARKER_TEMPLATE.format(review_id=str(state.review_id))
 
-    # Build a quick-lookup registry of file paths in the diff so
-    # routing's "non_diffed_file" short-circuit can decide WITHOUT
-    # calling tree_sitter_to_github (per FUP-057 resolution: V1
-    # publish does file-membership via the in-memory ChangedFile
-    # registry, not file_in_patch).
+    # Registry membership avoids coordinate translation for files outside the diff.
     changed_paths: set[str] = {cf.path for cf in state.pr_context.changed_files}
 
     # Step 3: interleaved per-finding routing + eligibility loop. Three
@@ -447,60 +314,17 @@ async def _publish_body(
 
     sorted_finding_ids = tuple(sorted(f.finding_id for f in admitted_findings))
 
-    # Step 4: intra-Outrider idempotency pre-flight (FUP-064 closed).
-    # The publish_event_sink's `query_prior_publish_event`
-    # method (shipped on AuditPersister) returns the most-recent prior
-    # `PublishEvent` for this review_id if one exists. Same-review_id
-    # redispatch (e.g., dispatcher re-fires the webhook after agent
-    # crash + restart) short-circuits here — no GitHub round-trip
-    # burned. Distinct from the Step 6 external-record check:
-    #   - Step 4 (here): the prior process succeeded AND persisted
-    #     PublishEvent. Local audit log proves the publish happened.
-    #   - Step 6: the prior process succeeded at the GitHub POST but
-    #     died BEFORE persisting PublishEvent. Local audit log has no
-    #     prior; the external-record body-marker query on GitHub is
-    #     the only signal.
-    # Spec ordering (§V lines 314-326): intra-Outrider BEFORE empty-
-    # eligible BEFORE external-record. Reasoning: if we already
-    # published, even an empty-eligible re-run should report skipped
-    # rather than producing a no_op_empty result that would mask the
-    # prior success on the dashboard.
-    # Symmetric with Step 7's POST-failure handling: if the read-side
-    # query raises (e.g., corrupted JSONB payload fails
-    # `PublishEvent.model_validate`, DB connection drops mid-SELECT),
-    # emit `PublishAttemptEvent(FAILED, failure_class=type(exc).__name__)`
-    # BEFORE re-raising so the audit trail records the failure class.
-    # Without this wrap, the dangling phase-start would be the only
-    # signal — operators diagnosing the failure couldn't distinguish
-    # "intra-Outrider idempotency query crashed" from "node hung
-    # mid-execution".
+    # Step 4: local idempotency precedes empty-tier handling, so a replay cannot
+    # hide prior success behind NO_OP_EMPTY. A committed PublishEvent skips all
+    # GitHub calls; its absence still requires Step 6's external recovery check.
     #
-    # Concurrent-invocation race defense — per-review advisory lock
-    # (`DECISIONS.md#027`). Steps 4→7 are read-before-write: two concurrent
-    # `ainvoke(Command(resume=...))` on one `thread_id` — a human resume racing a
-    # `reclaim_stuck_hitl_states` resume — could both observe
-    # `prior_publish_event=None` and both POST. The lock serializes them, so the
-    # second task reaches Step 4 BEHIND the first task's transaction boundary and
-    # sees either its committed `PublishEvent` (authentic `IDEMPOTENTLY_SKIPPED`)
-    # or its absence, in which case this task continues to the external-record
-    # check — absence of the local event alone does not authorize another POST.
+    # Serialize Steps 4–7 under the per-review lock (DECISIONS.md#027): concurrent
+    # human and sweep resumes must not both miss the local event and POST. If the
+    # winner crashes after POST, the lock releases and the body marker recovers
+    # its success. Lock/backoff rationale lives on PublishEventSink.acquire_publish_lock.
     #
-    # The database advisory lock coordinates contenders across processes, but it is
-    # released if the winner crashes. Step 6 covers
-    # crash-after-success-before-emit: after that release there is no
-    # `PublishEvent` to observe, so the GitHub body marker is the only evidence
-    # that the POST succeeded.
-    #
-    # Lock mechanics — try-lock, bounded backoff, why not blocking or single-shot
-    # loser-skip — live on `PublishEventSink.acquire_publish_lock`.
-    #
-    # Acquisition gets its own `try` for two reasons. A failure inside
-    # `__aenter__` (DB outage, acquisition timeout) must emit
-    # `PublishAttemptEvent(FAILED)` before re-raising, per the node's raises
-    # contract. And keeping it separate from the critical section's own
-    # `try/finally` means an inner-step failure reaches only that step's existing
-    # FAILED emit, never this one — no double-emit. The `AsyncExitStack` holds the
-    # lock for the critical section and releases on both paths.
+    # Catch acquisition separately: its failure needs a FAILED attempt, while a
+    # failure inside the critical section must retain its own single failure emit.
     lock_stack = AsyncExitStack()
     try:
         await lock_stack.enter_async_context(
@@ -546,12 +370,8 @@ async def _publish_body(
                 comments_attempted=len(eligible_inline_comments),
                 is_eval=state.is_eval,
             )
-            # Terminal-success lifecycle write per canonical
-            # `docs/spec.md` §3.3 step 10. A failure here raises before
-            # the wrapper's phase-end, leaving phase-start dangling (the
-            # canonical "publish interrupted" signal); a sweep-driven
-            # retry hits the prior PublishEvent short-circuit again and
-            # re-attempts the completion write.
+            # Completion precedes the wrapper's phase-end. If it fails, replay
+            # finds the committed PublishEvent and retries this write.
             await review_status_sink.mark_completed(review_id=state.review_id)
             return {
                 "publish_result": PublishResult.skipped(
@@ -580,50 +400,15 @@ async def _publish_body(
                 comments_attempted=0,
                 is_eval=state.is_eval,
             )
-            # Terminal-success lifecycle write per canonical
-            # `docs/spec.md` §3.3 step 10. See the equivalent comment
-            # at the Step-4 short-circuit above for ordering rationale.
             await review_status_sink.mark_completed(review_id=state.review_id)
             return {"publish_result": PublishResult.empty()}
 
-        # Step 6: external-record check (crash-after-success defense).
-        # The intra-Outrider check at Step 4 returns None for this
-        # scenario (the prior process died BEFORE persisting
-        # PublishEvent), so the external-record body-marker query on
-        # GitHub is the load-bearing signal here.
-        #
-        # Symmetric with Steps 4 + 7 failure handling. This GET is the
-        # FIRST publish GitHub call, so a revocation surfaces HERE before
-        # the POST: a 401/403/404 is authorization revoked (#065) → retain
-        # the review + record NOT_PUBLISHED_AUTH_REVOKED (shared handler with
-        # Step 7), NOT FAILED. Any OTHER raise (network drop, 5xx upstream,
-        # pagination cap exhausted) emits
-        # `PublishAttemptEvent(FAILED, failure_class=type(exc).__name__)`
-        # BEFORE re-raising so the audit trail records the failure class —
-        # otherwise the dangling phase-start is the only signal and operators
-        # can't distinguish "external-record query crashed" from "node hung
-        # mid-execution".
-        try:
-            # `github_factory(...)` is inside the try because
-            # installation-token minting can raise (App uninstalled,
-            # JWT clock skew, GitHub identity-API outage) — its failure
-            # must land in the audit chain as `PublishAttemptEvent(FAILED)`,
-            # not as a dangling phase-start.
-            gh = await github_factory(state.pr_context.installation_id)
-            existing_review_id = await publisher.find_existing_review_on_head_sha(
-                gh=gh,
-                owner=state.pr_context.owner,
-                repo=state.pr_context.repo,
-                pull_number=state.pr_context.pr_number,
-                head_sha=state.pr_context.head_sha,
-                body_marker=body_marker,
-            )
-        except Exception as exc:
+        async def _handle_github_failure(exc: Exception) -> dict[str, object] | None:
+            """Retain findings on revoked access; audit other failures before the caller raises."""
             status_code = _extract_status_code(exc)
             if status_code in _AUTH_REVOKED_STATUS_CODES:
-                # #065: the external-record GET (the first publish GitHub call) was rejected
-                # with 401/403/404 — auth revoked before publish. Retain, don't fail — same
-                # treatment as the Step-7 POST; the review can't publish, but it isn't an error.
+                # GitHub is the final authorization gate. Its rejection is a
+                # completed outcome without publication, rather than a failure.
                 return await _emit_auth_revoked_and_retain(
                     publish_event_sink=publish_event_sink,
                     review_status_sink=review_status_sink,
@@ -646,6 +431,24 @@ async def _publish_body(
                 status_code=status_code,
                 is_eval=state.is_eval,
             )
+            return None
+
+        # Recover a POST whose local PublishEvent never committed.
+        try:
+            # Token-minting failures belong to the same audited failure path.
+            gh = await github_factory(state.pr_context.installation_id)
+            existing_review_id = await publisher.find_existing_review_on_head_sha(
+                gh=gh,
+                owner=state.pr_context.owner,
+                repo=state.pr_context.repo,
+                pull_number=state.pr_context.pr_number,
+                head_sha=state.pr_context.head_sha,
+                body_marker=body_marker,
+            )
+        except Exception as exc:
+            failure_result = await _handle_github_failure(exc)
+            if failure_result is not None:
+                return failure_result
             raise
         if existing_review_id is not None:
             await _emit_attempt(
@@ -661,9 +464,6 @@ async def _publish_body(
                 # lands on the recovery path).
                 recovered_github_review_id=existing_review_id,
             )
-            # Terminal-success lifecycle write per canonical
-            # `docs/spec.md` §3.3 step 10. See the equivalent comment
-            # at the Step-4 short-circuit above for ordering rationale.
             await review_status_sink.mark_completed(review_id=state.review_id)
             return {
                 "publish_result": PublishResult.skipped_external(
@@ -676,22 +476,11 @@ async def _publish_body(
                 )
             }
 
-        # Step 7: POST the review. Failures emit attempt(failed) BEFORE
-        # re-raising so the audit trail has the failure_class on record.
-        # The phase-start remains dangling on failure (analyze convention).
+        # Failure handling leaves phase-start dangling when an error propagates.
         review_status = "COMMENT"  # V1: every published review is a comment.
-        # Status derivation lives upstream of publish (synthesize/HITL
-        # gate); future enhancement may compute review status from the
-        # highest-severity
-        # finding that actually posted (per docs/spec.md §V).
-        # Compose the marker-FIRST review body (DECISIONS.md#050): marker at
-        # offset 0 + optional "Related concerns" + optional aggregate
-        # dashboard-only note. The renderer sanitizes + size-caps; when all
-        # tiers are empty it returns the bare marker (byte-identical to the
-        # prior inline-only behavior). The count channels below report the
-        # findings MATERIALIZED into each tier (routing-pass counts); the 64KB
-        # review-body cap could in theory tail-truncate the rendered display at
-        # extreme finding counts, but the dashboard always carries the full set.
+        # The renderer preserves the offset-zero recovery marker and caps display
+        # text (DECISIONS.md#050). Counts describe materialized routing tiers; an
+        # extreme body can be tail-truncated while the dashboard retains all findings.
         review_body = _render_review_body(
             body_marker=body_marker,
             review_body_findings=tuple(eligible_review_body_findings),
@@ -712,42 +501,12 @@ async def _publish_body(
                 comments=tuple(eligible_inline_comments),
             )
         except Exception as exc:
-            status_code = _extract_status_code(exc)
-            if status_code in _AUTH_REVOKED_STATUS_CODES:
-                # #065: GitHub's authorization gate rejected the POST (401/403/404) — the App
-                # was uninstalled / suspended / lost repo access. Authorized-away, NOT a FAILED
-                # error: retain the review + record NOT_PUBLISHED_AUTH_REVOKED (shared with the
-                # Step-6 GET path). B2 does NOT promise "no post after revocation"; the POST is
-                # best-effort, GitHub is the final gate.
-                return await _emit_auth_revoked_and_retain(
-                    publish_event_sink=publish_event_sink,
-                    review_status_sink=review_status_sink,
-                    phase_event_sink=phase_event_sink,
-                    review_id=state.review_id,
-                    phase_id=phase_id,
-                    is_eval=state.is_eval,
-                    sorted_finding_ids=sorted_finding_ids,
-                    comments_attempted=len(eligible_inline_comments),
-                    status_code=status_code,
-                )
-            # Any other status (422 validation, 5xx, network, no HTTP context) is a genuine
-            # failure → FAILED + re-raise so the audit trail records the failure_class and
-            # the graph surfaces it (phase-start stays dangling per the analyze convention).
-            await _emit_attempt(
-                publish_event_sink=publish_event_sink,
-                review_id=state.review_id,
-                attempt_index=1,
-                outcome=PublishAttemptOutcome.FAILED,
-                sorted_finding_ids=sorted_finding_ids,
-                comments_attempted=len(eligible_inline_comments),
-                failure_class=type(exc).__name__,
-                status_code=status_code,
-                is_eval=state.is_eval,
-            )
+            failure_result = await _handle_github_failure(exc)
+            if failure_result is not None:
+                return failure_result
             raise
 
-        # Step 8: success path — emit attempt + canonical PublishEvent
-        # + phase end + return success result.
+        # Step 8: persist success before completion; the wrapper closes the phase.
         await _emit_attempt(
             publish_event_sink=publish_event_sink,
             review_id=state.review_id,
@@ -768,27 +527,12 @@ async def _publish_body(
                 review_status=review_status,
             )
         )
-        # Terminal-success lifecycle write per canonical `docs/spec.md`
-        # §3.3 step 10. Placed BEFORE `_emit_phase_end` so a lifecycle-
-        # write failure raises before the wrapper's phase-end, leaving
-        # phase-start dangling (the canonical "publish interrupted"
-        # signal); the `PublishEvent` is already committed so a
-        # sweep-driven retry sees prior-publish-event at Step 4 and
-        # short-circuits to IDEMPOTENTLY_SKIPPED, where `mark_completed`
-        # retries.
+        # The committed PublishEvent lets Step 4 retry a failed completion write
+        # without posting again. Failure still leaves phase-start dangling.
         await review_status_sink.mark_completed(review_id=state.review_id)
 
-        # NOTE: no Slack call here. BOTH message classes — the non-gated
-        # review-posted FYI and the gated status mirror — run in
-        # `_finalize_slack_notifications`, off the `publish` wrapper's single exit, so
-        # the idempotent-skip return paths above get them too. Placing either here is
-        # the defect that shipped twice: a notification reachable only on fresh
-        # success can never be repaired, because replay short-circuits before it.
-
-        # Started_at is not part of the result shape — kept as a local
-        # marker for future eval-timing metrics; PublishEvent doesn't
-        # carry it because the phase event bracket is the canonical
-        # timing source.
+        # Slack runs at the wrapper's shared exit so idempotent returns can repair it.
+        # Timing is represented by phase events; started_at is not part of the result.
         _ = started_at
         return {
             "publish_result": PublishResult.success(
@@ -799,10 +543,7 @@ async def _publish_body(
             )
         }
     finally:
-        # Release the advisory lock on every exit path (success,
-        # short-circuit return, raised exception). The acquired lock
-        # is transaction-scoped, so `aclose()` commits the lock-
-        # holding transaction and releases.
+        # Close the lock-holding transaction on every return or raised failure.
         await lock_stack.aclose()
 
 
@@ -812,23 +553,12 @@ async def _publish_body(
 
 
 def _extract_status_code(exc: BaseException) -> int | None:
-    """Extract HTTP status code from a publish-path exception, if present.
+    """Read HTTP status from the wrapper, raw SDK response, or chained cause.
 
-    Three exception shapes carry status; checked in order:
-      1. Wrapper exceptions (`GitHubReviewValidationError`,
-         `GitHubSecondaryRateLimitError`) set `exc.status_code` directly
-         at construction. Prefer this — it's the wrapper's contract.
-      2. Raw githubkit `RequestFailed` carries `exc.response.status_code`.
-         Falls through to this for raw passes-from-the-SDK paths.
-      3. Bare `GitHubPublishError` wraps the original SDK exception via
-         `raise ... from exc`; the original lives at `exc.__cause__`,
-         which carries `.response.status_code` for the SDK shape and
-         (in the wrapper subclasses' raise sites) `.status_code` directly.
-         Without this hop, non-422 POST failures + GET-reviews-list
-         failures would record `status_code=None` on `PublishAttemptEvent`.
-
-    Returns `None` for exceptions with no HTTP context (network errors
-    pre-response, programmer-error exceptions like `ValueError`).
+    Prefer the wrapper's direct `status_code`, then `response.status_code`.
+    GitHubPublishError can carry either shape on its original `__cause__`;
+    ignoring that cause would lose status on GET and non-422 POST failures.
+    Exceptions without HTTP context return None.
     """
     direct = getattr(exc, "status_code", None)
     if isinstance(direct, int):
@@ -859,17 +589,12 @@ async def _emit_auth_revoked_and_retain(
     comments_attempted: int,
     status_code: int,
 ) -> dict[str, object]:
-    """#065: a publish-path GitHub call was rejected with 401/403/404 — authorization
-    revoked (App uninstalled / suspended / repo removed). Record the retained no-post —
-    emit `PublishAttemptEvent(not_published_auth_revoked, status_code=<code>,
-    failure_class=None)`, mark the review `completed`, return the result (the `publish`
-    wrapper emits phase-end after Slack finalization).
+    """Record GitHub authorization revocation and retain the completed review (#065).
 
-    Shared by BOTH publish GitHub-call except paths — Step-6 `find_existing_review_on_head_sha`
-    (the GET, the first call) and Step-7 `create_review` (the POST) — so a revocation surfacing
-    at EITHER call is retained identically, not FAILED at one and revoked at the other.
-    `failure_class` is omitted (None): the attempt validator requires it absent for any
-    non-FAILED outcome. No `PublishEvent` + no Slack FYI — nothing was posted."""
+    GET and POST use this same outcome. Its attempt has a status code and no
+    failure_class, as required for a non-FAILED event. No PublishEvent or posted
+    FYI is produced; the wrapper handles Slack finalization and phase-end.
+    """
     await _emit_attempt(
         publish_event_sink=publish_event_sink,
         review_id=review_id,
@@ -885,41 +610,15 @@ async def _emit_auth_revoked_and_retain(
 
 
 def _collect_admitted_findings(state: ReviewState) -> list[ReviewFinding]:
-    """Read admitted findings from `state.review_report.findings`.
+    """Clone admitted findings from the required synthesized report.
 
-    After synthesize lands (canonical 7-node graph: trace → synthesize
-    → hitl → publish), the deduplicated + severity-sorted findings
-    tuple lives on `state.review_report.findings`. Publish consumes
-    that single canonical source. Fails LOUDLY if synthesize did not
-    run — a miswired graph that reaches publish without a populated
-    `review_report` would otherwise silently bypass synthesize's
-    content-hash dedup + cross-round severity-divergence detection,
-    proceeding under stale aggregation semantics. Fail-closed is the
-    audit-recommended posture.
-
-    **Findings are cloned via `model_copy()` before return.** Publish
-    mutates `finding.publish_destination` downstream
-    (`_route_and_gate_one_finding`), and `ReviewFinding` is
-    intentionally NOT frozen (`validate_assignment=True` only). Without
-    the clone, the mutation would bleed back into
-    `state.review_report.findings` — violating the shallow-frozen
-    contract documented at `schemas/review_report.py:60` and breaking
-    LangGraph's reducer model (state values are supposed to be returned
-    via state-delta dicts, not mutated in place). Pydantic V2 idiom per
-    `pydantic/concepts/models/index.md` "Faux immutability" +
-    `model_copy` patterns: clone outer immutable parent's mutable
-    children before downstream mutation.
-
-    Synthesize's content_hash dedup makes the
-    `_assert_no_duplicate_finding_ids` defense redundant for
-    well-formed reports — but we keep the assertion as belt-and-
-    suspenders against direct construction (test fixtures, replay
-    paths) bypassing synthesize.
+    Missing review_report fails closed: bypassing synthesize would lose its
+    content-hash dedup and cross-round severity-divergence checks. Findings are
+    mutable children of a shallow-frozen report, so copies prevent downstream
+    publish_destination assignment from mutating checkpointed report state.
+    `_assert_no_duplicate_finding_ids` also guards directly constructed reports.
     """
-    # Direct attribute access (not getattr-with-default) so a future
-    # schema rename of `review_report` surfaces as `AttributeError`
-    # rather than silently triggering the "synthesize must have run"
-    # RuntimeError.
+    # Direct access distinguishes a renamed schema field from a missing report.
     if state.review_report is None:
         msg = (
             "publish requires state.review_report to be set "
@@ -930,24 +629,13 @@ def _collect_admitted_findings(state: ReviewState) -> list[ReviewFinding]:
             "detection contracts."
         )
         raise RuntimeError(msg)
-    # `model_copy()` is shallow per Pydantic V2 "Faux immutability".
-    # NEVER pass `update={...}` here: model_copy with update bypasses
-    # ReviewFinding's `model_validator` chain (per the schema's own
-    # warning at `review_finding.py`'s docstring). Any future mutation
-    # of a finding must use the explicit-rebuild path: `ReviewFinding
-    # .model_validate({**finding.model_dump(), **{...}})` which
-    # re-runs validators.
+    # model_copy is shallow; adding update= would bypass ReviewFinding validators.
+    # Rebuild changed copies with model_validate to re-run those validators.
     return [f.model_copy() for f in state.review_report.findings]
 
 
 def _assert_no_duplicate_finding_ids(findings: list[ReviewFinding]) -> None:
-    """Pin the contract that admitted findings have distinct finding_ids.
-
-    Analyze's `append_with_dedup_by(lambda r: r.round_id)` reducer
-    dedups at the round layer; per the spec's "intra-execution drift
-    detection" the publish node ALSO defends at the finding layer
-    against producer regression.
-    """
+    """Reject duplicate finding IDs; round-level dedup cannot guard producer drift."""
     seen: set[UUID] = set()
     for f in findings:
         if f.finding_id in seen:
@@ -970,20 +658,13 @@ async def _route_and_gate_one_finding(
     eligible_review_body_findings: list[tuple[ReviewFinding, FindingSeverity]],
     surfaced_dashboard_only_findings: list[ReviewFinding],
 ) -> None:
-    """Route + gate one finding, emit both per-finding events, and (if ELIGIBLE)
-    collect it into exactly ONE of the three tier accumulators by destination
-    (DECISIONS.md#050): INLINE_COMMENT → `eligible_inline_comments`, REVIEW_BODY →
-    `eligible_review_body_findings`, DASHBOARD_ONLY → `surfaced_dashboard_only_findings`.
-    The eligibility gate is the SAME across all three tiers, so a WITHHELD
-    CRITICAL/HIGH finding lands in none of them.
+    """Route, gate, and audit a finding before materializing its destination (#050).
 
-    Per the spec's "routing-emission-failed recovery": if routing
-    emission raises, the per-finding `try/except` falls back to
-    eligibility=withheld + reason=routing_emission_failed.
+    Only ELIGIBLE findings enter one of the three accumulators; a WITHHELD
+    critical/high finding reaches none. Routing-sink failure instead emits
+    withheld eligibility with reason=routing_emission_failed.
     """
-    # Routing: branch on registry membership FIRST (cheap), then call
-    # tree_sitter_to_github for the slow path. Per the spec's reason
-    # mapping table at §V.
+    # Check diff membership before attempting coordinate translation.
     destination: PublishDestination
     routing_reason: PublishRoutingReason
     coord_kind: CoordinateErrorKind | None
@@ -1011,18 +692,11 @@ async def _route_and_gate_one_finding(
             inline_line = location.line
             inline_side = location.side
 
-    # Per the spec's "publish_destination pre-set overwrite" test:
-    # routing ALWAYS overwrites the finding's publish_destination
-    # regardless of any pre-set value (model can't pick destination).
+    # Overwrite any pre-set destination: routing is never model-assigned.
     finding.publish_destination = destination
 
-    # Build the routing event OUTSIDE the try/except: hash computation
-    # and `PublishRoutingEvent(...)` construction (Pydantic validation)
-    # are producer/schema concerns, not sink-I/O concerns. Wrapping
-    # them in the recovery path would silently convert producer bugs
-    # (drift between event schema + emitter, hash recipe regression)
-    # into `routing_emission_failed` — masking the bug as a withheld
-    # finding instead of failing fast.
+    # Build outside sink-I/O recovery: hash or schema bugs must fail, not become
+    # routing_emission_failed and silently withhold a finding.
     coord_kind_value = coord_kind.value if coord_kind is not None else None
     finding_content_hash = compute_finding_content_hash(
         file_path=finding.file_path,
@@ -1054,10 +728,8 @@ async def _route_and_gate_one_finding(
     try:
         await publish_event_sink.emit_publish_routing(routing_event)
     except Exception:
-        # Unlike every other publish failure (which emits PublishAttemptEvent(FAILED) and
-        # re-raises), this sink-I/O catch withholds the finding and continues — so a transient
-        # audit-DB hiccup silently lowers comments_posted. Log it so the withholding is visible
-        # (WARNING, so the demo's error tee catches it); the recovery path is unchanged.
+        # Recovery continues with one fewer eligible finding; warn so the reduced
+        # comments_posted count is explained in logs and the demo's error tee.
         logger.warning(
             "publish: routing-event emit failed for finding %s; withholding from GitHub "
             "(ROUTING_EMISSION_FAILED)",
@@ -1078,10 +750,7 @@ async def _route_and_gate_one_finding(
             PublishEligibilityReason.ROUTING_EMISSION_FAILED
         )
     else:
-        # HITL context flows through explicit kwargs per the gate's
-        # pure-function contract; state.hitl_request / state.hitl_decision
-        # are populated by the HITL node body (None for the pass-through
-        # path or for graph-wiring bypasses).
+        # The pure gate receives HITL context explicitly, including a missing gate.
         eligibility, eligibility_reason = is_eligible_for_v1_publish(
             finding,
             hitl_request=state.hitl_request,
@@ -1092,18 +761,8 @@ async def _route_and_gate_one_finding(
         eligibility=eligibility,
         reason=eligibility_reason,
     )
-    # Reuse `finding_content_hash` (computed once above for the routing event): the
-    # eligibility event binds the SAME (file_path, line_start, line_end, finding_type)
-    # identity tuple, so a second identical hash computation is wasted work.
-
-    # Look up the matching HITL decision (if any) to honor a
-    # SEVERITY_OVERRIDE outcome. Per the post-HITL audit convention
-    # (mirror of ReviewFinding): when override is in effect, the audit
-    # row's `severity` carries the OVERRIDE value and
-    # `original_severity` carries the POLICY BASELINE; the rendered
-    # GitHub comment header uses the override value too. When no
-    # override, severity = baseline (= SEVERITY_POLICY[finding_type]),
-    # original_severity = None.
+    # Routing and eligibility share the finding identity hash. Rendering and this
+    # event also share effective severity; an override retains its policy baseline.
     effective_severity, original_severity_for_audit = _resolve_effective_severity(
         finding=finding, hitl_decision=state.hitl_decision
     )
@@ -1124,13 +783,8 @@ async def _route_and_gate_one_finding(
             eligibility=eligibility,
             reason=eligibility_reason,
             # See DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.
-            # Mirror the finding's captured policy_version snapshot, NOT the
-            # live `active_policy_version` constant. HITL pauses can span a
-            # deploy that bumps ACTIVE_POLICY_VERSION; stamping the live
-            # value here would record the eligibility row under a policy
-            # the finding's severity was NOT classified under, breaking
-            # `severity-policy-versioned-for-replay`. Same defense class
-            # as the triage-anchored snapshot in synthesize.
+            # HITL can span a policy deploy. Use the finding's captured version so
+            # replay binds this severity to the policy that classified it.
             policy_version=finding.policy_version,
         )
     )
@@ -1145,18 +799,9 @@ async def _route_and_gate_one_finding(
         and inline_line is not None
         and inline_side is not None
     ):
-        # Build the inline comment via the canonical factory. Body
-        # construction is V1-minimal: severity + finding type + title
-        # + description. The full sanitizer pipeline applies — caller
-        # never sees raw model output.
-        # S1 agent-readable markers (ROADMAP.md section 3): append a
-        # `<!-- outrider:KEY VALUE -->` block rendered from deterministic
-        # fields. hitl-gated keys on the BASELINE severity (the policy-assigned
-        # value the HITL gate actually fired on), NOT the post-override
-        # `finding.severity` — a baked-override finding (baseline CRITICAL →
-        # reviewer LOW: original_severity=CRITICAL, severity=LOW) WAS gated, so
-        # `hitl-gated true` must agree with the reviewer-* markers. Mirror of the
-        # baseline form in `_resolve_effective_severity` + `publish_eligibility`.
+        # hitl-gated describes the baseline that triggered approval, even when a
+        # stored override has lowered finding.severity. It must agree with the
+        # reviewer markers, `_resolve_effective_severity`, and publish_eligibility.
         baseline_severity = (
             finding.original_severity if finding.original_severity is not None else finding.severity
         )
@@ -1167,15 +812,10 @@ async def _route_and_gate_one_finding(
             hitl_gated=hitl_gated,
             hitl_decision=state.hitl_decision,
         )
-        # S1.5: a visible (collapsed) deterministic "Prompt for AI agents" block a
-        # developer pastes into their coding agent. Built from verified fields; the
-        # untrusted model summary is fenced + length-bounded. No LLM call.
+        # The copy-paste agent prompt fences and bounds model prose without an LLM call.
         agent_prompt = _build_agent_prompt_block(finding, effective_severity=effective_severity)
-        # Feature-2 (DECISIONS.md#040): render the finding's stored single-line fix as
-        # a GitHub ```suggestion block. Reaches here ONLY on INLINE_COMMENT + ELIGIBLE,
-        # so a generated patch on a DASHBOARD_ONLY / REVIEW_BODY finding never renders
-        # (generate-before-routing, render-after-routing). Read-only: suppressed without
-        # mutation when suggested_fix is absent or backtick-bearing.
+        # Fixes are generated before routing but render only for eligible inline
+        # findings (#040). The renderer omits absent or unsafe fixes without mutation.
         suggestion = _render_suggestion_block(finding.suggested_fix)
         body = _build_finding_comment_body(
             finding,
@@ -1196,9 +836,7 @@ async def _route_and_gate_one_finding(
     elif (
         destination is PublishDestination.REVIEW_BODY and eligibility is PublishEligibility.ELIGIBLE
     ):
-        # Eligible unchanged-region finding → "Related concerns" entry. Severity
-        # is the policy/HITL-resolved effective value (the SAME gate as inline);
-        # the renderer sanitizes + caps at body-assembly time (DECISIONS.md#050).
+        # Body concerns use the same eligibility gate and effective severity as inline.
         eligible_review_body_findings.append((finding, effective_severity))
     elif (
         destination is PublishDestination.DASHBOARD_ONLY
@@ -1212,29 +850,17 @@ async def _route_and_gate_one_finding(
 def _resolve_inline_location(
     *, finding: ReviewFinding, state: ReviewState
 ) -> GitHubCommentLocation:
-    """Resolve a `ReviewFinding` to a `GitHubCommentLocation` via coordinates.
+    """Translate head-source lines into the canonical GitHub comment location.
 
-    Returns the `GitHubCommentLocation` (file_path + line + side) on
-    success; raises `CoordinateError` on unchanged-region / past-EOF /
-    etc. The publisher's caller catches and maps the kind to a routing
-    reason. Returning the canonical `coordinates` type directly (rather
-    than a dict) lets the caller type-narrow each field at attribute
-    access without an `int | str` union dance.
-
-    `side` ("LEFT" | "RIGHT") comes from `GitHubCommentLocation` and is
-    passed through to `InlineComment` unchanged — the publisher does
-    not independently decide head-vs-base. V1 always sees "RIGHT"
-    because `tree_sitter_to_github` accepts only `head_content` today;
-    a future spec adding LEFT-side commenting extends the translator,
-    not this resolver (per `coordinates-module-is-sole-translator` +
-    spec §V publisher-input-contract sub-rule).
+    The caller maps CoordinateError kinds to routing reasons. Location.side is
+    passed through unchanged; current translation uses head content and yields
+    RIGHT. LEFT-side support belongs in coordinates, not this resolver
+    (`coordinates-module-is-sole-translator`).
     """
-    # Find the ChangedFile for this finding.file_path so we have the
-    # head content + patch. _collect_admitted_findings's caller has
-    # already ensured the file is in `changed_paths`, so this lookup
-    # is guaranteed to find a match for the inline path. The
-    # comprehension expresses this intent.
-    matching = [cf for cf in state.pr_context.changed_files if cf.path == finding.file_path]
+    matching = []
+    for candidate_file in state.pr_context.changed_files:
+        if candidate_file.path == finding.file_path:
+            matching.append(candidate_file)
     if not matching:
         # Defensive: caller already filtered on `changed_paths`. If
         # the registry says yes but pr_context disagrees, that's a
@@ -1246,24 +872,14 @@ def _resolve_inline_location(
         )
     changed_file = matching[0]
     if changed_file.content_head is None or changed_file.patch is None:
-        # `removed` files have content_head=None; trying to publish
-        # against a removed file can't anchor inline. Distinct from
-        # FILE_NOT_IN_PATCH (which means "absent from patch entirely")
-        # — the file IS in the patch, just deleted. Per audit-stream
-        # replay equivalence: a finding on a deleted file should
-        # surface with a discriminating reason, not collapse into the
-        # registry-miss bucket.
+        # A deleted file is in the diff but has no head anchor. Preserve that
+        # reason instead of collapsing it into the FILE_NOT_IN_PATCH bucket.
         raise CoordinateError(
             f"file {finding.file_path!r} has no content_head or patch "
             f"(status={changed_file.status!r}); cannot anchor inline comment.",
             kind=CoordinateErrorKind.HEAD_CONTENT_UNAVAILABLE,
         )
-    # `source_line_to_github` is the line-based entry point in
-    # coordinates: `ReviewFinding` carries `line_start` / `line_end`
-    # (source-line coords on head), not the byte-span coords
-    # `tree_sitter_to_github` consumes directly. The line→byte
-    # translation lives in `coordinates/translator.py` per
-    # `coordinates-module-is-sole-translator`.
+    # Findings carry head-source line ranges; coordinates owns line-to-byte translation.
     return source_line_to_github(
         file_path=finding.file_path,
         line_start=finding.line_start,
@@ -1307,40 +923,15 @@ def _resolve_effective_severity(
     finding: ReviewFinding,
     hitl_decision: HITLDecision | None,
 ) -> tuple[FindingSeverity, FindingSeverity | None]:
-    """Apply a matching HITL `SEVERITY_OVERRIDE` decision to the
-    finding's severity for publish-time rendering.
+    """Return `(effective_severity, original_severity_for_audit)` for rendering.
 
-    Returns `(effective_severity, original_severity_for_audit)`:
+    A matching HITL SEVERITY_OVERRIDE supplies the effective value and preserves
+    the policy baseline in original_severity. Without it, return baseline and None;
+    forged override fields are withheld by publish_eligibility, never legitimized
+    here. Baseline is finding.original_severity when present, otherwise severity.
 
-      - LEGITIMATE OVERRIDE — a matching
-        `PerFindingDecision(outcome=SEVERITY_OVERRIDE)` is present in
-        `hitl_decision`:
-          effective = decision.override_severity (reviewer's choice)
-          original_severity_for_audit = baseline (policy mapping)
-        The audit event records the override on `severity` + the
-        baseline on `original_severity` — replay reconstructs "what
-        severity did the GitHub comment show" from this pair.
-
-      - NO MATCHING OVERRIDE — either `hitl_decision is None` OR the
-        matching decision is not SEVERITY_OVERRIDE OR the finding's
-        forged `original_severity` lacks a legitimating decision:
-          effective = baseline (policy mapping)
-          original_severity_for_audit = None
-        The audit event records the baseline on `severity` + None on
-        `original_severity` — the gate's WITHHELD outcome
-        (UNEXPECTED_OVERRIDE_FIELDS_PRESENT) records that the forged
-        finding never reached GitHub.
-
-    The baseline is computed mirror-of-ReviewFinding: when the finding
-    itself carries a non-None `original_severity`, that field IS the
-    baseline (and `finding.severity` carries the would-be-override).
-    Otherwise `finding.severity` IS the baseline (LLM-produced under
-    policy, no override path involved).
-
-    Per `severity-set-by-policy`, the override REASON + reviewer
-    identity live on the paired `HITLDecisionEvent.decisions[i]`
-    joined by `finding_id` — the publish event records only the
-    override SIGNAL + the resolved effective severity.
+    The GitHub header and eligibility event use this same pair. Override reason
+    and reviewer identity remain on the HITLDecisionEvent, joined by finding_id.
     """
     # Find a matching SEVERITY_OVERRIDE decision (if any).
     matching: PerFindingDecision | None = None
@@ -1366,32 +957,21 @@ def _resolve_effective_severity(
 
 
 def _escape_angle_brackets(value: str) -> str:
-    """HTML-escape ``<`` / ``>`` to entities. Kills any HTML-comment open (``<!--``)
-    or close (``-->`` / HTML5 ``--!>``) and any tag (``</details>``) as a RAW-TEXT
-    substring — ``&lt;`` has no ``<`` character, so a grep for ``<!-- outrider:...``
-    (the agent marker contract, which runs on raw comment bytes, NOT rendered HTML)
-    cannot match an escaped value. Used for every attacker-influenced string that
-    shares the comment body with the trustworthy machine-readable markers."""
+    """Escape angle brackets so raw text cannot open/close HTML tags or comments.
+
+    Agent markers are parsed from raw comment bytes. Entity-escaped untrusted
+    values cannot match their full `<!-- outrider:... -->` form.
+    """
     return value.replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _marker_safe(value: str) -> str:
-    """Make a free-string marker value safe to embed on a single
-    ``<!-- outrider:KEY VALUE -->`` line. Two structural risks, both neutralized:
+    """Keep a free-string value on one `<!-- outrider:KEY VALUE -->` line.
 
-    1. A newline would let the value span into a FORGED authoritative marker line
-       — the block is ``"\\n".join(...)`` and agents parse it line-by-line — so
-       ``\\r`` / ``\\n`` collapse to a space.
-    2. ``<`` / ``>`` are HTML-escaped, so the value cannot contain a comment open
-       (``<!--``) or ANY comment close (``-->`` or the HTML5 ``--!>``). Escaping
-       the angle brackets is whack-a-mole-proof — no HTML-comment syntax survives
-       without a ``<`` or ``>``, so no early close and no nested/forged marker.
-
-    ``reviewer_id`` is the one free-string marker value (every other value is a
-    UUID / enum value / bare-semver / ISO timestamp / literal true|false — all
-    structurally angle-bracket- and newline-free). It is server-set to ``"admin"``
-    in V1, so this is a no-op today and a COMPLETE forward guard for per-user
-    identity (V2). Deterministic at the renderer — boundary #6, not caller trust."""
+    Collapse CR/LF to prevent forged marker lines, then escape angle brackets to
+    prevent comment opening or closing, including HTML5 --!>. The free-string
+    reviewer_id is server-set to admin today; the renderer still guards it.
+    """
     return _escape_angle_brackets(value.replace("\r", " ").replace("\n", " "))
 
 
@@ -1402,28 +982,16 @@ def _build_agent_markers(
     hitl_gated: bool,
     hitl_decision: HITLDecision | None,
 ) -> str:
-    """S1 agent-readable HTML-comment marker block (ROADMAP.md section 3).
+    """Render decided fields as ordered agent-readable markers (ROADMAP §3 / S1).
 
-    Every value is a deterministic, already-decided field — never model output
-    (boundary #6). `severity` is the post-HITL-override `effective_severity`, the
-    same value the comment header and `PublishEligibilityEvent.severity` carry, so
-    an agent parsing the marker and a human reading the header always agree.
-    `policy-version` is the finding's captured snapshot (`DECISIONS.md#028`), not
-    the live `ACTIVE_POLICY_VERSION`.
+    Severity matches the header and eligibility event; policy-version is the
+    finding's captured snapshot (#028). These structured values bypass the prose
+    sanitizer to preserve the raw `outrider:` contract. The free-string reviewer
+    ID uses `_marker_safe`; the remaining values have no comment-close syntax.
 
-    Markers are identifiers / enum values / a semver / an ISO timestamp / the
-    server-set reviewer login ("admin" in V1) — NOT model prose — so they
-    intentionally bypass `sanitize_display_string`; routing them through it would
-    corrupt the `outrider:` grep contract. `reviewer_id` is the one free-string
-    value, so `_marker_safe` neutralizes any `-->` it could carry (a no-op for
-    V1's server-set "admin"); every other value is structurally `-->`-free.
-
-    Marker order matches the ROADMAP section 3 example (finding-id, finding-type,
-    severity, evidence-tier, policy-version, hitl-gated, reviewer-*, review-id).
-    The `outrider:agent-view-url` marker from the roadmap is omitted: the REST
-    /agent-view endpoint exists, but emitting a usable link needs a configured
-    public base URL (FUP-155); a base-less URL an agent might GET is worse than
-    its absence.
+    Order is finding-id, finding-type, severity, evidence-tier, policy-version,
+    hitl-gated, reviewer-*, review-id. agent-view-url remains omitted until a
+    public base URL is available (FUP-155), despite the endpoint already existing.
     """
     lines = [
         _AGENT_MARKER_TEMPLATE.format(key="finding-id", value=finding.finding_id),
@@ -1467,43 +1035,25 @@ def _build_agent_markers(
     return "\n".join(lines)
 
 
-# Upper bound on the bytes the model-generated finding summary contributes to the
-# S1.5 agent-prompt block. The visible comment prose above carries the full text;
-# 4 KiB is ample for a copy-paste agent prompt. The rendered block can still grow
-# beyond this for a backtick-heavy description (render_fenced_block sizes the fence
-# to longest-backtick-run + 1), but _build_finding_comment_body's outer reserve caps
-# the TOTAL comment body at GITHUB_COMMENT_BODY_MAX regardless.
+# Bound the agent-prompt summary to 4 KiB. Adaptive fencing can enlarge the block;
+# _build_finding_comment_body reserves its full size within the outer byte cap.
 _AGENT_PROMPT_SUMMARY_MAX_BYTES = 4096
 
 
 def _build_agent_prompt_block(
     finding: ReviewFinding, *, effective_severity: FindingSeverity
 ) -> str:
-    """S1.5 deterministic copy-paste "Prompt for AI agents" block (ROADMAP §3).
+    """Render a deterministic copy-paste agent prompt inside collapsed details.
 
-    A VISIBLE (collapsed) `<details>` block a developer pastes into Cursor / Claude
-    Code / Devin. DETERMINISTIC — no LLM call. The whole prompt is wrapped in one
-    breakout-safe code fence (`render_fenced_block`): inside a fence markdown AND
-    HTML are inert, so the model prose renders literally — `</details>` can't close
-    the fold, markdown can't inject, and the fence count is computed longer than any
-    backtick run so the summary can't break out of its own fence. But the fence
-    protects only the RENDERED view; the agent marker contract greps RAW comment
-    text, so the untrusted summary AND the attacker-influenced file_path are ALSO
-    entity-escaped (`_escape_angle_brackets` / `_marker_safe`) — `&lt;` has no `<`,
-    so neither can forge a grep-parseable `<!-- outrider:KEY VALUE -->` HTML-comment
-    marker alongside the trustworthy ones (santa round-3, 3-lens HIGH). This defends
-    the full HTML-comment marker form — the structural element an agent matches. The
-    bare `outrider:` PREFIX token still survives (escaped) in untrusted prose, so a
-    loose `outrider:*`-prefix grep can still read a forged value; making the marker
-    namespace unforgeable to a prefix grep is a broader, pre-existing question (the
-    visible-prose copy has the same property) tracked in FUP-154. The summary is the
-    only model prose part: length-bounded (so a huge description can't blow the byte
-    budget), control-code-stripped by `render_fenced_block`, and LABELLED as
-    untrusted context — never instructions (boundary #6: the model proposes, the
-    human paste disposes). The scaffold (finding id / type / severity / evidence
-    tier / policy version / location) is rendered from verified fields. No
-    `agent-view-url` until a public base URL is configured (FUP-155; the /agent-view
-    endpoint itself exists) — a dead link is worse than its absence.
+    render_fenced_block strips controls and chooses a fence longer than internal
+    backtick runs, making Markdown/HTML inert in the rendered view. Raw-marker
+    parsing needs a separate defense: entity-escape the model summary and file
+    path so they cannot forge full `<!-- outrider:KEY VALUE -->` markers. A loose
+    prefix-only grep can still match untrusted `outrider:` text (FUP-154).
+
+    The summary is length-bounded and labelled as untrusted context, never
+    instructions. The scaffold uses verified fields, with no LLM call. A public
+    agent-view URL remains deferred under FUP-155.
     """
     from outrider.policy.output_sanitizer import (  # noqa: PLC0415
         GITHUB_COMMENT_BODY_MAX,
@@ -1511,13 +1061,8 @@ def _build_agent_prompt_block(
         render_fenced_block,
     )
 
-    # Bound the untrusted model summary to a fixed size (reuse apply_size_cap's
-    # reserve to express a hard 4 KiB cap), THEN entity-escape `<`/`>`. The fence
-    # below makes the summary render-inert, but the agent marker contract greps RAW
-    # comment text — without the escape, a description with a literal
-    # `<!-- outrider:severity low -->` would forge a grep-parseable marker beside the
-    # trustworthy ones. render_fenced_block then strips control codes + bounds
-    # backtick breakout. (`&lt;` keeps newlines, so the summary's structure survives.)
+    # Cap the summary first, then escape angles for raw-marker safety. The later
+    # fence protects rendering; entity escaping preserves the summary's newlines.
     summary = _escape_angle_brackets(
         apply_size_cap(
             f"{finding.title}\n\n{finding.description}",
@@ -1591,31 +1136,14 @@ def _build_finding_comment_body(
     agent_prompt: str = "",
     markers: str = "",
 ) -> str:
-    """V1-minimal comment body. Full sanitizer pipeline applies.
+    """Render sanitized prose, reserving space for complete evidence and marker blocks.
 
-    `effective_severity` is the post-HITL-override severity to render
-    in the header. Resolved by `_resolve_effective_severity(...)` —
-    matches what publish.py emits on `PublishEligibilityEvent.severity`
-    so the user-visible GitHub comment and the audit shadow agree on
-    the effective severity.
-
-    Builds `**severity** · **finding_type** — title\n\ndescription` and
-    runs it through `sanitize_display_string` + `apply_size_cap`. The
-    sanitizer enforces the byte cap including the truncation marker
-    and any fencing overhead the body composes.
-
-    The uncuttable tail is, in order: the proof line (`_render_proof_line`, always
-    present — carries the evidence-tier phrase), the fenced evidence snippet
-    (`evidence_block`, omitted when `finding.evidence` is empty), the labelled
-    ```suggestion block (`fix_block`, whose Apply button must not be truncated), the
-    S1.5 agent-prompt block (`agent_prompt`), and the S1 agent-marker block (`markers`).
-    All are pre-bounded; the PROSE (header + description) is size-capped reserving room
-    for the whole suffix, then each block is appended UNCUT, so truncation can never cut
-    a code fence, the suggestion Apply button, or the marker block. With every tail block
-    empty the prose is capped alone (original behaviour).
-    """
-    # Local import to keep the module top-level clean and to avoid
-    # pulling the sanitizer's HMAC-secret env-read at import time.
+    Effective severity matches the eligibility event. The suffix keeps the proof
+    line, fenced evidence, safe suggestion, agent prompt and markers intact, in that
+    order. Only header/description prose is truncated. Truncation reads the configured
+    HMAC secret through apply_size_cap."""
+    # Keep sanitizer use at the rendering boundary. apply_size_cap reads the
+    # HMAC secret when truncation is needed, not when this module is imported.
     from outrider.policy.output_sanitizer import (  # noqa: PLC0415
         apply_size_cap,
         render_fenced_block,
@@ -1658,7 +1186,7 @@ def _build_finding_comment_body(
 # Review-body renderers (DECISIONS.md#050) — the "Related concerns" section for
 # eligible REVIEW_BODY findings + the aggregate DASHBOARD_ONLY note. Siblings to
 # `_build_finding_comment_body`: same "node renders + sanitizes + caps, publisher
-# posts raw" contract. PURE + PRE-GATED — the caller (the routing loop) passes
+# posts raw" contract. PRE-GATED — the caller (the routing loop) passes
 # only ELIGIBLE findings, so a WITHHELD CRITICAL/HIGH never reaches the body
 # (trust boundary #6). Wired into the publish node's Step-7 body composition.
 # ---------------------------------------------------------------------------
@@ -1680,24 +1208,16 @@ def _review_deep_link(base_url: str | None, review_id: UUID, finding_id: UUID | 
 def _render_related_concern_entry(
     finding: ReviewFinding, *, effective_severity: FindingSeverity, deep_link: str | None
 ) -> str:
-    """One "Related concerns" entry for an ELIGIBLE REVIEW_BODY finding.
+    """Render one eligible review-body finding with location and optional dashboard link.
 
-    Per `docs/spec.md` §4.1.7: a `file:line` reference + a dashboard link for full
-    context — NOT the full description (that lives in the dashboard). Severity is
-    policy/HITL-resolved (`effective_severity`), never model-set (boundary #2). The
-    model-authored `title` AND the displayed `file_path` both pass through
-    `sanitize_display_string`: the path is rendered as TEXT here (unlike inline
-    comments, where it is the GitHub API anchor), so `@`/`#`/backtick in a path
-    (e.g. `@scope/pkg`, `@types/`) would otherwise spawn a mention/ref/code-span.
-    """
+    Severity is policy/HITL-resolved (docs/spec.md §4.1.7, boundary #2). Sanitize
+    title and displayed path as untrusted prose, then flatten title newlines so the
+    entry remains one list item. A title may come from query metadata or a model."""
     from outrider.policy.output_sanitizer import sanitize_display_string  # noqa: PLC0415
 
     location = sanitize_display_string(f"{finding.file_path}:{finding.line_start}")
-    # Collapse CR/LF: each entry is a single markdown list item (the renderer joins
-    # entries with "\n"), and `sanitize_display_string` escapes metachars but does
-    # NOT strip newlines. `title` is model-authored with only a max_length cap (no
-    # newline validator, unlike `file_path`), so an embedded newline would splinter
-    # the bullet across lines and detach the dashboard link.
+    # Titles have a length cap, but allow CR/LF that sanitization retains. Flatten
+    # them so the concern and its dashboard link stay in one markdown list item.
     title = sanitize_display_string(finding.title).replace("\r", " ").replace("\n", " ")
     # deep_link is operator-config (dashboard_base_url) + UUIDs (review/finding
     # ids): no `)`/whitespace, so the markdown link target needs no escaping. If
@@ -1715,21 +1235,11 @@ def _render_review_body(
     review_id: UUID,
     dashboard_base_url: str | None,
 ) -> str:
-    """Compose the marker-FIRST GitHub review body (DECISIONS.md#050).
+    """Render the recovery marker first, then eligible concerns and a dashboard count.
 
-    Layout: `body_marker` at offset 0 (load-bearing — crash-recovery's
-    `find_existing_review_on_head_sha` matches `startswith(body_marker)`), then an
-    optional "Related concerns" section (one entry per eligible review-body
-    finding), then an optional aggregate dashboard-only note (count + link only,
-    never per-finding). The assembled body is `apply_size_cap`-ed against
-    `GITHUB_REVIEW_BODY_MAX`; the cap tail-truncates, so the offset-0 marker
-    survives — preserving the startswith recovery contract on an over-cap body.
-
-    PURE + PRE-GATED: the caller passes only ELIGIBLE review-body findings and
-    surfaced=eligible dashboard-only findings, so a WITHHELD CRITICAL/HIGH finding
-    never reaches the body — the gate lives in the routing loop, the renderer
-    trusts its inputs (mirroring `_build_finding_comment_body`).
-    """
+    The caller supplies only eligibility-approved findings (DECISIONS.md#050).
+    Tail truncation preserves the offset-zero marker used by GitHub crash recovery.
+    apply_size_cap reads the HMAC secret only if truncation is needed."""
     from outrider.policy.output_sanitizer import (  # noqa: PLC0415
         GITHUB_REVIEW_BODY_MAX,
         apply_size_cap,
@@ -1738,31 +1248,36 @@ def _render_review_body(
     sections: list[str] = [body_marker]
 
     if review_body_findings:
-        entries = [
-            _render_related_concern_entry(
-                finding,
-                effective_severity=severity,
-                deep_link=_review_deep_link(dashboard_base_url, review_id, finding.finding_id),
+        entries: list[str] = []
+        for related_finding, related_severity in review_body_findings:
+            entries.append(
+                _render_related_concern_entry(
+                    related_finding,
+                    effective_severity=related_severity,
+                    deep_link=_review_deep_link(
+                        dashboard_base_url, review_id, related_finding.finding_id
+                    ),
+                )
             )
-            for finding, severity in review_body_findings
-        ]
         sections.append("## Related concerns\n\n" + "\n".join(entries))
 
     if dashboard_only_findings:
-        m = len(dashboard_only_findings)
-        n = len({f.file_path for f in dashboard_only_findings})
+        finding_count = len(dashboard_only_findings)
+        file_count = len(
+            {dashboard_finding.file_path for dashboard_finding in dashboard_only_findings}
+        )
         aggregate_link = _review_deep_link(dashboard_base_url, review_id, None)
-        # Pronoun agrees with the finding count (m==1 -> "it", else "them") so the
-        # singular case reads "found 1 additional concern. View it at ...".
-        pronoun = "them" if m != 1 else "it"
+        pronoun = "them" if finding_count != 1 else "it"
         where = (
             f"View {pronoun} at {aggregate_link}."
             if aggregate_link
             else f"View {pronoun} in the Outrider dashboard."
         )
         sections.append(
-            f"Outrider found {m} additional concern{'s' if m != 1 else ''} in "
-            f"{n} file{'s' if n != 1 else ''} it couldn't comment on inline. {where}"
+            f"Outrider found {finding_count} additional concern"
+            f"{'s' if finding_count != 1 else ''} in "
+            f"{file_count} file{'s' if file_count != 1 else ''} "
+            f"it couldn't comment on inline. {where}"
         )
 
     return apply_size_cap("\n\n".join(sections), max_bytes=GITHUB_REVIEW_BODY_MAX)

@@ -1,31 +1,10 @@
 # See specs/2026-05-16-audit-persister.md + DECISIONS.md#012 + #016.
-"""RetentionSettings — operator-overridable retention TTL for audit content.
+"""Operator-configured retention for LLM content, findings, and reviews.
 
-Per `DECISIONS.md#012` ("Every review, finding, audit event, and installation
-row has a retention TTL, set in configuration and operator-overridable via
-`pydantic-settings`"), retention values must be operator-tunable rather than
-hard-coded module constants.
-
-This module owns the three audit content-table retention TTLs:
-`llm_content_retention_ttl` (llm_call_content rows), `findings_retention_ttl`
-(findings rows, written by the findings-content writer), and
-`review_retention_ttl` (reviews rows).
-
-Validators:
-  - `gt=timedelta(0)` on every TTL field: rejects zero AND negative TTLs at
-    construction. Operator setting any TTL env var to `0` raises
-    `ValidationError` at startup, not a silent metadata-only-replay slip
-    where the retention sweep deletes every content row on its next tick.
-  - Ordering check (`_enforce_retention_ordering`): the three TTLs must satisfy
-    `llm_content <= findings <= review`. The most-sensitive content (LLM
-    prompt/completion text) carries the shortest TTL; findings (structured
-    finding content) sit between; the review row outlives both. The ordering
-    is the load-bearing replay invariant — `findings.review_id` is
-    `ON DELETE CASCADE`, so a findings TTL exceeding the review TTL is
-    unreachable (findings cascade-die with the review) AND would let an
-    operator manufacture the review-purged/content-survives state that
-    `audit.replay._classify_mode` treats as corruption. Fail loud at
-    construction instead.
+All three default to 90 days and must be positive, with
+`llm_content <= findings <= review` (`DECISIONS.md#012/#014/#016`).
+Prompt/completion content expires first; its review outlives the content.
+Construction validates the ordering before writers assign row deadlines.
 """
 
 from datetime import timedelta
@@ -61,42 +40,15 @@ _DEFAULT_REVIEW_RETENTION_TTL: Final[timedelta] = timedelta(days=90)
 
 
 class RetentionSettings(BaseSettings):
-    """Retention TTLs for audit content tables.
+    """Frozen retention settings read from `OUTRIDER_AUDIT_*` environment variables.
 
-    Env-prefix matches the per-subsystem `OUTRIDER_<SUBSYSTEM>_` convention
-    established by `ModelConfig` in `llm/config.py`. Env var names:
+    The TTL names are `LLM_CONTENT_RETENTION_TTL`, `FINDINGS_RETENTION_TTL`,
+    and `REVIEW_RETENTION_TTL`. Environment values use ISO-8601 durations
+    such as `P7D` or `PT24H`; bare integer seconds are rejected.
 
-      - `OUTRIDER_AUDIT_LLM_CONTENT_RETENTION_TTL` (llm_call_content rows)
-      - `OUTRIDER_AUDIT_FINDINGS_RETENTION_TTL` (findings rows, written by
-        the findings-content writer — operator-overridable per
-        `DECISIONS.md#014`)
-      - `OUTRIDER_AUDIT_REVIEW_RETENTION_TTL` (reviews rows, added by the
-        intake-and-webhook spec — operator-overridable per
-        `DECISIONS.md#012/#014`)
-
-    `frozen=True` means construction-time-only configuration; tests that
-    need a non-default value re-construct with explicit kwargs rather
-    than mutating an instance. Mirrors the `ModelConfig` pattern.
-
-    `pydantic-settings` 2.13.1 parses `timedelta` env vars as **ISO-8601
-    duration strings only** (`P7D`, `PT24H`, `PT3600S`). Bare integers
-    (e.g., `604800` for seconds) are NOT accepted — pinned by
-    `tests/unit/test_retention_settings.py::test_env_var_bare_integer_seconds_is_rejected`.
-    The `gt=timedelta(0)` constraint rejects zero AND negative values at
-    construction, surfacing operator misconfiguration before any content
-    row lands.
-
-    **Test-construction pattern.** Tests that need a non-default TTL
-    MUST construct via explicit kwargs, e.g.
-    `RetentionSettings(llm_content_retention_ttl=timedelta(days=N))` or
-    `RetentionSettings(review_retention_ttl=timedelta(days=N))`.
-
-    Do NOT use `model_copy(update={...})`. Pydantic v2's `model_copy`
-    is permitted on frozen models AND **does not validate the update
-    payload** — a copy with `update={"llm_content_retention_ttl":
-    timedelta(0)}` (or any other TTL field) silently bypasses the
-    `gt=timedelta(0)` constraint AND the ordering validator below. Only the
-    explicit-kwarg constructor runs the validators.
+    Construct with explicit keyword arguments for overrides. Do not use
+    `model_copy(update=...)`: it bypasses positivity and ordering validation
+    even on frozen models. See `test_retention_settings.py`.
     """
 
     model_config = SettingsConfigDict(
@@ -145,18 +97,11 @@ class RetentionSettings(BaseSettings):
 
     @model_validator(mode="after")
     def _enforce_retention_ordering(self) -> Self:
-        """Pin `llm_content <= findings <= review` (the retention ordering).
+        """Require positive-field TTLs to follow `llm_content <= findings <= review`.
 
-        The most-sensitive content carries the shortest TTL, and content
-        purges no later than its review row. Replay's `_classify_mode`
-        treats a surviving content row whose review is purged as
-        corruption; `findings.review_id` is ON DELETE CASCADE, so a
-        findings TTL longer than the review TTL is both unreachable and a
-        misconfiguration. Raising here (construction time) keeps the
-        ordering an enforced invariant, not just a documented expectation.
-
-        Runs on the explicit-kwarg constructor only; `model_copy(update=...)`
-        bypasses it (same caveat as the per-field `gt=timedelta(0)` checks).
+        Content must purge no later than its review; replay rejects surviving
+        content without that row. `findings.review_id` also cascades on review
+        deletion. `model_copy(update=...)` bypasses this construction-time check.
         """
         if not (
             self.llm_content_retention_ttl

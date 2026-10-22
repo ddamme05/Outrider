@@ -1,66 +1,21 @@
 # V1 publish eligibility gate per specs/2026-05-21-publish-node.md Q3 + the
 # HITL-aware extension per specs/2026-05-26-hitl-node.md Group 6.
-"""is_eligible_for_v1_publish — policy-derived publish-materialization gate.
+"""Policy gate for whether a finding may proceed to publish routing.
 
-Per DECISIONS.md #023 (publish routing and eligibility are separate
-decisions, not one combined gate): this module is the **policy** half
-of the fabricated-override defense. The **schema** half lives at
-`PublishEligibilityEvent._enforce_override_legitimacy` in `audit/events.py`;
-both must hold for the DECISIONS #023 "schema + gate" trust story.
-The validator was renamed from `_enforce_v1_no_overrides` after HITL
-shipped — non-None `original_severity` is now admissible when paired
-with a reviewer-issued `PerFindingDecision(outcome=SEVERITY_OVERRIDE)`
-per `DECISIONS.md#023` Amended 2026-05-27.
+Routing and eligibility are separate per DECISIONS.md #023. An eligible
+finding may still be dashboard-only; the gate does not record a GitHub receipt.
+The matching HITL decision is found first, then fabricated overrides are
+rejected before the severity gate. CRITICAL/HIGH require a request-backed
+reviewer decision; MEDIUM/LOW/INFO pass the baseline gate.
 
-The gate fires BEFORE materialization — the publish node calls
-`is_eligible_for_v1_publish(finding, hitl_request=..., hitl_decision=...)`
-per finding, and routes the finding to `publisher.create_review(...)`
-only when the return is `("eligible", None)`. Withholding outcomes get
-recorded in `PublishEligibilityEvent(eligibility=withheld, reason=<reason>)`
-and the finding does NOT reach GitHub.
+Override legitimacy also has a schema check in audit/events.py at
+`PublishEligibilityEvent._enforce_override_legitimacy`, per
+`DECISIONS.md#023` Amended 2026-05-27. This gate requires the decision's
+baseline and applied severity to match the finding exactly.
 
-The HITL context comes through as explicit kwargs (NOT read from any
-module-level state) so the gate stays a pure function over its inputs:
-
-  - `hitl_request: HITLRequest | None` — the gate envelope the HITL
-    node emitted (None means HITL didn't run for this review).
-  - `hitl_decision: HITLDecision | None` — the reviewer's decision set
-    after resume (None means HITL ran but no decision landed yet,
-    OR HITL never ran).
-
-Withholding reasons (post-HITL extension):
-
-- `hitl_required_node_absent` — finding severity is `CRITICAL` or
-  `HIGH` and the HITL node did not run for this review (request +
-  decision are both None). Defense-in-depth: the graph wiring routes
-  through HITL post-analyze/trace, so reaching this branch indicates
-  a wiring bypass.
-
-- `hitl_decision_missing` — severity ∈ {CRITICAL, HIGH}, HITL request
-  landed (request is not None) but decision is None OR no matching
-  `PerFindingDecision` for this `finding_id` in the submitted set
-  (defense-in-depth against an endpoint mismatch check that missed
-  something).
-
-- `hitl_rejected` — severity ∈ {CRITICAL, HIGH}, reviewer's outcome
-  for this finding was REJECT.
-
-- `hitl_suppressed` — severity ∈ {CRITICAL, HIGH}, reviewer's outcome
-  for this finding was SUPPRESS.
-
-- `unexpected_override_fields_present` — finding carries a non-None
-  `original_severity` despite no matching `SEVERITY_OVERRIDE` decision
-  in the HITL decision set. Indicates either a producer bug or
-  replay-injected state forging a pre-approved downgrade. Defended at
-  this gate AND at the audit-row schema layer; the gate fires FIRST
-  so no GitHub call ever happens for a forged-override finding.
-
-The mapping is a `MappingProxyType` keyed by `FindingSeverity` — set
-membership is FORBIDDEN per the spec's "implementation discipline"
-clause. The mapping is total over `FindingSeverity` at import time
-(`_assert_mapping_total_at_import` runs as a module-level assertion);
-any new severity that lands without an entry crashes the import.
-"""
+The immutable severity mapping must be total at import. Set-membership
+shortcuts for severity gating are forbidden by the spec's implementation
+discipline. All HITL context is passed explicitly; no module state is read."""
 
 from __future__ import annotations
 
@@ -81,11 +36,8 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# Eligibility mapping — keyed by FindingSeverity. The HITL gate consults
-# this mapping AFTER the fabricated-override check (which is HITL-aware)
-# and BEFORE the HITL decision lookup, so the mapping itself only encodes
-# whether a severity requires HITL gating (CRITICAL/HIGH) or passes
-# through (MEDIUM/LOW/INFO).
+# Eligibility mapping, consulted after override validation. It says which
+# severities require HITL (CRITICAL/HIGH), independently of decision lookup.
 # ---------------------------------------------------------------------------
 
 
@@ -192,76 +144,25 @@ def is_eligible_for_v1_publish(
     hitl_request: HITLRequest | None,
     hitl_decision: HITLDecision | None,
 ) -> tuple[PublishEligibility, PublishEligibilityReason | None]:
-    """Decide whether a finding materializes via the publisher in V1.
+    """Return eligibility and a withholding reason before publish routing.
 
-    Returns:
-        `(PublishEligibility.ELIGIBLE, None)` — publisher materializes;
-        `(PublishEligibility.WITHHELD, <reason>)` — no GitHub call.
+    Find the matching decision, then reject unsupported override fields first:
+    the request must gate this finding, and a SEVERITY_OVERRIDE decision must
+    match its baseline and applied severity. This blocks forged downgrades
+    before the effective severity can pass the baseline gate.
 
-    Inputs (kwargs-only — the gate stays a pure function over what the
-    caller explicitly passes, not what's in a module-level state):
-
-      - `finding` — the candidate; the gate reads `.severity`,
-        `.original_severity`, `.finding_id`.
-      - `hitl_request` — the HITL gate envelope (None means HITL didn't
-        run for this review).
-      - `hitl_decision` — the reviewer's decision set (None means HITL
-        ran but no decision landed yet, OR HITL never ran).
-
-    Withholding order (precedence-bearing):
-
-      1. **Fabricated-override defense first.** If
-         `finding.original_severity is not None` AND no matching
-         `PerFindingDecision(outcome=SEVERITY_OVERRIDE)` exists in
-         `hitl_decision`, return WITHHELD with
-         `unexpected_override_fields_present`. A `CRITICAL` finding
-         showing `original_severity=CRITICAL + severity=LOW` would
-         otherwise pass the severity gate; the override-fields check
-         FIRST blocks this.
-
-      2. **Severity gate.** Lookup in `_V1_SEVERITY_GATE` by
-         `finding.severity`. MEDIUM/LOW/INFO → ELIGIBLE (no HITL
-         needed). CRITICAL/HIGH → consult HITL state:
-
-           - `hitl_request is None`: WITHHELD with
-             `hitl_required_node_absent` (graph-wiring bypass — the
-             HITL node never ran).
-           - `hitl_decision is None` (request landed but decision
-             didn't): WITHHELD with `hitl_decision_missing`.
-           - Decision exists: lookup the per-finding outcome:
-             - APPROVE → ELIGIBLE
-             - SEVERITY_OVERRIDE → ELIGIBLE
-             - REJECT → WITHHELD with `hitl_rejected`
-             - SUPPRESS → WITHHELD with `hitl_suppressed`
-             - no matching `finding_id` (defense-in-depth):
-               WITHHELD with `hitl_decision_missing`.
-    """
+    MEDIUM/LOW/INFO then pass. CRITICAL/HIGH require a HITL request, a matching
+    decision, and membership in the request's gated finding set. APPROVE and
+    SEVERITY_OVERRIDE admit; REJECT and SUPPRESS withhold. Missing request or
+    decision gets its distinct withholding reason. ELIGIBLE permits routing;
+    WITHHELD prevents GitHub materialization."""
     matching_decision = _find_decision_for(
         finding_id=finding.finding_id, hitl_decision=hitl_decision
     )
 
-    # Defense (1): fabricated-override check. Fires FIRST so a forged
-    # downgrade can't sneak past the severity gate — unless the
-    # corresponding HITL decision actually carries SEVERITY_OVERRIDE
-    # for this finding_id AND that finding_id appears in the
-    # `findings_requiring_approval` set of an actual HITL request.
-    # Five-condition gate (defense-in-depth):
-    #   1. A SEVERITY_OVERRIDE decision exists for this finding_id.
-    #   2. A `hitl_request` ran (it's not None).
-    #   3. This finding_id was in the gated set of that request.
-    #   4. The decision's `original_severity` matches the finding's
-    #      claimed baseline.
-    #   5. The decision's `override_severity` matches the finding's
-    #      applied severity.
-    # Without (2)+(3), a forged `finding.original_severity` paired with
-    # a forged-but-Pydantic-valid `HITLDecision` (no `hitl_request`
-    # backing it) would pass (1) alone. Without (4)+(5), a forged finding
-    # could reuse a legitimate decision intended for a different severity
-    # transition — e.g., reviewer approved CRITICAL→MEDIUM, finding
-    # claims CRITICAL→LOW; outcome+finding_id match but the approved
-    # values differ. Schema-side `PerFindingDecision` requires both
-    # severity fields under SEVERITY_OVERRIDE, so the comparison is
-    # always against non-None values.
+    # Validate a claimed override before effective severity can admit it.
+    # Request membership blocks invented approvals; exact severity matching
+    # prevents reusing a real approval for a different downgrade.
     if finding.original_severity is not None:
         has_legit_override = (
             matching_decision is not None
@@ -306,17 +207,9 @@ def is_eligible_for_v1_publish(
             PublishEligibilityReason.HITL_DECISION_MISSING,
         )
 
-    # Defense-in-depth: the decision's `finding_id` MUST be in the
-    # canonical `hitl_request.findings_requiring_approval` gated set.
-    # The /decide endpoint already enforces payload→request set-equality
-    # at 422 (`/decide` rejects mismatched payloads); this is the
-    # publish-side check for a forged-state scenario where a
-    # `PerFindingDecision` was constructed for a finding_id the
-    # original HITLRequest never gated. Without this check, a decision
-    # not backed by the canonical request would be honored at publish
-    # — bypassing `hitl-gates-high-severity` for findings the request
-    # never listed. Reject as HITL_DECISION_MISSING (the canonical
-    # "this finding has no decision backing it" reason).
+    # Recheck request membership even though /decide validates set equality.
+    # A decision outside the canonical request cannot satisfy
+    # hitl-gates-high-severity; treat it as missing.
     if finding.finding_id not in hitl_request.findings_requiring_approval:
         return (
             PublishEligibility.WITHHELD,

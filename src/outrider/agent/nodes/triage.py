@@ -1,52 +1,9 @@
-# Triage node body per specs/2026-05-15-triage-node.md.
-"""Triage node body: classify changed files into review tiers via Haiku.
+"""Classify changed files and assess the pull request's overall risk.
 
-Consumes a size-OK seed `ReviewState` (with `PRContext.changed_files`
-populated by intake; spec assumes upstream §6.10 size-cap gate has run)
-and produces a frozen `TriageResult` via a Haiku LLM pass. The node
-classifies each changed file as DEEP/STANDARD/SKIM (never SKIP — that's
-the policy-gate path), assesses overall_risk, and selects applicable
-ReviewDimensions.
-
-Runtime dependencies are closure-injected per `nodes-receive-deps-via-closure`:
-- `provider: LLMProvider` — calls Haiku; the provider's internal persister
-  writes `LLMCallEvent` + `llm_call_content` rows in one transaction.
-- `triage_model: str` — the per-tier Haiku id from `ModelConfig.triage_model`
-  (NOT a hardcoded model string — pins `model-strings-from-config-not-hardcoded`).
-- `phase_event_sink: PhaseEventSink` — emits `ReviewPhaseEvent` start/end
-  pairs per `phase-events-bound-work`. Required (no Optional, no production
-  no-op default).
-
-Failure-path semantics: the end-event is skipped (or partially-written) if
-ANY of FIVE post-start failure sources raises:
-
-  1. Request construction (`pydantic.ValidationError`)
-  2. Provider call (`LLMProviderError` subclasses)
-  3. Schema validation (`pydantic.ValidationError` on `response.text`)
-  4. Policy validation (`TriagePolicyViolationError`)
-  5. End-phase-event emission itself (`PhaseEventSink.emit_phase` raise per
-     the Protocol's "Implementations MUST persist before returning, OR
-     raise" rule — durable sinks raise on persistence failure)
-
-Sources 1-4 mean the end event is never attempted; the audit stream has
-a dangling start. Source 5 means the end event WAS attempted; depending
-on the sink's transaction shape the row may have partially landed or
-not. In all five cases the function raises and `{"triage_result": ...}`
-is never returned, so the partial state cannot reach downstream nodes.
-
-The prompt-render step is intentionally pure / non-raising (see
-`prompts/triage.py`) so it does NOT appear in this list.
-
-The post-schema policy gate (`_enforce_triage_policy`) is the deterministic
-floor: `TriageResult.model_validate_json(response.text)` validates SHAPE
-(enum casing, max_length, types) but admits SKIP values and arbitrary path
-keys. The policy gate rejects schema-valid-but-policy-invalid output:
-(a) any SKIP value, (b) `file_tiers` keys not in `state.pr_context.changed_files`,
-(c) any changed-file path missing from `file_tiers`.
-
-`TriagePolicyViolationError` is the typed exception so callers can
-distinguish policy failure from transport failure (`LLMProviderError`)
-and schema failure (`pydantic.ValidationError`).
+The model supplies a TriageResult. Deterministic validation requires every
+changed-file path, rejects SKIP, and anchors the active policy version.
+The provider records its call before returning; failed work returns no
+state update and can leave the start phase open.
 """
 
 import hashlib
@@ -64,34 +21,16 @@ from outrider.prompts import triage as triage_prompt
 from outrider.schemas.triage_result import ReviewTier, TriageResult
 
 _POLICY_VIOLATION_SAMPLE_SIZE = 3
-"""How many paths from a violating set appear verbatim in error messages.
-
-The full sorted set is hashed (`sha256[:12]`) and the count is reported,
-so operators can correlate repeat violations and bound the disclosure
-surface. A bounded sample preserves enough signal for debugging without
-echoing arbitrary-length LLM/webhook-derived path lists into log
-streams. See `_format_path_set_for_error` below for the message shape;
-see DECISIONS#013 point 5 + #016 point 4 for the underlying "logs never
-contain prompt or completion content" rule.
-"""
+"""Bound path samples in policy errors; hash the full sorted set for correlation."""
 
 _REASONING_MAX_CHARS = 500
-"""Cap mirroring `TriageResult.reasoning` `Field(max_length=500)`.
-
-The model occasionally exceeds it on large/complex PRs (the prompt gives no length
-instruction), so `_validate_triage_response` clamps an over-long `reasoning` to
-this cap at the boundary rather than crashing triage — the same vendor-output
-normalization discipline as `strip_outer_json_fence`. Truncation is safe:
-`reasoning` is advisory and consulted by no deterministic gate. A unit test pins
-this constant to the schema's actual constraint so the two can't drift.
-"""
+"""Match TriageResult.reasoning's schema cap; advisory reasoning can be truncated."""
 
 
 def _validate_triage_response(raw_json: str) -> TriageResult:
-    """Validate the triage response, clamping an over-long `reasoning` to the cap.
+    """Clamp advisory reasoning to its schema cap, then validate the response.
 
-    Malformed JSON falls through to `model_validate_json` so Pydantic raises its
-    clear error; only the length normalization is applied here.
+    Let Pydantic report malformed JSON; normalize only the reasoning length.
     """
     try:
         data = json.loads(raw_json)
@@ -103,65 +42,20 @@ def _validate_triage_response(raw_json: str) -> TriageResult:
 
 
 class TriagePolicyViolationError(ValueError):
-    """LLM produced schema-valid TriageResult that violates deterministic floor.
+    """Schema-valid model output violated the deterministic triage policy.
 
-    Raised when (a) file_tiers contains a `ReviewTier.SKIP` value (SKIP is
-    the policy-gate path per the triage-node spec's non-goal #1, never
-    node output), (b) file_tiers has a key not in the changed-files-under-
-    review set, (c) the set of keys does not cover every changed file
-    under review, or (d) `policy_version != ACTIVE_POLICY_VERSION` at
-    fresh-review time (snapshot-anchor producer-side gate per
-    `DECISIONS.md#028` — closes LLM-reachability of the per-review
-    policy_version snapshot that synthesize's H-1 forge defense depends
-    on; bypasses the rule on the replay path because replay reads audit
-    rows directly without re-executing this gate).
-
-    The wrapper's internal persister has already written `LLMCallEvent` +
-    content rows by the time this exception fires (`provider.complete()`
-    returned successfully); the caller decides whether to retry or fail
-    the review.
-
-    Log-content note: exception messages do NOT embed verbatim path
-    lists. All three rule messages route the violating set through
-    `_format_path_set_for_error`, which emits
-    `count=N hash=<sha256-12> sample=[first-3 paths, repr-escaped]`.
-    The disclosure surface is bounded to `_POLICY_VIOLATION_SAMPLE_SIZE`
-    (=3) paths regardless of set size; the SHA-256 hex prefix gives
-    operators a stable correlation key for repeat violations without
-    echoing content. ANSI / terminal-injection mitigation is preserved
-    by `repr()` on the bounded sample list — control chars escape to
-    `\\xNN` notation. Per DECISIONS#013 point 5 + #016 point 4
-    ("Logs never contain prompt or completion content"), only the
-    bounded sample paths can appear in a log capturing this exception's
-    message body; the full set is recoverable via the hash for replay
-    correlation but not from the message alone. Callers logging this
-    exception should still consider that the sample paths may be
-    attacker-influenced (LLM hallucination for rule b, webhook payload
-    for rule c). FUP-021 closed this gap; see the `_format_path_set_for_error`
-    docstring for the full design rationale.
+    Reject SKIP, unknown or missing paths, and an inactive policy_version.
+    Messages use bounded, escaped path samples and a hash of the full set.
+    In the node flow, the provider has persisted its call before this gate runs.
     """
 
 
 def _format_path_set_for_error(paths: Iterable[str]) -> str:
-    """Format a path set for embedding in `TriagePolicyViolationError`.
+    """Describe violating paths without echoing an unbounded path list.
 
-    Returns `count=N hash=<sha256-12> sample=[...]` where sample is up to
-    `_POLICY_VIOLATION_SAMPLE_SIZE` paths formatted via `repr()` (which
-    escapes control chars to `\\xNN` notation — same ANSI / terminal-
-    injection mitigation the pre-mitigation code relied on). The hash is
-    SHA-256 over the NUL-separated sorted full set, first 12 hex chars —
-    long enough to be useful for correlating repeat violations, short
-    enough to read.
-
-    Bounds the disclosure surface per DECISIONS#013 point 5 + #016
-    point 4 ("logs never contain prompt or completion content"). The
-    paths come from two attacker-influenced sources: LLM output
-    (hallucinated unknown paths from rule b) and webhook payload
-    (`PRContext.changed_files` paths surfaced by rule c). A downstream
-    `logger.exception(...)` capturing this message would historically
-    have echoed the full set; the bounded-sample-plus-hash shape caps
-    that leak to `_POLICY_VIOLATION_SAMPLE_SIZE` paths regardless of
-    set size, while still giving operators a stable correlation key.
+    Return the count, a 12-character SHA-256 prefix over the NUL-separated
+    sorted paths, and an escaped sample of at most three paths.
+    See DECISIONS.md#013 and #016 for the log-content constraint.
     """
     sorted_paths = sorted(paths)
     digest = hashlib.sha256("\x00".join(sorted_paths).encode("utf-8")).hexdigest()[:12]
@@ -174,19 +68,11 @@ def _enforce_triage_policy(
     *,
     expected_paths: Set[str],
 ) -> None:
-    """Deterministic post-schema gate. Raises TriagePolicyViolationError on violation.
-
-    `expected_paths` is the abstract `Set` (from `collections.abc`) so
-    callers can pass `set`, `frozenset`, or `dict_keys` view without
-    needing to wrap. Set arithmetic below works identically across all.
-
-    Error messages embed bounded path samples plus a stable hash of the
-    full violating set — never the verbatim sorted list. See
-    `_format_path_set_for_error` for the message shape and the
-    DECISIONS#013 / #016 log-content discipline that motivates it.
-    """
-    # Rule (a): no SKIP values.
-    skip_paths = [path for path, tier in result.file_tiers.items() if tier is ReviewTier.SKIP]
+    """Require the active policy and one non-SKIP tier for every expected path."""
+    skip_paths: list[str] = []
+    for candidate_path, candidate_tier in result.file_tiers.items():
+        if candidate_tier is ReviewTier.SKIP:
+            skip_paths.append(candidate_path)
     if skip_paths:
         raise TriagePolicyViolationError(
             "LLM produced SKIP tier for one or more paths "
@@ -198,13 +84,12 @@ def _enforce_triage_policy(
             "system prompt's 'never produce skip' rule needs reinforcement."
         )
 
-    # Rule (b): no unknown paths.
     actual_paths = frozenset(result.file_tiers.keys())
-    extra = actual_paths - expected_paths
-    if extra:
+    unknown_paths = actual_paths - expected_paths
+    if unknown_paths:
         raise TriagePolicyViolationError(
             "file_tiers contains unknown paths "
-            f"({_format_path_set_for_error(extra)}) not in changed_files "
+            f"({_format_path_set_for_error(unknown_paths)}) not in changed_files "
             f"(expected: {_format_path_set_for_error(expected_paths)}). "
             "The triage node MUST tier exactly the changed-files set — no "
             "more, no less. An unknown path indicates either an LLM "
@@ -215,12 +100,11 @@ def _enforce_triage_policy(
             "consume the bad triage_result."
         )
 
-    # Rule (c): no missing paths.
-    missing = expected_paths - actual_paths
-    if missing:
+    missing_paths = expected_paths - actual_paths
+    if missing_paths:
         raise TriagePolicyViolationError(
             "file_tiers is missing paths from changed_files "
-            f"({_format_path_set_for_error(missing)}; expected: "
+            f"({_format_path_set_for_error(missing_paths)}; expected: "
             f"{_format_path_set_for_error(expected_paths)}). Every "
             "changed file under review MUST receive a tier — DEEP, "
             "STANDARD, or SKIM. A missing path means the downstream "
@@ -228,18 +112,8 @@ def _enforce_triage_policy(
             "is the failure mode the policy-gate exists to prevent."
         )
 
-    # Rule (d) — see DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.
-    # policy_version MUST equal the live ACTIVE_POLICY_VERSION.
-    # The field's `pattern=BARE_SEMVER_PATTERN` admits ANY valid semver
-    # — an LLM that emits `{"policy_version": "0.0.0", ...}` in its JSON
-    # output (training-data leakage, prompt injection through PR
-    # content, or a future system prompt that documents the field)
-    # would survive Pydantic. Synthesize's H-1 forge defense uses
-    # `state.triage_result.policy_version` as the trusted snapshot
-    # anchor; without this gate, the anchor itself is LLM-reachable
-    # and the defense narrows to "attacker picks any bare-semver."
-    # This rule closes the producer-side path: the snapshot landed
-    # in state MUST match what the deployment thinks is active.
+    # Downstream finding validation trusts this snapshot (DECISIONS.md#028).
+    # The model must not select a different policy version.
     if result.policy_version != ACTIVE_POLICY_VERSION:
         raise TriagePolicyViolationError(
             f"triage_result.policy_version={result.policy_version!r} "
@@ -263,22 +137,10 @@ async def triage(
     triage_model: str,
     phase_event_sink: PhaseEventSink,
 ) -> dict[str, TriageResult]:
-    """Run the triage classification pass.
+    """Classify files, validate the model result, and return a triage state update.
 
-    Returns `{"triage_result": <validated, policy-checked TriageResult>}`
-    for LangGraph's reducer to merge into state. Default reducer is
-    overwrite — appropriate here because `triage_result` is a singleton
-    field per the schema-foundation spec.
-
-    Order of operations (failure-path-significant; see module docstring):
-      1. Emit start phase event.
-      2. Render prompts (pure, non-raising).
-      3. Build LLMRequest (raises ValidationError on malformed fields).
-      4. Call provider.complete() (raises LLMProviderError subclasses on transport failure).
-      5. Validate response shape via TriageResult.model_validate_json (raises ValidationError).
-      6. Enforce policy gate (raises TriagePolicyViolationError).
-      7. Emit end phase event.
-      8. Return partial state.
+    Emit the end marker only after model and policy validation succeed.
+    Return no state update if request, provider, validation, or audit work fails.
     """
     phase_id = compute_phase_id(
         review_id=str(state.review_id),
@@ -286,10 +148,6 @@ async def triage(
         attempt_key="triage",
     )
 
-    # Step 1: emit start phase event. If THIS raises (audit infra outage),
-    # the node fails before any work; no dangling start.
-    # `is_eval` flows from ReviewState.is_eval so eval-tagged reviews
-    # produce eval-tagged phase events (parity with LLMCallEvent at step 4).
     await phase_event_sink.emit_phase(
         ReviewPhaseEvent(
             review_id=state.review_id,
@@ -297,58 +155,35 @@ async def triage(
             node_id="triage",
             marker="start",
             is_eval=state.is_eval,
-            # triage is not a fan-out target by design; phase_key populates
-            # only for parallel-analyze siblings (V1.5+), never for triage.
             phase_key=None,
         )
     )
 
-    # Step 2: render prompts (pure, non-raising — see prompts.triage docstring).
-    parts = triage_prompt.render(state.pr_context)
+    prompt_parts = triage_prompt.render(state.pr_context)
 
-    # Step 3: build LLMRequest. Field validators run; ValidationError surfaces
-    # if any value violates the request schema (e.g., empty prompt).
-    # `is_eval` flows from ReviewState.is_eval so audit rows produced during
-    # eval runs are correctly tagged per docs/testing.md "Eval isolation".
     request = LLMRequest(
         model=triage_model,
-        system_prompt=parts.system_prompt,
-        user_prompt=parts.user_prompt,
+        system_prompt=prompt_parts.system_prompt,
+        user_prompt=prompt_parts.user_prompt,
         max_tokens=triage_prompt.MAX_TOKENS,
         temperature=triage_prompt.TEMPERATURE,
         review_id=state.review_id,
         node_id="triage",
         is_eval=state.is_eval,
         prompt_template_version=triage_prompt.VERSION,
-        degraded_mode=False,  # triage has no degraded path in V1
-        # cache_control defaults to True per DECISIONS#013 point 4
-        # context_summary defaults to ()
+        degraded_mode=False,
     )
 
-    # Step 4: provider call. The provider's internal persister writes
-    # LLMCallEvent + llm_call_content rows BEFORE returning, per the
-    # LLMProvider Protocol contract. LLMProviderError subclasses propagate.
     response = await provider.complete(request)
 
-    # Step 5: schema validation. ValidationError on malformed JSON, missing
-    # required keys, or wrong enum casing. `strip_outer_json_fence` tolerates a
-    # single ```json...``` wrapper the model sometimes adds despite the
-    # system-prompt instruction; malformed wrappers fall through unchanged so
-    # Pydantic raises a clear error. `_validate_triage_response` additionally
-    # clamps an over-long `reasoning` to the schema cap at the boundary — the
-    # model exceeds it on large PRs and crashing triage over an advisory field
-    # would be wrong (same normalization discipline as the JSON-fence strip).
+    # Normalize vendor output before schema and policy validation.
     triage_result = _validate_triage_response(strip_outer_json_fence(response.text))
 
-    # Step 5b: deterministic policy gate. Catches schema-valid output that
-    # violates this node's contract (SKIP, unknown path, missing path).
     _enforce_triage_policy(
         triage_result,
         expected_paths={cf.path for cf in state.pr_context.changed_files},
     )
 
-    # Step 6: success-exit phase event. Same phase_id as the start above;
-    # same is_eval flag for audit-isolation parity.
     await phase_event_sink.emit_phase(
         ReviewPhaseEvent(
             review_id=state.review_id,
@@ -360,8 +195,6 @@ async def triage(
         )
     )
 
-    # Step 7: partial-state return. LangGraph's default reducer (overwrite)
-    # merges triage_result into ReviewState; pr_context survives unchanged.
     return {"triage_result": triage_result}
 
 

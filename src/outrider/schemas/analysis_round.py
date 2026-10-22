@@ -1,17 +1,10 @@
 # See specs/2026-05-19-analyze-foundation.md §1.
-"""`AnalysisRound` per-pass results record.
+"""One analyze-pass record, accumulated across analyze/trace iterations.
 
-Synthesize will consume the accumulated `list[AnalysisRound]` across all
-analyze ⇄ trace iterations to build the final report. This module
-defines the schema only; producers (the analyze node) and consumers
-(synthesize) live in the sister analyze-implementation spec.
-
-`round_id` is a SHA-256 hex digest used as the LangGraph reducer's merge
-key (see `outrider.agent.reducers.append_with_dedup_by` in §2). The
-hash is content-derived via `outrider.policy.canonical.compute_identity_hash`
-so replay re-application is idempotent — same payload produces the same
-id across processes, and duplicate rounds collapse on merge.
-"""
+Analyze emits admitted findings; synthesize consumes the rounds to build the
+report. round_id is content-derived through policy.canonical.compute_round_id
+and is the append_with_dedup_by reducer key, so identical replayed rounds
+collapse on merge."""
 
 from __future__ import annotations
 
@@ -89,21 +82,10 @@ class AnalysisRound(BaseModel):
     @field_validator("files_examined", "files_skipped")
     @classmethod
     def _enforce_canonical_paths(cls, paths: tuple[str, ...]) -> tuple[str, ...]:
-        """Reject paths that aren't `coordinates.validate_diff_path` output.
+        """Canonicalize each path before its identity enters round_id.
 
-        `round_id` is content-
-        derived from this round's payload (per spec §1). If callers pass
-        non-canonical paths (`./src/a.py` vs `src/a.py`, trailing slash,
-        unvalidated metachars), the resulting `round_id` is non-
-        deterministic across producers — replay re-application collides
-        under a DIFFERENT key, defeating idempotency.
-
-        Pushing the rule down to the schema means the parser, replay
-        reconstructor, test fixture, and any future producer all get
-        the same guarantee. `validate_diff_path` raises `CoordinateError` on invalid
-        input; because it is not a `ValueError` subclass, Pydantic lets it propagate
-        unchanged.
-        """
+        Use coordinates.validate_diff_path for every producer and replay path.
+        CoordinateError propagates directly; it is not a ValueError subclass."""
         return tuple(validate_diff_path(p) for p in paths)
 
     @model_validator(mode="after")
@@ -199,25 +181,11 @@ class AnalysisRound(BaseModel):
 
     @model_validator(mode="after")
     def _enforce_round_id_matches_payload(self) -> Self:
-        """Assert `round_id == compute_round_id(...)` over this round's payload.
+        """Verify round_id against the canonical hash of this round's payload.
 
-        without this validator,
-        `round_id` was only pattern-checked — a caller could supply ANY
-        64-char hex string and Pydantic accepted it. The dedup-by-key
-        reducer would then admit two logically-equivalent rounds under
-        different `round_id`s and double-accumulate state on replay.
-
-        The validator re-derives the canonical id from this round's
-        actual payload and rejects mismatch. `compute_round_id` sorts
-        inputs internally, so caller-side enumeration order doesn't
-        matter — the validator is robust to the same loose-order risk
-        the §1 spec named.
-
-        Replay rehydrates `AnalysisRound` via `model_validate`, so this
-        validator fires there too — a future change to the round-id
-        recipe would surface as a loud replay failure rather than a
-        silent dedup-key drift.
-        """
+        compute_round_id sorts its inputs, so enumeration order cannot create
+        another merge key for the same round. Rehydration validates the recipe too;
+        changing it requires a DECISIONS-level replay compatibility plan."""
         expected = compute_round_id(
             pass_index=self.pass_index,
             files_examined=self.files_examined,

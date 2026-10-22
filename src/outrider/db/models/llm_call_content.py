@@ -1,31 +1,14 @@
 # See DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only
-"""LLM_CALL_CONTENT.
+"""Retained model exchanges paired with metadata-only audit events.
 
-Per #016, prompt and completion text for every LLM call land in a separate
-content table keyed by `event_id` (matching the corresponding LLMCallEvent audit
-row). The audit row stays metadata-only per #014; the content lives here.
+The persister inserts the LLMCallEvent and this content row in one transaction
+(DECISIONS.md#016; tests/integration/test_llm_content_single_transaction.py).
+event_id references the append-only audit parent with NO ACTION. Retention deletes
+the content child directly while the audit row survives, leaving metadata-only
+replay (DECISIONS.md#014).
 
-`event_id` is BOTH primary key AND foreign key to `audit_events.event_id` with
-`NO ACTION` (PostgreSQL default, equivalent to RESTRICT). The FK direction is
-child → parent: this content row references the audit row, not vice versa. Since
-the parent (`audit_events`) is append-only forever via its trigger, the NO ACTION
-behavior never fires in practice — the trigger blocks parent DELETE before any
-FK action could trigger. NO ACTION is the right shape because (a) it never fires,
-and (b) it documents intent: "if anyone tries to delete a parent audit row, fail
-loud." See docs/schema.md "Content-table foreign-key semantics" for the full
-analysis of why this is NOT a "loose UUID."
-
-`installation_id` mirrors the FINDINGS pattern: real FK with RESTRICT for
-denormalized purge scoping. The retention sweep deletes content rows directly
-(safe child-row delete; doesn't touch the parent audit row); the parent stays
-forever. Joining audit_events to llm_call_content after a content purge returns
-no row for the purged audit events — that's the metadata-only-replay state per
-#014 point 4 applied to LLM content.
-
-The single-transaction insert constraint from #016 (LLMCallEvent audit row +
-LLM_CALL_CONTENT row in one transaction or neither) is enforced by application
-code, not the schema; integration test `test_llm_content_single_transaction.py`
-gates this.
+Installation RESTRICT requires explicit content purge before installation deletion.
+See docs/schema.md, "Content-table foreign-key semantics".
 """
 
 from datetime import datetime

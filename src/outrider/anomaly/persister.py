@@ -1,45 +1,14 @@
-"""Durable AnomalySink implementation.
+"""Persist anomalies once per `(review_id, rule_name)`.
 
-Per-emit fresh `AsyncSession`; uses `postgresql_insert(...).
-on_conflict_do_nothing(...)` against per-rule partial unique indexes
-(e.g. `uq_anomalies_hitl_timeout_natural_key`,
-`uq_anomalies_cross_round_severity_divergence_natural_key`). The
-`index_where` predicate is a LITERAL SQL clause looked up from
-`_RULE_NAME_INDEX_WHERE` by the runtime `rule_name` — each rule's
-partial index has the form `WHERE rule_name='<rule_value>'`, and
-PostgreSQL's conflict-arbiter needs the `index_where` as literal
-text (not an ORM-expression bind parameter) to match a partial index.
+Each emit opens a fresh session and inserts with `on_conflict_do_nothing`
+against the rule's partial unique index. `_RULE_NAME_INDEX_WHERE` supplies
+literal SQL predicates: a bound predicate can fail PostgreSQL index inference
+under prepared generic plans. Every rule needs a matching index migration.
 
-Idempotency contract: same `(review_id, rule_name)` pair is admitted
-by the partial unique index AT MOST ONCE; retries collapse to a
-no-op. Per `AnomalySink` Protocol docstring, the persister serves
-two caller classes:
-
-- **Sweep callers** (`sweep/hitl_expiry.py`): rely on `SWEEP_LOCK_ID`
-  for surrounding-operation serialization; the partial unique index
-  here provides per-row idempotency. Anomaly-first ordering depends
-  on this — if the anomaly emit raises spuriously, the sweep
-  short-circuits and the row stays in `awaiting_approval` for the
-  next sweep tick. With `on_conflict_do_nothing`, a retry of an
-  already-recorded anomaly returns cleanly and the sweep proceeds
-  to the status flip.
-
-- **Graph callers** (`agent/nodes/synthesize.py` for
-  CROSS_ROUND_SEVERITY_DIVERGENCE, `agent/nodes/analyze.py` for
-  COST_BUDGET_STARVATION): no surrounding
-  advisory lock — anomaly emission has no non-idempotent external
-  side effect; concurrent or replayed inserts collapse via the
-  partial unique index. Same DB-layer idempotency mechanism; the
-  caller-class distinction lives entirely in the surrounding
-  concurrency story (sweep needs the advisory lock for the
-  surrounding status flip; graph does not).
-
-The `is_eval` column is written explicitly per `docs/testing.md`'s
-loud-failure convention (every is_eval-bearing row's flag is set
-by the producer; the column's `server_default=text("false")` is
-defense in depth, NOT the primary contract). Eval-scenario emissions
-land with `is_eval=True` and are filtered out of the production
-anomaly queue + pass the eval-DB teardown integrity gate.
+Sweep callers hold `SWEEP_LOCK_ID` around their status changes and emit the
+anomaly first, so a failed emit leaves expiry retryable. Graph callers rely
+on insert idempotency without a sweep lock. Both pass `severity` and `is_eval`
+explicitly; the database default is only a backstop.
 """
 
 from collections.abc import Mapping
@@ -102,22 +71,10 @@ class AnomalyPersisterConfigError(ValueError):
 
 
 class AnomalyPersister:
-    """Durable implementation of `AnomalySink`.
+    """Durable `AnomalySink` with one fresh transaction per emit.
 
-    Per-emit fresh `AsyncSession`. `on_conflict_do_nothing` against
-    the runtime-`rule_name`'s partial unique index makes the emit
-    idempotent on `(review_id, rule_name)`. `severity` and
-    `is_eval` are caller-controlled (no V1 defaults — both are
-    loud-failure surfaces); `status='open'` is V1-hardcoded because
-    V1 has no other terminal state at emit-time.
-
-    Serves sweep callers (HITL_TIMEOUT) and graph callers
-    (CROSS_ROUND_SEVERITY_DIVERGENCE from synthesize,
-    COST_BUDGET_STARVATION + GATED_FINDINGS_OVER_CAP from analyze, and
-    GATED_FINDINGS_OVER_CAP from synthesize). The dispatch is implicit in
-    the literal `index_where` looked up from `_RULE_NAME_INDEX_WHERE`
-    by the runtime rule_name — each rule's partial unique index has a
-    matching literal predicate.
+    The matching partial index deduplicates retries. Callers supply severity,
+    details, and eval scope; new rows start with `status='open'`.
     """
 
     def __init__(self, *, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -134,28 +91,11 @@ class AnomalyPersister:
         details: dict[str, Any],
         is_eval: bool,
     ) -> None:
-        """Insert one anomaly row with on-conflict-do-nothing on the
-        partial unique index `(review_id, rule_name)` matching the
-        runtime `rule_name`.
+        """Insert an anomaly or accept an existing `(review_id, rule_name)`.
 
-        The on-conflict target — `index_elements=["review_id"]` +
-        `index_where=_RULE_NAME_INDEX_WHERE[rule_name]` (LITERAL SQL,
-        not an ORM expression) — dispatches on the runtime rule_name.
-        PostgreSQL's conflict-arbiter requires the `index_where`
-        predicate to match the partial unique index exactly, as
-        literal text; a bind-parameter predicate (which an ORM
-        expression renders) fails arbiter inference under psycopg3
-        generic plans — defeating the idempotency contract. See
-        `_RULE_NAME_INDEX_WHERE` for the full rationale.
-
-        Every AnomalyRuleName value must have a matching partial
-        unique index in the DB (created by a Group 3-or-later
-        migration with `WHERE rule_name = '<value>'`). If the
-        migration is missing for a new rule_name, the
-        on_conflict_do_nothing falls through silently — the insert
-        succeeds AS A NEW ROW each time, breaking idempotency.
-        Producer-side discipline: every new AnomalyRuleName ships
-        with a matching migration in the same PR.
+        The literal `index_where` must match the rule's partial unique index.
+        A new rule must ship its predicate and index migration together; a missing
+        index makes PostgreSQL reject the conflict target rather than deduplicate.
         """
         async with self._session_factory() as session, session.begin():
             stmt = (

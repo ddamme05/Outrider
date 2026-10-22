@@ -2,112 +2,44 @@
 # and rejected lift sites per #025 point 1).
 # See also DECISIONS.md#024-trace-candidates-are-dotted-python-import-strings-v1
 # (admission path; same-file inline handling).
-"""Analyze node body — orchestration around the proof-boundary parser.
+"""Review changed files and audit accepted findings.
 
-Assembles inputs, enforces triage gating, calls the provider, hands the
-raw response to `analyze_parser.parse_analyze_response`, lifts parser
-rejection payloads into audit events, returns state deltas. Admission
-logic lives in `analyze_parser.py`; this module does NOT replicate it.
+`analyze` plans the initial pass and runs the sequential trace pass;
+`analyze_file` reviews one file. `analyze_aggregate` folds worker results
+in its own module. `build_graph` binds runtime dependencies, and
+`analyze_parser.parse_analyze_response` owns finding admission.
 
-Wiring: TWO graph vertices live here since the fan-out cutover
-(specs/2026-07-05-parallel-analyze.md) — `analyze` (the pass-0 PLANNER
-+ the sequential pass-1 body, Command-routing) and `analyze_file` (the
-per-file Send worker wrapping `_process_one_file`); the third vertex,
-`analyze_aggregate`, lives in `analyze_aggregate.py` with the fold it
-consumes. All kwarg-bound deps; `build_graph` binds them via
-`functools.partial` (same convention as triage).
+File outcomes (spec §7 step 3a):
 
-**Provider-failure policy.** `LLMProviderError` propagates without a
-try/except wrapper — no worker-level retry machinery. On a mid-pass
-failure, the finished files' audit events have already landed and the
-start `ReviewPhaseEvent` is dangling without a matching end — that's
-the audit signal for "pass interrupted." A blanket try/except would
-mask transport failures as fake skip outcomes.
+- `clean+full_llm`: changed scopes parse without errors and pass the budget gate.
+- `degraded+degraded_llm`: tree errors intersect changed scopes or added lines
+  without recovered scopes, or eligible module-level OBSERVED matches occur
+  outside changed scopes (`module_level_observed_match`, DECISIONS.md#062).
+  The module route keeps clean parse status and merges deterministic findings.
+  Model proposals must be JUDGED, stay within file bounds, and intersect
+  added-line context.
+- `skipped+NO_REVIEWABLE_CONTEXT`: no content, or parse failure without added text.
+  Current intake and `ChangedFile` validation make these cases unreachable.
+- `skipped+NO_CHANGED_SCOPE_UNITS`: no changed scopes or patch, unless eligible
+  module-level matches select the degraded prompt route.
+- `skipped+COST_BUDGET_EXHAUSTED`: prompt estimate exceeds the available budget.
+- `skipped+UNSUPPORTED_LANGUAGE`: no registered adapter for the file extension.
+- `skipped+ALL_SCOPES_TRIVIAL`: enforcement excludes every admitted scope;
+  the budget gate runs first. Shadow mode never takes this route.
+- `skipped+PATCH_HEAD_MISALIGNED`: added patch lines disagree with head content;
+  checked before routing because their coordinates cannot be trusted.
 
-**Counter source-of-truth.** Local accumulators (populated from
-`ParserResult.counters`) feed `AnalyzeCompletedEvent` — never re-read
-from the audit stream. `_enforce_proposal_accounting` validator
-backstops drift; producer-side correctness is the contract.
+Parser-stage skips retain their reason on `FileExaminationEvent`. Scope
+selection requires added lines and clipped hunks; deletion-only edits can
+still miss review (FUP-050).
 
-**File outcomes** (spec §7 step 3a):
+The `failed+degraded_llm` route remains for a future raw-byte intake path
+(FUP-053). Current intake rejects invalid UTF-8 and supplies decoded strings.
 
-- `clean+full_llm` — clean parse, scope units intersect changed
-  regions, no `has_error` in those units, cost gate passes.
-- `degraded+degraded_llm` — clean parse but either tree-sitter `has_error`
-  nodes intersect a changed scope unit (`degradation_reason=
-  "tree_has_error_in_changed_regions"`) OR a changed addable line
-  intersects a tree error with no recovered scope
-  (`degradation_reason="tree_has_error_no_scope"`, DECISIONS#033) OR — the
-  one non-parse-defect cause — a diff whose ADDED lines all sit outside
-  any scope unit carries an eligible module-level OBSERVED match (`degradation_reason=
-  "module_level_observed_match"`, the module-scope admission arm: the
-  producer RUNS on this route and its OBSERVED findings merge with the
-  degraded pass; `parse_status` stays "clean"). Parser
-  admits JUDGED only, gated on `span_within_file` AND
-  `span_within_degraded_context` (FUP-138).
-- `skipped+NO_REVIEWABLE_CONTEXT` — both `content_head` and
-  `content_base` are None (V1-unreachable: `ChangedFile.enforce_status_invariants`
-  guarantees every valid status has ≥1 content side) OR parse failure
-  with no added text (V1-unreachable per the `failed+degraded_llm` note
-  below). Branch kept as a structural slot for the future
-  schema-relaxation / raw-bytes paths. No LLM call.
-- `skipped+NO_CHANGED_SCOPE_UNITS` — clean parse but no scope unit
-  intersects the changed regions, OR clean parse with no patch — UNLESS an
-  eligible module-level OBSERVED match sits on the added lines, which
-  routes to `degraded+degraded_llm` (`module_level_observed_match`) above
-  instead of skipping.
-- `skipped+COST_BUDGET_EXHAUSTED` — cost gate fired before the LLM
-  call.
-- `skipped+UNSUPPORTED_LANGUAGE` — no registered ast_facts adapter
-  for the file's extension (`.go`, `.rs`, `.vue`, …; the registry
-  covers Python + JS/TS/TSX). Capability-scoped per `DECISIONS.md#018`
-  Amended 2026-05-21 — the value names "today's analyze cannot review
-  this," not "Outrider forever cannot."
-- `skipped+ALL_SCOPES_TRIVIAL` — enforcing-mode trivial-scope filter:
-  every admitted scope classified ordinary-comment-only, so the LLM
-  call is skipped (the shadow default never produces this). Fires
-  after the cost gate per `DECISIONS.md#018` Amended 2026-06-11.
-- `skipped+PATCH_HEAD_MISALIGNED` — the patch names an added line the
-  fetched head content doesn't have, so every coordinate anchor for the
-  file is unsound (FUP-217; a force-push racing intake's file-list
-  fetch against its content fetch). Probed once before any route.
-
-**V1 unreachable: `failed+degraded_llm`.** Spec §7 step 3a names this
-outcome; the analyze code path is wired to handle it, but in V1 the
-trigger cannot fire. The `parse_*` entry points only produce
-`parser_outcome="failed"` on a UTF-8 strict-decode failure ([ast_facts/python_adapter.py]
-step 2). Two upstream gates make that branch dead in V1: (a) intake's
-`_classify_or_reserve_decode` rejects invalid-UTF-8 bytes with
-`SkipReason.OVERSIZED` BEFORE analyze sees the file; (b) analyze
-receives content as `str` from `ChangedFile` and re-encodes via
-`content.encode("utf-8")` — a Python `str` round-trips to valid UTF-8
-by definition. The `failed`/`parse_failed` paths remain in code as
-structural slots so adding a raw-bytes intake → state path (FUP-053)
-doesn't require re-introducing them.
-
-Parser-stage skips (`OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`,
-`MINIFIED`, `GENERATED_BANNER`) pass through with the parser's
-`skip_reason` preserved on `FileExaminationEvent`.
-
-**Changed-region intersection.** A scope unit is "included" iff BOTH
-`coordinates.scope_unit_has_added_lines` AND
-`coordinates.scope_unit_diff_hunks` return non-empty. Context-only
-intersections don't include the unit. Deletion-only edits inside an
-otherwise-unchanged function currently route to
-`NO_CHANGED_SCOPE_UNITS` — V1 limitation tracked as FUP-050.
-
-**Registry-query firing.** For clean+full_llm, every structural query
-id registered for the file's catalog language
-(`queries.registry.structural_query_ids_for(language)`) is fired
-against the file content; the matching subset becomes
-`query_match_id_set` passed to the parser. OBSERVED claims with an id
-outside the set reject. A language registering no structural queries
-(JS/TS today) gets the empty set — every model OBSERVED claim rejects.
-
-**Token estimation.** `_estimate_tokens` counts UTF-8 bytes with
-ceiling division (`_BYTES_PER_TOKEN = 3`). Conservative-up for code-
-heavy / multi-byte content; over-estimates the budget rather than
-under-estimates. A tokenizer-grade estimate is FUP-049 scope.
+Provider failures propagate. Completed-file events remain persisted, and an
+interrupted phase has no end marker; failures must not become skip outcomes.
+Completion counters come from parser results, never from re-reading the audit
+stream, and `AnalyzeCompletedEvent` validates proposal accounting.
 """
 
 from __future__ import annotations
@@ -267,23 +199,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# One file can starve at most `1 / PER_FILE_CAP_FRACTION` others on the
-# review-wide budget; richer fairness (iteration ordering, per-installation
-# budgets) is FUP-044.
+# Limit each file's share of the review budget. Additional fairness policies
+# (including per-installation budgets) remain deferred to FUP-044.
 PER_FILE_CAP_FRACTION: Final[float] = 0.25
 
-# Bounded high-risk reserve (specs/2026-06-17-analyze-cost-fairness.md Stage 1).
-# A capped slice of the per-review budget that ONLY pass-0 files carrying a
-# blatant CRITICAL-class signature (policy.recall) may draw from, so a
-# late-iterated dangerous file is never starved purely by iteration position.
-# The reserve is the deterministic fix for the verified PR #8 failure (a CRITICAL
-# command_injection skipped COST_BUDGET_EXHAUSTED behind benign DEEP files). It is
-# BOUNDED — high-risk files draw their dedicated reserve first and dip into general
-# on overflow, and a file past (reserve + general) still skips; it is NOT an
-# unlimited budget bypass. The fractional token reserve + PER_FILE_CAP_FRACTION are
-# the only bounds (no separate slot cap — the token cap already bounds total reserve
-# spend, and a single huge high-risk file still can't exceed the per-file cap). 0.25
-# of a 200k budget = 50k, ~3-4 reserved files at typical DEEP per-file cost.
+# Reserved tokens are available only to pass-0 high-risk files (policy.recall;
+# specs/2026-06-17-analyze-cost-fairness.md Stage 1). They draw reserve first, then
+# general tokens. This protects some funding from benign files without bypassing
+# the class budget or per-file cap; exhausted high-risk files can still skip.
 HIGH_RISK_RESERVE_FRACTION: Final[float] = 0.25
 
 # Tier-descending iteration order (specs/2026-06-17-analyze-cost-fairness.md Stage 2):
@@ -300,9 +223,8 @@ _PASS0_TIER_RANK: Final[Mapping[ReviewTier, int]] = MappingProxyType(
 # FileExaminationEvent skips. 3 matches the FUP-044 exit-rule threshold.
 COST_BUDGET_STARVATION_THRESHOLD: Final[int] = 3
 
-# Default per-review token budget; tunable via OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS
-# (AnalyzeConfig), wired through build_graph by api/lifespan.py. Before that wiring
-# (Stage 0), production silently used this hardcoded default.
+# AnalyzeConfig reads OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS; lifespan passes the
+# setting through build_graph. Direct callers may use this default.
 DEFAULT_REVIEW_BUDGET_TOKENS: Final[int] = 200_000
 
 # Absolute ceiling on the per-file pre-flight token estimate, applied
@@ -348,14 +270,10 @@ _PROXY_RENDER_MARGIN_TOKENS: Final[int] = 384
 
 
 def _estimate_tokens(text: str) -> int:
-    """UTF-8 byte count with ceiling division by `_BYTES_PER_TOKEN`.
+    """Estimate tokens from UTF-8 bytes with ceiling division by _BYTES_PER_TOKEN.
 
-    Conservative-up: over-estimates rather than under-estimates so the
-    cost gate fails safer. Codepoint-counting would under-count multi-
-    byte sequences (a 3-byte CJK char → `1 // 3 == 0` tokens). The
-    estimator's job is order-of-magnitude blowup detection, not a tight
-    count; a tokenizer-grade estimate is FUP-049.
-    """
+    Byte counting includes multibyte source text; codepoint counting would understate
+    it. This is a budget proxy, not a tokenizer bound (FUP-049)."""
     byte_len = len(text.encode("utf-8"))
     return (byte_len + _BYTES_PER_TOKEN - 1) // _BYTES_PER_TOKEN
 
@@ -450,17 +368,10 @@ def _fence_lang_for(path: str) -> str:
 
 
 def _compute_per_file_cap(total_review_budget_tokens: int) -> int:
-    """Min of fractional cap (`budget * PER_FILE_CAP_FRACTION`) and
-    absolute cap (`MAX_PER_FILE_TOKENS_ABSOLUTE`). Budget ≤ 0 returns a
-    non-positive cap, which gates every file to `COST_BUDGET_EXHAUSTED`
-    — fail-closed kill switch for a misconfigured budget.
+    """Limit a file to the smaller fractional or absolute token-estimate cap.
 
-    The fractional ceiling bounds budget consumption per file
-    (one file can starve at most `1/PER_FILE_CAP_FRACTION` others).
-    The absolute ceiling stays independent of caller-configurable
-    budget, preventing budget inflation from lifting the cap into
-    call-overflow territory.
-    """
+    Non-positive review budgets reject all files. The absolute ceiling prevents a
+    larger review budget from permitting an oversized model call."""
     return min(
         int(total_review_budget_tokens * PER_FILE_CAP_FRACTION),
         MAX_PER_FILE_TOKENS_ABSOLUTE,
@@ -539,7 +450,11 @@ class AnalyzeConcurrencyGate:
             # Prune on EVERY call (the map is a handful of loops at most):
             # miss-only pruning would retain a closed secondary loop's
             # semaphore indefinitely when no new loop ever appears.
-            for stale in [known for known in self._by_loop if known.is_closed()]:
+            closed_loops: list[asyncio.AbstractEventLoop] = []
+            for known_loop in self._by_loop:
+                if known_loop.is_closed():
+                    closed_loops.append(known_loop)
+            for stale in closed_loops:
                 del self._by_loop[stale]
             semaphore = self._by_loop.get(loop)
             if semaphore is None:
@@ -549,22 +464,11 @@ class AnalyzeConcurrencyGate:
 
 
 class AnalyzeWorkerPayload(BaseModel):
-    """The self-contained Send payload for one `analyze_file` worker.
+    """Checkpointable input for one file worker, separate from closure dependencies.
 
-    Pure data (specs/2026-07-05-parallel-analyze.md): a Send worker
-    receives ONLY this payload as its input — never the parent
-    `ReviewState` — so it carries everything `_process_one_file` needs
-    that isn't a closure dep. `allocation_tokens` is the planner's
-    pre-flight budget verdict (`plan_file_budgets`): the worker's real
-    rendered-prompt estimate is gated against it, so a worker can never
-    spend past its allocation and N concurrent workers can never
-    overshoot the pools. An unfunded file carries 0 and skips
-    COST_BUDGET_EXHAUSTED at the gate, exactly like the sequential
-    drawdown's starved files.
-
-    Checkpoint weight: the `ChangedFile` (content + patch) duplicates
-    into the superstep's pending sends; bounded by intake's size gates
-    and dropped once the worker completes.
+    The rendered-prompt estimate must fit `allocation_tokens`; an unfunded
+    file carries zero. Content and patch are copied into pending sends,
+    bounded by intake's size gates, and released when the worker completes.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -600,31 +504,15 @@ async def analyze_file(
     profile_contract_digest: str | None = None,
     concurrency_semaphore: asyncio.Semaphore | AnalyzeConcurrencyGate | None = None,
 ) -> dict[str, object]:
-    """The per-file Send worker: one `(file, pass)` slot per invocation.
+    """Review one file and return its outcome for the aggregate's round.
 
-    Wraps `_process_one_file` (all per-file audit events fire inside it,
-    under the logical `node_id="analyze"` per `DECISIONS.md#064`) and
-    returns the slot's `AnalyzeWorkerOutcome` for the slot-guard reducer;
-    the aggregate step folds outcomes into the pass's round. Emits no
-    round and no pass-level event; it DOES own its keyed phase pair —
-    `phase_key = file:<path>#<pass>` (injective even for paths containing
-    `#`: the pass index is an integer final segment) — and stamps the
-    same key on every per-operation event `_process_one_file` emits,
-    including `LLMRequest.phase_key` for the provider to mirror onto
-    `LLMCallEvent`. The pair opens AFTER the semaphore admits the body:
-    the envelope bounds work, and queueing is not work
-    (`phase-events-bound-work`).
+    Acquire the concurrency permit before opening the keyed phase: queueing
+    is outside the work envelope (`phase-events-bound-work`). The file/pass
+    key also tags per-operation audit events and the provider request.
+    Worker failures propagate without worker-level retries (DECISIONS.md#064).
 
-    Failure policy (spec): NO worker-level retry machinery — provider
-    retries are unchanged, and a worker exception fails the pass, parity
-    with the sequential loop's abort behavior.
-
-    `concurrency_semaphore` bounds in-flight worker bodies
-    (`ANALYZE_MAX_CONCURRENCY`): build_graph closes in an
-    `AnalyzeConcurrencyGate` (one semaphore per running loop — a bare
-    Semaphore would bind to the first loop and crash on a second); tests
-    may pass a bare `asyncio.Semaphore`. None (direct invocation) runs
-    unbounded.
+    `AnalyzeConcurrencyGate` supplies a semaphore per running loop; direct
+    callers may pass a bare semaphore or None for unbounded execution.
     """
     phase_key = f"file:{payload.changed_file.path}#{payload.pass_index}"
     worker_phase_id = compute_phase_id(
@@ -666,10 +554,8 @@ async def analyze_file(
             active_policy_version=active_policy_version,
             pass_index=payload.pass_index,
             per_file_cap_tokens=_compute_per_file_cap(total_review_budget_tokens),
-            # WORKER-SIDE ALLOCATION ENFORCEMENT: the existing cost gate
-            # compares the REAL rendered-prompt estimate against this value,
-            # so the pre-flight allocation is the worker's whole budget —
-            # a proxy under-estimate costs coverage (a skip), never budget.
+            # The rendered-prompt estimate must fit this allocation. A low
+            # planning estimate causes a skip rather than overspending.
             remaining_budget_tokens=payload.allocation_tokens,
             trivial_scope_filter_enabled=trivial_scope_filter_enabled,
             analyze_observed_skip_enforced=analyze_observed_skip_enforced,
@@ -713,15 +599,11 @@ async def _plan_pass_zero(
     cache_scope: CacheScope | None,
     triage_result: TriageResult | None,
 ) -> Command[Literal["analyze_file", "analyze_aggregate", "synthesize"]]:
-    """Pass 0: plan the fan-out and return one `Send` per kept file.
+    """Allocate budgets and dispatch one worker per kept file.
 
-    No per-file work happens here and no per-file events are emitted — the
-    planner allocates budgets pre-flight and hands each worker a self-contained
-    payload. Zero kept files routes straight to the aggregate, which still folds
-    one empty round plus its completed event.
-
-    Returns the node's full destination union because `Command` is invariant, but
-    only ever routes to "analyze_file" or "analyze_aggregate".
+    No kept files routes directly to the aggregate for an empty round.
+    `Command` requires the node's full destination union, though this planner
+    only routes to `analyze_file` or `analyze_aggregate`.
     """
     pass_zero_worklist: list[tuple[ChangedFile, ReviewTier]] = []
     if triage_result is not None:
@@ -731,12 +613,8 @@ async def _plan_pass_zero(
                 pass_zero_worklist.append((changed_file, tier))
         pass_zero_worklist.sort(key=lambda item: _PASS0_TIER_RANK[item[1]])
 
-    # Fixed proxy overhead, computed ONCE per review from the real
-    # prompt constants: system prefix + empty user-template scaffolding
-    # + the output reservation — the same three fixed terms the
-    # worker's real estimate carries (omitting any would under-fund
-    # every file by that constant and convert the gap into spurious
-    # COST_BUDGET_EXHAUSTED skips).
+    # Include the system prompt, template scaffolding, and output reservation
+    # in every estimate; omitting a fixed term would underfund every worker.
     empty_parts = analyze_prompt.render(
         file_path="",
         scope_unit_context="",
@@ -751,13 +629,8 @@ async def _plan_pass_zero(
         + _PROXY_RENDER_MARGIN_TOKENS
     )
 
-    # Pre-flight allocation replaces the sequential drawdown: the
-    # reserved/general split is unchanged (Stage 1), but allocations
-    # are final — unspent tokens are NOT redistributed (the
-    # later-files-benefit dynamic is deliberately given up per the
-    # spec's Non-goals; utilization is measured via skip counters).
-    # plan_file_budgets fails loud on a duplicate path BEFORE any
-    # Send (vendor-data corruption, never silently deduped).
+    # Allocations are final; unused tokens are not redistributed.
+    # Reject duplicate paths before dispatching any worker.
     reserved_pool_tokens = int(total_review_budget_tokens * HIGH_RISK_RESERVE_FRACTION)
     general_pool_tokens = total_review_budget_tokens - reserved_pool_tokens
     plan = plan_file_budgets(
@@ -778,24 +651,24 @@ async def _plan_pass_zero(
         per_file_cap_tokens=per_file_cap_tokens,
     )
     allocation_by_path = {a.path: a for a in plan.allocations}
-    sends = [
-        Send(
-            "analyze_file",
-            AnalyzeWorkerPayload(
-                review_id=state.review_id,
-                installation_id=state.pr_context.installation_id,
-                is_eval=state.is_eval,
-                pass_index=pass_index,
-                review_tier=tier,
-                allocation_tokens=allocation_by_path[changed_file.path].allocation_tokens,
-                changed_file=changed_file,
-                cache_scope=cache_scope,
-            ),
+    sends: list[Send] = []
+    for worker_file, worker_tier in pass_zero_worklist:
+        sends.append(
+            Send(
+                "analyze_file",
+                AnalyzeWorkerPayload(
+                    review_id=state.review_id,
+                    installation_id=state.pr_context.installation_id,
+                    is_eval=state.is_eval,
+                    pass_index=pass_index,
+                    review_tier=worker_tier,
+                    allocation_tokens=allocation_by_path[worker_file.path].allocation_tokens,
+                    changed_file=worker_file,
+                    cache_scope=cache_scope,
+                ),
+            )
         )
-        for changed_file, tier in pass_zero_worklist
-    ]
-    # Close the planner's own phase pair: planning work is bounded
-    # here; the workers and the aggregate own their own envelopes.
+    # Workers and the aggregate have separate phases; planning ends here.
     await phase_event_sink.emit_phase(
         ReviewPhaseEvent(
             review_id=state.review_id,
@@ -806,10 +679,8 @@ async def _plan_pass_zero(
             phase_key=plan_phase_key,
         )
     )
-    # `analyze_pass_started_at` rides state to the aggregate (the pass
-    # spans vertices; a monotonic anchor cannot). Zero-worker route:
-    # no Sends would strand the aggregate — route to it by name so the
-    # empty pass still folds one empty round + completed event.
+    # Pass the wall-clock start to the aggregate across vertices. Route an
+    # empty worklist there explicitly so it still produces a round.
     return Command(
         update={"analyze_pass_started_at": started_at},
         goto=sends if sends else "analyze_aggregate",
@@ -837,63 +708,37 @@ async def _run_trace_pass(
     started_mono: float,
     per_file_cap_tokens: int,
 ) -> Command[Literal["analyze_file", "analyze_aggregate", "synthesize"]]:
-    """Pass 1: the sequential trace re-entry, from worklist through phase end.
+    """Analyze trace-fetched files sequentially, then route to synthesis.
 
-    Counter source-of-truth is the local bookkeeping below — never re-read from
-    the audit stream. The accumulators are declared here rather than in `analyze`
-    because pass 0 never touches them and the counters are rebound as work
-    proceeds, so they cannot be passed in.
-
-    Routes to "synthesize" unconditionally: the depth-2 ceiling means a
-    post-pass-1 round count can never route back to trace. The annotation carries
-    the node's full union because `Command` is invariant.
+    Completion counters come from this pass's bookkeeping, not the audit stream.
+    `Command` requires the node's full destination union; the two-round limit
+    makes synthesis the only destination after this pass.
     """
     admitted_findings: list[ReviewFinding] = []
-    # Dedupe-by-(content_hash, proposal_hash) tracked alongside
-    # `admitted_findings` because `AnalysisRound` enforces uniqueness
-    # on both. Pass-1 fan-out (one iteration per source-finding × target
-    # file) can legitimately produce identical logical findings from
-    # different source-finding contexts (same file content → same
-    # vulnerability under any prompt framing); without this gate, the
-    # SECOND emission of the same logical finding would trip
-    # `_enforce_findings_unique` at `AnalysisRound` construction. The
-    # same defensive gate covers pass-0 against an LLM repeating the
-    # same proposal in a single response.
+    # Different source findings can produce the same target-file proposal.
+    # Deduplicate admission by both hashes; collapse content hashes later.
     admitted_keys_seen: set[tuple[str, str]] = set()
     trace_candidates: list[TraceCandidate] = []
-    # Cross-type subsumption proof-retention records (DECISIONS.md#055), aggregated
-    # across files for the per-pass AnalyzeCompletedEvent. Set on every _FileOutcome
-    # (normal merge + cache serve), so it accumulates regardless of cache hit/miss.
+    # Collect per-file subsumption proof for completion accounting (DECISIONS.md#055).
     pass_subsumed_matches: list[ObservedSubsumedMatch] = []
     files_examined: list[str] = []
     files_skipped: list[str] = []
-    # FUP-044 ext 3: count COST_BUDGET_EXHAUSTED skips in this pass (pass-0
-    # changed-file set) to drive the COST_BUDGET_STARVATION anomaly after the loop.
+    # Trace passes leave this counter at zero; starvation is measured in pass 0.
     budget_skip_count = 0
     n_proposals_seen = 0
     n_findings_emitted = 0
     n_findings_served = 0
     n_findings_observed = 0
-    # FUP-180: content_hashes of cache-SERVED findings, so the post-loop cap can
-    # classify a dropped served finding back to its origin (served findings can be
-    # any evidence_tier, so origin isn't derivable from the finding alone — only the
-    # serve branch knows). Producer-OBSERVED vs proposal IS derivable (OBSERVED_QUERY_IDS).
+    # Trace passes currently serve no cached findings. Retain the provenance set
+    # used by the post-cap accounting below; evidence tier cannot identify a serve.
     served_content_hashes: set[str] = set()
     n_proposals_superseded_by_observed = 0
     n_proposals_rejected = 0
     n_responses_rejected = 0
     n_trace_candidates_emitted = 0
-    # Per-pass aggregate of malformed-trace-candidate drops. Mirrors
-    # `ParserCounters.n_trace_candidates_dropped_malformed` and lands
-    # on `AnalyzeCompletedEvent` for the audit row — accumulating
-    # here is what makes the per-pass summary count match the per-file
-    # counters.
     n_trace_candidates_dropped_malformed = 0
     n_llm_calls = 0
-    # The STANDARD-tier model actually used this pass (an LLM call fired for at least
-    # one STANDARD-tier file), else None — lands on `AnalyzeCompletedEvent`.
-    # `analyze_model` (DEEP) is always recorded; the STANDARD model only when STANDARD
-    # routing fired this pass (`specs/2026-06-08-analyze-tiered-model-routing.md`).
+    # Trace analysis uses the DEEP model; this field remains None.
     standard_model_used: str | None = None
     total_input_tokens = 0
     total_output_tokens = 0
@@ -905,31 +750,19 @@ async def _run_trace_pass(
     source_findings_by_id: dict[UUID, ReviewFinding] = {
         f.finding_id: f for r in state.analysis_rounds for f in r.findings
     }
-    # Fan out by `(target_file, source_finding_id)` per
-    # `state.trace_decisions`, NOT by `state.trace_fetched_files`
-    # alone. `TraceFetchedFile.path` is dedup'd first-write-wins
-    # under the reducer; iterating over fetched files would
-    # process the fetched content ONCE under the first finding's
-    # context only, leaving every other finding that resolved to
-    # the same target with no source-specific pass-1 analysis.
-    # Each `(fetched_file, source_finding)` pair runs pass-1
-    # independently so every admitted source finding gets its own
-    # post-trace prompt.
+    # Analyze each (target file, source finding) pair from the decisions.
+    # Fetched files deduplicate by path, but each source needs its own prompt.
     fetched_files_by_path: dict[str, TraceFetchedFile] = {
         f.path: f for f in state.trace_fetched_files
     }
-    # Build the (path, source_finding_id) work list from the
-    # canonical state.trace_decisions stream (filter to resolved +
-    # target_file in fetched_files_by_path to skip target-in-PR
-    # decisions whose Phase 2 deliberately skipped per M8).
+    # Only resolved decisions with fetched content enter the worklist.
     pass_one_work: list[tuple[TraceFetchedFile, ReviewFinding]] = []
     for decision in state.trace_decisions:
         if decision.target_file is None:
             continue
         fetched = fetched_files_by_path.get(decision.target_file)
         if fetched is None:
-            # Decision resolved but Phase 2 skipped (target-in-PR
-            # case per M8). No content to feed pass-1.
+            # Targets already in the PR have no trace-fetched content.
             continue
         source_finding = source_findings_by_id.get(decision.source_finding_id)
         if source_finding is None:
@@ -965,10 +798,7 @@ async def _run_trace_pass(
         if file_outcome.parser_result is not None:
             n_llm_calls += 1
             n_proposals_seen += file_outcome.parser_result.counters.n_proposals_seen
-            # Trace-fetched files don't run the OBSERVED producer today, so
-            # n_findings_observed / n_proposals_superseded_by_observed are 0
-            # here; aggregated symmetrically with the main path so accounting
-            # stays correct if that ever changes.
+            # Trace-fetched files currently have no producer OBSERVED findings.
             n_findings_emitted += (
                 file_outcome.parser_result.counters.n_findings_emitted
                 + file_outcome.parser_result.counters.n_findings_observed
@@ -990,16 +820,8 @@ async def _run_trace_pass(
                 admitted_findings,
                 admitted_keys_seen,
             )
-            # Per DECISIONS.md#025 point 6: trace_candidates from
-            # rejected-parent proposals stay in state for replay
-            # ("Unjoined candidates remain forensic-only"). Trace's
-            # `_bucket_candidates_by_finding` skips the unjoined
-            # ones (INFO log) — that's the documented forensic
-            # contract, not a bug to filter at the analyze→state
-            # boundary. The audit-event counter
-            # `n_trace_candidates_emitted` on
-            # `AnalyzeCompletedEvent` reflects the same pre-dedup
-            # set the state-side reducer ingests.
+            # Retain candidates from rejected proposals for replay (DECISIONS.md#025).
+            # Trace skips candidates it cannot join to admitted findings.
             trace_candidates.extend(file_outcome.parser_result.trace_candidates)
 
         total_input_tokens += file_outcome.input_tokens
@@ -1007,30 +829,11 @@ async def _run_trace_pass(
         total_cache_read_tokens += file_outcome.cache_read_tokens
         total_cache_write_tokens += file_outcome.cache_write_tokens
         total_cost_decimal += file_outcome.cost_decimal
-        # Cross-type subsumption records (DECISIONS.md#055) from this file's
-        # outcome — empty for trace-fetched files (no OBSERVED producer runs
-        # there) and for cache misses with nothing subsumed.
         pass_subsumed_matches.extend(file_outcome.subsumed_matches)
         remaining_budget_tokens -= file_outcome.estimated_tokens
 
-        # Pass-1 fan-out can iterate the same `fetched_file.path`
-        # multiple times (one per source finding targeting that
-        # path). `AnalysisRound._enforce_files_examined_unique` /
-        # `_enforce_files_skipped_unique` validators reject
-        # duplicates, so dedup at append time.
-        #
-        # Examined-wins semantic: once a path lands in
-        # `files_examined`, subsequent iterations are no-ops; if an
-        # earlier iteration skipped the path and a later one
-        # examines it, promote the path from `files_skipped` to
-        # `files_examined`. In current code paths skip outcomes
-        # are deterministic per file (same content → same
-        # decision), so the skip→examined transition cannot occur
-        # — but encoding "examined wins" defensively means a
-        # future skip-reason addition that DOES depend on
-        # iteration-mutable state (e.g., partial-budget) can't
-        # silently leave a successfully-examined path stuck in
-        # `files_skipped`.
+        # One path can have several source contexts, but round paths must be
+        # unique. An examined outcome takes precedence over an earlier skip.
         if fetched_file.path in files_examined:
             pass
         elif file_outcome.parse_status != "skipped":
@@ -1059,32 +862,20 @@ async def _run_trace_pass(
     # ended_at is monotonic-derived so it can't precede started_at (FUP-141).
     ended_at = _round_ended_at(started_at, started_mono)
 
-    # Step 3h (FUP-180): finalize the round's findings BEFORE any FindingEvent fires, so
-    # the emitted audit stream == the round by construction (no mid-assembly strand).
-    #
-    # 1. Collapse content_hash duplicates (first-wins). The cold-parse proposal path can
-    #    admit two findings sharing a content_hash but differing in proposal_hash (same
-    #    file/line/finding_type, different prose); `_admit_with_dedup` keys on the PAIR so
-    #    both survive, and `AnalysisRound._enforce_findings_unique` (content_hash) would
-    #    then raise.
+    # Finalize and validate the kept set before emitting its FindingEvents.
+    # Different proposals can share a content hash; collapse them first-wins.
     collapsed_findings = _collapse_by_content_hash(admitted_findings)
 
-    # 2. Gated-aware severity cap. NON-gated findings drop to the soft cap; gated
-    #    (CRITICAL/HIGH) are NEVER dropped to fit it (hitl-gates-high-severity), only the
-    #    hard runaway ceiling bounds them (FUP-180).
+    # Gated findings survive the soft cap (hitl-gates-high-severity).
+    # Exceeding the hard ceiling raises rather than dropping them.
     kept_findings, dropped_findings = cap_findings_by_severity(
         collapsed_findings, soft_cap=MAX_FINDINGS_PER_ROUND, hard_cap=MAX_FINDINGS_HARD_CAP
     )
     n_findings_dropped_over_cap = len(dropped_findings)
 
-    # 3. Reconcile the emitted-set counters to the KEPT set (post collapse + cap). The
-    #    pre-dedup loop accumulators counted what the parser admitted; the actual
-    #    FindingEvents fire only over kept_findings, so recompute from kept, classified by
-    #    ORIGIN (not evidence_tier): served (content_hash tracked above), producer-OBSERVED
-    #    (tier OBSERVED + query_match_id in the producer registry), else a model proposal.
-    #    `n_proposals_dropped` = parser proposal-emitted minus surviving proposals — covers
-    #    ALL pre-emission drops (cross-source dedup, content-hash collapse, AND the cap),
-    #    keeping `_enforce_proposal_accounting` balanced (FUP-180).
+    # Recount kept findings after admission deduplication, collapse, and capping.
+    # The sequential path identifies producer output by tier and registry membership;
+    # the parallel aggregate uses recorded origin. Dropped proposals balance accounting.
     parser_proposal_emitted = n_findings_emitted - n_findings_served - n_findings_observed
     kept_served = sum(1 for f in kept_findings if f.content_hash in served_content_hashes)
     kept_observed = sum(
@@ -1100,19 +891,10 @@ async def _run_trace_pass(
     n_findings_served = kept_served
     n_findings_observed = kept_observed
 
-    # NOTE: trace_candidates is intentionally NOT filtered to surviving findings. A
-    # candidate whose source finding did not survive (cap-dropped, or a rejected-parent
-    # proposal) stays in state.trace_candidates as a forensic-only record per
-    # DECISIONS.md#025 point 6 — trace's proposal-hash join already INFO-skips any
-    # unjoinable candidate (no GitHub fetch), so a cap-orphaned candidate is handled
-    # identically and safely.
-
-    # Step 4: build AnalysisRound AND construct AnalyzeCompletedEvent — BOTH BEFORE any
-    # side effect. Their validators (round uniqueness + round_id; the proposal-accounting
-    # equation) run here, so a validator raise crashes cleanly with NOTHING emitted,
-    # closing the strand class fully (FUP-180): the completed-event accounting
-    # validators must run before the FindingEvent emit, too.
-    # `round_id` is content-derived so re-emission is idempotent on replay.
+    # Unjoined candidates remain in state for replay, including candidates whose
+    # findings were capped (DECISIONS.md#025). Trace will not fetch for them.
+    # Validate both the round and completion accounting before emitting findings.
+    # Content-derived round identity makes replay idempotent.
     round_id = compute_round_id(
         pass_index=pass_index,
         files_examined=tuple(files_examined),
@@ -1128,8 +910,7 @@ async def _run_trace_pass(
         started_at=started_at,
         ended_at=ended_at,
     )
-    # Counters from local accumulators — the producer-side source of truth (spec §7 step
-    # 5). Constructed (accounting-validated) HERE, before any emit.
+    # Validate completion accounting before emitting findings.
     completed_event = AnalyzeCompletedEvent(
         review_id=state.review_id,
         is_eval=state.is_eval,
@@ -1153,24 +934,20 @@ async def _run_trace_pass(
         total_cache_read_tokens=total_cache_read_tokens,
         total_cache_write_tokens=total_cache_write_tokens,
         total_output_tokens=total_output_tokens,
-        # Decimal-summed across files, cast to float once. Matches
-        # `sum(LLMCallEvent.cost_usd)` to within one float-cast step.
+        # Sum costs as Decimal; convert to float only at the event boundary.
         total_cost_usd=float(total_cost_decimal),
         pricing_version=PRICING_VERSION,
         policy_version=active_policy_version,
         analyze_model=analyze_model,
         standard_analyze_model=standard_model_used,
-        # Host-identity triad (DECISIONS.md#056), closed in at build_graph (None until lifespan
-        # wiring; coherence enforced by the event validator).
+        # Host identity comes from build_graph (DECISIONS.md#056).
         profile_id=profile_id,
         reasoning_enabled=reasoning_enabled,
         profile_contract_digest=profile_contract_digest,
     )
 
-    # All validation done. Side effects now, in order:
-    # Gated-overflow anomaly (best-effort). `len(kept) > soft cap` only when gated findings
-    # ALONE exceed it — all kept (gated are never dropped; >hard_cap fails loud earlier),
-    # still reaching HITL — a loud capacity signal. Observability must never fail the review.
+    # Gated findings can exceed the soft cap and still reach HITL.
+    # Report the overflow, but anomaly failures must not fail the review.
     if len(kept_findings) > MAX_FINDINGS_PER_ROUND:
         try:
             await anomaly_sink.emit_anomaly(
@@ -1187,13 +964,13 @@ async def _run_trace_pass(
         except Exception:
             logger.exception("analyze_gated_findings_over_cap_anomaly_emit_failed")
 
-    # One FindingEvent per kept finding — the emitted set equals the round by construction.
+    # Emit exactly the round's kept findings.
     for finding in kept_findings:
         await analyze_event_sink.emit_finding(finding, is_eval=state.is_eval)
 
     await analyze_event_sink.emit_analyze_completed(completed_event)
 
-    # Step 6: end phase event. Same phase_id as the start event.
+    # Close the phase after findings and completion accounting.
     await phase_event_sink.emit_phase(
         ReviewPhaseEvent(
             review_id=state.review_id,
@@ -1205,18 +982,12 @@ async def _run_trace_pass(
         )
     )
 
-    # Step 7: state delta + routing. list shape (not tuple) per canonical
-    # docs/spec.md §7.1 — the `append_with_dedup_by` reducer expects
-    # list-of-T. Only pass 1 reaches this tail (pass 0 returned at the
-    # planner), and the post-pass-1 round count can never satisfy the
-    # trace router's `rounds == 1` predicate — synthesize, always.
+    # Reducers require lists. The trace pass ends at synthesis.
     return Command(
         update={
             "analysis_rounds": [new_round],
             "trace_candidates": list(trace_candidates),
-            # Always empty here: only pass 1 reaches this tail, and the
-            # trace-fetched pass stays sequential and out of fan-out scope
-            # (workers own the pass-0 writes).
+            # Only pass 0 produces worker outcomes.
             "analyze_worker_outcomes": [],
         },
         goto="synthesize",
@@ -1229,8 +1000,7 @@ async def analyze(
     provider: LLMProvider,
     analyze_model: str,
     standard_analyze_model: str,
-    # Host-identity triad (DECISIONS.md#056) closed in at build_graph for the AnalyzeCompletedEvent
-    # (default None = unqualified until lifespan wiring; the event validator enforces coherence).
+    # Host identity for completion accounting (DECISIONS.md#056).
     profile_id: str | None = None,
     reasoning_enabled: bool | None = None,
     profile_contract_digest: str | None = None,
@@ -1246,38 +1016,18 @@ async def analyze(
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
 ) -> Command[Literal["analyze_file", "analyze_aggregate", "synthesize"]]:
-    """The analyze entry vertex: pass-0 PLANNER, pass-1 sequential body.
+    """Open the analysis phase, then plan workers or run the trace pass.
 
-    Pass 0 (the fan-out cutover, specs/2026-07-05-parallel-analyze.md):
-    emit the pass's phase start, resolve the cache scope, build the
-    kept-file worklist, allocate per-file budgets pre-flight
-    (`plan_file_budgets` over the bytes-based proxy estimate), and
-    return `Command(goto=[Send("analyze_file", payload), ...])` — one
-    self-contained payload per kept file. Zero kept files routes to
-    "analyze_aggregate" directly (the empty pass still folds one empty
-    round + completed event). No per-file work happens here; the
-    planner emits no per-file events.
-
-    Pass 1 (trace re-entry) runs in `_run_trace_pass`: sequential, and routing to
-    "synthesize" because the depth-2 ceiling means a post-pass-1 round count can
-    never route back to trace. Its counter source-of-truth is the local bookkeeping
-    declared there — never the audit stream.
+    Pass 0 resolves the cache scope and delegates to `_plan_pass_zero`;
+    workers and the aggregate produce its round. Pass 1 delegates to
+    `_run_trace_pass`, which reviews fetched scopes sequentially and
+    routes to synthesis.
     """
-    # `pass_index` is derived from `state.analysis_rounds`: pass 0 = no
-    # rounds merged yet (the first analyze pass); pass 1 = one round
-    # merged (post-trace re-entry per the M8 loop). The round_id reducer
-    # dedup includes pass_index in its content-derived hash, so deriving
-    # the index from state guarantees distinct round_ids across the two
-    # passes (a hardcoded `pass_index = 0` would collide under the
-    # reducer + silently drop the second pass). The depth-2 ceiling is
-    # enforced at `agent/graph.py::_trace_router` via `MAX_ANALYSIS_ROUNDS`.
+    # Derive the pass from merged rounds so each pass has a distinct round_id.
+    # The graph's trace router enforces MAX_ANALYSIS_ROUNDS.
     pass_index = len(state.analysis_rounds)
-    # Phase identity per pass shape (increment 4): pass 0 emits the keyed
-    # PLANNER pair (`plan#<pass>`; attempt_key = phase_key VERBATIM, so
-    # phase_id inherits the key's retry stability and collision-freedom);
-    # the sequential pass-1 body keeps the legacy un-keyed
-    # `analyze-pass-<n>` envelope. Both derive from pre-merge state, so
-    # replay re-emission collapses on the PhaseEventSink idempotency.
+    # Pass 0 has a keyed planner phase; pass 1 keeps its unkeyed envelope.
+    # Both identities are stable across retries from the same state.
     if pass_index == 0:
         plan_phase_key: str | None = f"plan#{pass_index}"
         phase_id = compute_phase_id(
@@ -1293,19 +1043,12 @@ async def analyze(
             attempt_key=f"analyze-pass-{pass_index}",
         )
     started_at = datetime.now(UTC)
-    # Monotonic anchor for the round DURATION (FUP-141): `ended_at` is derived
-    # from this rather than a second wall-clock read, so a backwards clock jump
-    # (NTP step / VM resume / WSL2 skew) between start and end can't make
-    # `ended_at < started_at` and trip the `AnalysisRound` invariant mid-review.
-    # `started_at` stays wall-clock for the audit trail. Precondition: this mark
-    # and the matching end read stay in one process (`monotonic()` is per-process;
-    # a V1.5 parallel-analyze fan-out must re-anchor per worker, not hoist this).
+    # The sequential trace pass derives its end time from this monotonic anchor
+    # to survive backwards wall-clock jumps (FUP-141). Pass 0 ends in the aggregate.
     started_mono = time.monotonic()
     per_file_cap_tokens = _compute_per_file_cap(total_review_budget_tokens)
 
-    # Step 1: start phase event (the plan# pair on pass 0; the legacy
-    # envelope on pass 1). If this raises (audit infra outage), the node
-    # fails before any work — no dangling start.
+    # Persist the phase start before any cache read or file work.
     await phase_event_sink.emit_phase(
         ReviewPhaseEvent(
             review_id=state.review_id,
@@ -1317,19 +1060,9 @@ async def analyze(
         )
     )
 
-    # Analyze-cache scope, resolved once on pass 0 from the reviews row —
-    # the canonical (installation_id, repo_id) tenant identity the cache
-    # key requires (never PRContext's mutable owner/repo strings); the
-    # cache is pass-0-only, so trace rounds skip the SELECT. Sits AFTER
-    # the phase-start emit: the resolve is node work (a DB read), and
-    # `phase-events-bound-work` requires node work inside the phase
-    # envelope. None disables the cache for this pass: store not
-    # injected (the eval driver's default), review row missing
-    # (fail-open to UNCACHED, never to cross-scope), or a store DB
-    # failure: the shadow cache is optional telemetry and must never
-    # abort a review (`CacheStoreError` is contained, not raised). An
-    # eval review does NOT disable the cache — it reads/writes scoped to
-    # is_eval rows via the lookup's is_eval predicate (DECISIONS.md#046).
+    # Resolve pass-0 cache tenancy from the reviews row, never mutable PR names.
+    # Missing scope or store failure disables caching without aborting analysis.
+    # Production and eval partitions remain separate (DECISIONS.md#046).
     cache_scope: CacheScope | None = None
     if analyze_cache_store is not None and pass_index == 0:
         try:
@@ -1340,18 +1073,8 @@ async def analyze(
                 exc_info=True,
             )
             cache_scope = None
-        # No is_eval bypass (DECISIONS.md#046): eval and production reviews BOTH
-        # use the cache, kept mutually invisible by the lookup's REQUIRED is_eval
-        # read-isolation predicate (the scope's is_eval, passed at the lookup
-        # below) plus the is_eval-stamped write.
-        #
-        # Defense-in-depth: the lookup partitions on cache_scope.is_eval (the
-        # reviews row) while CacheLookupEvent + the serve emits are tagged
-        # state.is_eval. The two are set together at review creation and cannot
-        # diverge in production; but if a producer bug ever split them, reading one
-        # partition while emitting the other's telemetry would be incoherent — so a
-        # divergence disables the cache for this pass (fail-safe; the protection the
-        # pre-#046 either-flag bypass gave, kept without the eval-wide veto).
+        # Lookups use the scope's eval flag; events use state's flag.
+        # Disable caching if they disagree rather than mix partitions and telemetry.
         if cache_scope is not None and cache_scope.is_eval != state.is_eval:
             logger.warning(
                 "analyze-cache is_eval divergence (scope=%s, state=%s); cache disabled",
@@ -1360,24 +1083,8 @@ async def analyze(
             )
             cache_scope = None
 
-    # Step 2: per-pass iteration scope.
-    #
-    # Pass 0 (`len(state.analysis_rounds) == 0`): iterate
-    # `pr_context.changed_files` filtered by triage tier — the original
-    # analyze surface. SKIM/SKIP excluded by construction; files absent
-    # from the tier map are treated as SKIP (defensive against tier-map
-    # gaps; per spec §7 step 2). No FileExaminationEvent fires for
-    # excluded files.
-    #
-    # Pass 1 (`len(state.analysis_rounds) == 1`, post-trace re-entry per
-    # M8 loop): iterate `state.trace_fetched_files` — files trace
-    # resolved + fetched at head SHA. These are NOT PR-diff files, so
-    # there's no patch, no triage classification, and no
-    # changed-scope-unit intersection: analyze examines the WHOLE file
-    # because trace's resolution decided the file is relevant to a
-    # source finding. The parser admits INFERRED proposals only on
-    # pass 1 (`pass_index > 0`) — pass 0 still rejects per the V1 stub
-    # (no trace context exists yet at that point).
+    # Pass 0 plans only DEEP/STANDARD diff files; absent tiers default to SKIP.
+    # Pass 1 reviews trace-fetched scope units with source-finding context.
     if pass_index == 0:
         return await _plan_pass_zero(
             state,
@@ -1420,12 +1127,11 @@ def _worker_outcome_for(
     pass_index: int,
     review_tier: ReviewTier,
 ) -> AnalyzeWorkerOutcome:
-    """Map one `_FileOutcome` to its `AnalyzeWorkerOutcome`: the per-file
-    branch union discriminates the source, and the builders receive the
-    ORIGINAL objects (producer originals pre-clone — origin truth intersects
-    by object identity; cloning happens inside the builders). Called by the
-    `analyze_file` worker; the aggregate folds the outcomes into the pass's
-    round (the sequential-parity contract lives in the wiring tests)."""
+    """Build a worker outcome from the active per-file result.
+
+    Pass original producer objects: builders determine provenance by identity
+    before cloning findings for state.
+    """
     if file_outcome.parser_result is not None:
         parser_result = file_outcome.parser_result
         return worker_outcome_from_parser(
@@ -1467,8 +1173,7 @@ def _worker_outcome_for(
     if file_outcome.observed_skip_result is not None:
         skip_reason = file_outcome.skip_reason
         if skip_reason is None:
-            # The #049 ENFORCED coverage skip: clean FileExaminationEvent,
-            # no SkipReason — the file is EXAMINED, the LLM just never ran.
+            # Deterministic coverage counts as examined, with no skip reason.
             return worker_outcome_from_observed_coverage(
                 path=path,
                 pass_index=pass_index,
@@ -1496,12 +1201,10 @@ def _worker_outcome_for(
 
 @dataclass(frozen=True, slots=True)
 class _ServedResult:
-    """Cache-served findings + trace candidates for one file (Stage B serve
-    flip). A served hit populates this on `_FileOutcome` INSTEAD of
-    `parser_result` (which stays None — no LLM call), so the main loop
-    accumulates the findings WITHOUT counting an LLM call: they ride
-    `n_findings_served` (subtracted from the proposal-accounting equation) and
-    `n_findings_emitted` (real `FindingEvent`s fired)."""
+    """Cached findings and candidates restored without an LLM call.
+
+    Worker builders classify these as served, outside proposal accounting.
+    """
 
     admitted_findings: tuple[ReviewFinding, ...]
     trace_candidates: tuple[TraceCandidate, ...]
@@ -1509,32 +1212,22 @@ class _ServedResult:
 
 @dataclass(frozen=True, slots=True)
 class _ObservedSkipResult:
-    """Deterministic OBSERVED findings for a file whose LLM pass did NOT run.
-    Three producers: the ENFORCED coverage skip (Step 3b-mechanism — every
-    changed scope covered by `skip_safe` matches), and the two module-arm
-    early-skip ride-outs (DECISIONS.md#062 as amended: COST_BUDGET_EXHAUSTED
-    and ALL_SCOPES_TRIVIAL skips carry the zero-token module-level findings
-    instead of dropping them). Populated on `_FileOutcome` INSTEAD of
-    `parser_result` (which stays None). The main loop admits these like the
-    augment path's OBSERVED findings — `n_findings_emitted` (real
-    FindingEvents fired) AND `n_findings_observed` (the proposal-accounting
-    subtraction channel; OBSERVED findings have no proposal lifecycle) — with
-    NO LLM call counted. They still flow to synthesize + HITL."""
+    """Producer findings retained without an LLM call.
+
+    Deterministic coverage counts as examined. Module-level findings also
+    survive budget/trivial skips (DECISIONS.md#062). Both reach synthesis
+    and HITL without entering proposal accounting.
+    """
 
     admitted_findings: tuple[ReviewFinding, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class _FileOutcome:
-    """Per-file processing result. Populated by `_process_one_file` and
-    consumed by the main loop's accumulators.
+    """Per-file result for worker builders and sequential pass accounting.
 
-    Cache reads and writes stay separate (cache_write bills at 1.25×
-    base, cache_read at 0.1×); the 12.5× cost differential would be
-    hidden if summed. `cost_decimal` is the per-file `Decimal` cost;
-    the main loop sums Decimals and casts to float once at the
-    aggregate event, eliminating per-file FP drift against the per-call
-    `LLMCallEvent.cost_usd` sum.
+    Cache reads and writes stay separate because their prices can differ.
+    Costs remain Decimal until conversion at the completion-event boundary.
     """
 
     parse_status: _ParseStatus
@@ -1545,40 +1238,22 @@ class _FileOutcome:
     cache_write_tokens: int
     cost_decimal: Decimal
     estimated_tokens: int
-    # Stage B serve flip: non-None ONLY on a cache-served hit (parser_result is
-    # then None — no LLM call). The main loop's served branch consumes it.
+    # Cache serves have no parser_result or LLM call.
     served_result: _ServedResult | None = None
-    # Non-None ONLY when the file skipped the LLM but produced OBSERVED findings:
-    # the enforced skip_safe-coverage skip, or a module-finding ride-out on a
-    # budget/trivial skip (parser_result is then None — no LLM call). The main
-    # loop's observed-skip branch admits these findings so they reach
-    # synthesize + HITL.
+    # Producer-only coverage or findings retained alongside a budget/trivial skip.
     observed_skip_result: _ObservedSkipResult | None = None
-    # Stage 2 (FUP-044 ext 3): the skip reason, mirrored from the
-    # FileExaminationEvent onto the in-memory outcome so the main loop can count
-    # COST_BUDGET_EXHAUSTED skips for the starvation anomaly. None on any
-    # non-skipped outcome (parse_status != "skipped").
+    # Mirror the examination event's reason for skip and starvation accounting.
     skip_reason: SkipReason | None = None
-    # Cross-type subsumption proof-retention records (DECISIONS.md#055), set on
-    # BOTH paths — the normal merge assembles them, the cache serve reconstructs
-    # them from the payload — so the main loop accumulates them onto the per-pass
-    # AnalyzeCompletedEvent uniformly regardless of cache hit/miss.
+    # Merge or restored-cache proof for AnalyzeCompletedEvent (DECISIONS.md#055).
     subsumed_matches: tuple[ObservedSubsumedMatch, ...] = ()
-    # RAW producer output (original objects, pre-clone) from the #054 merge
-    # site — the parallel-analyze origin-truth source: the worker-outcome
-    # builder intersects these BY OBJECT IDENTITY with the admitted set, so
-    # they must be the same objects the merge placed (never clones). Empty
-    # on every non-parser path.
+    # Original producer objects let builders check survival by identity before cloning.
     producer_findings: tuple[ReviewFinding, ...] = ()
 
 
 class _ServeReconstructionError(Exception):
-    """A live cache payload could not be reconstructed into served findings.
+    """A cache payload failed reconstruction before any serve event was emitted.
 
-    Raised by `_serve_cache_hit` BEFORE any emit when the cached payload is
-    malformed (missing key, null/non-iterable container, or a finding/candidate
-    dict that fails validation). The serve short-circuit catches it and degrades
-    to a real LLM call (FUP-177 edge 2) — degrade, never abort the review.
+    The caller falls back to model analysis.
     """
 
 
@@ -1596,23 +1271,13 @@ async def _serve_cache_hit(
     file_examination_sink: FileExaminationSink,
     phase_key: str | None,
 ) -> _FileOutcome:
-    """Serve a live analyze-cache hit (Stage B): reconstruct the cached findings
-    + trace candidates onto THIS review, emit the audit trail, and return a
-    served `_FileOutcome` — NO LLM call.
+    """Restore cached findings and candidates without an LLM call.
 
-    Findings re-mint `finding_id` DETERMINISTICALLY (`compute_served_finding_id`)
-    and re-stamp `review_id` / `installation_id` onto the new review, preserving
-    all content. The rebuild routes through `ReviewFinding.model_validate` (NOT
-    `model_copy`), so every validator re-runs — content_hash re-verified,
-    severity re-checked against LIVE policy, proof boundary re-enforced: cache
-    content is never trusted past the schema floor. Trace candidates need no
-    re-mint (`candidate_id` is content-derived, review-independent).
-
-    Served findings re-emit `FindingEvent`s (per-review self-containment for
-    replay); served trace candidates emit no per-item event — their identity
-    rides the `CacheServeEvent`, their full content (incl. `reason`) rides the
-    returned `_ServedResult` into state and purges with the cache row. The file
-    emits ONE `FileExaminationEvent(parse_status="clean")` and NO `LLMCallEvent`.
+    Revalidate findings, reset downstream lifecycle fields, and derive IDs for
+    this review. Candidate IDs remain content-derived and review-independent.
+    Reconstruction and uniqueness checks precede all emits; then emit the
+    cache serve and a clean examination event. FindingEvents are deferred to
+    round assembly, and candidate content travels in the returned outcome.
     """
     # Reconstruct from the cached payload INSIDE a degrade guard (FUP-177 edge 2):
     # a malformed-but-live payload (missing key, null/non-iterable container, or a
@@ -1754,21 +1419,11 @@ async def _serve_cache_hit(
 
 
 def _build_query_match_id_set(file_content_bytes: bytes, *, file_path: str) -> frozenset[str]:
-    """Fire every structural query registered for `file_path`'s catalog
-    language against `file_content_bytes`; return the set of ids that
-    produced at least one match.
+    """Return IDs of non-deprecated structural queries that fired for this file.
 
-    Iterates `queries.registry.structural_query_ids_for(language)` (current
-    non-deprecated ids of the file's language only — the registry-language-
-    aware selector per the JS/TS OBSERVED catalog spec). Per spec §7 step
-    3b, this set is passed to the parser's OBSERVED admission — a model
-    claim whose `query_match_id` isn't in this set rejects with
-    `query_match_id_not_in_registry`. Empty set means no structural query
-    is registered for (or fired against) this file → every model OBSERVED
-    claim rejects; only JUDGED proposals can land. JS/TS files register no
-    structural queries in V1, so their set is empty by registration — the
-    dispatch-era rejection behavior, now data-driven.
-    """
+    The registry selects the language catalog and grammar, including JS/TS dialects.
+    The parser requires OBSERVED IDs to belong to this supplied set (spec §7 step 3b);
+    an empty set rejects every model OBSERVED claim."""
     language = query_registry.query_language_for_path(file_path)
     grammar = query_registry.grammar_for_path(file_path)
     if language is None or grammar is None:
@@ -1872,26 +1527,19 @@ def _assemble_scope_unit_context(
     source_bytes: bytes,
     fence_lang: str = "python",
 ) -> str:
-    """Render the included scope units as the prompt's `scope_unit_context` block.
+    """Render scope kind, name, source-line range and fenced body for each unit.
 
-    V1 shape is per-unit kind + qualified name + line range + raw body
-    extract. Same-file callers/callees/imports/decorators land with the
-    trace spec. Byte-slicing is delegated to
-    `coordinates.extract_scope_unit_body` because the byte-range →
-    text surface belongs to the coordinates module per
-    `coordinates-module-is-sole-translator`.
-
-    No internal char cap today — the cost gate at the call site is the
-    fail-closed protection. Adding an assembly-time cap parallel to
-    `_DEGRADED_HUNK_CHAR_CAP` for the degraded path is tracked as
-    FUP-052.
-    """
+    coordinates.extract_scope_unit_body owns byte slicing
+    (`coordinates-module-is-sole-translator`). This block adds no caller/import
+    graph context. The call-site budget gate limits size; an assembly-time cap
+    remains deferred (FUP-052)."""
     blocks: list[str] = []
-    for su in included_scope_units:
-        body = extract_scope_unit_body(su, source_bytes)
-        name = su.qualified_name or su.name
+    for scope_unit in included_scope_units:
+        body = extract_scope_unit_body(scope_unit, source_bytes)
+        name = scope_unit.qualified_name or scope_unit.name
         blocks.append(
-            f"### {su.kind} `{name}` (lines {su.line_start}-{su.line_end})\n"
+            f"### {scope_unit.kind} `{name}` "
+            f"(lines {scope_unit.line_start}-{scope_unit.line_end})\n"
             f"{safe_code_fence(body, lang=fence_lang)}"
         )
     return "\n\n".join(blocks)
@@ -2058,6 +1706,142 @@ async def _emit_examination(
     )
 
 
+def _merge_producer_findings(
+    parser_result: ParserResult, observed_findings: tuple[ReviewFinding, ...]
+) -> tuple[ParserResult, list[ObservedSubsumedMatch]]:
+    """Merge producer findings and retain proof for subsumed matches."""
+    subsumed_matches: list[ObservedSubsumedMatch] = []
+    # Same-hash producer findings replace JUDGED proposals to retain query proof
+    # (DECISIONS.md#054). Keep incumbents carrying proof; append fresh findings
+    # in producer order.
+    admitted_list = list(parser_result.admitted_findings)
+    index_by_hash = {f.content_hash: i for i, f in enumerate(admitted_list)}
+    fresh: list[ReviewFinding] = []
+    fresh_hashes: set[str] = set()
+    n_superseded = 0
+    for observed_finding in observed_findings:
+        content_hash = observed_finding.content_hash
+        collide_idx = index_by_hash.get(content_hash)
+        if collide_idx is not None:
+            if admitted_list[collide_idx].evidence_tier is EvidenceTier.JUDGED:
+                admitted_list[collide_idx] = observed_finding
+                n_superseded += 1
+        elif content_hash not in fresh_hashes:
+            fresh.append(observed_finding)
+            fresh_hashes.add(content_hash)
+    n_observed = len(fresh) + n_superseded
+    if n_observed:
+        # Replacements remove proposal findings and record supersessions;
+        # fresh and replacement producer findings count as observed.
+        # Reuse the original tuple when no incumbent was replaced.
+        base_admitted = (
+            parser_result.admitted_findings if n_superseded == 0 else tuple(admitted_list)
+        )
+        parser_result = replace(
+            parser_result,
+            admitted_findings=base_admitted + tuple(fresh),
+            counters=replace(
+                parser_result.counters,
+                n_findings_emitted=parser_result.counters.n_findings_emitted - n_superseded,
+                n_findings_observed=n_observed,
+                n_proposals_superseded_by_observed=n_superseded,
+            ),
+        )
+
+    # Subsumption follows replacement so triple collisions use the surviving
+    # producer finding (DECISIONS.md#055). Only same-span JUDGED findings can
+    # subsume producer OBSERVED findings; exact spans avoid absorbing unrelated
+    # findings. Retain the dropped query proof in subsumed_matches.
+    admitted = parser_result.admitted_findings
+    judged_by_span: dict[tuple[int, int], list[ReviewFinding]] = {}
+    for jf in admitted:
+        if jf.evidence_tier is EvidenceTier.JUDGED:
+            judged_by_span.setdefault((jf.line_start, jf.line_end), []).append(jf)
+    if judged_by_span:
+        surviving: list[ReviewFinding] = []
+        for af in admitted:
+            subsumer: ReviewFinding | None = None
+            # Producer registry IDs exclude model-cited structural OBSERVED
+            # findings, whose removal would decrement the wrong counter.
+            if (
+                af.evidence_tier is EvidenceTier.OBSERVED
+                and af.query_match_id is not None
+                and af.query_match_id in OBSERVED_QUERY_IDS
+            ):
+                for yf in judged_by_span.get((af.line_start, af.line_end), ()):
+                    if subsumes(yf.finding_type, af.finding_type):
+                        subsumer = yf
+                        break
+            if subsumer is None:
+                surviving.append(af)
+            else:
+                subsumed_matches.append(
+                    ObservedSubsumedMatch(
+                        file_path=af.file_path,
+                        query_match_id=af.query_match_id,
+                        finding_type=af.finding_type,
+                        subsumed_by_finding_type=subsumer.finding_type,
+                        line_start=af.line_start,
+                        line_end=af.line_end,
+                        dropped_content_hash=af.content_hash,
+                        subsumer_content_hash=subsumer.content_hash,
+                    )
+                )
+        n_subsumed = len(admitted) - len(surviving)
+        if n_subsumed:
+            # Decrease observed only: aggregate emitted decreases with it,
+            # so proposal accounting still balances.
+            parser_result = replace(
+                parser_result,
+                admitted_findings=tuple(surviving),
+                counters=replace(
+                    parser_result.counters,
+                    n_findings_observed=parser_result.counters.n_findings_observed - n_subsumed,
+                ),
+            )
+    return parser_result, subsumed_matches
+
+
+def _price_model_response(response: LLMResponse) -> Decimal:
+    """Price the returned token counts and actual billing tier, keeping Decimal precision."""
+    return compute_cost_usd(
+        response.profile_id,
+        response.model,
+        input_tokens=response.input_tokens,
+        cache_write_tokens=response.cache_write_tokens,
+        cache_read_tokens=response.cache_read_tokens,
+        output_tokens=response.output_tokens,
+        billed_prompt_tokens=response.billed_prompt_tokens,
+        service_tier=response.service_tier_actual,
+    )
+
+
+async def _emit_parser_rejections(
+    *,
+    parser_result: ParserResult,
+    analyze_event_sink: AnalyzeEventSink,
+    review_id: UUID,
+    is_eval: bool,
+    phase_key: str | None,
+) -> None:
+    """Audit rejected proposals in order, then any whole-response rejection."""
+    for rejection in parser_result.proposal_rejections:
+        await analyze_event_sink.emit_finding_proposal_rejected(
+            _lift_proposal_rejection(
+                rejection, review_id=review_id, is_eval=is_eval, phase_key=phase_key
+            )
+        )
+    if parser_result.response_rejection is not None:
+        await analyze_event_sink.emit_analyze_response_rejected(
+            _lift_response_rejection(
+                parser_result.response_rejection,
+                review_id=review_id,
+                is_eval=is_eval,
+                phase_key=phase_key,
+            )
+        )
+
+
 async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orchestration boundary; outcome branches resist further extraction without losing audit clarity
     *,
     changed_file: ChangedFile,
@@ -2083,21 +1867,15 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     profile_contract_digest: str | None = None,
     phase_key: str | None,
 ) -> _FileOutcome:
-    """Process one triage-kept file through parse → outcome → cost
-    gate → trivial-scope classification → LLM call → parser → audit
-    events.
+    """Review a triage-kept file through eligibility, context, and budget gates.
 
-    Produces every file outcome the module docstring's table enumerates,
-    plus the parser-stage skip pass-through described there. The table is
-    stated once, in that docstring.
+    Filter scopes, try the clean cache, then check deterministic coverage.
+    If a model call remains necessary, price and parse its response, merge
+    producer findings, audit rejections, and cache the completed result.
+    Finding emission waits for the caller's round cap.
     """
-    # Language gate: registry dispatch (dispatch spec). Triage doesn't
-    # filter by language and `ChangedFile.language` is unpopulated, so a
-    # file with no registered adapter (`.go`, `.rs`, …) classified
-    # DEEP/STANDARD would otherwise reach a parser that can't handle it.
-    # Routes through `SkipReason.UNSUPPORTED_LANGUAGE` per
-    # `DECISIONS.md#018` Amended 2026-05-21 — capability-scoped to the
-    # current registry, not a forever-claim about language support.
+    # Triage can keep files without a registered language adapter; skip them
+    # before parsing (DECISIONS.md#018).
     if not _language_supported(changed_file.path):
         return await _emit_skip(
             file_examination_sink=file_examination_sink,
@@ -2108,8 +1886,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             skip_reason=SkipReason.UNSUPPORTED_LANGUAGE,
         )
 
-    # Explicit `is not None` (not `or`) so an empty `content_head` ("")
-    # doesn't fall through to `content_base` and analyze stale content.
+    # An empty head is current content; only None permits the base fallback.
     if changed_file.content_head is not None:
         content = changed_file.content_head
     elif changed_file.content_base is not None:
@@ -2126,9 +1903,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             skip_reason=SkipReason.NO_REVIEWABLE_CONTEXT,
         )
 
-    # `file_byte_length` computed ONCE here per spec §7 step 3a;
-    # passed to parser §5 unchanged so it never recomputes per
-    # proposal.
+    # Reuse the byte length for every proposal's span check.
     content_bytes = content.encode("utf-8")
     file_byte_length = len(content_bytes)
 
@@ -2138,12 +1913,8 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         import_path_resolver,
     )
 
-    # Parser-stage skip (VENDORED, OVERSIZED, GENERATED_FILENAME, MINIFIED,
-    # GENERATED_BANNER): pass the parser's skip_reason through. Handled BEFORE
-    # `lookup_patched_file` because a skipped file may carry a malformed/duplicate
-    # patch, and `lookup_patched_file` RAISES `CoordinateError` on those (it returns
-    # None only for the absent cases). Skipping first keeps the clean-skip for those
-    # files — `lookup_patched_file` is only safe to call for a review candidate.
+    # Handle parser exclusions before patch lookup, which can raise on malformed
+    # or duplicate patches. Pass the skip reason through without a model call.
     if parse_result.parser_outcome == "skipped":
         # ParseResult validator guarantees skip_reason non-None when
         # parser_outcome="skipped"; rebind narrows for mypy.
@@ -2162,26 +1933,13 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             skip_reason=parser_skip_reason,
         )
 
-    # `None` covers three cases: no patch (binary / oversized response), file
-    # absent from a well-formed patch, or path-validation failure (the helper
-    # returns None for those). Computed after the parser-skip return because the
-    # degraded prompt below also needs `patched_file`.
+    # Missing or path-rejected patch context returns None. A malformed patch can
+    # raise here, after parser exclusions have already returned.
     patched_file = lookup_patched_file(changed_file.patch, changed_file.path)
 
-    # FUP-217: patch/head misalignment probe. `added_line_byte_ranges` raises
-    # CoordinateError when a patch target line lies beyond the fetched source
-    # (force-push racing intake's files-list vs content fetches). Probed ONCE
-    # here, before any route, because every downstream coordinate anchor for
-    # the file is unsound against mismatched content: the degraded span veto
-    # recomputes these ranges AFTER the LLM call (an uncontained raise there
-    # aborted the whole review), the module-scope arm denies on them, and a
-    # "clean" review would hand publish wrong-line comment locations. Added
-    # lines are HEAD-side coordinates, so the probe anchors on head content
-    # ONLY: when head is absent, an added-line patch has nothing to anchor
-    # against and skips as the same misalignment class — probing the base
-    # fallback would validate head coordinates against the wrong text and
-    # pass wrongly. Deletion-only patches over base content (removed files)
-    # carry no added lines and proceed unprobed, unchanged.
+    # Validate patch/head alignment before routing: every later span uses this
+    # coordinate frame. The coordinates layer raises on mismatched added lines;
+    # only that mismatch becomes a skip (FUP-217).
     if patched_file is not None:
         if changed_file.content_head is None:
             misaligned = patched_file_has_added_lines(patched_file)
@@ -2206,34 +1964,19 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 skip_reason=SkipReason.PATCH_HEAD_MISALIGNED,
             )
 
-    # Module-scope arm inputs (DECISIONS.md#062), derived through the ONE
-    # gated helper (fully error-free parse; patch/head-misalignment
-    # contained to an inert arm — production-unreachable now that the
-    # probe above skips misaligned files first; kept as defense) — needed
-    # on the clean route too (the with-scopes arm + its cache-key
-    # digest), so derived up front. The ROUTING SWEEP below is lazy; only
-    # this derivation is unconditional.
+    # Derive module inputs once for routing, producer admission, and cache identity
+    # (DECISIONS.md#062). The catalog sweep remains lazy.
     module_all_scope_units, module_added_ranges = module_admission_inputs(
         parse_result, patched_file, changed_file.content_head
     )
 
-    # Outcome determination (skip / degraded / clean) for a PARSED file lives in the
-    # pure `decide_degradation` (degradation.py) — extracted so structural eval
-    # scenarios can exercise it LLM-free. This node is the only place that turns the
-    # decision into behavior. The `"failed"` degraded branch is V1-unreachable
-    # (intake gates invalid UTF-8 with SkipReason.OVERSIZED); retained for the
-    # raw-bytes intake path (FUP-053) + audit/prompt-wiring tests.
+    # The pure degradation decision selects skip, bounded hunks, or scoped review.
+    # Its parse-failure route remains for future raw-byte intake (FUP-053).
     decision = decide_degradation(parse_result, patched_file)
 
-    # Module-scope routing (DECISIONS.md#062), evaluated LAZILY: the catalog
-    # sweep runs only when the file would otherwise skip at
-    # NO_CHANGED_SCOPE_UNITS — the ONE branch that consults the candidate —
-    # and `module_level_observed_matches` itself short-circuits languages
-    # with no eligible query, so the common route (files with changed
-    # scopes) and every Python file pay nothing. `decide_degradation` is
-    # pure, so re-deciding on a non-empty sweep is free; the admitted
-    # matches are REUSED as the module route's final set below (one sweep,
-    # zero drift between routing and production).
+    # Sweep only when module matches could rescue NO_CHANGED_SCOPE_UNITS.
+    # Reuse those matches for production; ineligible languages short-circuit
+    # (DECISIONS.md#062).
     module_matches: tuple[ObservedMatch, ...] = ()
     if (
         decision.mode == "skip"
@@ -2270,15 +2013,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     included_clipped_hunks: tuple[tuple[str, ...], ...] = decision.included_clipped_hunks
     degraded_mode = decision.mode == "degraded"
 
-    # Step 3b: registry-query firing (skip for degraded mode). The builder
-    # is registry-language-aware (JS/TS OBSERVED catalog spec): it selects
-    # the structural queries registered for THIS file's language and runs
-    # them under the file's grammar, so a query never fires over bytes of
-    # another language (no error-recovery garbage matches). A language with
-    # no structural queries (JS/TS in V1) or no catalog at all yields the
-    # empty set — the prompt stays honest ("do not claim observed") and any
-    # model observed claim on such a file rejects at admission, exactly the
-    # dispatch-era behavior, now by registration instead of a Python gate.
+    # Run structural queries under the registered language grammar. Degraded
+    # prompts cannot cite structural proof; an empty fired set rejects OBSERVED
+    # model proposals.
     is_python = _is_python_file(changed_file.path)
     query_match_id_set: frozenset[str] = (
         frozenset()
@@ -2286,28 +2023,19 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         else _build_query_match_id_set(content_bytes, file_path=changed_file.path)
     )
 
-    # The from-import refs the trace-candidate machinery may consume.
-    # Feeds BOTH the cache key digest and the parser call below from one
-    # binding (FUP-171 anti-fork). Unconditional since the resolver spec:
-    # every registry language collects candidates. NOTE the correction
-    # map is NOT necessarily empty for JS/TS (a bare specifier like
-    # 'express' is a valid identifier and enters the map); what keeps
-    # corrections off JS/TS is the parser's module-form-only correction
-    # gate — the map's only effect for specifier-form files is keying
-    # the cache digest.
+    # Use the same imports for cache identity and parser candidate correction.
+    # Correction applies only to module-form candidates.
     trace_import_refs = parse_result.imports
 
-    # Step 3c: assemble the (system, user) prompt pair.
+    # Build scoped context for clean files, bounded diff context for degraded ones.
     if degraded_mode:
-        # `patched_file` and `degradation_reason` are both non-None on
-        # this branch by construction. The runtime checks below narrow
-        # for mypy without re-asserting upstream invariants.
+        # The degradation decision guarantees both values; this check narrows them.
         if degradation_reason is None or patched_file is None:
             raise RuntimeError(
                 "analyze: degraded_mode true with degradation_reason/patched_file None "
                 "— upstream outcome-determination invariant violated"
             )
-        parts = analyze_prompt.render_degraded(
+        prompt_parts = analyze_prompt.render_degraded(
             file_path=changed_file.path,
             bounded_hunks=bound_diff_hunks_text(
                 patched_file,
@@ -2318,7 +2046,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             degradation_reason=degradation_reason,
         )
     else:
-        parts = analyze_prompt.render(
+        prompt_parts = analyze_prompt.render(
             file_path=changed_file.path,
             scope_unit_context=_assemble_scope_unit_context(
                 included_scope_units=included_scope_units,
@@ -2330,20 +2058,15 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             pass_index=pass_index,
         )
 
-    # Step 3d: cost gate.
+    # Gate the full prompt before scope filtering can reduce it.
     estimated_tokens = (
-        _estimate_tokens(parts.system_prompt)
-        + _estimate_tokens(parts.user_prompt)
+        _estimate_tokens(prompt_parts.system_prompt)
+        + _estimate_tokens(prompt_parts.user_prompt)
         + analyze_prompt.MAX_TOKENS
     )
     if estimated_tokens > per_file_cap_tokens or estimated_tokens > remaining_budget_tokens:
-        # Budget exhaustion must not drop the module arm's zero-token
-        # OBSERVED findings (DECISIONS.md#062 as amended: the early-skip
-        # ride-out). Two shapes reach here: the module ROUTE already carries
-        # its routing-sweep matches; a WITH-SCOPES clean-route file (changed
-        # function + changed module-level line) never ran the sweep — run it
-        # now, lazily, only because the gate actually fired (the sweep
-        # short-circuits ineligible languages and empty ranges).
+        # A budget skip must retain zero-token module findings (DECISIONS.md#062).
+        # Reuse routing matches, or sweep lazily if the clean route has not needed them.
         budget_module_matches = module_matches or (
             module_level_observed_matches(
                 file_path=changed_file.path,
@@ -2357,9 +2080,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             else ()
         )
         if budget_module_matches:
-            # The LLM pass is skipped — and counted, the
-            # COST_BUDGET_EXHAUSTED accounting stands — but the
-            # deterministic findings cost zero tokens and ride out.
+            # Keep the budget skip and retain the zero-token deterministic findings.
             return await _emit_skip_with_module_findings(
                 file_examination_sink=file_examination_sink,
                 review_id=review_id,
@@ -2380,34 +2101,13 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             skip_reason=SkipReason.COST_BUDGET_EXHAUSTED,
         )
 
-    # Step 3d-bis: trivial-scope classification (pass-0 clean mode only;
-    # degraded files are never classified). Runs AFTER the baseline cost
-    # gate by pinned precedence (specs/2026-06-10-trivial-scope-filter.md):
-    # COST_BUDGET_EXHAUSTED wins over ALL_SCOPES_TRIVIAL, and the gate
-    # evaluated the BASELINE prompt estimate, so enabling the filter can
-    # never convert a budget skip into an LLM call (the filtered prompt is
-    # <= baseline). The baseline estimate also stays in
-    # `_FileOutcome.estimated_tokens` for the budget deduction — a
-    # deliberate conservative over-debit: later files see a tighter
-    # budget under enforcement, never a looser one.
-    # Shadow mode (flag off) still classifies and emits
-    # `applied=False` would-exclude telemetry — the eval-backed flip's
-    # production data; enforcing mode excludes trivial scopes from the
-    # prompt and skips all-trivial files. Runs BEFORE step 3e so the
-    # all-trivial skip routes through `_emit_skip` and the single
-    # FileExaminationEvent emission point holds.
-    # FUP-170: one post-cost-gate head parse feeds BOTH the trivial-scope
-    # classification (below) and the FUP-162 parameterized-call scan.
-    # The pre-gate `parse_source` parse stays separate (it fed degradation + the
-    # token estimate); this runs strictly AFTER the cost gate, so a cost-skipped
-    # file never reaches it (COST_BUDGET_EXHAUSTED-before-classification holds).
-    # The scan rides every clean file (None in degraded mode — also exactly when
-    # the file is not cacheable, so `parameterized_call_scan is not None` IS the
-    # clean-mode cache gate below). The SAME scan object feeds BOTH the cache-key
-    # digest AND the admission veto in parse_analyze_response, so the keyed and
-    # admitted inputs can never fork (FUP-171 anti-fork). `compute_triviality`
-    # mirrors the classification gate so triviality (+ its base parse) builds
-    # only when there's a patch and included scopes.
+    # Classify scopes only after the baseline budget gate: filtering must not turn
+    # a budget skip into a model call. Keep the baseline estimate for conservative
+    # budget accounting. Shadow mode records exclusions without applying them.
+    #
+    # One post-gate parse supplies triviality and parameterized-call facts. The same
+    # scan feeds cache identity and parser admission; build base-side triviality
+    # only when a patch and included scopes require it.
     want_triviality = (
         is_python and not degraded_mode and patched_file is not None and bool(included_scope_units)
     )
@@ -2421,13 +2121,8 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             degraded=degraded_mode,
         )
     else:
-        # Non-Python: the trivial-scope classifier and the FUP-162 scan
-        # are Python-grammar surfaces (dispatch spec). Clean files carry
-        # an EMPTY scan, NOT None — None means degraded/not-cacheable
-        # (the clean-mode cache gate below keys on `is not None`), while
-        # an empty scan keeps the sql_injection veto naturally inert
-        # (no execute-like calls to match) and `scan_digest(empty)` keys
-        # the cache stably.
+        # These scans are Python-only. Clean non-Python files get an empty scan so they
+        # remain cacheable; None denotes degraded mode. The SQL veto stays inert.
         triviality_context = None
         parameterized_call_scan = None if degraded_mode else ParameterizedCallScan()
 
@@ -2461,15 +2156,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 if not entry.trivial
             )
             if not kept:
-                # Before dropping to the trivial skip: a changed
-                # module-level match is NOT trivial-scope coverage and must
-                # not be silently dropped with it (DECISIONS.md#062). The
-                # clean route never ran the routing sweep, so run it here —
-                # lazily, only when the skip actually fires; the sweep
-                # short-circuits ineligible languages. Structurally
-                # unreachable today (triviality is Python-gated; the sole
-                # eligible query is JavaScript) — this guards the first
-                # Python eligible query / JS trivial classifier.
+                # Preserve changed module findings when every function scope is trivial
+                # (DECISIONS.md#062). This guard is currently unreachable: triviality is
+                # Python-only and the eligible module query is JavaScript-only.
                 trivial_module_matches = module_level_observed_matches(
                     file_path=changed_file.path,
                     head_content=content,
@@ -2500,18 +2189,14 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 )
             included_scope_units = tuple(su for su, _ in kept)
             included_clipped_hunks = tuple(hunks for _, hunks in kept)
-            # Span-filter the fired query-ID set to the kept scopes. The
-            # SAME filtered set feeds the prompt's query_match_id_list AND
-            # the parser's OBSERVED admission below — filtering only the
-            # prompt text would let a finding anchored in a shown scope
-            # cite a query ID whose match lives in an excluded scope (an
-            # OBSERVED proof pointing at never-shown code).
+            # Keep proof IDs within the retained scopes. Both prompt and parser use this
+            # filtered set, so a finding cannot cite proof from excluded code.
             query_match_id_set = _filter_query_ids_to_scopes(
                 query_match_id_set, content_bytes, included_scope_units, file_path=changed_file.path
             )
             # Re-render over the kept scopes; this filtered prompt is what
             # is actually sent (and what context_summary describes).
-            parts = analyze_prompt.render(
+            prompt_parts = analyze_prompt.render(
                 file_path=changed_file.path,
                 scope_unit_context=_assemble_scope_unit_context(
                     included_scope_units=included_scope_units,
@@ -2523,17 +2208,8 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 pass_index=pass_index,
             )
 
-    # `parameterized_call_scan` was produced by the FUP-170 bundle above (None in
-    # degraded mode); the clean-mode cache lookup below gates on it being non-None.
-
-    # Step 3d-ter: analyze-cache shadow lookup (pass-0 clean mode only;
-    # specs/2026-06-11-file-hash-analyze-cache.md). The key is computed
-    # over the FINAL rendered parts — post trivial-filter re-render under
-    # enforcement — so the keyed prompt is the prompt actually sent. The
-    # all-trivial skip returned above without keying: skip outcomes are
-    # NEVER memoized (no prompt bytes to pin them). Shadow semantics: a
-    # would_hit still calls the model; nothing is served. The would-hit
-    # rate accumulated here is the serve flip's evidence.
+    # Look up clean-pass cache entries after scope filtering. The key describes
+    # the actual prompt and admission inputs; degraded files are not cacheable.
     cache_key: str | None = None
     cache_would_hit = False
     if (
@@ -2542,8 +2218,8 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         and parameterized_call_scan is not None
     ):
         cache_key = compute_analyze_cache_key(
-            system_prompt=parts.system_prompt,
-            user_prompt=parts.user_prompt,
+            system_prompt=prompt_parts.system_prompt,
+            user_prompt=prompt_parts.user_prompt,
             installation_id=cache_scope.installation_id,
             repo_id=cache_scope.repo_id,
             model=analyze_model,
@@ -2556,22 +2232,14 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             parameterized_call_scan_digest=scan_digest(parameterized_call_scan),
             observed_producer_version=OBSERVED_PRODUCER_VERSION,
             subsumes_digest=SUBSUMES_DIGEST,
-            # Candidate correction's per-file input (#024 from-import
-            # amendment): corrected siblings depend on imports the
-            # rendered prompt doesn't carry.
+            # Candidate correction also depends on imports outside the prompt (#024).
             from_import_map_digest=from_import_map_digest(trace_import_refs),
-            # Import-binding admission's per-file input: `_binding_admits`
-            # joins OBSERVED matches against ALL imports (module + value
-            # marker + names), most of which the from-import map excludes —
-            # same refs the producer consumes
-            # (`trace_import_refs IS parse_result.imports`).
+            # Key imported API bindings used by producer admission, including imports
+            # outside the rendered scopes. Lexical shadowing is keyed separately below.
             import_bindings_digest=import_bindings_digest(trace_import_refs),
-            # The shadowing guard's per-file input — bindings can live in
-            # enclosing-but-not-included scopes the prompt never shows.
+            # Shadowing may come from enclosing scopes outside the prompt.
             lexical_bindings_digest=lexical_bindings_digest(parse_result.lexical_bindings),
-            # The module-scope arm's per-file input: added-line ranges +
-            # the module-level bytes they cover + every parsed scope span
-            # (the disjointness input) — all outside prompt bytes.
+            # Module admission uses added bytes and all scope spans, beyond prompt context.
             module_admission_digest=module_admission_digest(
                 module_added_ranges, module_all_scope_units, content_bytes
             ),
@@ -2580,18 +2248,13 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             profile_contract_digest=profile_contract_digest,
         )
         try:
-            # Self-hit exclusion: a crash/retry re-execution of this node
-            # must not read its own first attempt's writes as hits — that
-            # would inflate the would-hit rate (the serve flip's evidence)
-            # and, under serve, serve a review its own partial output.
+            # A retry must not count or serve this review's own previous write.
             cache_entry = await analyze_cache_store.lookup(
                 cache_key, is_eval=cache_scope.is_eval, exclude_source_review_id=review_id
             )
         except CacheStoreError:
-            # Contained: a failed lookup degrades to a real LLM call (shadow OR
-            # serve) — NEVER a silent skip of findings. No CacheLookupEvent (the
-            # lookup didn't complete; a fabricated "miss" would be false audit
-            # history). cache_key cleared so step 3g's write gate skips too.
+            # A failed lookup falls back to the model without a false miss event.
+            # Clear the key to suppress writes for this failed lookup as well.
             logger.warning(
                 "analyze-cache lookup failed; cache skipped for %s",
                 changed_file.path,
@@ -2600,11 +2263,8 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             cache_key = None
         else:
             if cache_mode is CacheMode.SERVE and cache_entry is not None:
-                # SERVE: reconstruct the cached findings onto this review and
-                # short-circuit the LLM call + parser block entirely. Every
-                # deterministic downstream gate still runs on the served
-                # findings (reducers → synthesize → HITL → publish); the cache
-                # replaces exactly the analyze LLM call.
+                # Restore cached findings for this review and skip the model call. Record
+                # served findings separately from current-pass model proposals.
                 try:
                     return await _serve_cache_hit(
                         phase_key=phase_key,
@@ -2620,29 +2280,16 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                         file_examination_sink=file_examination_sink,
                     )
                 except _ServeReconstructionError:
-                    # Malformed-but-LIVE cached payload (incl. a duplicate-finding
-                    # set): degrade to a real LLM call instead of aborting the
-                    # review — degrade-not-lose-findings (FUP-177 edge 2). The raise
-                    # lands BEFORE any serve emit, so no partial events leaked. Do
-                    # NOT fabricate a CacheLookupEvent: the lookup DID find a row,
-                    # so a "miss" is false history and a "would_hit" implies serve
-                    # worked. Clear cache_key — the telemetry emit AND the step-3g
-                    # write both gate on it — so this degrades silently (the log is
-                    # the signal), like the lookup-error path. The live poisoned row
-                    # persists until expiry (write refreshes only EXPIRED rows);
-                    # re-serving it just degrades again, safely. Unreachable via the
-                    # V1 writer (valid payloads; the key pins policy/registry).
+                    # Fall through to the model before any serve event. Clear the key
+                    # to suppress fabricated lookup telemetry and cache writes (FUP-177).
                     logger.warning(
                         "analyze-cache serve reconstruction failed; degrading to LLM for %s",
                         changed_file.path,
                         exc_info=True,
                     )
                     cache_key = None
-            # SHADOW (any outcome) or SERVE-miss: record would-hit/miss telemetry
-            # and fall through to the model call. A serve-miss is a real miss → the
-            # model runs and step 3g writes. Skipped when a serve reconstruction
-            # degraded above (cache_key cleared): no fabricated miss/would_hit for a
-            # row that WAS found but could not be served.
+            # Record completed shadow lookups and serve misses before continuing analysis.
+            # Failed lookups take the exception path without fabricating a miss event.
             if cache_key is not None:
                 cache_would_hit = cache_entry is not None
                 await analyze_event_sink.emit_cache_lookup(
@@ -2656,7 +2303,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                     )
                 )
 
-    # Step 3e: SINGLE FileExaminationEvent emission point.
+    # Count the file as examined before deterministic coverage or a model call.
     await _emit_examination(
         file_examination_sink=file_examination_sink,
         review_id=review_id,
@@ -2666,31 +2313,13 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         phase_key=phase_key,
     )
 
-    # Step 3e.5 (Step 3b-mechanism): compute the OBSERVED coverage decision BEFORE the
-    # LLM call so an enforced `would_skip` short-circuits provider.complete. The matches
-    # are reused by the post-LLM OBSERVED block; the shadow event is EMITTED at its
-    # existing post-LLM point for the non-enforced path (byte-identical audit ordering —
-    # a provider failure still leaves no shadow event), and only HERE, pre-LLM-return, on
-    # an enforced skip. Same clean-parse + head-content gate as the post-LLM block.
+    # Compute deterministic coverage before the model call so enforcement can
+    # skip it. Shadow telemetry remains deferred until a successful call.
     observed_matches: tuple[ObservedMatch, ...] = ()
     observed_skip_event: ObservedSkipShadowEvent | None = None
-    # Language selection lives INSIDE `run_observed_matches` (JS/TS OBSERVED
-    # catalog spec): the producer runs the queries registered for this
-    # file's language under this file's grammar — Python files run the
-    # Python catalog, JS/TS files the javascript catalog, and a language
-    # with no catalog selects zero queries (inert producer, the
-    # dispatch-era safety preserved by registration). No queries ever
-    # execute over bytes of another language's grammar.
-    # The module-scope degraded route (`module_level_observed_match`) is the
-    # ONE degraded reason under which the producer runs — its module-level
-    # arm only (no included scopes exist on that route, so the containment
-    # arm is naturally inert). Every other degraded reason keeps the producer
-    # OFF (an error-recovered/failed tree is not trusted for structural
-    # proof). Module-level matches are excluded from #049 skip coverage
-    # (DECISIONS.md#062) at three layers: the shadow call below is gated
-    # off the module ROUTE, `compute_observed_skip_shadow` filters
-    # `module_level` matches out of coverage in clean mode, and the schema
-    # floor rejects eligible+SKIP_SAFE queries outright.
+    # The producer selects its registered grammar and eligible security queries.
+    # Degraded parse-error routes exclude structural production; the clean-parse
+    # module route reuses its routing matches.
     module_level_route = decision.is_module_level_route
     if changed_file.content_head is not None and decision.runs_observed_producer:
         if module_level_route:
@@ -2703,18 +2332,12 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 file_path=changed_file.path,
                 head_content=content,
                 included_scope_units=included_scope_units,
-                # Import-binding admission: the producer proves a
-                # name-anchored match binds to its dangerous API via the
-                # file's extracted imports — and rejects it when a local
-                # binding shadows the anchor (or a guarded global) at the
-                # match site.
+                # Pass imports and lexical facts unchanged: receiver binding checks use both,
+                # and the cache key digests these same inputs.
                 import_refs=parse_result.imports,
                 lexical_bindings=parse_result.lexical_bindings,
-                # Module-scope arm inputs — the with-scopes case (a changed
-                # function AND a changed module-level line in one file)
-                # admits through the same arm; `module_added_ranges` is
-                # empty for error-bearing parses and patch-less files,
-                # keeping the arm inert exactly there.
+                # On the clean route, combine changed-scope and module matches using the
+                # same module admission inputs already used for routing and cache identity.
                 all_scope_units=module_all_scope_units,
                 added_line_ranges=module_added_ranges,
             )
@@ -2734,12 +2357,8 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             and observed_skip_event is not None
             and observed_skip_event.outcome == "would_skip"
         ):
-            # ENFORCED SKIP: every changed scope is skip_safe-covered, so the LLM is
-            # NOT called. Emit the OBSERVED findings (they reach synthesize + HITL via
-            # the round, preserving hitl-gates-high-severity) + the shadow event with
-            # skip_enforced=True, then return. The FileExaminationEvent (clean) was
-            # already emitted above. No #054/#055 merge (no LLM parser_result to merge
-            # against); no cache write (skip outcomes are never memoized).
+            # Full deterministic coverage can skip the model call. The file still counts
+            # as examined, and its findings pass through ordinary synthesis and approval.
             produced = produce_observed_findings(
                 observed_matches,
                 file_path=changed_file.path,
@@ -2747,17 +2366,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 installation_id=installation_id,
                 active_policy_version=active_policy_version,
             )
-            # Collapse same-content_hash producer duplicates BEFORE emit/admit — the
-            # same first-wins reason as the augment path's #054 `fresh_hashes`:
-            # content_hash excludes evidence_tier, so two OBSERVED findings of the same
-            # finding_type matching the same span (two queries) would otherwise fire
-            # duplicate FindingEvents AND trip AnalysisRound._enforce_findings_unique.
-            # No JUDGED to supersede here (the LLM never ran).
+            # Collapse duplicate producer claims before admission; rounds require unique
+            # content hashes even when distinct queries match the same span.
             skip_findings = _collapse_by_content_hash(produced)
-            # model_validate (not model_copy) so the skip_enforced=True event is
-            # RE-VALIDATED (skip_enforced => would_skip); the branch already guarantees
-            # would_skip, but model_copy bypasses validators — re-validation keeps the
-            # audit-event contract enforced even if the gate above ever changes.
+            # Revalidate the skip_enforced => would_skip event contract when stamping it.
             await analyze_event_sink.emit_observed_skip_shadow(
                 ObservedSkipShadowEvent.model_validate(
                     {
@@ -2767,9 +2379,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                     }
                 )
             )
-            # FindingEvent emission for these OBSERVED findings is DEFERRED to the
-            # main loop's post-cap step (FUP-180); they ride out on the returned
-            # `_ObservedSkipResult`.
+            # Return findings for the caller's round cap before any FindingEvent (FUP-180).
             return _FileOutcome(
                 parse_status=parse_status_for_event,
                 parser_result=None,
@@ -2782,10 +2392,8 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 observed_skip_result=_ObservedSkipResult(tuple(skip_findings)),
             )
 
-    # Step 3f: LLM call + response parse.
-    # One ContextManifestEntry per included scope unit for clean+full_llm.
-    # Empty tuple for degraded — `_enforce_context_for_scope_nodes`
-    # special-cases this.
+    # The model receives a manifest of clean scopes. Degraded context uses no
+    # structural manifest, as allowed by the request validator.
     context_summary: tuple[ContextManifestEntry, ...] = (
         ()
         if degraded_mode
@@ -2795,8 +2403,8 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     )
     request = LLMRequest(
         model=analyze_model,
-        system_prompt=parts.system_prompt,
-        user_prompt=parts.user_prompt,
+        system_prompt=prompt_parts.system_prompt,
+        user_prompt=prompt_parts.user_prompt,
         max_tokens=analyze_prompt.MAX_TOKENS,
         temperature=analyze_prompt.TEMPERATURE,
         review_id=review_id,
@@ -2805,49 +2413,19 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         prompt_template_version=analyze_prompt.VERSION,
         degraded_mode=degraded_mode,
         degradation_reason=degradation_reason,
-        # Worker phase attribution (parallel-analyze increment 4): providers
-        # mirror this verbatim onto LLMCallEvent.phase_key.
+        # Providers mirror the worker's phase key onto LLMCallEvent.
         phase_key=phase_key,
         context_summary=context_summary,
-        # Constrained decoding (FUP-096): the pinned analyze response schema
-        # rides every analyze call — pass-0 and trace-fetched alike — so the
-        # API guarantees syntactically valid, shape-conforming JSON. The
-        # parser's rejection path stays (refusal/max_tokens escapes).
+        # Both passes use the pinned schema; refusal and truncation still need parser checks.
         response_schema_json=ANALYZE_RESPONSE_SCHEMA_JSON,
     )
-    # Provider failure (LLMProviderError subclasses) propagates. No
-    # try/except — the dangling start phase event is the audit signal
-    # for "this pass was interrupted."
+    # Provider failures propagate; the open phase records the interruption.
     response: LLMResponse = await provider.complete(request)
 
-    # Cost: Decimal per file, summed in Decimal arithmetic, float-cast
-    # once at the aggregate event. Matches sum(LLMCallEvent.cost_usd)
-    # modulo a single float-cast step rather than per-file FP drift —
-    # priced on (response.profile_id, response.model), the SAME host+model the
-    # provider/persister bill against, so SDK model substitution can't drift the
-    # aggregate from the per-call event costs.
-    cost_decimal = compute_cost_usd(
-        response.profile_id,
-        response.model,
-        input_tokens=response.input_tokens,
-        cache_write_tokens=response.cache_write_tokens,
-        cache_read_tokens=response.cache_read_tokens,
-        output_tokens=response.output_tokens,
-        # Response-derived pricing context (openai-native-host spec): tier-echo
-        # expectation derives INSIDE pricing.py from profile_id, so an
-        # echo-expecting host priced without these would classify absent_tier
-        # and raise AFTER the billed call. A deviant response never reaches
-        # this site — the provider raises the terminal contract error first —
-        # so the default-tier context here always prices flat/long.
-        billed_prompt_tokens=response.billed_prompt_tokens,
-        service_tier=response.service_tier_actual,
-    )
+    cost_decimal = _price_model_response(response)
 
-    # FUP-138: deterministic degraded context (the addable-diff byte ranges a
-    # degraded JUDGED span must intersect), computed from the patch in coordinates/
-    # — never recomputed from prompt text or trusted from a model span. patched_file
-    # is non-None on the degraded path by construction; `()` on the clean path is
-    # unused (the parser's degraded gate doesn't run).
+    # Derive allowed degraded spans from the patch through coordinates, not from
+    # model or prompt text. Clean-mode admission does not use these ranges.
     degraded_context_byte_ranges = (
         added_line_byte_ranges(patched_file, content)
         if degraded_mode and patched_file is not None
@@ -2867,24 +2445,14 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         degraded_context_byte_ranges=degraded_context_byte_ranges,
         pass_index=pass_index,
         finish_reason=response.finish_reason,
-        # FUP-162 veto facts, hoisted above the cache key (FUP-171): the SAME
-        # scan object keyed the cache entry, so admission and key never fork.
+        # Admission uses the same parameterized-call facts included in the cache key.
         parameterized_call_scan=parameterized_call_scan,
-        # From-import candidate correction: the file's own imports are the
-        # deterministic ground truth for a symbol's module; a candidate
-        # whose module prefix they contradict gains a corrected
-        # module-form sibling at admission (emitted alongside the
-        # original, never instead). `trace_import_refs` is the SAME
-        # object the cache key digested (FUP-171 anti-fork: keyed input
-        # and consumed input cannot diverge).
+        # Use this file's imports to add corrected module-form siblings alongside
+        # the original candidates. This is the same input digested by the cache key.
         import_refs=trace_import_refs,
-        # Per-language candidate form (DECISIONS.md#024 Amended
-        # 2026-07-03, ANALYZE_PARSER_VERSION v7): Python admits dotted
-        # module strings, JS/TS admit leading-dot relative specifiers —
-        # the parser drops the wrong form and enforces repo-escape
-        # containment at admission for specifiers. Registry-derived
-        # (totality-asserted), not an is_python ternary — the form is a
-        # per-language registration, not a Python/other binary.
+        # The registry owns candidate form: dotted modules for Python, relative
+        # specifiers for JS/TS. The parser enforces form and repository containment
+        # (DECISIONS.md#024).
         trace_candidate_form=_trace_candidate_form_for(changed_file.path),
     )
     if parser_result.counters.n_trace_candidates_module_corrected:
@@ -2895,41 +2463,14 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             changed_file.path,
         )
 
-    # Deterministic OBSERVED-tier findings (Cost Lever 3): augment the LLM's
-    # JUDGED findings with structural security-query matches. Runs in clean
-    # mode and on the ONE clean-parse degraded route
-    # (`module_level_observed_match` — the module-scope arm's whole point);
-    # the error-caused degraded routes keep the producer off. Merged into
-    # `parser_result.admitted_findings` BEFORE the emit/cache/return below, so
-    # they ride the audit stream, the cache payload (serve reconstructs them),
-    # and the round identically to LLM findings. Collapsed by content_hash —
-    # `AnalysisRound` requires unique content_hashes. On a same-(file,lines,type)
-    # collision with a model JUDGED finding, prefer-OBSERVED (DECISIONS.md#054)
-    # EVICTS the JUDGED and keeps the OBSERVED (its query_match_id is the stronger
-    # proof); a collision with an already-OBSERVED incumbent keeps the incumbent.
-    # signal_only: the LLM still ran; OBSERVED augments it, never skips it.
-    #
-    # HEAD-CONTENT ONLY (defense-in-depth): the OBSERVED producer is head-content
-    # proof — its queries run on head, and `evidence` + the shadow event's
-    # `side="head"` are head-derived. A normal `removed` file already skips upstream
-    # at NO_CHANGED_SCOPE_UNITS (no added lines; `decide_degradation`) and never
-    # reaches here. This gate makes the head-content dependency explicit AT the
-    # block and guards the one residual path it would NOT catch: a `content_head is
-    # None` file that still carries added lines (a ChangedFile-invariant violation)
-    # would otherwise run OBSERVED on the `content_base` fallback and flag deleted
-    # code with base lines treated as head.
-    # Cross-type subsumption records (DECISIONS.md#055), assembled in the merge
-    # below and threaded out for the per-pass `AnalyzeCompletedEvent`; stays empty
-    # in degraded mode and when nothing is subsumed.
+    # Merge deterministic findings before emission and caching (DECISIONS.md#054,
+    # #055). Only head content proves a current finding; the base fallback must
+    # not produce OBSERVED findings for deleted code. Parse-error routes exclude
+    # the producer; the clean-parse module route permits it.
     subsumed_matches: list[ObservedSubsumedMatch] = []
     producer_originals: tuple[ReviewFinding, ...] = ()
     if changed_file.content_head is not None and decision.runs_observed_producer:
-        # `observed_matches` was computed PRE-LLM (Step 3b-mechanism) so an enforced
-        # `would_skip` could short-circuit the LLM; reuse the same matches here for the
-        # findings producer + the #054 merge (a single deterministic OBSERVED query pass).
-        # On the module-scope degraded route the same merge applies: the producer's
-        # module-level OBSERVED findings join (and #054-evict colliding JUDGED from)
-        # the degraded pass's admitted findings.
+        # Reuse pre-call matches so coverage decisions and emitted findings agree.
         observed_findings = produce_observed_findings(
             observed_matches,
             file_path=changed_file.path,
@@ -2939,192 +2480,34 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         )
         producer_originals = tuple(observed_findings)
         if observed_findings:
-            # prefer-OBSERVED (DECISIONS.md#054): a producer OBSERVED finding that
-            # collides (same content_hash = file+line+finding_type) with an
-            # admitted model JUDGED proposal EVICTS the JUDGED in place — keeping
-            # the stronger, replay-verifiable query_match_id. A collision with an
-            # already-OBSERVED/INFERRED admitted finding keeps the incumbent (its
-            # proof is not lost) and drops the producer duplicate. Non-colliding
-            # producer findings append, as before. The swap MUST happen here,
-            # before round/FindingEvent construction: content_hash excludes
-            # evidence_tier, so two same-hash findings would trip
-            # AnalysisRound._enforce_findings_unique.
-            admitted_list = list(parser_result.admitted_findings)
-            index_by_hash = {f.content_hash: i for i, f in enumerate(admitted_list)}
-            fresh: list[ReviewFinding] = []
-            fresh_hashes: set[str] = set()
-            n_superseded = 0
-            for observed_finding in observed_findings:
-                content_hash = observed_finding.content_hash
-                collide_idx = index_by_hash.get(content_hash)
-                if collide_idx is not None:
-                    if admitted_list[collide_idx].evidence_tier is EvidenceTier.JUDGED:
-                        admitted_list[collide_idx] = observed_finding
-                        n_superseded += 1
-                    # else: incumbent already carries its own proof artifact —
-                    # keep it, drop the producer duplicate. The reachable
-                    # incumbent here is a MODEL-CITED structural OBSERVED:
-                    # content_hash excludes query_match_id and the model
-                    # chooses finding_type freely, so a structural citation
-                    # with a security type at the producer's line collides.
-                    # INFERRED cannot reach this merge — pass 0 rejects every
-                    # INFERRED proposal (no trace context), and pass 1 never
-                    # runs the OBSERVED producer.
-                elif content_hash not in fresh_hashes:
-                    fresh.append(observed_finding)
-                    fresh_hashes.add(content_hash)
-            n_observed = len(fresh) + n_superseded
-            if n_observed:
-                # OBSERVED findings (fresh + swapped-in) fire real FindingEvents
-                # and ride the aggregate n_findings_emitted, but are NOT proposals
-                # — subtracted via n_findings_observed (like n_findings_served).
-                # Each swap also evicts a JUDGED proposal: drop it from the parser
-                # n_findings_emitted (one fewer proposal-finding) and account it via
-                # n_proposals_superseded_by_observed, which the accounting equation
-                # ADDS (a proposal with no surviving finding — same side as
-                # n_proposals_rejected).
-                # No substitution (the common case — the producer flags lines the
-                # model missed) means admitted_list is an untouched copy, so reuse
-                # the original tuple instead of rebuilding an identical one.
-                base_admitted = (
-                    parser_result.admitted_findings if n_superseded == 0 else tuple(admitted_list)
-                )
-                parser_result = replace(
-                    parser_result,
-                    admitted_findings=base_admitted + tuple(fresh),
-                    counters=replace(
-                        parser_result.counters,
-                        n_findings_emitted=parser_result.counters.n_findings_emitted - n_superseded,
-                        n_findings_observed=n_observed,
-                        n_proposals_superseded_by_observed=n_superseded,
-                    ),
-                )
+            parser_result, new_subsumed = _merge_producer_findings(parser_result, observed_findings)
+            subsumed_matches.extend(new_subsumed)
 
-            # Cross-type subsumption (DECISIONS.md#055): over the POST-#054
-            # admitted set, drop an OBSERVED finding X when a same-span JUDGED
-            # finding Y of a more-specific finding_type subsumes it — the INVERSE
-            # tiebreaker from #054 (accuracy over proof when the claims DIFFER, not
-            # agree). The two-sided tier gate is load-bearing: Y JUDGED keeps the
-            # survivor honestly JUDGED; X OBSERVED keeps the dropped side
-            # structural, so the accounting nets out through n_findings_observed
-            # alone and the both-JUDGED case is a non-goal by construction.
-            # Running over the post-#054 set (not the pending producer list)
-            # handles the triple-collision: a redundant model JUDGED weak_crypto
-            # has already been swapped to OBSERVED by #054, so this pass finds and
-            # drops it. The dropped query_match_id is retained in subsumed_matches
-            # (the signal_only match is absent from the skip-shadow telemetry).
-            # Exact-span match only: a multi-line envelope mismatch is an accepted
-            # recall gap, never loose overlap (which could absorb an unrelated
-            # weak_crypto sharing lines with a password-hash subsumer).
-            admitted = parser_result.admitted_findings
-            judged_by_span: dict[tuple[int, int], list[ReviewFinding]] = {}
-            for jf in admitted:
-                if jf.evidence_tier is EvidenceTier.JUDGED:
-                    judged_by_span.setdefault((jf.line_start, jf.line_end), []).append(jf)
-            if judged_by_span:
-                surviving: list[ReviewFinding] = []
-                for af in admitted:
-                    subsumer: ReviewFinding | None = None
-                    # Only a PRODUCER-origin OBSERVED finding is subsumable: its
-                    # query_match_id is in OBSERVED_QUERY_IDS (the security producer
-                    # registry), and ONLY producer findings are counted in
-                    # n_findings_observed — the term the drop decrements. A
-                    # MODEL-cited OBSERVED finding (the model claimed `observed`
-                    # citing a fired STRUCTURAL query id, which the parser admits
-                    # without binding finding_type to the query) rides the parser's
-                    # n_findings_emitted instead; dropping it would underflow
-                    # n_findings_observed and crash the pass. The two id sets are
-                    # disjoint, so this gate excludes the model-cited case cleanly.
-                    if (
-                        af.evidence_tier is EvidenceTier.OBSERVED
-                        and af.query_match_id is not None
-                        and af.query_match_id in OBSERVED_QUERY_IDS
-                    ):
-                        for yf in judged_by_span.get((af.line_start, af.line_end), ()):
-                            if subsumes(yf.finding_type, af.finding_type):
-                                subsumer = yf
-                                break
-                    if subsumer is None:
-                        surviving.append(af)
-                    else:
-                        subsumed_matches.append(
-                            ObservedSubsumedMatch(
-                                file_path=af.file_path,
-                                query_match_id=af.query_match_id,
-                                finding_type=af.finding_type,
-                                subsumed_by_finding_type=subsumer.finding_type,
-                                line_start=af.line_start,
-                                line_end=af.line_end,
-                                dropped_content_hash=af.content_hash,
-                                subsumer_content_hash=subsumer.content_hash,
-                            )
-                        )
-                n_subsumed = len(admitted) - len(surviving)
-                if n_subsumed:
-                    # The dropped finding is always OBSERVED, so it rode
-                    # n_findings_observed (and the aggregate n_findings_emitted via
-                    # the parser_emitted + parser_observed sum). Decrement ONLY
-                    # n_findings_observed; the aggregate emitted drops with it and
-                    # the two cancel in _enforce_proposal_accounting — no new term.
-                    parser_result = replace(
-                        parser_result,
-                        admitted_findings=tuple(surviving),
-                        counters=replace(
-                            parser_result.counters,
-                            n_findings_observed=parser_result.counters.n_findings_observed
-                            - n_subsumed,
-                        ),
-                    )
-
-        # Skip-routing telemetry (Cost Lever 3, DECISIONS.md#049): the skip-eligibility
-        # decision (`observed_skip_event`) was computed PRE-LLM (Step 3b-mechanism);
-        # EMIT it here for the non-enforced path so audit ordering + failure semantics
-        # stay byte-identical (a `provider.complete` failure above leaves no shadow
-        # event — this point is never reached). The enforced `would_skip` branch already
-        # emitted it (skip_enforced=True) and returned; `skip_enforced` stays False here
-        # (the LLM ran, so no skip was enforced).
+        # Emit shadow coverage only after a successful model call, preserving failure
+        # semantics and audit order. The enforced branch already emitted and returned
+        # (DECISIONS.md#049).
         if observed_skip_event is not None:
             await analyze_event_sink.emit_observed_skip_shadow(
-                # Re-validated (not model_copy) to stamp the worker's phase
-                # key — compute_observed_skip_shadow is phase-blind by design.
+                # Revalidate when adding the worker's phase key to the coverage event.
                 ObservedSkipShadowEvent.model_validate(
                     {**observed_skip_event.model_dump(), "phase_key": phase_key}
                 )
             )
 
-    # Lift parser rejection payloads into audit events.
-    for proposal_rej in parser_result.proposal_rejections:
-        await analyze_event_sink.emit_finding_proposal_rejected(
-            _lift_proposal_rejection(
-                proposal_rej, review_id=review_id, is_eval=is_eval, phase_key=phase_key
-            )
-        )
-    if parser_result.response_rejection is not None:
-        await analyze_event_sink.emit_analyze_response_rejected(
-            _lift_response_rejection(
-                parser_result.response_rejection,
-                review_id=review_id,
-                is_eval=is_eval,
-                phase_key=phase_key,
-            )
-        )
+    await _emit_parser_rejections(
+        parser_result=parser_result,
+        analyze_event_sink=analyze_event_sink,
+        review_id=review_id,
+        is_eval=is_eval,
+        phase_key=phase_key,
+    )
 
-    # FindingEvent emission (audit row + content row per admitted finding) is
-    # DEFERRED to the main loop's post-cap step (FUP-180): the per-round finding cap
-    # must decide the kept set before any FindingEvent fires. The admitted findings
-    # ride out on the returned `parser_result.admitted_findings`.
+    # Return admitted findings for the caller's round cap before any FindingEvent (FUP-180).
 
-    # Step 3g: analyze-cache write-on-miss. Only completed clean-mode
-    # calls populate the store — a response-level rejection has no
-    # admitted outcome to cache (zero findings, by contrast, IS a valid
-    # cacheable outcome), and a `max_tokens`-truncated response is never
-    # cached even when its JSON happens to validate: the finding set may
-    # be silently incomplete, and memoizing it would serve the truncated
-    # outcome for the row's whole lifetime. The payload carries the
-    # content tier: admitted finding content (pre-HITL, policy-stamped)
-    # + FULL trace candidates including their LLM-derived `reason` —
-    # content lives in the retention-bound cache row, never on the
-    # audit events.
+    # Cache only completed clean passes, using the earlier lookup key. Persist
+    # admitted findings and subsumption proof together; rejected responses are
+    # not reusable review results. Even valid JSON with max_tokens is incomplete
+    # and must not be cached.
     if (
         analyze_cache_store is not None
         and cache_scope is not None
@@ -3146,9 +2529,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                     "trace_candidates": [
                         c.model_dump(mode="json") for c in parser_result.trace_candidates
                     ],
-                    # Cross-type subsumption proof-retention records (DECISIONS.md#055):
-                    # the dropped OBSERVED findings are absent from `findings`, so without
-                    # this the cache-hit path would lose their query_match_id telemetry.
+                    # Retain query proof for subsumed findings missing from `findings` (#055).
                     "subsumed_matches": [m.model_dump(mode="json") for m in subsumed_matches],
                 },
                 model=analyze_model,
@@ -3158,16 +2539,14 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 active_policy_version=active_policy_version,
                 analyze_parser_version=ANALYZE_PARSER_VERSION,
                 prompt_hash=_canonical_prompt_hash(
-                    system_prompt=parts.system_prompt, user_prompt=parts.user_prompt
+                    system_prompt=prompt_parts.system_prompt, user_prompt=prompt_parts.user_prompt
                 ),
-                # Host-triad telemetry columns (FUP-194): the SAME values folded into
-                # cache_key above, so the denormalized columns match the key.
+                # Telemetry uses the same host fields as the cache key.
                 profile_id=profile_id,
                 reasoning_enabled=reasoning_enabled,
             )
         except CacheStoreError:
-            # Contained: the review's findings are already emitted; a
-            # failed cache write loses nothing but one memoization.
+            # Admission has completed; a failed write only loses memoization.
             logger.warning(
                 "analyze-cache write failed; outcome not cached for %s",
                 changed_file.path,
@@ -3205,37 +2584,12 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     per_file_cap_tokens: int,
     remaining_budget_tokens: int,
 ) -> _FileOutcome:
-    """Process one trace-fetched file through parse → LLM call → parser.
+    """Review error-free scopes for a resolved trace target without a PR patch.
 
-    Pass-1 sibling of `_process_one_file`. Trace resolved this file via
-    M8's two-phase fetch (Phase 1 probes + Phase 2 content fetch); the
-    file is NOT a PR-diff file, so there's no patch, no triage
-    classification, and no changed-scope-unit intersection. Analyze
-    examines the WHOLE file because trace's resolution decided the file
-    is relevant to a source finding.
-
-    Outcomes (subset of `_process_one_file`'s):
-      - `skipped+UNSUPPORTED_LANGUAGE` — no registered adapter for
-        the extension.
-      - Parser-stage skip — `parse_source` returned skipped (vendored,
-        oversized, etc.).
-      - `skipped+COST_BUDGET_EXHAUSTED` — cost gate failed.
-      - `clean+full_llm` — clean parse, LLM call admitted, parser ran.
-
-    Degraded outcomes (parse_failed / tree_has_error_in_changed_regions /
-    tree_has_error_no_scope / module_level_observed_match) don't apply
-    here: no changed regions — the module-scope arm is diff-anchored, so a
-    whole-file pass has no added-line ranges to anchor on — and parse
-    failures on a
-    head-SHA-fetched file are routed through the parser-stage skip path
-    rather than the V1-unreachable degraded branch.
-
-    Per spec line 25: "INFERRED findings whose source `TraceDecision.
-    resolution_status` is `unresolved` or `ambiguous` downgrade to
-    JUDGED." V1 enforces this by Phase 2's gate (only `resolution_status=
-    "resolved"` files reach `state.trace_fetched_files`), so the
-    downgrade case doesn't fire here at the parser layer — every file
-    iterated in pass 1 is by construction resolved.
+    Check eligibility and budget, then call the model with the active source
+    finding's context. Price and parse the response, audit rejections, and
+    return findings for the caller's round cap. Excluding an error-bearing
+    scope also disables OBSERVED query proofs for the file.
     """
     if not _language_supported(fetched_file.path):
         return await _emit_skip(
@@ -3274,14 +2628,8 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         )
 
     if parse_result.parser_outcome == "failed":
-        # Parse failure on a trace-fetched file: route to
-        # NO_REVIEWABLE_CONTEXT skip rather than the degraded-LLM branch.
-        # The fetched-file content came from GitHub at head SHA; a parse
-        # failure here is either a genuinely-unparseable Python file
-        # (already unusual for production code) or an invalid-UTF-8 case
-        # the encode round-trip can't produce. Trace's resolution stays
-        # in the audit log; analyze pass 1 didn't admit findings, but
-        # the file is reachable for forensic inspection.
+        # No patch context exists for a degraded prompt; retain trace resolution
+        # in the audit trail and record an analysis skip.
         return await _emit_skip(
             file_examination_sink=file_examination_sink,
             review_id=review_id,
@@ -3291,26 +2639,12 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
             skip_reason=SkipReason.NO_REVIEWABLE_CONTEXT,
         )
 
-    # Include all scope units WITHOUT `has_error` from the prompt's
-    # deterministic-proof set. Pass-1 INFERRED admission cross-checks
-    # `trace_path` elements against the included scope-unit names
-    # (`evidence-tier-schema-enforced`); admitting a scope unit whose
-    # tree-sitter parse contains ERROR nodes would let the model claim
-    # structural proof against recovered/error-bearing AST — defeating
-    # the proof boundary. The unchanged-file `_process_one_file` has
-    # the same guard (it routes the whole file to degraded mode when
-    # has_error fires in changed regions); for trace-fetched files we
-    # do per-scope-unit filtering instead, since there are no "changed
-    # regions" to scope the degradation to.
+    # INFERRED admission checks trace paths against included scope names.
+    # Exclude error-bearing scopes so they cannot authorize structural proof.
     included_scope_units = tuple(
         su for su in parse_result.scope_units if not parse_result.has_error.get(su.unit_id, False)
     )
     if not included_scope_units:
-        # Pass-1 trace-fetched file has no notion of "changed" — the file
-        # lives outside the PR diff. Empty included-scope-units after the
-        # has_error filter means there's no reviewable structural context;
-        # NO_REVIEWABLE_CONTEXT classifies this for audit telemetry.
-        # Same enum the parse-failed branch above uses for the same reason.
         return await _emit_skip(
             file_examination_sink=file_examination_sink,
             review_id=review_id,
@@ -3320,32 +2654,15 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
             skip_reason=SkipReason.NO_REVIEWABLE_CONTEXT,
         )
 
-    # Pass-1 prompt admits INFERRED proposals with non-empty `trace_path`.
-    # `render_post_trace` is the pass-1 variant of `render`; same shape
-    # (system + user prompt), different system-prompt instructions to
-    # allow INFERRED.
-    #
-    # Fail-closed on partial has_error filtering: if the has_error filter
-    # above dropped any scope unit, treat the whole file as degraded for
-    # OBSERVED-proof purposes (force `query_match_id_set` empty). Without
-    # this, the registry built from the FULL file content could authorize
-    # an OBSERVED proposal against a query match that lives inside a
-    # scope unit we deliberately excluded from the proof set — defeating
-    # the proof boundary the has_error filter exists to defend. Mirrors
-    # the pass-0 `degraded_mode → frozenset()` pattern in
-    # `_process_one_file`.
-    # Language-awareness mirrors pass-0: the builder selects this file's
-    # own structural queries under its own grammar (empty for a language
-    # with none registered — JS/TS in V1 — so no id can authorize an
-    # OBSERVED claim there; the veto scan further down stays Python-gated
-    # for its own reason).
+    # Queries scan full file content. If a scope was excluded, clear query IDs
+    # so a match in that scope cannot authorize OBSERVED proof.
     is_python = _is_python_file(fetched_file.path)
     query_match_id_set: frozenset[str] = (
         frozenset()
         if len(included_scope_units) != len(parse_result.scope_units)
         else _build_query_match_id_set(content_bytes, file_path=fetched_file.path)
     )
-    parts = analyze_prompt.render_post_trace(
+    prompt_parts = analyze_prompt.render_post_trace(
         file_path=fetched_file.path,
         scope_unit_context=_assemble_scope_unit_context(
             included_scope_units=included_scope_units,
@@ -3353,15 +2670,8 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
             fence_lang=_fence_lang_for(fetched_file.path),
         ),
         query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
-        # Pass the ACTIVE source finding's id (matches the
-        # title/description/evidence below), NOT
-        # `fetched_file.source_finding_id` — the latter is first-write
-        # provenance on `state.trace_fetched_files` (dedup'd by path
-        # under the reducer); under the pass-1 fan-out (one iteration
-        # per source finding targeting this fetched path), every
-        # iteration after the first would attribute the SECOND/THIRD
-        # finding's content to the FIRST finding's id — internally
-        # inconsistent prompt.
+        # Each source finding gets its own pass over the target. Use its active ID
+        # with its content; fetched_file retains only the first source's provenance.
         source_finding_id=source_finding.finding_id,
         source_finding_title=source_finding.title,
         source_finding_description=source_finding.description,
@@ -3370,8 +2680,8 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     )
 
     estimated_tokens = (
-        _estimate_tokens(parts.system_prompt)
-        + _estimate_tokens(parts.user_prompt)
+        _estimate_tokens(prompt_parts.system_prompt)
+        + _estimate_tokens(prompt_parts.user_prompt)
         + analyze_prompt.MAX_TOKENS
     )
     if estimated_tokens > per_file_cap_tokens or estimated_tokens > remaining_budget_tokens:
@@ -3392,18 +2702,14 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         phase_key=None,  # pass 1 is the legacy un-keyed stream by design
     )
 
-    # `inclusion_reason="trace_expansion"` per the ContextManifestEntry
-    # Literal — names the post-trace expansion-pass inclusion shape
-    # (scope units from a trace-fetched file). The Literal predates the
-    # trace-node arc; using it here closes the loop without a schema
-    # change.
+    # Mark these scopes as trace expansion rather than PR changes.
     context_summary: tuple[ContextManifestEntry, ...] = _build_context_manifest(
         fetched_file.path, included_scope_units, inclusion_reason="trace_expansion"
     )
     request = LLMRequest(
         model=analyze_model,
-        system_prompt=parts.system_prompt,
-        user_prompt=parts.user_prompt,
+        system_prompt=prompt_parts.system_prompt,
+        user_prompt=prompt_parts.user_prompt,
         max_tokens=analyze_prompt.MAX_TOKENS,
         temperature=analyze_prompt.TEMPERATURE,
         review_id=review_id,
@@ -3413,48 +2719,20 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         degraded_mode=False,
         degradation_reason=None,
         context_summary=context_summary,
-        # Constrained decoding (FUP-096): the pinned analyze response schema
-        # rides every analyze call — pass-0 and trace-fetched alike — so the
-        # API guarantees syntactically valid, shape-conforming JSON. The
-        # parser's rejection path stays (refusal/max_tokens escapes).
+        # Both passes use the pinned schema; refusal and truncation still need parser checks.
         response_schema_json=ANALYZE_RESPONSE_SCHEMA_JSON,
     )
     response: LLMResponse = await provider.complete(request)
 
-    cost_decimal = compute_cost_usd(
-        response.profile_id,
-        response.model,
-        input_tokens=response.input_tokens,
-        cache_write_tokens=response.cache_write_tokens,
-        cache_read_tokens=response.cache_read_tokens,
-        output_tokens=response.output_tokens,
-        # Response-derived pricing context (openai-native-host spec): tier-echo
-        # expectation derives INSIDE pricing.py from profile_id, so an
-        # echo-expecting host priced without these would classify absent_tier
-        # and raise AFTER the billed call. A deviant response never reaches
-        # this site — the provider raises the terminal contract error first —
-        # so the default-tier context here always prices flat/long.
-        billed_prompt_tokens=response.billed_prompt_tokens,
-        service_tier=response.service_tier_actual,
-    )
+    cost_decimal = _price_model_response(response)
 
-    # Deterministic-proof set for INFERRED admission per the
-    # `evidence-tier-schema-enforced` invariant: every scope-unit name
-    # the model could legitimately have walked in this file. Uses the
-    # SAME single rendered label the prompt actually shows the model
-    # (`_assemble_scope_unit_context` at line ~681 renders
-    # `su.qualified_name or su.name` — one label per scope unit, not
-    # both). Admitting both `qualified_name` AND bare `name` would
-    # weaken the proof boundary: common duplicate bare names like
-    # `__init__` or `handle` across multiple classes would satisfy
-    # `trace_path` membership without identifying a unique scope unit.
-    # The parser's pass-1 INFERRED admission rejects any trace_path
-    # element not in this set — load-bearing for
-    # `evidence-tier-schema-enforced`.
+    # INFERRED trace paths may cite only the single rendered name of each scope
+    # (evidence-tier-schema-enforced). Adding bare-name aliases could let duplicate
+    # methods in different classes satisfy the same proof.
     valid_trace_path_elements = frozenset(
         rendered_name
-        for su in included_scope_units
-        if (rendered_name := (su.qualified_name or su.name))
+        for scope_unit in included_scope_units
+        if (rendered_name := (scope_unit.qualified_name or scope_unit.name))
     )
     parser_result = parse_analyze_response(
         response.text,
@@ -3470,14 +2748,8 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         pass_index=pass_index,
         valid_trace_path_elements=valid_trace_path_elements,
         finish_reason=response.finish_reason,
-        # FUP-162 veto facts — trace-fetched files run with has_error scope
-        # units filtered out, not a whole-file degraded mode; the scan
-        # itself returns empty for any error-bearing tree, so a partially
-        # erroring file disables the veto rather than trusting recovery.
-        # Python-grammar surface: non-Python fetched files — reached on
-        # every resolved JS/TS trace since the resolver spec — get the
-        # inert empty scan; the gate keeps Python-grammar scanning off
-        # non-Python bytes.
+        # This Python-only scan returns empty for any error-bearing tree, even
+        # after scope filtering. Other languages receive an inert empty scan.
         parameterized_call_scan=scan_parameterized_calls(content_bytes)
         if is_python
         else ParameterizedCallScan(),
@@ -3486,25 +2758,15 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         import_refs=parse_result.imports,
     )
 
-    for proposal_rej in parser_result.proposal_rejections:
-        await analyze_event_sink.emit_finding_proposal_rejected(
-            _lift_proposal_rejection(
-                proposal_rej, review_id=review_id, is_eval=is_eval, phase_key=None
-            )
-        )
-    if parser_result.response_rejection is not None:
-        await analyze_event_sink.emit_analyze_response_rejected(
-            _lift_response_rejection(
-                parser_result.response_rejection,
-                review_id=review_id,
-                is_eval=is_eval,
-                phase_key=None,  # pass 1: legacy un-keyed stream
-            )
-        )
+    await _emit_parser_rejections(
+        parser_result=parser_result,
+        analyze_event_sink=analyze_event_sink,
+        review_id=review_id,
+        is_eval=is_eval,
+        phase_key=None,  # pass 1: legacy un-keyed stream
+    )
 
-    # FindingEvent emission DEFERRED to the main loop's post-cap step (FUP-180), same
-    # as the pass-0 path — the trace-fetched (pass-1) round is capped identically. The
-    # admitted findings ride out on `parser_result.admitted_findings`.
+    # Return admitted findings for the caller's round cap before any FindingEvent (FUP-180).
 
     return _FileOutcome(
         parse_status="clean",

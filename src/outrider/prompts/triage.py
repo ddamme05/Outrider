@@ -1,54 +1,13 @@
 # Triage-node prompt template + render helper per specs/2026-05-15-triage-node.md
-"""Triage prompt template, version, knobs, and render helper.
+"""Render PR metadata and patches for tier/risk classification.
 
-The triage node uses a fast Haiku pass to classify each changed file into
-a `ReviewTier` (DEEP / STANDARD / SKIM — never SKIP, that's the §6.10
-policy-gate path), assess `overall_risk`, and select the applicable
-`ReviewDimension`s. This module owns the prompt surface for that pass.
+The configured triage model proposes DEEP/STANDARD/SKIM per file, overall risk
+and review dimensions. SKIP belongs to the deterministic size gate (§6.10).
+The triage node validates the response against the changed-file set.
 
-Surfaces (per the triage-node spec's Reference Reconciliation):
-
-- `SYSTEM_PROMPT: Final[str]` — fully static instructions + JSON output
-  schema. Goes into `LLMRequest.system_prompt` (cached per `cache_control:
-  ephemeral` set by the wrapper); reused across the analyze ⇄ trace loop
-  for cache hits.
-- `USER_TEMPLATE: Final[str]` — per-PR `str.format`-style template with
-  structural placeholders (`{pr_title}`, `{file_list}`, `{diff_summary}`).
-  Values are filled at `render()` time; the placeholder names are template
-  STRUCTURE — attacker-supplied content in PR fields cannot escape into
-  the template (per `webhook-strings-are-data-not-format-strings`).
-- `TEMPLATE` — alias for `USER_TEMPLATE`; this is the spec's named surface
-  for the `str.format` target.
-- `VERSION: Final[str] = "triage-v1"` — flows to `LLMRequest.prompt_template_version`.
-- `MAX_TOKENS: Final[int] = 2048` — fits per-file tier classification +
-  risk + dimensions + 500-char reasoning across the §6.10 size-cap upper
-  bound (~30 files).
-- `TEMPERATURE: Final[float] = 0.0` — deterministic-leaning; minimizes
-  drift across replay.
-- `TriagePromptParts` — frozen dataclass result of `render()`. Dataclass
-  not NamedTuple because dataclasses don't subclass `tuple` → positional
-  unpacking fails at runtime (the object isn't iterable). Swap-prone
-  access patterns like `(system, user) = render(...)` parse and compile
-  fine but raise `TypeError` on execution, so the swap can't ship
-  silently.
-- `render(pr_context: PRContext) -> TriagePromptParts` — pure function;
-  builds the user prompt via `USER_TEMPLATE.format(**kwargs)` and pairs
-  it with the constant `SYSTEM_PROMPT`.
-
-Render is intentionally non-raising. All str-keyed placeholder names are
-provided as keyword arguments at the format call, so `str.format` cannot
-hit a missing key. None field values stringify to `"None"`; they do not
-raise. The triage node's full post-start-emission failure matrix lives
-in `agent.nodes.triage` (currently five sources: request construction,
-provider call, schema validation, policy validation, and end-phase
-emission); this module's contract is just that `render()` does not add
-a sixth source.
-
-V1.5+ extension hook: when multi-version prompt comparison surfaces,
-`prompts/triage.py` becomes `prompts/triage/registry.py` (or similar) and
-this module's flat constants graduate to registry entries. Until then,
-flat constants keep the surface small.
-"""
+Static instructions stay separate from per-PR data. PR strings fill values in
+USER_TEMPLATE, never act as format targets, and patches use dynamic fences
+(`webhook-strings-are-data-not-format-strings`)."""
 
 from dataclasses import dataclass
 from typing import Final
@@ -162,73 +121,32 @@ call site. They refer to the same string object."""
 
 @dataclass(frozen=True, slots=True)
 class TriagePromptParts:
-    """Render output: the (system, user) pair plus the cache-boundary contract.
-
-    Dataclass (not NamedTuple) because dataclasses do NOT subclass tuple,
-    so the swap-prone shape `(system, user) = render(...)` parses and
-    compiles fine but raises `TypeError` at runtime when the iterator
-    protocol fails. The swap cannot ship silently — attribute access
-    (`parts.system_prompt`, `parts.user_prompt`) is the supported usage
-    pattern; positional unpacking fails loud on the very first call.
-
-    Both fields are str (validated downstream by `LLMRequest.system_prompt`
-    and `.user_prompt` which carry `min_length=1`).
-    """
+    """Named system and user prompt fields; LLMRequest validates non-empty strings."""
 
     system_prompt: str
     user_prompt: str
 
 
 def render(pr_context: PRContext) -> TriagePromptParts:
-    """Build the (system, user) prompt pair for the triage LLM call.
+    """Render only the permitted PR metadata and diff fields.
 
-    Pure function. Uses `USER_TEMPLATE.format(**kwargs)` with all
-    placeholder names supplied as keyword arguments — missing-key
-    `KeyError` cannot fire under correct programming. None field values
-    stringify to "None"; they do not raise.
+    Static system instructions stay separate from the per-PR user prompt
+    (DECISIONS#013 point 4, spec §9.5). The wrapper owns cache behavior.
 
-    Cache-boundary contract per DECISIONS#013 point 4 + spec §9.5: the
-    returned `system_prompt` is fully static (a `Final` constant) and gets
-    `cache_control: ephemeral` from the wrapper — reusing it across the
-    analyze ⇄ trace loop produces cache hits. The `user_prompt` carries
-    the volatile per-PR data (title, file list, diffs) and stays outside
-    the cache boundary by design.
-
-    Currently SENT `PRContext` fields per DECISIONS#013 point 1
-    ("Egress include list", Amended 2026-07-16):
-      - `pr_title`              ✓ used here
-      - `changed_files[].path`  ✓ used (file list)
-      - `changed_files[].patch` ✓ used (diff summary; = file content delta)
-      - `changed_files[].status`/`.additions`/`.deletions` ✓ used (metadata)
-
-    Carried but NOT sent — future use of any of these requires a new
-    privacy-contract amendment first (#013 Amended 2026-07-16):
-      - `pr_body`
-      - `author`
-      - branch names / commit messages  (not carried in PRContext at all)
-
-    `PRContext` fields that are NOT egress-eligible per DECISIONS#013
-    point 2 ("Egress exclude list") AND any future-refactor that
-    enriches the prompt MUST keep these OUT of the LLM payload:
-      - `installation_id`       — operational identifier (auth-scoped),
-                                  not credential material
-      - `base_sha` / `head_sha` — commit identifiers; not explicitly
-                                  excluded in #013 but not in the include
-                                  list either; treat as metadata that
-                                  belongs in audit rows, NOT in prompts
-      - `owner` / `repo`        — repository coordinates; same reasoning
-                                  as SHAs above
-
-    If a future refactor needs additional fields, surface a DECISIONS#013
-    supersession (per point 2's "If a future code path would send any
-    excluded item, that's a bug *and* a #013 supersession").
-    """
+    Egress include list (DECISIONS#013 point 1, Amended 2026-07-16): PR title;
+    changed-file paths, patches, status and line counts; aggregate line counts.
+    PR body and author are carried in PRContext but are not sent. Branch names and
+    commit messages are not carried here. Installation ID, SHAs and repository
+    coordinates remain out of the prompt (DECISIONS#013 point 2). Adding fields
+    requires a privacy-contract amendment."""
     file_list = "\n".join(
-        f"- {cf.path} ({cf.status}, +{cf.additions}/-{cf.deletions})"
-        for cf in pr_context.changed_files
+        f"- {changed_file.path} ({changed_file.status}, "
+        f"+{changed_file.additions}/-{changed_file.deletions})"
+        for changed_file in pr_context.changed_files
     )
     diff_summary = "\n\n".join(
-        _format_file_diff(cf.path, cf.patch) for cf in pr_context.changed_files
+        _format_file_diff(changed_file.path, changed_file.patch)
+        for changed_file in pr_context.changed_files
     )
     user_prompt = USER_TEMPLATE.format(
         pr_title=pr_context.pr_title,

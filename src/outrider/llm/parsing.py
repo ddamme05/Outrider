@@ -1,22 +1,8 @@
-"""Response-envelope normalization for LLM-returned structured output.
+"""Remove an optional outer Markdown fence before structured-output validation.
 
-Defends against the well-known LLM-output-discipline gap: prompt
-instructions like "do not wrap the JSON in markdown fences" are
-advisory, not enforcement. Some hosts wrap responses in ```json ... ```
-despite the system prompt — Anthropic Haiku is the canonical case, but
-any OpenAI-compatible host can too (e.g. GLM-on-Baseten, whose profile is
-JsonMode.SOFT_FENCED). Without a runtime defense,
-`Model.model_validate_json(response.text)` raises a `ValidationError` on
-the first backtick, crashing the consuming node.
-
-This module owns the narrow normalization step that nodes apply
-between the raw LLM text and `model_validate_json`. The policy
-intentionally accepts ONE outer well-formed wrapper only — malformed
-or nested wrappers fall through to Pydantic for a clear schema
-error. This module does not extract JSON from arbitrary prose; that
-would couple the LLM-output trust boundary to prose-parsing
-heuristics, which is exactly the relaxation the proof boundary is
-designed to prevent.
+Hosts may wrap JSON despite prompt instructions. Nodes apply this narrow
+normalization, then their schema/parser admission checks. It does not search
+arbitrary prose for JSON or validate the body.
 """
 
 from __future__ import annotations
@@ -25,31 +11,13 @@ __all__ = ["strip_outer_json_fence"]
 
 
 def strip_outer_json_fence(text: str) -> str:
-    """Strip one outer ```json...``` or ```...``` wrapper from LLM output.
+    """Remove one outer fence with a newline-separated, non-empty body.
 
-    Tolerates a single, well-formed outer markdown fence — the common
-    "model wrapped output despite the prompt instruction" case. Any
-    other shape returns the input unchanged so Pydantic raises a clean
-    schema error downstream.
-
-    Policy:
-
-    - Exactly one outer fence, optionally with a language tag
-      (``` or ```json or ```any-lang).
-    - The opener is the first non-whitespace content and the closer is
-      the last non-whitespace content.
-    - Whitespace OUTSIDE the wrapper is tolerated; the inner body is
-      returned with trailing whitespace stripped.
-    - No prose extraction: if the input begins with `prose\\n```...```,
-      the wrapper is NOT recognized and the input is returned unchanged.
-    - No nested or multiple wrappers: only the outermost is handled.
-    - Malformed wrappers (opener but no closer, or closer but no opener,
-      or opener with no newline before body) fall through unchanged so
-      Pydantic produces a clear ValidationError instead of this helper
-      masking the failure.
-
-    The helper imports nothing from a vendor SDK — the LLM provider
-    boundary stays intact.
+    The opener must be the first non-whitespace content and the closer the last.
+    Any opener tag is accepted. Outside whitespace and body trailing whitespace
+    are stripped only when a wrapper is recognized; otherwise return the input.
+    Nested or multiple fences remain in the returned body for downstream
+    validation to reject. This helper does not parse JSON.
     """
     stripped = text.strip()
     if not stripped.startswith("```"):

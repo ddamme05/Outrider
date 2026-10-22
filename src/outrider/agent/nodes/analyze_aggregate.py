@@ -1,40 +1,18 @@
 # Aggregate fold for the parallel-analyze fan-out per specs/2026-07-05-parallel-analyze.md.
-"""Fold per-(file, pass) worker outcomes into one `AnalysisRound` per pass.
+"""Combine worker outcomes into one `AnalysisRound` and its event inputs.
 
-Pure and import-light (no LLM, prompt, or graph machinery — the
-`decide_degradation` / `analyze_budget` precedent): the aggregate node
-calls `fold_worker_outcomes` once per pass and turns the returned
-`AggregateFold` into side effects (the `AnalyzeCompletedEvent`, the
-FindingEvent emissions, the anomaly signals). Per `DECISIONS.md#063`
-workers never emit rounds; this fold is the ONE place worker results
-become a round.
+`fold_worker_outcomes` is pure; `analyze_aggregate` emits the resulting
+events and anomalies. Workers do not create rounds (DECISIONS.md#063).
 
-Fidelity contract: this mirrors the sequential main loop's accumulation
-and post-processing exactly — cross-source `(content_hash,
-proposal_hash)` admission dedup, content-hash collapse (first-wins),
-the gated-aware severity cap, and the post-cap counter recompute — with
-outcomes folded in SORTED PATH ORDER so worker completion order can
-never change the round (a completion-order-dependent fold would break
-replay idempotence). The sequential loop iterates tier-descending (a
-budget-pressure ordering that is a planner concern, not round
-identity), so the round's state-visible tuples (`files_examined`,
-`findings`) come out in a different ORDER than the sequential round's —
-but `compute_round_id` sorts its hashed inputs internally, so both
-orderings produce the SAME `round_id` and collapse as one round on the
-dedup reducer. Ordering is not an identity divergence.
+Sorted path order makes duplicate winners and output order independent
+of worker completion order. Admission deduplicates by `(content_hash,
+proposal_hash)`, then keeps the first finding per content hash before
+applying the severity cap. Round identity sorts the examined/skipped paths
+and retained content hashes, so reordering the same inputs keeps the same ID.
 
-The ONE deliberate, documented divergence: the sequential post-cap recompute
-classifies producer-OBSERVED findings by a HEURISTIC (tier + registry
-membership), which miscounts a model-cited OBSERVED proposal as producer
-output. The fold classifies by ORIGIN IDENTITY
-(`producer_observed_hashes`, recorded by the code that produced them) —
-strictly more accurate, and the accounting the event docstring always
-claimed ("findings the analyze node PRODUCED this pass").
-
-Non-aliasing (the 3b-2 acceptance gate): the fold CLONES every kept
-finding via `model_validate` round-trip (the validator-safe clone —
-`model_copy` skips validators per the `ReviewFinding` docstring), so no
-live object is shared between `analyze_worker_outcomes` and the round.
+Counters classify findings by recorded producer and cache provenance,
+not evidence tier. Kept findings use `ReviewFinding.validated_clone()`
+to rerun validation and avoid sharing objects with worker outcomes.
 """
 
 from __future__ import annotations
@@ -80,20 +58,16 @@ __all__ = ["AggregateFold", "FoldInputError", "analyze_aggregate", "fold_worker_
 
 
 class FoldInputError(ValueError):
-    """The outcome set is not a valid single pass (mixed pass indices or
-    duplicate paths). Both are producer bugs the slot-guard reducer and
-    planner gate should have made impossible — fail loud, never fold."""
+    """Worker outcomes contain mixed pass indices or duplicate file paths."""
 
 
 @dataclass(frozen=True, slots=True)
 class AggregateFold:
-    """Everything the aggregate node needs to emit the pass's side effects.
+    """Round, counters, and anomaly inputs for the aggregate node.
 
-    `round` carries CLONED findings (non-aliasing gate). The counter
-    fields map one-to-one onto `AnalyzeCompletedEvent`'s producer-side
-    fields; `budget_skip_count` and `gated_overflow` feed the two anomaly
-    signals; `standard_tier_llm_used` lets the node record the STANDARD
-    model name (config-owned — the fold never sees model strings).
+    Counter fields populate `AnalyzeCompletedEvent`. `budget_skip_count`
+    and `gated_overflow` drive anomalies; `standard_tier_llm_used` selects
+    the configured model name without passing model strings into the fold.
     """
 
     round: AnalysisRound
@@ -124,9 +98,7 @@ class AggregateFold:
 
 
 def _clone(finding: ReviewFinding) -> ReviewFinding:
-    """Non-aliasing gate — delegates to the single-sourced
-    `ReviewFinding.validated_clone()` (re-validation is deliberate; see the
-    method's docstring)."""
+    """Clone through `validated_clone()` to preserve validation and isolation."""
     return finding.validated_clone()
 
 
@@ -137,144 +109,145 @@ def fold_worker_outcomes(
     started_at: AwareDatetime,
     ended_at: AwareDatetime,
 ) -> AggregateFold:
-    """Fold one pass's worker outcomes into the round + event inputs.
+    """Fold one pass in sorted path order, regardless of completion order.
 
-    Deterministic: outcomes fold in sorted-path order regardless of the
-    tuple's (completion) order. Zero outcomes is the valid empty pass —
-    one empty round still folds (the zero-worker planner→aggregate route).
+    Reject mixed pass indices and duplicate paths. Zero outcomes produces
+    an empty round for the planner's zero-worker route.
     """
-    if any(o.pass_index != pass_index for o in outcomes):
+    if any(outcome.pass_index != pass_index for outcome in outcomes):
         raise FoldInputError(
             f"fold_worker_outcomes: outcomes span pass indices "
-            f"{sorted({o.pass_index for o in outcomes})}; expected only {pass_index}"
+            f"{sorted({outcome.pass_index for outcome in outcomes})}; expected only {pass_index}"
         )
-    ordered = tuple(sorted(outcomes, key=lambda o: o.path))
-    paths = [o.path for o in ordered]
-    if len(set(paths)) != len(paths):
+    ordered_outcomes = tuple(sorted(outcomes, key=lambda outcome: outcome.path))
+    outcome_paths = [outcome.path for outcome in ordered_outcomes]
+    if len(set(outcome_paths)) != len(outcome_paths):
         raise FoldInputError("fold_worker_outcomes: duplicate paths in one pass")
 
     files_examined: list[str] = []
     files_skipped: list[str] = []
-    admitted: list[ReviewFinding] = []
-    admitted_keys: set[tuple[str, str]] = set()
+    admitted_findings: list[ReviewFinding] = []
+    admitted_finding_keys: set[tuple[str, str]] = set()
     trace_candidates: list[TraceCandidate] = []
-    subsumed: list[ObservedSubsumedMatch] = []
-    served_hashes: set[str] = set()
-    producer_hashes: set[str] = set()
+    subsumed_matches: list[ObservedSubsumedMatch] = []
+    served_content_hashes: set[str] = set()
+    producer_content_hashes: set[str] = set()
     n_llm_calls = 0
     n_proposals_seen = 0
     n_proposals_rejected = 0
     n_responses_rejected = 0
-    n_superseded = 0
-    n_dropped_malformed = 0
-    n_trace_emitted = 0
-    emitted_pre = 0
-    served_pre = 0
-    observed_pre = 0
-    input_tokens = output_tokens = cache_read = cache_write = 0
+    n_proposals_superseded_by_observed = 0
+    n_trace_candidates_dropped_malformed = 0
+    n_trace_candidates_emitted = 0
+    admitted_count_before_dedup = 0
+    served_count_before_dedup = 0
+    producer_count_before_dedup = 0
+    input_tokens = output_tokens = cache_read_tokens = cache_write_tokens = 0
     total_cost = Decimal("0")
     budget_skip_count = 0
     standard_tier_llm_used = False
 
-    for o in ordered:
-        if o.parse_status == "skipped":
-            files_skipped.append(o.path)
-            if o.skip_reason is SkipReason.COST_BUDGET_EXHAUSTED:
+    for outcome in ordered_outcomes:
+        if outcome.parse_status == "skipped":
+            files_skipped.append(outcome.path)
+            if outcome.skip_reason is SkipReason.COST_BUDGET_EXHAUSTED:
                 budget_skip_count += 1
         else:
-            files_examined.append(o.path)
-        if o.source == "parser":
+            files_examined.append(outcome.path)
+        if outcome.source == "parser":
             n_llm_calls += 1
-            if o.review_tier is ReviewTier.STANDARD:
+            if outcome.review_tier is ReviewTier.STANDARD:
                 standard_tier_llm_used = True
-            # Only parser candidates count as emitted THIS pass;
-            # cache_serve candidates are prior-pass restorations.
-            n_trace_emitted += len(o.trace_candidates)
-        n_proposals_seen += o.n_proposals_seen
-        n_proposals_rejected += o.n_proposals_rejected
-        n_responses_rejected += o.n_responses_rejected
-        n_superseded += o.n_proposals_superseded_by_observed
-        n_dropped_malformed += o.n_trace_candidates_dropped_malformed
-        emitted_pre += len(o.admitted_findings)
-        served_pre += len(o.served_content_hashes)
-        observed_pre += len(o.producer_observed_hashes)
-        served_hashes.update(o.served_content_hashes)
-        producer_hashes.update(o.producer_observed_hashes)
-        input_tokens += o.input_tokens
-        output_tokens += o.output_tokens
-        cache_read += o.cache_read_tokens
-        cache_write += o.cache_write_tokens
-        total_cost += o.cost
-        # Cross-source admission dedup — the SAME implementation the
-        # sequential pass-1 accumulation uses (FUP-178; extracted so the
-        # two round-assembly paths cannot drift on the admission key).
-        admit_with_pair_dedup(o.admitted_findings, admitted, admitted_keys)
-        trace_candidates.extend(o.trace_candidates)
-        subsumed.extend(o.subsumed_matches)
+            # Only parser candidates count as new output; cached candidates are restored.
+            n_trace_candidates_emitted += len(outcome.trace_candidates)
+        n_proposals_seen += outcome.n_proposals_seen
+        n_proposals_rejected += outcome.n_proposals_rejected
+        n_responses_rejected += outcome.n_responses_rejected
+        n_proposals_superseded_by_observed += outcome.n_proposals_superseded_by_observed
+        n_trace_candidates_dropped_malformed += outcome.n_trace_candidates_dropped_malformed
+        admitted_count_before_dedup += len(outcome.admitted_findings)
+        served_count_before_dedup += len(outcome.served_content_hashes)
+        producer_count_before_dedup += len(outcome.producer_observed_hashes)
+        served_content_hashes.update(outcome.served_content_hashes)
+        producer_content_hashes.update(outcome.producer_observed_hashes)
+        input_tokens += outcome.input_tokens
+        output_tokens += outcome.output_tokens
+        cache_read_tokens += outcome.cache_read_tokens
+        cache_write_tokens += outcome.cache_write_tokens
+        total_cost += outcome.cost
+        # Share the admission key with sequential pass-1 accumulation.
+        admit_with_pair_dedup(outcome.admitted_findings, admitted_findings, admitted_finding_keys)
+        trace_candidates.extend(outcome.trace_candidates)
+        subsumed_matches.extend(outcome.subsumed_matches)
 
-    # Content-hash collapse, first-wins (the sequential FUP-180 finding-A
-    # collapse: two findings may share content_hash with differing
-    # proposal_hash; AnalysisRound enforces content_hash uniqueness).
-    collapsed = _collapse_by_content_hash(admitted)
+    # Different proposals can share a content hash; AnalysisRound requires
+    # unique content hashes, so keep the first finding in path order.
+    unique_findings = _collapse_by_content_hash(admitted_findings)
 
-    # Gated-aware severity cap: non-gated drop to the soft cap; gated are
-    # never dropped (hitl-gates-high-severity); the hard ceiling fails loud.
-    kept, dropped = cap_findings_by_severity(
-        collapsed, soft_cap=MAX_FINDINGS_PER_ROUND, hard_cap=MAX_FINDINGS_HARD_CAP
+    # Keep gated findings beyond the soft cap (hitl-gates-high-severity).
+    # More gated findings than the hard ceiling raises before round creation.
+    kept_findings, dropped_findings = cap_findings_by_severity(
+        unique_findings, soft_cap=MAX_FINDINGS_PER_ROUND, hard_cap=MAX_FINDINGS_HARD_CAP
     )
 
-    # Post-cap recompute over the KEPT set, classified by ORIGIN IDENTITY:
-    # served (hash in the served union), producer-observed (hash in the
-    # producer union, not served), else a surviving model proposal.
-    kept_served = sum(1 for f in kept if f.content_hash in served_hashes)
-    kept_observed = sum(
-        1 for f in kept if f.content_hash not in served_hashes and f.content_hash in producer_hashes
+    # Recount kept findings by provenance: served, then producer-observed,
+    # then model proposals. Served findings take precedence over producer hashes.
+    kept_served_count = sum(
+        1 for finding in kept_findings if finding.content_hash in served_content_hashes
     )
-    kept_proposals = len(kept) - kept_served - kept_observed
-    parser_proposal_emitted = emitted_pre - served_pre - observed_pre
-    n_proposals_dropped = parser_proposal_emitted - kept_proposals
+    kept_producer_count = sum(
+        1
+        for finding in kept_findings
+        if finding.content_hash not in served_content_hashes
+        and finding.content_hash in producer_content_hashes
+    )
+    kept_proposal_count = len(kept_findings) - kept_served_count - kept_producer_count
+    admitted_proposal_count_before_dedup = (
+        admitted_count_before_dedup - served_count_before_dedup - producer_count_before_dedup
+    )
+    n_proposals_dropped = admitted_proposal_count_before_dedup - kept_proposal_count
 
-    kept_clones = tuple(_clone(f) for f in kept)  # non-aliasing gate
+    round_findings = tuple(_clone(finding) for finding in kept_findings)
     round_id = compute_round_id(
         pass_index=pass_index,
         files_examined=tuple(files_examined),
         files_skipped=tuple(files_skipped),
-        finding_content_hashes=tuple(f.content_hash for f in kept_clones),
+        finding_content_hashes=tuple(finding.content_hash for finding in round_findings),
     )
-    new_round = AnalysisRound(
+    analysis_round = AnalysisRound(
         round_id=round_id,
         pass_index=pass_index,
-        findings=kept_clones,
+        findings=round_findings,
         files_examined=tuple(files_examined),
         files_skipped=tuple(files_skipped),
         started_at=started_at,
         ended_at=ended_at,
     )
     return AggregateFold(
-        round=new_round,
+        round=analysis_round,
         trace_candidates=tuple(trace_candidates),
-        subsumed_matches=tuple(subsumed),
+        subsumed_matches=tuple(subsumed_matches),
         n_files_analyzed=len(files_examined),
         n_files_skipped=len(files_skipped),
         n_llm_calls=n_llm_calls,
         n_proposals_seen=n_proposals_seen,
-        n_findings_emitted=len(kept),
-        n_findings_served=kept_served,
-        n_findings_observed=kept_observed,
-        n_proposals_superseded_by_observed=n_superseded,
+        n_findings_emitted=len(kept_findings),
+        n_findings_served=kept_served_count,
+        n_findings_observed=kept_producer_count,
+        n_proposals_superseded_by_observed=n_proposals_superseded_by_observed,
         n_proposals_dropped=n_proposals_dropped,
-        n_findings_dropped_over_cap=len(dropped),
+        n_findings_dropped_over_cap=len(dropped_findings),
         n_proposals_rejected=n_proposals_rejected,
         n_responses_rejected=n_responses_rejected,
-        n_trace_candidates_emitted=n_trace_emitted,
-        n_trace_candidates_dropped_malformed=n_dropped_malformed,
+        n_trace_candidates_emitted=n_trace_candidates_emitted,
+        n_trace_candidates_dropped_malformed=n_trace_candidates_dropped_malformed,
         total_input_tokens=input_tokens,
         total_output_tokens=output_tokens,
-        total_cache_read_tokens=cache_read,
-        total_cache_write_tokens=cache_write,
+        total_cache_read_tokens=cache_read_tokens,
+        total_cache_write_tokens=cache_write_tokens,
         total_cost=total_cost,
         budget_skip_count=budget_skip_count,
-        gated_overflow=len(kept) > MAX_FINDINGS_PER_ROUND,
+        gated_overflow=len(kept_findings) > MAX_FINDINGS_PER_ROUND,
         standard_tier_llm_used=standard_tier_llm_used,
     )
 
@@ -293,29 +266,19 @@ async def analyze_aggregate(
     reasoning_enabled: bool | None = None,
     profile_contract_digest: str | None = None,
 ) -> dict[str, object]:
-    """The pass-0 aggregate vertex: fold worker outcomes into the round.
+    """Fold pass-0 outcomes after all workers complete, including an empty pass.
 
-    Runs once per pass-0 superstep, after every `analyze_file` worker
-    completes (or directly from the planner on the zero-worker route).
-    Folds this pass's slot-guarded outcomes and turns the pure
-    `AggregateFold` into the pass's side effects, mirroring the
-    sequential tail's ORDER exactly: starvation anomaly → gated-overflow
-    anomaly → one `FindingEvent` per kept finding → the accounting-
-    validated `AnalyzeCompletedEvent` → the phase END marker (the same
-    `phase_id` recipe the planner's start marker used — the pass's
-    envelope spans the three physical vertices under one logical
-    `node_id="analyze"`, per `DECISIONS.md#064`).
+    Emit starvation and gated-overflow anomalies, kept findings, the completion
+    event, then the aggregate phase end, in that order. Planner, worker, and
+    aggregate phases share the logical `analyze` node (DECISIONS.md#064).
 
-    `ended_at` is clamped to `max(started_at, now)`: the pass spans
-    vertices (and possibly processes, across a checkpoint resume), so
-    the sequential loop's single-process monotonic anchor (FUP-141)
-    cannot apply — the clamp preserves the round's ordering invariant
-    under a backwards clock jump, trading exact duration for it.
+    Clamp `ended_at` to `started_at` if the clock moves backwards. A pass can
+    resume in another process, so a process-local monotonic clock cannot
+    measure its full duration.
     """
     pass_index = len(state.analysis_rounds)
-    # The aggregate's own keyed phase pair (increment 4): attempt_key =
-    # phase_key VERBATIM, so phase_id inherits the recipe's retry
-    # stability; node_id stays the logical "analyze" (DECISIONS.md#064).
+    # Use the phase key unchanged for retry-stable identity under the logical
+    # analyze node (DECISIONS.md#064).
     phase_key = f"aggregate#{pass_index}"
     phase_id = compute_phase_id(
         review_id=str(state.review_id),
@@ -332,7 +295,9 @@ async def analyze_aggregate(
             phase_key=phase_key,
         )
     )
-    outcomes = tuple(o for o in state.analyze_worker_outcomes if o.pass_index == pass_index)
+    outcomes = tuple(
+        outcome for outcome in state.analyze_worker_outcomes if outcome.pass_index == pass_index
+    )
     started_at = state.analyze_pass_started_at
     if started_at is None:
         raise RuntimeError(
@@ -349,9 +314,7 @@ async def analyze_aggregate(
         ended_at=ended_at,
     )
 
-    # Construct the accounting-validated event BEFORE any side effect
-    # (the sequential strand-prevention contract: a validator raise
-    # crashes cleanly with nothing emitted).
+    # Validate accounting before anomalies and findings can be emitted.
     completed_event = AnalyzeCompletedEvent(
         review_id=state.review_id,
         is_eval=state.is_eval,
@@ -375,8 +338,7 @@ async def analyze_aggregate(
         total_cache_read_tokens=fold.total_cache_read_tokens,
         total_cache_write_tokens=fold.total_cache_write_tokens,
         total_output_tokens=fold.total_output_tokens,
-        # Decimal-summed across outcomes, cast to float ONCE (the
-        # sequential FP discipline).
+        # Sum costs as Decimal; convert to float only at the event boundary.
         total_cost_usd=float(fold.total_cost),
         pricing_version=PRICING_VERSION,
         policy_version=active_policy_version,
@@ -389,13 +351,10 @@ async def analyze_aggregate(
         phase_key=phase_key,
     )
 
-    # Side effects, in the sequential tail's order. Both anomalies are
-    # best-effort — observability must never fail the review. The
-    # threshold import is function-scoped so the FOLD stays import-light
-    # for direct structural testing (this node only runs in graph
-    # context, where analyze is imported anyway).
+    # Keep this import local so importing the pure fold does not load the analyze node.
     from outrider.agent.nodes.analyze import COST_BUDGET_STARVATION_THRESHOLD  # noqa: PLC0415
 
+    # Log ordinary anomaly failures and continue; cancellation still propagates.
     if fold.budget_skip_count >= COST_BUDGET_STARVATION_THRESHOLD:
         try:
             await anomaly_sink.emit_anomaly(
@@ -427,18 +386,14 @@ async def analyze_aggregate(
         except Exception:
             logger.exception("analyze_gated_findings_over_cap_anomaly_emit_failed")
 
-    # One FindingEvent per kept finding — the emitted set equals the
-    # round by construction (fold output IS the round). Aggregate-keyed
-    # (admission is aggregate work); per-file attribution rides the
-    # event's own file_path field.
+    # Emit the round's kept findings under the aggregate phase; each event
+    # retains its own file path for attribution.
     for finding in fold.round.findings:
         await analyze_event_sink.emit_finding(finding, is_eval=state.is_eval, phase_key=phase_key)
 
     await analyze_event_sink.emit_analyze_completed(completed_event)
 
-    # Close the aggregate's own phase pair (the planner and each worker
-    # closed theirs; three keyed envelopes per pass replace the
-    # sequential era's single analyze-pass envelope).
+    # Close the aggregate phase after findings and completion accounting.
     await phase_event_sink.emit_phase(
         ReviewPhaseEvent(
             review_id=state.review_id,

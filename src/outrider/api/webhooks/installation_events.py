@@ -1,30 +1,16 @@
 # See DECISIONS.md#065-authorization-is-a-live-github-check-the-local-install-db-is-a-cache
-"""Install-event dispatch handlers (Arc B2, `DECISIONS.md#012` + `#065`).
+"""Maintain local installation hints and retention state from signed webhooks.
 
-Under `#065` the local `installations` / `installation_repositories` tables are a **cache**,
-not the authorization authority — GitHub is checked LIVE at intake/publish. These handlers
-maintain cache / retention / display state via simple, idempotent upserts; they NEVER make a
-security decision, so there is no ordering clock, no reconcile fence, no per-event fail-closed
-state machine (all dissolved by `#065` — spec `2026-07-06-b2-installation-lifecycle.md` lines
-149-151). If a hint drifts, it doesn't matter: the authority is the live check.
+The router verifies and parses the delivery, then supplies a session and owns
+the transaction. Handlers allowlist actions and make unknown actions a 2xx
+no-op. These tables provide display state and an early webhook filter; live
+GitHub checks remain the authorization authority (DECISIONS.md#065).
 
-Contract: each handler takes an already-parsed payload + an `AsyncSession` and issues its
-UPDATE/INSERT statements. The CALLER (webhook router) owns the transaction (`session.begin()`)
-and the commit — mirroring the `pull_request` review-insert path. Signature verification has
-already run in the router before dispatch, so these run only on authentic deliveries.
-
-`action` is allowlisted here (unknown -> `{"status": "ignored", "reason": "action"}`, a 2xx
-no-op so GitHub doesn't retry) rather than pinned in the schema `Literal`, per the spec's
-round-12 finding (only `created` / `installation_repositories.added` are doc-pinned).
-
-Deferred to the reconcile janitor (not this slice): the `all->selected` transition reconcile
-(non-load-bearing under `#065`'s live check — FUP-227) and the LIVE-confirmed RESTORE. A `created`
-here deliberately does NOT clear an existing tombstone — a redelivered OLD `created` after a
-`deleted` is indistinguishable from a real reinstall, and clearing blindly would cancel a `#012`
-purge (spec round-12 finding). Restore happens ONLY through the janitor's `GET /app/installations`
-App-JWT confirmation (clears the tombstone for installs GitHub still lists). Until the janitor
-lands, a reinstall-within-grace does not auto-reactivate — but retention stays correct, which is
-the safe failure direction.
+A created event preserves existing tombstones: an old redelivery must not cancel
+an uninstall purge (DECISIONS.md#012). sweep/reconcile_installations.py restores
+only installations confirmed live by GitHub. The all-to-selected repository
+transition remains a reconciliation follow-up (FUP-227); the grace period's
+configuration follow-up is FUP-226. See specs/2026-07-06-b2-installation-lifecycle.md.
 """
 
 from __future__ import annotations
@@ -102,10 +88,8 @@ async def handle_installation_repositories_event(
     if action not in _INSTALLATION_REPO_ACTIONS:
         return _IGNORED_ACTION
     inst_id = payload.installation.id
-    # #065 cache-hint: if the parent install row is unknown (a lost / out-of-order `created`,
-    # or one already hard-deleted), NO-OP rather than FK-violating on the membership INSERT —
-    # a 5xx here would make GitHub retry a hint that can never land. The cache is best-effort;
-    # a later `created` or the janitor reconciles it, and the authority is the live check anyway.
+    # Skip an unknown parent rather than violate the membership FK. A later created
+    # event or reconciliation can repair this cache hint (DECISIONS.md#065).
     parent = await session.execute(
         select(Installation.installation_id).where(Installation.installation_id == inst_id)
     )
@@ -241,8 +225,10 @@ async def _add_repo_membership(
 async def _remove_repo_membership(
     session: AsyncSession, installation_id: int, repo_id: int
 ) -> None:
-    """Soft-remove: set `removed_at = now()` for the `(installation_id, repo_id)` row. A remove
-    of an absent/already-removed row is a harmless no-op (the WHERE simply matches nothing)."""
+    """Stamp a membership's removal time; an absent row is a no-op.
+
+    A repeated removal refreshes removed_at on the existing row.
+    """
     await session.execute(
         update(InstallationRepository)
         .where(

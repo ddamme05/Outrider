@@ -1,30 +1,12 @@
-"""Eval-harness infrastructure that must be importable from `src`.
+"""Shared eval/test database lifecycle and isolation checks.
 
-This subpackage exists for one structural reason: the eval graph driver
-(`run_review`, exported from `outrider.agent`) is reachable from production
-`src/outrider/`, the eval scenarios call it with only a fixture path — it
-self-constructs its DB + adapter dependencies (the optional `probe=` /
-`model_config=` overrides aside) and runs its own ephemeral-database
-lifecycle. Because `pythonpath = ["src"]` only — `tests/`
-is NOT importable from `src/` (see `docs/conventions.md`) — that lifecycle
-code cannot live under `tests/`. It lives here instead so that `run_review`
-can call it, and it is the single shared implementation of the
-create/migrate/drop/guard lifecycle: `run_review`, `tests/integration/conftest.py`,
-`tests/eval/conftest.py`, and `scripts/smoke_e2e.py` all import it *from* `src`
-(tests may import `src`, not vice-versa) rather than each keeping a copy.
+Eval drivers live in src and cannot import tests (docs/conventions.md). Drivers,
+test fixtures and the smoke runner therefore share these create/migrate/drop
+helpers; see `specs/2026-06-01-eval-graph-driver.md` (resolution A).
 
-**This is eval/test infrastructure, walled off from the real subsystems.**
-It is not an `agent/` concern and not normal production database behavior —
-it issues `CREATE DATABASE` / `DROP DATABASE` against the ephemeral
-`postgres-test` container only. The fail-closed guards make that explicit:
-
-- `require_eval_mode()` refuses to proceed unless `OUTRIDER_IS_EVAL=1`.
-- `assert_test_url_is_isolated()` refuses any URL that is not the test
-  container (port 5433, "test" in the database name).
-
-See `specs/2026-06-01-eval-graph-driver.md` (resolution A) for why this
-package exists.
-"""
+Database lifecycle helpers require test URL markers: port 5433 and "test" in the
+database name. Eval-only entry points additionally require OUTRIDER_IS_EVAL=1.
+The post-run integrity check rejects rows whose is_eval flag is not True."""
 
 from outrider.eval_support.db_lifecycle import (
     EVAL_DB_NAME_PREFIX,

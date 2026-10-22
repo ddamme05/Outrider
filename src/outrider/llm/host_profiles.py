@@ -1,19 +1,17 @@
 # Host profiles for the OpenAI-compatible provider, per DECISIONS.md#056.
 # `import openai` stays out of this module (re/hashlib/enum/pydantic + llm.base only),
 # so it is import-lint-clean under trust boundary #8.
-"""Per-host profiles for `OpenAICompatibleProvider` (DECISIONS.md#056).
+"""Host contracts for the OpenAI-compatible provider (`DECISIONS.md#056`).
 
-A `HostProfile` is per-host DATA (base_url, slug pattern, json mode, token-accounting
-mode, privacy posture) plus a single closed code axis — the reasoning-off shaper,
-resolved through `_SHAPER_REGISTRY` (a frozen-model can't hold a callable). Identity is
-`(profile_id, model)`; `profile_contract_digest` covers the wire-affecting fields PLUS
-`SHAPER_CONTRACT_VERSION`, so a shaper/accounting *function* change rotates the digest
-even when the enum is unchanged (audit-7 #3).
+Frozen profiles specify transport, model names, JSON mode, token accounting,
+reasoning, and privacy provenance. A closed shaper registry translates the
+reasoning enum. The contract digest covers wire-affecting data and
+`SHAPER_CONTRACT_VERSION`; body changes require a version bump.
 
-Arc 1a ships only `BASETEN_PROFILE` (byte-identical to the merged GLM spike) +
-`HOST_DEFAULT_MODELS["anthropic"]` (the native path's per-node defaults — Anthropic is
-selected by the `OUTRIDER_LLM_HOST` string, NOT a profile). DeepInfra/Fireworks/custom
-are later arcs, each gated on a captured wire fixture + a scorecard pass.
+Baseten and Fireworks profiles are registered. The OpenAI profile also exists
+for research/eval construction, but `PRODUCTION_UNADMITTED_HOSTS` blocks it
+at the composition root. Registration alone does not grant production admission.
+Anthropic uses its native wrapper and shares per-node defaults here.
 """
 
 from __future__ import annotations
@@ -435,10 +433,9 @@ OPENAI_PROFILE: Final[HostProfile] = HostProfile(
     ),
 )
 
-# ADD-A-HOST CHECKLIST (e.g. DeepInfra — arc 2). The registries below
-# (HOST_PROFILES, HOST_DEFAULT_MODELS) + pricing's RATE_TABLE / MIN_CACHEABLE_TOKENS are
-# the ONLY host enumerations in src/, and the error strings auto-derive their host lists
-# from them, so this is genuinely "add-a-profile":
+# ADD-A-HOST CHECKLIST (DECISIONS.md#056). A profile makes a host resolvable;
+# production admission also requires the evidence and policy checks below.
+# Check the admission/tier-billing policy sets as well as these registries.
 #   1. Here: define a frozen HostProfile (host_id, base_url, api_key_env, model_slug_pattern,
 #      json_mode, token_accounting, reasoning_mechanism, privacy w/ source_url + verified_date)
 #      and register it in HOST_PROFILES; add a HOST_DEFAULT_MODELS[host_id] row (all six
@@ -494,10 +491,9 @@ HOST_PROFILES: Final[Mapping[str, HostProfile]] = MappingProxyType(
 # Never a silent default.
 PRODUCTION_UNADMITTED_HOSTS: Final[frozenset[str]] = frozenset({"openai"})
 
-# Per-host per-node default model slugs (NOT HostProfiles). Anthropic has an entry but no
-# profile (native path). `ModelConfig.for_host` (step 4) merges these BELOW env so
-# `OUTRIDER_MODEL_*` still wins. The anthropic row reproduces config.py's current ModelConfig
-# field defaults; GLM hosts collapse to the single GLM slug (no Haiku/Sonnet tiering).
+# Per-host defaults for all six model roles; Anthropic uses its native provider.
+# ModelConfig.for_host applies environment overrides first, then these defaults.
+# GLM hosts share one slug; the Anthropic row matches ModelConfig's field defaults.
 _MODEL_FIELDS: Final[tuple[str, ...]] = (
     "triage_model",
     "analyze_model",

@@ -1,45 +1,21 @@
 # See specs/2026-05-19-analyze-foundation.md §7.
-"""Raw + admitted analyze proposal schemas.
+"""Bounded raw proposals and enum-constrained admitted proposals.
 
-Two-layer shape so the sister analyze-implementation spec's parser can
-record rejection events for proposals with invalid enum values. The
-raw layer admits bounded invalid strings (e.g., a model-returned
-`finding_type` outside the `FindingType` enum) long enough for the
-parser to emit `FindingProposalRejectedEvent`; the admitted layer is
-what passes to `ReviewFinding` construction.
+The raw layer lets off-list type/tier strings reach the parser so it can
+record rejection events. The admitted layer is what reaches ReviewFinding
+construction; failed admission rejects rather than downgrades tiers.
 
-Without the split, a model returning a `finding_type` outside the
-enum would fail Pydantic at `AnalyzeResponseRaw.model_validate(...)`
-BEFORE the parser could emit the rejection event — losing the audit
-signal that the model produced an invalid type.
+Line ranges are 1-indexed file lines and identity-preserved across layers
+per `DECISIONS.md#022` (FUP-126): proposal_hash includes the raw location.
+Byte translation stays inside coordinates for degraded file-bound checks.
+proposal_hash remains excluded from finding_content_hash per
+`DECISIONS.md#025` point 3.
 
-**Line-preservation invariant** (per `DECISIONS.md#022`, span-key amended
-2026-06-01 / FUP-126). Both layers are LINE-based: `line_start`/`line_end`
-are 1-indexed file lines — the frame the model is actually shown
-(scope-unit header + diff `@@` markers). The admitted layer's
-`line_start`/`line_end` MUST equal the raw layer's byte-for-byte (no
-normalization between layers), the same identity-preservation the byte
-`span` field carried before this amendment: `proposal_hash` is
-canonicalized from the RAW line values, so a normalized admitted line
-range would describe different lines from the same hash. Byte `Span` is
-NOT a proposal-schema field anymore — `ReviewFinding` is line-based, and
-the only byte translation (`coordinates.line_range_to_span`) is a
-parser-internal, un-clipped step for the degraded file-bounds check.
-`proposal_hash` is also excluded from `finding_content_hash` per
-`DECISIONS.md#025` point 3, so the recipe change is replay-safe. Tests
-pin the line-preservation invariant.
-
-`import_string` is the other cross-layer field and it IS deliberately
-normalized (raw `import_string_raw` → admitted `import_string` post-
-`coordinates.is_valid_trace_import_string`): line numbers are
-identity-preserved because the hash folds them; `import_string` is
-normalized because downstream consumers (trace node resolving the import)
-need the validated canonical form. Per `DECISIONS.md#024` (Amended
-2026-07-03) trace candidates carry one of two syntactic forms — dotted
-Python import string or JS/TS relative specifier — validated by the
-shared two-form dispatcher; the prior `candidate_path` framing was
-renamed in lockstep.
-"""
+Trace candidates differ: import_string_raw becomes the canonical
+import_string through coordinates.is_valid_trace_import_string, supporting
+dotted Python imports and JS/TS relative specifiers per `DECISIONS.md#024`.
+The pinned constrained-decoding format below is a separate provider contract;
+Pydantic admission still enforces constraints omitted from that format."""
 
 from __future__ import annotations
 

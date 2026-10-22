@@ -108,22 +108,11 @@ async def load_policy_for_version(
             ) from exc
         typed_policy[finding_type] = severity
 
-    # Completeness check — ACTIVE version ONLY. The active policy must assign a
-    # severity to every CURRENT FindingType, or live classification silently falls
-    # through to lookup_severity's MEDIUM fallback (breaking severity-set-by-policy).
-    #
-    # Historical (non-active) versions are deliberately EXEMPT: a historical row is
-    # correct as of its seeding date, and a finding classified under it can only
-    # reference FindingTypes that existed then. If the enum GROWS later (a new type
-    # added in a future release + seeded as a new active version), the current enum
-    # would no longer match an older row's key set — and re-checking historical rows
-    # against the grown enum would raise on EVERY prior version, breaking
-    # `severity-policy-versioned-for-replay` (the replay path at
-    # `audit/replay.py::_policy_snapshots` and the dashboard policy browser both load
-    # historical versions). The active-version check still catches the real bug it
-    # was added for: a FindingType added to the enum without seeding a complete new
-    # active policy. (A historical key that is no longer a valid FindingType is a
-    # separate concern, still caught per-key above.)
+    # Only the ACTIVE version must cover every current FindingType
+    # (severity-set-by-policy). Historical versions may predate enum growth;
+    # requiring today's keys would break severity-policy-versioned-for-replay
+    # in AuditReplayer._verify_historical_severity and the dashboard policy browser.
+    # Every stored key still needs to decode to a valid enum member above.
     if version == ACTIVE_POLICY_VERSION:
         missing_types = set(FindingType) - set(typed_policy.keys())
         if missing_types:

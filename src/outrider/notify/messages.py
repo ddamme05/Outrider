@@ -70,19 +70,12 @@ def _escape_mrkdwn(text: str) -> str:
 
 
 def _clip(raw: str) -> str:
-    """Clip a raw attacker-controlled string to a display bound BEFORE escaping/composition.
-    The primary length defense: bounds the section blocks AND the `text` fallback, keeps the
-    UTF-16 length under Slack's cap, and (by clipping the raw value) guarantees later escaping +
-    truncation never split a multi-char `&amp;`/`&lt;` entity."""
+    """Bound raw display text before escaping so titles and paths cannot grow freely."""
     return raw if len(raw) <= _SLACK_INPUT_MAX else raw[: _SLACK_INPUT_MAX - 1] + "…"
 
 
 def _cap_text(text: str) -> str:
-    """Truncate composed mrkdwn to Slack's ≤3000-char section limit, ESCAPE-AWARE so a cut never
-    severs a `&amp;`/`&lt;`/`&gt;` entity into a dangling `&…`. Backstops the section blocks AND
-    the `text` fallback: `_escape_mrkdwn` expands each `&`/`<`/`>` (to ≤5 chars), so a `_clip`-ped
-    (≤300-cp) input can still exceed the limit once escaped — this proves the FINAL serialized
-    length regardless of that expansion."""
+    """Cap composed text without cutting a generated &amp;, &lt;, or &gt; entity."""
     if len(text) <= _SLACK_SECTION_MAX:
         return text
     cut = text[: _SLACK_SECTION_MAX - 1]
@@ -104,7 +97,11 @@ def _context(markdown: str) -> dict[str, Any]:
 
 def _severity_counts(findings: Sequence[ReviewFinding]) -> list[tuple[FindingSeverity, int]]:
     counts = Counter(f.severity for f in findings)
-    return [(s, counts[s]) for s in _SEVERITY_ORDER if counts[s]]
+    present: list[tuple[FindingSeverity, int]] = []
+    for severity in _SEVERITY_ORDER:
+        if counts[severity]:
+            present.append((severity, counts[severity]))
+    return present
 
 
 def _counts_phrase(counts: list[tuple[FindingSeverity, int]]) -> str:
@@ -112,9 +109,10 @@ def _counts_phrase(counts: list[tuple[FindingSeverity, int]]) -> str:
 
 
 def _finding_line(f: ReviewFinding) -> str:
-    """One finding, metadata-first: severity · type — file:line-range + title. No code/evidence.
-    Humanized labels from the shared presentation layer; full line range (was line_start only). NO
-    severity emoji — Slack announces it to screen readers (a11y); severity is the text label."""
+    """Render severity, type, file range, and title without code or evidence.
+
+    Use text severity labels rather than emoji, which screen readers announce.
+    """
     sections = build_finding_sections(f, effective_severity=f.severity)
     line_range = str(f.line_start) if f.line_start == f.line_end else f"{f.line_start}-{f.line_end}"
     return (
@@ -131,7 +129,9 @@ def _finding_blocks(
     the finding list is the channel's record and survives every mirror edit."""
     total = len(ordered)
     shown = ordered[:top_n]
-    blocks: list[dict[str, Any]] = [_section(_finding_line(f)) for f in shown]
+    blocks: list[dict[str, Any]] = []
+    for finding in shown:
+        blocks.append(_section(_finding_line(finding)))
     if total > len(shown):
         remaining = _severity_counts(ordered[top_n:])
         more = f"+{total - len(shown)} more ({_counts_phrase(remaining)})"

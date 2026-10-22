@@ -328,8 +328,8 @@ class SynthesizeEventSink(Protocol):
         """Sum the review's `LLMCallEvent` rows (count, tokens, cost).
 
         Synthesize populates `ReviewMetrics` from this — the same single-source SUM
-        the dashboard read-API uses, so the persisted row and the badge cannot
-        diverge.
+        the dashboard read-API uses. Each caller observes the totals at its
+        query time.
         """
         ...
 

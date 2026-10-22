@@ -1,16 +1,9 @@
-"""Durable implementation of `ReviewStatusSink` + `ReviewStatusReader`.
+"""Persist lifecycle transitions and read human-decision preflight data.
 
-Single class implementing both Protocols from `db/sinks.py`. Per-method
-fresh `AsyncSession` from the injected `async_sessionmaker`. Write methods
-run ONE atomic UPDATE statement covering status + JSONB column +
-(where applicable) `expires_at`; read method runs two SELECTs in one
-session.
-
-Mirrors the `AuditPersister.__init__` precedent for dependency-injection
-discipline: `session_factory` is required, `None` raises at construction
-(not at first call). Tests that wrap `async_sessionmaker` for
-instrumentation remain compatible — runtime flexibility wins over
-isinstance gating.
+Each write uses a fresh session and one atomic UPDATE for status and its paired
+fields. Matching no rows is a successful no-op. fetch_for_decide reads the review
+cache, then loads gated severities from the canonical audit stream when needed.
+See db/sinks.py for the cross-boundary contract.
 """
 
 from collections.abc import Mapping
@@ -50,17 +43,10 @@ class ReviewStatusPersisterConfigError(ValueError):
 
 
 class ReviewStatusPersister:
-    """Durable persister implementing both `ReviewStatusSink` and
-    `ReviewStatusReader`.
+    """Implement ReviewStatusSink and ReviewStatusReader with fresh sessions.
 
-    Three sink methods (`mark_awaiting_approval`, `mark_running`,
-    `mark_awaiting_approval_expired`) — each opens ONE fresh
-    `AsyncSession`, runs ONE atomic UPDATE, commits. All return
-    successfully on rowcount=0 (idempotency contract).
-
-    One reader method (`fetch_for_decide`) — runs two SELECTs in one
-    session: the row state + (conditionally) the gated-finding severity
-    map sourced from `FindingEvent.severity` rows in `audit_events`.
+    Request and decision writes are first-write-only. Every lifecycle write commits
+    atomically and treats a nonmatching predicate as an idempotent no-op.
     """
 
     def __init__(self, *, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -105,33 +91,12 @@ class ReviewStatusPersister:
         review_id: UUID,
         hitl_decision_payload: dict[str, Any],
     ) -> None:
-        """Single-transaction status flip + JSONB write on resume.
+        """Resume an awaiting or expired review and store its first decision atomically.
 
-        Predicate filters on `status IN ('awaiting_approval',
-        'awaiting_approval_expired') AND hitl_decision IS NULL`. The
-        `hitl_decision IS NULL` discriminator makes the method
-        first-write-only, mirroring `mark_awaiting_approval`'s
-        `hitl_request IS NULL` defense: a concurrent second background
-        task whose audit-layer emit lost the natural-key race (or whose
-        body re-runs after a window (g) crash per spec §"Window (g)" —
-        after `mark_running`, before `emit_phase(end)`) sees
-        `hitl_decision` already populated and no-ops (rowcount=0). Without this
-        discriminator, a divergent-content second decision whose
-        `AuditPersisterHITLDecisionNaturalKeyConflict` was caught by
-        the endpoint's failure wrapper could STILL overwrite the JSONB
-        cache with content the audit row never ratified.
-
-        Source states admitted: `awaiting_approval` (canonical
-        transition) + `awaiting_approval_expired` (remediation path per
-        spec §4.1.6). `running` is intentionally NOT in the predicate;
-        once status moves past awaiting_approval, the row is
-        terminal-from-the-HITL-node's-perspective.
-
-        `expires_at` is intentionally left in place for forensic
-        visibility — the sweep filter `status='awaiting_approval' AND
-        expires_at < NOW()` rules out the row once status moves past
-        `awaiting_approval`, so the value's persistence is correctness-
-        free and forensically useful.
+        hitl_decision IS NULL prevents a competing decision from replacing the cache with
+        content the audit stream did not accept. expires_at stays for forensic visibility;
+        the expiry sweep only selects awaiting_approval rows. See docs/spec.md §4.1.6
+        and DECISIONS.md#016.
         """
         async with self._session_factory() as session, session.begin():
             await session.execute(

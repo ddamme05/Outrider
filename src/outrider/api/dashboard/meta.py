@@ -1,19 +1,8 @@
-"""GET /api/meta — deployment-shape flags the SPA needs before it renders.
+"""Expose the public demo-mode flag before the SPA's token gate.
 
-One unauthenticated, side-effect-free boolean surface: `demo_mode`. The SPA uses
-it to render the read-only-demo banner and disable HITL decision controls —
-without it, a public demo box shows live-looking Submit controls whose POST can
-never reach FastAPI (the demo Caddyfile proxies no mutation route, and the hitl
-router is not even mounted). Unauthenticated is deliberate and matches
-`/health`'s posture: the flag reveals only what the deployment shape already
-makes observable, and being auth-free lets the SPA mount the read-only-demo
-banner ABOVE its token gate (`main.tsx`), so a demo viewer sees it before
-entering the admin key.
-
-Lives under `/api/*` so both hand-maintained route mirrors — the demo Caddyfile
-and the Vite dev proxy — cover it with their existing prefix rules (the
-route-mirror bug class shipped three times on non-/api prefixes: /privacy twice,
-/setup once).
+The SPA uses it for the demo banner and disabled decision controls. This route
+is read-only and requires no credentials. The /api prefix keeps it covered by
+both the demo proxy and the Vite proxy.
 """
 
 from __future__ import annotations

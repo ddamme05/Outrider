@@ -1,21 +1,10 @@
 # See specs/2026-05-19-analyze-foundation.md §2 and DECISIONS.md#017.
-"""LangGraph reducer factory: dedup-keyed list append.
+"""Idempotent list reducers for checkpoint replay.
 
-Per `reducers-dedup-not-concat`: plain `operator.add` (the LangGraph
-default for `list[...]`) double-accumulates under checkpoint replay
-because the framework can re-apply state deltas during rehydration.
-Dedup-keyed merge is idempotent — items already present (by key) are
-skipped on re-emission.
-
-Consumers:
-- `ReviewState.analysis_rounds` — keyed on `AnalysisRound.round_id`; one
-  round per analyze PASS, never per worker (see DECISIONS.md#063).
-- `ReviewState.trace_candidates` — keyed on `TraceCandidate.candidate_id`.
-
-The factory is generic so future state fields with content-derived
-identity hashes (sister-spec finding proposal lists, etc.) can reuse the
-same idempotent-merge contract without copying the dedup logic.
-"""
+`append_with_dedup_by` keeps the first item for each caller-provided identity key
+(`reducers-dedup-not-concat`). ReviewState uses IDs and file paths.
+`append_with_slot_guard` also checks semantic content for positional worker slots:
+an identical replay is ignored; divergent content raises (DECISIONS.md#063)."""
 
 from __future__ import annotations
 
@@ -32,27 +21,18 @@ if TYPE_CHECKING:
 def append_with_dedup_by[T](
     key_fn: Callable[[T], Hashable],
 ) -> Callable[[list[T], list[T]], list[T]]:
-    """Return a LangGraph reducer that appends incoming items, deduped by `key_fn`.
+    """Append unseen keys, keeping existing entries and incoming order.
 
-    Replay re-application is idempotent: items already present (by key)
-    are skipped. Plain concat would double-accumulate under LangGraph
-    checkpoint replay; this factory is the durable fix.
-
-    Key extraction collisions (two items with same key but different
-    content) resolve to first-seen: the existing entry is preserved and
-    the incoming one is dropped. Callers ensure key uniqueness via
-    content-derived hashes (e.g., `AnalysisRound.round_id`,
-    `TraceCandidate.candidate_id`) so this collision case represents
-    legitimate re-emission of the same logical item, not divergent state.
-    """
+    Replaying the same keys is idempotent. Positional worker slots use
+    append_with_slot_guard to detect divergent content on retries."""
 
     def reducer(existing: list[T], incoming: list[T]) -> list[T]:
         seen: set[Hashable] = {key_fn(item) for item in existing}
         merged = list(existing)
         for item in incoming:
-            k = key_fn(item)
-            if k not in seen:
-                seen.add(k)
+            key = key_fn(item)
+            if key not in seen:
+                seen.add(key)
                 merged.append(item)
         return merged
 
@@ -95,7 +75,10 @@ def semantic_digest(
             return out
         if isinstance(value, list):
             tails = tuple(p[1:] for p in paths if len(p) > 1 and p[0] == "[]")
-            return [strip(v, tails) for v in value]
+            stripped_items: list[object] = []
+            for list_item in value:
+                stripped_items.append(strip(list_item, tails))
+            return stripped_items
         return value
 
     stripped = strip(model.model_dump(mode="json"), parsed)

@@ -1,38 +1,14 @@
 # Raw-payload Pydantic models for the GitHub pull_request webhook.
-"""Raw-payload trust translation per `docs/trust-boundaries.md#5-input-boundary`.
+"""Translate signed GitHub payloads into the fields Outrider consumes.
 
-GitHub webhook payloads enter the system through these Pydantic models —
-no code downstream of the webhook router ever sees a raw dict. The
-models capture ONLY the fields the intake-and-webhook flow consumes;
-unknown fields are tolerated (`extra="ignore"`) because GitHub's
-pull_request payload is very wide (top-level keys like `sender`,
-`number`, `organization`, `enterprise`, `changes`, `before`, `after`,
-action-specific `assignee` / `label` / `requested_reviewer`, etc.) and
-forward-compat additions are routine.
+Raw adapter models ignore extra fields so GitHub payload additions do not break
+parsing. This is the narrow input-boundary carve-out in
+specs/2026-05-17-intake-and-webhook.md; canonical state and audit models retain
+extra="forbid" (docs/conventions.md). See docs/trust-boundaries.md#5-input-boundary.
 
-**Adapter-model `extra="ignore"` carve-out** per `specs/2026-05-17-intake-and-webhook.md`
-Trust Boundary Impact (input boundary bullet "Adapter-model
-`extra="ignore"` carve-out") and Test Scenarios bullet (the
-`test_webhooks_schemas.py` description). Raw GitHub webhook payloads
-include 10+ top-level keys (`sender`, `number`, `organization`,
-`enterprise`, `changes`, action-specific `assignee`/`label`/etc.)
-that this spec doesn't model; `extra="forbid"` would reject all of
-them and break parsing on every real delivery. The carve-out is
-narrow: applies ONLY to raw external-payload adapter models at the
-trust boundary. Downstream canonical types (`PRContext`,
-`ReviewState`, every `audit/events.py` event type, every internal
-Pydantic) keep `extra="forbid"` per `docs/conventions.md`. Unknown
-fields ignored at the adapter cannot flow into prompts, audit rows,
-or graph state — they're not surfaced past the translation boundary.
-
-The `webhook-strings-are-data-not-format-strings` invariant applies to
-every string field here. Downstream code may place these into structured
-`PRContext` fields (which then flow into prompts as named params), but
-never f-string interpolate them into prompt templates or shell commands.
-
-Validators here are SHAPE-only — presence, type, status enum membership.
-The webhook handler is responsible for the SEMANTIC checks (signature,
-installation membership, idempotency, etc.).
+Validators check field shape. The router owns signature, action, installation,
+and idempotency checks. GitHub strings remain structured data, never prompt
+templates or shell commands (webhook-strings-are-data-not-format-strings).
 """
 
 from __future__ import annotations
@@ -56,26 +32,12 @@ __all__ = [
 ]
 
 
-# Spec line 26 + spec.md §6.3 line 662: only opened/synchronize/reopened
-# proceed; other actions get a 2xx no-op so GitHub doesn't retry. The
-# action field is `str` (NOT a closed Literal) so a future GitHub-added
-# action — or any signed-but-unsupported value — parses cleanly and
-# reaches the router's `_PULL_REQUEST_ACTION_ALLOWLIST` filter, which
-# returns 2xx for anything outside the allowlist. A closed Literal would
-# return 400 to GitHub on unknown actions, causing retries (the spec's
-# "no retry on signed-unsupported" guarantee then fails).
-
-
 class WebhookUser(BaseModel):
-    """The minimum slice of a GitHub user we consume.
+    """A bounded GitHub user id and login for canonical PRContext fields.
 
-    `login` is bounded with the same character-class GitHub itself enforces
-    server-side: 1-39 chars, ASCII alphanumeric plus hyphen, no leading
-    hyphen, no consecutive hyphens. Defending here AT the input boundary
-    closes the gap where a forged-or-replayed payload could embed empty /
-    slashed / control-character logins into `PRContext.author` (which
-    reaches LLM prompts) and into the URL segments of the
-    `repos/{owner}/{repo}/...` API calls intake builds.
+    The login pattern permits ASCII letters, digits, and hyphens. It deliberately
+    does not enforce GitHub's leading/consecutive-hyphen restrictions; it excludes
+    slashes, control characters, and shell metacharacters at the input boundary.
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
@@ -277,6 +239,7 @@ class PullRequestEventPayload(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
+    # Keep unknown actions parseable; the router's current allowlist decides which run.
     action: str
     pull_request: WebhookPullRequest
     repository: RepositoryRef

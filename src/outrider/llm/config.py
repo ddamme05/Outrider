@@ -1,29 +1,16 @@
 # Per-node LLM model selection, env-backed.
 # See specs/2026-05-05-llm-provider-wrapper.md and docs/spec.md §4.2.
 # Host-aware selection via `ModelConfig.for_host` (DECISIONS.md#056); the lifespan
-# OUTRIDER_LLM_HOST read that drives it lands with the provider-factory wiring.
-"""ModelConfig — env-backed per-node LLM model selection.
+# OUTRIDER_LLM_HOST read that drives it happens in the provider-factory wiring.
+"""Frozen per-node model selection with environment overrides.
 
-Backs the `model-strings-from-config-not-hardcoded` invariant: every LLM
-call site reads its model from this config, not a hardcoded string.
-Defaults match canonical spec §4.2 as amended: Sonnet for DEEP-tier
-analyze only; Haiku for triage/trace/patch, STANDARD-tier analyze
-(DECISIONS.md#041), and synthesize (DECISIONS.md#043). Each field is overridable via
-`OUTRIDER_MODEL_<FIELD>` env var (e.g., `OUTRIDER_MODEL_TRIAGE_MODEL`)
-so eval runs can swap models per-tier without code changes.
+`ModelConfig()` uses Anthropic defaults: Sonnet for DEEP analyze and Haiku
+for the other calls (`DECISIONS.md#041/#043`). Anthropic names must match
+the family pattern and avoid the SDK's deprecated-model registry.
 
-Validators:
-  - regex: model strings must match the V1 Anthropic family pattern
-    `^claude-(haiku|sonnet|opus)-\\d+(-\\d+)?(-\\d{8})?$`. Catches typos
-    at construction (e.g., `OUTRIDER_MODEL_ANALYZE_MODEL=gpt-4`). The
-    optional 8-digit `YYYYMMDD` suffix accepts dated exact model-version IDs;
-    dated forms normalize to their undated alias for pricing lookup
-    (see `outrider.llm.pricing.normalize_to_pricing_key`).
-  - deprecation: rejects any model string in
-    `anthropic.resources.messages.DEPRECATED_MODELS` (a `dict[str, str]`
-    of model id → deprecation date). The SDK would otherwise emit a
-    `DeprecationWarning` at first call; we surface it eagerly at
-    construction.
+`for_host` merges `OUTRIDER_MODEL_*` overrides over `HOST_DEFAULT_MODELS`
+(`DECISIONS.md#056`). Non-Anthropic slugs are validated by their host
+profile downstream. Call sites read these fields, rather than model literals.
 """
 
 import re
@@ -139,7 +126,7 @@ class ModelConfig(BaseSettings):
     triage_model: str = "claude-haiku-4-5"
     analyze_model: str = "claude-sonnet-5"
     # See DECISIONS.md#041 — the DEEP-tier model is `analyze_model`; STANDARD-tier files
-    # route here. Defaults to Haiku (1/3 of Sonnet's per-token price) after the eval
+    # route here. Defaults to Haiku after the eval
     # quality gate (PR #51) showed Haiku holds STANDARD-tier recall and does not over-flag
     # safe code worse than Sonnet. DEEP-tier files stay on `analyze_model` (Sonnet); so do
     # trace-fetched (no-tier) files. Override per-deployment via

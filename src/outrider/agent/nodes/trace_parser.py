@@ -1,32 +1,11 @@
 # See specs/2026-05-23-trace-node.md M6 + Q4.
-"""Trace LLM-response parser: validate + rank candidates per the response.
+"""Validate a model ranking as a permutation of the supplied trace candidates.
 
-The trace node makes one Haiku call (`prompts/trace.py`) that returns
-a JSON object with `ranked_candidate_ids: list[str]`. This parser:
-
-  1. Strips the outer JSON code fence if present
-     (`llm.parsing.strip_outer_json_fence` defends the
-     vendor-wire-format quirk per `vendor-payloads-normalized-at-boundary`).
-  2. Validates the response shape via Pydantic.
-  3. Verifies the response's ranking includes every supplied
-     candidate_id exactly once (no fabrication, no omission, no dup).
-  4. Returns the input candidates re-ordered to match the LLM's
-     ranking.
-
-Failure surfaces (returned via `TraceRankingOutcome` discriminated
-union rather than raised, mirroring the analyze-parser's discipline):
-
-  - `parsed` — happy path; ranked candidates.
-  - `rejected` — well-defined rejection reason (parse failure,
-    fabricated id, missing id, duplicate id, count mismatch).
-
-The trace node consumes `parsed` directly; on `rejected` it falls back
-to the input order (deterministic) and WARN-logs the rejection reason.
-V1 does not emit a dedicated `TraceRankingRejectedEvent` — that audit
-surface is deferred (see FUP-076). The discriminated-union shape here
-matches `AnalyzeResponseRaw`'s parser for code-shape parity and to
-keep the future event-emission wiring a one-site addition.
-"""
+Normalize the outer JSON fence (`vendor-payloads-normalized-at-boundary`),
+validate the envelope, then check count, duplicates and ID membership before
+reordering the original candidate objects.
+The trace node warns and retains input order on rejection. A dedicated
+TraceRankingRejectedEvent remains deferred (FUP-076)."""
 
 from __future__ import annotations
 
@@ -43,10 +22,8 @@ if TYPE_CHECKING:
     from outrider.schemas.trace_candidate import TraceCandidate
 
 
-# Rejection reasons span the LLM-response parser surface for trace.
-# Each value is a stable identifier consumed by audit emission; do not
-# rename without coordinating with `audit/events.py` rejection-reason
-# enumerations.
+# Stable rejection identifiers consumed by trace's warning/fallback path.
+# Dedicated rejection-event attribution remains deferred (FUP-076).
 TraceResponseRejectionReason = Literal[
     "raw_response_unparseable",
     "ranking_id_fabricated",
@@ -57,13 +34,7 @@ TraceResponseRejectionReason = Literal[
 
 
 class TraceRankingResponseRaw(BaseModel):
-    """Pydantic schema for the raw Haiku ranking response.
-
-    Single field: `ranked_candidate_ids` — ordered list of strings,
-    each MUST appear in the supplied candidate list. `extra="forbid"`
-    catches schema drift (e.g., LLM adding a `reasoning` field that
-    would otherwise silently land in an audit row).
-    """
+    """Strict envelope for the configured trace model's ordered candidate IDs."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -108,28 +79,17 @@ def parse_trace_ranking(
     response_text: str,
     candidates: Sequence[TraceCandidate],
 ) -> TraceRankingOutcome:
-    """Validate the Haiku response + reorder candidates per its ranking.
+    """Return the original candidates in ranking order, or a typed rejection.
 
-    Step order (failure-path-significant):
-      1. Strip outer JSON fence (vendor wire-format quirk).
-      2. Pydantic-validate the JSON shape.
-      3. Verify ranking is exactly the input candidate_id set (no
-         fabrication, no omission, no duplicate).
-      4. Reorder the input `candidates` list per the ranking.
-
-    Empty input (`candidates=()`) is a producer bug — trace shouldn't
-    invoke the parser without candidates. Caller asserts this before
-    calling; the parser additionally short-circuits to a
-    `count_mismatch` rejection if the LLM returns a non-empty ranking
-    for an empty candidate set.
-    """
+    After JSON normalization and validation, check count before duplicates and
+    membership. This order determines the reported reason for malformed rankings."""
     try:
         raw = TraceRankingResponseRaw.model_validate_json(strip_outer_json_fence(response_text))
     except ValidationError:
         return TraceRankingRejected(outcome="rejected", reason="raw_response_unparseable")
 
     ranked_ids = raw.ranked_candidate_ids
-    candidate_id_set = {c.candidate_id for c in candidates}
+    candidate_id_set = {candidate.candidate_id for candidate in candidates}
     ranked_id_set = set(ranked_ids)
 
     # Count check FIRST — catches the obvious shape errors with one
@@ -154,9 +114,9 @@ def parse_trace_ranking(
     # Reorder per the LLM's ranking. `index_by_id` is the deterministic
     # lookup (input candidates are guaranteed unique by `candidate_id`
     # per the schema validator).
-    index_by_id = {c.candidate_id: c for c in candidates}
-    ordered = tuple(index_by_id[cid] for cid in ranked_ids)
-    return TraceRankingParsed(outcome="parsed", ordered_candidates=ordered)
+    index_by_id = {candidate.candidate_id: candidate for candidate in candidates}
+    ordered_candidates = tuple(index_by_id[candidate_id] for candidate_id in ranked_ids)
+    return TraceRankingParsed(outcome="parsed", ordered_candidates=ordered_candidates)
 
 
 __all__ = [

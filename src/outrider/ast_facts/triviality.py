@@ -16,9 +16,8 @@ then pure per-scope work over `coordinates.ScopeChangedLineSpans`.
 
 Raw tree-sitter stays inside this module per the AST firewall; the
 matcher rules are text rules over comment bodies, versioned by
-`TRIVIAL_FILTER_VERSION` — any rule or denylist change bumps it (the
-version is an audit-event field and a planned lever-#8 cache-key
-component, FUP-166).
+`TRIVIAL_FILTER_VERSION` — any rule or denylist change bumps it. The version
+is recorded in audit events and the lever-#8 cache key (FUP-166).
 """
 
 from __future__ import annotations
@@ -43,7 +42,7 @@ _PY_LANGUAGE: Final = Language(tree_sitter_python.language())
 _PARSER: Final = Parser(_PY_LANGUAGE)
 
 # Bump on ANY change to the matcher rules or denylist below — the version
-# is recorded on every ScopeExclusionEvent and becomes a lever-#8
+# is recorded on every ScopeExclusionEvent and is a lever-#8
 # cache-key component (FUP-166). Code-pinned by design: never injectable.
 TRIVIAL_FILTER_VERSION: Final = "trivial-filter-v1"
 
@@ -158,7 +157,7 @@ def build_triviality_context(
 
 
 def _comment_spans(root: Node) -> list[tuple[int, int]]:
-    """Byte spans of every comment node, via cursor walk (comments are
+    """Byte spans of every comment node, via iterative walk (comments are
     leaves; Python comments never span lines)."""
     spans: list[tuple[int, int]] = []
     stack = [root]

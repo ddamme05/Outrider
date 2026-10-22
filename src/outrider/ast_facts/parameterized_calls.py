@@ -53,16 +53,9 @@ _PARSER: Final = Parser(_PY_LANGUAGE)
 # an ANALYZE_PARSER_VERSION bump.
 _EXECUTE_LIKE_METHODS: Final = frozenset({"execute", "executemany", "raw"})
 
-# Receiver idioms whose binding contract is conventionally pinned. The
-# safety claim has TWO parts and only one is structural: a pure-literal
-# SQL argument proves no user input reaches the STRING at the call site,
-# but whether the second argument is BOUND (safe) or interpolated into
-# the string by the callee (injectable) is the callee's contract. A bare
-# `execute(...)` or an arbitrary `wrapper.execute(...)` can interpolate —
-# a project wrapper doing `sql % args` internally looks identical at the
-# call site — so only receivers whose idiom conventionally pins DB-API /
-# ORM binding semantics qualify for the safe set. Everything else stays
-# execute-like (span-conflict protection) and FAILS OPEN to HITL.
+# Literal SQL plus a params argument does not prove the callee binds params.
+# Only these conventional DB-API receivers qualify; other execute-like calls
+# remain unsafe sites for span-conflict protection and pass through to HITL.
 _BINDING_RECEIVERS: Final = frozenset({"cursor", "cur", "conn", "connection"})
 
 
@@ -84,7 +77,7 @@ class ExecuteCallSite(BaseModel):
 class ParameterizedCallScan(BaseModel):
     """The execute-like call sets the veto consumes.
 
-    Two STORED sets — `safe_parameterized_calls` ⊆ `all_execute_like_calls` by
+    Two stored tuples — `safe_parameterized_calls` ⊆ `all_execute_like_calls` by
     construction — plus the DERIVED `unsafe_parameterized_calls` property
     (multiset `all − safe`). The veto requires a proposal's line range to be
     contained in a safe call AND to intersect no unsafe site — so a range
@@ -210,7 +203,10 @@ def _is_safe_parameterized(call: Node) -> bool:
     arguments = call.child_by_field_name("arguments")
     if arguments is None:
         return False
-    args = [c for c in arguments.named_children if c.type != "comment"]
+    args: list[Node] = []
+    for argument_node in arguments.named_children:
+        if argument_node.type != "comment":
+            args.append(argument_node)
     if len(args) < 2:
         return False
     return _is_pure_literal_string(args[0])

@@ -1,26 +1,16 @@
 # Cross-boundary publish carriers per docs/spec.md §4.1.7 + specs/2026-05-21-publish-node.md.
-"""InlineComment + PublishResult + GitHubReviewCreated — publish-side carriers.
+"""Validated publish carriers and terminal results.
 
-All three are frozen + extra="forbid" per the output-boundary trust rule
-(`docs/trust-boundaries.md` §6): the model proposes, deterministic systems
-dispose. The publisher constructs these from `ReviewFinding` + the
-`coordinates.tree_sitter_to_github` location — no model field controls
-publish routing or comment body content; sanitizer + coordinates own those.
+InlineComment.from_finding is the only production construction path under
+docs/trust-boundaries.md §6. Publish supplies coordinates and sanitized
+body text; the factory carries them with the finding identity. Direct schema
+construction remains available to tests and is forbidden in src by an
+import-graph assertion.
 
-`InlineComment.from_finding(...)` is the canonical production construction
-path; the trust-boundary checklist (boundary #6) mandates this factory be
-the only call site inside `src/outrider/`. Direct Pydantic construction
-remains permitted for test fixtures that need to bypass the sanitizer
-path, but an import-graph unit test forbids it inside `src/outrider/`.
-
-`PublishResult` is the publish node's terminal state field — captured on
-`ReviewState.publish_result` and rolled up into the dashboard's review-level
-summary. Its four constructors (`success`, `empty`, `skipped`,
-`skipped_external`) line up with the four non-`failed` `PublishAttemptOutcome`
-variants; the publisher raises on `failed` outcomes rather than returning
-a degraded result, matching the analyze convention of "failures propagate
-and the start phase event is left dangling as the audit signal."
-"""
+PublishResult records five non-failed outcomes: success, empty, local retry
+skip, external-record skip, and authorization revoked. Failed attempts raise
+and leave the start phase dangling for audit; terminal results are stored on
+ReviewState.publish_result."""
 
 from __future__ import annotations
 

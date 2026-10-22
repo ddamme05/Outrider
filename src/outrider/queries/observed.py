@@ -2,7 +2,7 @@
 """`QueryClass` + `ObservedQuery`: the registry-side metadata for the
 OBSERVED-tier security query library (Cost Lever 3).
 
-The deterministic OBSERVED producer (the analyze node, a later increment)
+The deterministic OBSERVED producer (`agent/nodes/analyze_observed.py`)
 maps a `QueryMatchSpan` from `queries.registry.match(id, ...)` to a
 `ReviewFinding` with NO model text: `finding_type` drives the
 `SEVERITY_POLICY` severity (never model-set), and the static

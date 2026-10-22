@@ -66,22 +66,9 @@ from urllib.parse import urlparse
 # ---------------------------------------------------------------------------
 
 # Outrider policy cap on the rendered GitHub comment body, in UTF-8 bytes.
-#
-# This is an Outrider POLICY cap, NOT a measured GitHub maximum. GitHub
-# was empirically observed (sandbox PR-2 reviews, 2026-05-22) to accept
-# inline-comment bodies at least up to 70,000 ASCII chars under
-# apiVersion 2026-03-10; the actual vendor maximum above the probed
-# range is unverified and the cap was deliberately not walked further
-# (no shipping decision rides on the exact ceiling). The cap exists for
-# bounded output, deterministic truncation, and sanitizer predictability
-# — truncation fires here, not at an opaque API boundary, so the
-# publish call always succeeds (user sees a truncation marker, never
-# a 422 from the body field).
-#
-# Cap is enforced in UTF-8 BYTES including the truncation marker and
-# fencing overhead — ASCII test data hides the codepoint-vs-byte gap;
-# non-ASCII content (CJK identifiers, emoji, RTL text in evidence)
-# is the edge case that motivates byte-measurement.
+# This is an Outrider policy limit, not a measured GitHub maximum.
+# Count UTF-8 bytes, including the marker and fencing overhead, so non-ASCII
+# text cannot bypass the cap. API acceptance also depends on other fields.
 GITHUB_COMMENT_BODY_MAX: Final[int] = 65_536
 # Distinct GitHub surface from inline comments (the PR review BODY), kept separate
 # per DECISIONS.md#050 so the two caps can diverge without re-introducing the
@@ -303,12 +290,9 @@ def sanitize_display_string(text: str) -> str:
 
 
 def escape_markdown_prose(text: str) -> str:
-    """Escape inline + leading-position markdown semantics for prose.
+    """Escape inline characters and leading block markers in prose.
 
-    Public so a caller composing a body manually (e.g., a future
-    `synthesize` review-body builder) can apply the same escaping
-    without going through the full sanitizer pipeline.
-    """
+    Body composers can use this independently of codepoint stripping and caps."""
     # Inline escapes: process backslash FIRST so later escapes don't
     # get doubly-escaped.
     for char, escaped in _MARKDOWN_INLINE_ESCAPES.items():
@@ -440,28 +424,15 @@ def is_safe_link_url(value: str) -> bool:
 def apply_size_cap(
     body: str, *, reserve_bytes: int = 0, max_bytes: int = GITHUB_COMMENT_BODY_MAX
 ) -> str:
-    """Truncate `body` to fit `max_bytes - reserve_bytes` UTF-8 bytes.
+    """Truncate the assembled body to max_bytes - reserve_bytes UTF-8 bytes.
 
-    `max_bytes` defaults to `GITHUB_COMMENT_BODY_MAX` (inline comments); the PR
-    review-body surface passes `GITHUB_REVIEW_BODY_MAX` (DECISIONS.md#050). Every
-    existing caller omits it, so behaviour is unchanged.
+    Inline comments default to GITHUB_COMMENT_BODY_MAX; review summaries pass
+    GITHUB_REVIEW_BODY_MAX (DECISIONS.md#050). Reserved bytes belong to content
+    appended after this call, such as intact S1 agent markers.
 
-    `reserve_bytes` holds back room for content the caller appends AFTER the
-    cap and that must NOT itself be truncated — the S1 agent-marker block is the
-    motivating case (an agent must be able to parse every `<!-- outrider:... -->`
-    line intact). The effective budget is `max_bytes - reserve_bytes`, so
-    `prose + appended-block` still fits GitHub's hard byte limit. Default
-    `reserve_bytes=0` preserves the original behaviour for every existing caller.
-
-    The truncation marker is INCLUDED in the (reduced) cap — if the assembled
-    body is already within `max_bytes - reserve_bytes`, it is returned unchanged;
-    otherwise truncated such that
-    `len((truncated + marker).encode("utf-8")) <= max_bytes - reserve_bytes`.
-
-    Care taken NOT to truncate mid-codepoint for non-ASCII content:
-    the loop trims bytes from the end and decodes with `errors="ignore"`
-    so any trailing partial UTF-8 sequence drops cleanly.
-    """
+    The returned text includes the truncation marker within that reduced budget.
+    Byte slicing with errors='ignore' drops a partial UTF-8 codepoint cleanly.
+    Invalid caps or insufficient marker space fail loudly."""
     if reserve_bytes < 0:
         raise ValueError(f"reserve_bytes must be >= 0; got {reserve_bytes}")
     if max_bytes <= 0:
@@ -549,17 +520,11 @@ def compute_truncation_hmac(original_byte_count: int) -> str:
 
 
 def require_truncation_secret() -> None:
-    """Assert ``OUTRIDER_TRUNCATION_HMAC_SECRET`` is set — for eager startup validation.
+    """Validate the truncation-marker secret eagerly at startup.
 
-    The truncation marker's HMAC keys off this secret, read LAZILY (only when a body
-    actually exceeds the size cap inside ``apply_size_cap``). That laziness means a
-    deploy missing the secret boots clean and reviews short PRs fine, then fails the
-    whole publish node with a bare ``RuntimeError`` the first time any finding body
-    truncates (the per-finding routing loop has no recovery wrapper, so it aborts the
-    review). The lifespan calls this once at startup so the misconfiguration fails
-    loud at boot instead of mid-review. Raises ``RuntimeError`` (via
-    ``_get_truncation_secret``) when the secret is unset/empty; returns None when set.
-    """
+    apply_size_cap otherwise reads it only when truncation occurs. Lifespan
+    calls this so a missing, placeholder, or short secret fails before review
+    processing instead of during publication."""
     _get_truncation_secret()
 
 
@@ -569,9 +534,7 @@ def require_truncation_secret() -> None:
 
 
 def _strip_bidi_and_zero_width(text: str) -> str:
-    """Strip bidi-override + zero-width codepoints. Inline so callers
-    using `render_fenced_block` get the same protection without
-    re-importing the constant sets."""
+    """Strip the shared bidi and zero-width sets from prose or fenced content."""
     if not text:
         return text
     result_chars: list[str] = []
@@ -619,12 +582,9 @@ def _build_truncation_marker(*, original_byte_count: int) -> str:
 
 
 def _get_truncation_secret() -> bytes:
-    """Read the HMAC secret from env. Fails loudly if absent.
+    """Read and validate the HMAC secret on each call; never cache it.
 
-    Read on every call (not cached) so a test fixture's monkeypatch
-    of the env var takes effect immediately. Per-call hashlib.sha256
-    is microsecond-cheap; no performance concern.
-    """
+    Validation uses the stripped value, while signing keeps the original bytes."""
     secret = os.environ.get(TRUNCATION_HMAC_SECRET_ENV, "")
     stripped = secret.strip()
     if not stripped:

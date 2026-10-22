@@ -375,8 +375,7 @@ class PythonAdapter:
         file_path: str,
         scope_units: tuple[ScopeUnit, ...],
     ) -> tuple[CallSite, ...]:
-        # Pre-sort scopes by byte_start ASC, byte_end DESC so the most
-        # tightly-enclosing scope is found first by linear search.
+        # Sort deterministically; the shared lookup selects the smallest enclosing span.
         sorted_scopes = sorted(scope_units, key=lambda s: (s.byte_start, -s.byte_end))
         calls: list[CallSite] = []
         for node in self._walk(tree.root_node):
@@ -389,15 +388,8 @@ class PythonAdapter:
             function_node = node.child_by_field_name("function")
             if function_node is None:
                 continue
-            # `callee_name` is RAW SOURCE TEXT per canonical spec.md §5.4
-            # ("raw text; resolution is a separate concern"). For `obj.method()`
-            # this is `"obj.method"`; for multi-line `(\n  chain\n  .step\n)()`
-            # it preserves embedded newlines and parens. The trace-node spec
-            # (when written) is responsible for normalizing this text when
-            # matching against `ImportRef.names` — the field stays raw on the
-            # `ast_facts/` side per spec-fidelity discipline. Changing this
-            # contract requires a `DECISIONS.md` entry that supersedes §5.4,
-            # not a silent shape change here.
+            # Preserve raw callee text, including newlines and parentheses (spec.md §5.4).
+            # Resolution belongs downstream; changing this requires a DECISIONS.md amendment.
             calls.append(
                 CallSite(
                     file_path=file_path,
@@ -493,9 +485,10 @@ class PythonAdapter:
         candidates = self._resolver.resolve_candidate_paths(import_ref.module, import_root)
         # Existence check via the symlink-safe primitive per Internal
         # contracts (allowlist: only `.is_file(follow_symlinks=False)`).
-        existing: list[Path] = [
-            c for c in candidates if (import_root / c).is_file(follow_symlinks=False)
-        ]
+        existing: list[Path] = []
+        for candidate_path in candidates:
+            if (import_root / candidate_path).is_file(follow_symlinks=False):
+                existing.append(candidate_path)
         if len(existing) == 1:
             return ImportResolution(
                 status="resolved",
@@ -547,12 +540,7 @@ class PythonAdapter:
         # scope-defining node enclosed by it.
         # `decorated_definition` is in target_types so a decorator-region
         # syntax error propagates to the wrapping scope's `has_error`.
-        # NOTE: this currently always returns `"clean"` — syntax errors
-        # surface as per-scope-unit `has_error[unit_id] == True`, not as
-        # a file-wide "failed" outcome. A future syntax-fatal classifier
-        # (e.g., "more than N% of root children are ERROR nodes") could
-        # return `"failed"` and would feed analyze's `failed+degraded_llm`
-        # outcome alongside the FUP-053 raw-bytes path. Not in V1 scope.
+        # Syntax errors remain per-scope flags; the file verdict stays clean.
         has_error: dict[str, bool] = {}
         for scope in scope_units:
             node = _find_node_by_span(tree.root_node, scope.byte_start, scope.byte_end)
@@ -625,30 +613,12 @@ def _find_node_by_span(root: Node, byte_start: int, byte_end: int) -> Node | Non
 
 
 def parse_python(source: bytes, file_path: str, resolver: ImportPathResolver) -> ParseResult:
-    """Run the size→pattern→decode→parse pipeline per Internal contracts.
+    """Run exclusions, UTF-8 validation, one parse, and ordered extraction.
 
-    Surfaces a `TypeError` at the top of the pipeline if `source` is not
-    `bytes`. Without this guard, `should_skip` would silently iterate
-    rules and crash deeper in the loop with a confusing traceback when
-    a caller passes `str` by accident.
-
-    Returns:
-      * `ParseResult(parser_outcome="skipped", skip_reason=...)` if any
-        rule in `EXCLUSION_RULES` matches.
-      * `ParseResult(parser_outcome="failed")` if UTF-8 decode fails or
-        if `compute_parser_outcome` returns `"failed"` after extraction.
-        BOTH paths are V1-unreachable through analyze — see the step-2
-        comment below for the decode path and the
-        `_compute_parser_outcome_from_tree` comment for the extraction
-        path. Future raw-bytes intake (FUP-053) and a future syntax-fatal
-        classifier are the respective triggers.
-      * `ParseResult(parser_outcome="clean", scope_units=..., ...,
-        has_error=...)` on the clean path.
-
-    `resolver` is required by `PythonAdapter`'s constructor (the adapter
-    holds it for `resolve_simple_direct_import`); `parse_python` does
-    not invoke the resolver on the clean path, but the constructor
-    parameter is uniform.
+    Non-bytes input raises TypeError. Skipped and failed results contain no facts.
+    Invalid UTF-8 fails; the current adapter reports syntax errors as per-scope
+    flags with a clean file verdict. A defensive failed extraction discards facts.
+    The adapter stores resolver for import resolution; this pipeline does not call it.
     """
     if not isinstance(source, bytes):
         raise TypeError(
@@ -661,25 +631,11 @@ def parse_python(source: bytes, file_path: str, resolver: ImportPathResolver) ->
     skip_reason: SkipReason | None = should_skip(file_path, source)
     if skip_reason is not None:
         return ParseResult(parser_outcome="skipped", skip_reason=skip_reason)
-    # Step 2: UTF-8 strict decode (validity gate; we do not retain the
-    # decoded str, since tree-sitter accepts bytes directly).
-    # NOTE: V1 callers (analyze) re-encode a Python `str` to bytes
-    # before reaching this gate, and intake's `_classify_or_reserve_decode`
-    # rejects invalid UTF-8 upstream with SkipReason.OVERSIZED. The
-    # `parser_outcome="failed"` return is therefore V1-unreachable
-    # through analyze; kept for the raw-bytes intake path (FUP-053) and
-    # for direct `parse_python` consumers that hand it untrusted bytes.
-    #
-    # BOM / CRLF tolerance (FUP-058 closed 2026-05-21): a UTF-8 BOM
-    # (`\xef\xbb\xbf`) is valid UTF-8 (encodes U+FEFF), so strict decode
-    # accepts BOM-prefixed source. CRLF line endings are also accepted —
-    # tree-sitter parses both line-ending conventions correctly and
-    # produces scope-unit byte ranges that include the BOM bytes / CR
-    # bytes as-is. Downstream coordinate translation in `coordinates/`
-    # consumes those byte ranges with the same byte view, so the bytes
-    # round-trip. Pinned by `test_parse_python_handles_utf8_bom_prefix`
-    # and `test_parse_python_handles_crlf_line_endings` in
-    # `tests/unit/test_ast_facts_python.py`.
+    # Validate UTF-8 without retaining decoded text; tree-sitter consumes raw bytes.
+    # Analyze re-encodes already-decoded text, while intake classifies invalid UTF-8
+    # as BINARY. Direct byte callers can still reach this failed return (FUP-053).
+    # BOM and CRLF bytes remain intact for downstream coordinate translation;
+    # tests/unit/test_ast_facts_python.py pins both cases (FUP-058).
     try:
         source.decode("utf-8")
     except UnicodeDecodeError:

@@ -1,37 +1,19 @@
 # LLM provider wrapper — typed call surface + Protocols.
 # See specs/2026-05-05-llm-provider-wrapper.md and DECISIONS.md #013/#014/#015/#016/#019.
-"""LLM provider wrapper foundation.
+"""Provider-neutral requests, responses, errors, and persistence contracts.
 
-This module is the boundary between agent nodes and concrete LLM SDKs:
-- Agent nodes consume `LLMProvider` (Protocol), never the SDK directly.
-- Concrete providers (`AnthropicProvider`, in `anthropic_provider.py`)
-  implement the Protocol and import the vendor SDK at the call surface.
-  The `vendor-sdks-only-in-wrappers` invariant is folder-scoped (vendor
-  imports confined to `src/outrider/llm/`), not file-scoped — supporting
-  modules within `llm/` may legitimately import SDK metadata too (e.g.,
-  `config.py` imports `anthropic.resources.messages.DEPRECATED_MODELS`
-  for eager deprecation validation; cleanup per Copilot).
+Agent nodes call `LLMProvider`; concrete wrappers own vendor SDK access
+under `vendor-sdks-only-in-wrappers`.
+Requests carry transport inputs and audit context, while responses carry
+normalized text, usage, and host identity. Providers persist a completed
+exchange before returning it.
 
-See spec for the full design chain. Two abstract-base enforcement
-notes worth pinning here:
+Content serializers redact by default. `INCLUDE_TEXT_OPT_IN` enables raw
+serialization through an identity check; `AuditPersister` instead reads raw
+attributes directly into the retained content table (`DECISIONS.md#016`).
 
-  - `LLMProviderError(Exception, ABC)` does NOT prevent instantiation
-    because `Exception.__new__` bypasses ABC's `__abstractmethods__`
-    check. We use `__init__` type-guard + `__init_subclass__`
-    presence + value-membership enforcement instead.
-  - `INCLUDE_TEXT_OPT_IN` is a typed sentinel, not a string key. ANY
-    caller that intentionally needs to serialize `LLMRequest` or
-    `LLMResponse` with raw content (rather than the default redacted
-    form) passes it as the `model_dump()` context — identity check
-    (`info.context is INCLUDE_TEXT_OPT_IN`), not dict lookup, so typos
-    like `"INCLUDE_TEXT"` cannot accidentally pass. NOTE: the shipped
-    `AuditPersister` does NOT take this path — it persists raw
-    `prompt`/`completion` via direct attribute access
-    (`request.user_prompt`, `response.text`) into the `llm_call_content`
-    side-table, bypassing both the redaction serializer AND the audit
-    payload entirely. The sentinel remains as a utility for any future
-    caller that genuinely needs serialized-with-content form; today no
-    production code path uses it.
+`LLMProviderError` enforces a retry layer on every concrete subclass.
+Its docstring records the complete taxonomy and construction rules.
 """
 
 import hashlib
@@ -97,30 +79,12 @@ __all__ = [
 
 
 class _IncludeTextOptIn:
-    """Sentinel; only constructable via the module-level `INCLUDE_TEXT_OPT_IN`
-    singleton. Direct construction outside this module raises `TypeError`.
+    """Singleton token for explicitly serializing raw model-call content.
 
-    The serializer uses identity (`info.context is INCLUDE_TEXT_OPT_IN`),
-    NOT dict-key lookup — there is no string to typo.
-
-    **reconciliation:** the older provider-wrapper spec at
-    `specs/2026-05-05-llm-provider-wrapper.md` described this sentinel
-    as the ONLY way to retrieve raw content (e.g., persister calling
-    `request.model_dump(context=INCLUDE_TEXT_OPT_IN)`). That was the
-    at-approval plan; the audit-persister spec
-    (`specs/2026-05-16-audit-persister.md`) deliberately chose
-    **direct attribute access** instead (`request.user_prompt`,
-    `response.text`) because the persister stores raw content in the
-    `llm_call_content` side-table and there's no reason to round-trip
-    through `model_dump()` for the same result. The sentinel remains
-    as a utility for any future caller that genuinely needs the
-    serialized-WITH-content form; no production code path uses it
-    today. Both retrieval paths are content-clean by their own
-    discipline (the `field_serializer` redaction guards the
-    `model_dump()` path; the direct-attribute-access path bypasses the
-    serializer entirely and writes only to the dedicated content
-    side-table). See `specs/2026-05-16-audit-persister.md` Actual
-    Outcome for the contract history.
+    Only the module-held construction token can create it. Serializers check
+    `info.context is INCLUDE_TEXT_OPT_IN`, so a string or dictionary cannot
+    accidentally opt in. Persistence uses direct attributes instead; see the
+    audit-persister spec's Actual Outcome.
     """
 
     _CONSTRUCT_TOKEN: ClassVar[object] = object()
@@ -517,18 +481,13 @@ class LLMMessage(BaseModel):
 
 
 class LLMRequest(BaseModel):
-    """Wrapper input. Two field groups:
+    """Frozen provider input: transport settings plus metadata-only audit context.
 
-    - **Transport fields** the wrapper sends to the SDK:
-      `system_prompt`, `user_prompt`, `messages` (V1.5+ only),
-      `model`, `max_tokens`, `cache_control`, `temperature`,
-      `response_schema_json` (sent as `output_config.format`; its
-      derived digest also rides to `LLMCallEvent` as provenance).
-    - **Audit-context fields** the wrapper passes opaquely through to
-      `LLMCallEvent` at `complete()` step 9: `review_id`, `node_id`,
-      `is_eval`, `context_summary`, `prompt_template_version`,
-      `degraded_mode`, `phase_key`. Provider does NOT modify or re-derive
-      these.
+    System/user text, model, token ceiling, caching, temperature, and optional
+    response schema shape the SDK request; each provider maps them to its API.
+    `messages` is reserved and must remain None. Review/node IDs, eval scope,
+    context manifest, template version, degradation provenance, and phase key
+    pass through to the audit event without provider reinterpretation.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -687,15 +646,10 @@ class LLMRequest(BaseModel):
     # in declaration order.
     @model_validator(mode="after")
     def _enforce_degradation_provenance(self) -> Self:
-        """`degraded_mode` requires `node_id == "analyze"` AND a typed
-        `degradation_reason`, bidirectionally.
+        """Keep degradation mode and its reason coupled, and analyze-only.
 
-        Three-way coupling prevents silent bypass:
-          (a) a buggy caller cannot set `degraded_mode=True` without
-              also naming a documented degradation cause;
-          (b) a non-analyze request (trace/synthesize/triage) cannot
-              carry analyze-specific degradation semantics at all
-              .
+        Phase keys also belong only to analyze fan-out. This validator runs
+        before the context requirement so provenance errors surface first.
         """
         # Rule 1: only analyze can be degraded in V1. Other nodes have
         # no degraded-mode contract; allowing degraded_mode=True
@@ -806,23 +760,12 @@ class LLMRequest(BaseModel):
 
 
 class LLMResponse(BaseModel):
-    """Wrapper output.
+    """Frozen normalized completion and usage, with no policy or cost fields.
 
-    Per AC#7, has NO `severity`/`evidence_tier`/`confidence`/`cost_usd`
-    fields — schema layer enforces severity/tier/confidence; cost is
-    computed by the provider in `complete()` step 8 from token counts ×
-    `llm.pricing.RATE_TABLE` and lands on `LLMCallEvent` (NOT here).
-
-    `text` is completion content; default `model_dump()` redacts via
-    `field_serializer` (renders `"<redacted, N chars>"`). The redacted
-    form is what flows through any log/serialization path that uses
-    `model_dump()` without the opt-in sentinel. The shipped
-    `AuditPersister` does NOT use `model_dump()` for content
-    persistence — it reads `response.text` via direct attribute access
-    so the raw content lands in `llm_call_content.completion`. Callers
-    that genuinely want the model-dumped form WITH raw text pass
-    `INCLUDE_TEXT_OPT_IN` as the context (identity-checked); no
-    production code path does so today.
+    Nodes enforce finding policy; providers calculate cost for `LLMCallEvent`.
+    Default serialization redacts `text`. Raw serialized text requires the
+    identity-checked `INCLUDE_TEXT_OPT_IN`; `AuditPersister` instead reads the
+    attribute directly for the separate, expiring completion-content row.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -835,8 +778,8 @@ class LLMResponse(BaseModel):
     cache_write_tokens: int = Field(ge=0)
     finish_reason: str
     latency_ms: int = Field(ge=0)
-    # Host-identity triad (DECISIONS.md#056) — the provider stamps these (a later step-4
-    # commit); the persister cross-checks them against the LLMCallEvent. `None` until stamped.
+    # Host-identity triad (DECISIONS.md#056): providers stamp all three together;
+    # the persister cross-checks them against LLMCallEvent. None is read-compatible.
     profile_id: str | None = None
     reasoning_enabled: bool | None = None
     # The canonical sha256-hex shape (policy.canonical.SHA256_HEX_PATTERN — already a transitive
@@ -954,35 +897,19 @@ class LLMProvider(Protocol):
 
 
 def _canonical_prompt_hash(*, system_prompt: str, user_prompt: str) -> str:
-    """Replay-equivalence canonicalization for `LLMCallEvent.prompt_hash`.
+    """Hash the exact UTF-8 bytes of both prompts, each prefixed by its byte length.
 
-    Length-prefixed SHA-256 — the input bytes are
-    `f"{len(sp_bytes)}:".encode() + sp_bytes + f"{len(up_bytes)}:".encode() + up_bytes`,
-    where `sp_bytes = system_prompt.encode("utf-8")` and similar for user.
-    The length prefix makes the prompt-boundary unambiguous regardless of
-    delimiter characters appearing inside either string. A fixed-delimiter
-    recipe collides whenever the delimiter character can appear in the
-    prompt body — PR content (which can flow into either prompt via
-    template substitution) is attacker-controlled, so a `\\x1e`-bearing
-    payload could move the boundary across two distinct (system, user)
-    pairs that share a digest. Length-prefix encoding is collision-resistant
-    by structure.
-
-    No Unicode normalization, no whitespace trimming, no line-ending
-    conversion — the hash is over the BYTES the LLM provider received.
-
-    Keyword-only because both args are `str` and adjacent; positional
-    swap would silently produce a different valid SHA-256 with no type
-    signal. Sibling pattern matches `compute_finding_content_hash` in
-    `audit/events.py`.
+    Length framing keeps attacker-controlled delimiters from moving the
+    system/user boundary. No trimming, Unicode normalization, or line-ending
+    conversion occurs. The keyword-only arguments prevent an unnoticed swap.
     """
-    sp_bytes = system_prompt.encode("utf-8")
-    up_bytes = user_prompt.encode("utf-8")
+    system_prompt_bytes = system_prompt.encode("utf-8")
+    user_prompt_bytes = user_prompt.encode("utf-8")
     payload = (
-        f"{len(sp_bytes)}:".encode("ascii")
-        + sp_bytes
-        + f"{len(up_bytes)}:".encode("ascii")
-        + up_bytes
+        f"{len(system_prompt_bytes)}:".encode("ascii")
+        + system_prompt_bytes
+        + f"{len(user_prompt_bytes)}:".encode("ascii")
+        + user_prompt_bytes
     )
     return hashlib.sha256(payload).hexdigest()
 
