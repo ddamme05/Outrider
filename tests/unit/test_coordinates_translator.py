@@ -93,7 +93,7 @@ def test_span_in_context_line_returns_correct_line() -> None:
 
 
 def test_span_on_first_line_of_hunk() -> None:
-    """byte_start on the first reviewable line of the hunk → that line."""
+    """Byte zero on the first reviewable hunk line maps to line 1."""
     loc = tree_sitter_to_github(
         file_path=SIMPLE_FILE_PATH,
         byte_start=0,
@@ -405,18 +405,6 @@ def test_zero_width_span_in_hunk_succeeds() -> None:
         patch=SIMPLE_PATCH,
     )
     assert loc.line == 2
-
-
-def test_byte_start_zero_in_hunk_succeeds() -> None:
-    """byte_start == 0 (file start) → line 1 if line 1 is in a hunk."""
-    loc = tree_sitter_to_github(
-        file_path=SIMPLE_FILE_PATH,
-        byte_start=0,
-        byte_end=4,
-        head_content=SIMPLE_HEAD,
-        patch=SIMPLE_PATCH,
-    )
-    assert loc.line == 1
 
 
 def test_byte_end_at_head_byte_length_in_hunk_succeeds() -> None:

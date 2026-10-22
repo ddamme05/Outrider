@@ -1,25 +1,8 @@
 # See specs/2026-05-19-analyze-foundation.md §8.
-"""Cross-cutting integration test: checkpoint-replay equivalence for the
-new analyze-foundation state slots.
+"""Analysis rounds and trace candidates survive ReviewState JSON reconstruction.
 
-Exercises:
-- Construct a `ReviewState` with seeded `analysis_rounds` +
-  `trace_candidates`.
-- Round-trip through Pydantic's JSON serialization (the same path
-  langgraph-checkpoint-postgres takes for persistence) and back.
-- Apply a "replay" delta (same items emitted again) and assert the
-  reducer collapses duplicates — total count unchanged.
-
-This is the integration counterpart to the unit-level reducer tests
-in `tests/unit/test_review_state_dedup_reducers.py`. The unit tests
-verify the reducer in isolation; this test verifies it survives the
-full Pydantic JSON serialization + state-merge cycle.
-
-(Note: a full LangGraph compiled-graph integration is in
-`tests/integration/test_review_state_langgraph_merge.py` for the
-existing slots; we don't add another compiled-graph fixture here
-because that's covered by §3's tests and the §8 scope is cross-cutting
-serialization correctness only.)
+Reducer replay idempotence is covered in test_review_state_dedup_reducers.py.
+Compiled-graph state merges are covered in test_review_state_langgraph_merge.py.
 """
 
 from __future__ import annotations
@@ -242,38 +225,3 @@ def test_review_state_checkpoint_roundtrip_with_analysis_rounds() -> None:
             assert restored_finding.evidence_tier == original_finding.evidence_tier
             # Re-derived from evidence_tier, not from the input.
             assert restored_finding.confidence == original_finding.confidence
-
-
-def test_review_state_replay_collapse_for_analysis_rounds() -> None:
-    """Replay the same AnalysisRound twice via Pydantic merge — the
-    dedup-by-round_id reducer collapses duplicates so the count stays at 1.
-
-    This is the integration counterpart to the unit-level reducer test:
-    here we go through Pydantic's model construction (the same path
-    LangGraph uses post-merge) rather than calling the reducer directly.
-    """
-    from typing import Any, get_args, get_type_hints
-
-    hints = get_type_hints(ReviewState, include_extras=True)
-    reducer = next(m for m in get_args(hints["analysis_rounds"])[1:] if callable(m))
-
-    r = _round(pass_index=0)
-    # Simulate "first emit" + "checkpoint replay reapplies the same delta".
-    merged_first = reducer([], [r])
-    merged_replay: list[Any] = reducer(merged_first, [r])
-    assert len(merged_replay) == 1
-    assert merged_replay[0].round_id == r.round_id
-
-
-def test_review_state_replay_collapse_for_trace_candidates() -> None:
-    """Same shape for trace_candidates."""
-    from typing import Any, get_args, get_type_hints
-
-    hints = get_type_hints(ReviewState, include_extras=True)
-    reducer = next(m for m in get_args(hints["trace_candidates"])[1:] if callable(m))
-
-    c = _candidate("auth-mw")
-    merged_first = reducer([], [c])
-    merged_replay: list[Any] = reducer(merged_first, [c])
-    assert len(merged_replay) == 1
-    assert merged_replay[0].candidate_id == c.candidate_id

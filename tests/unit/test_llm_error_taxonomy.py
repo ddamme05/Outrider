@@ -142,15 +142,6 @@ def test_retry_at_layer_per_subclass(cls: type[LLMProviderError], expected_layer
     assert cls.retry_at_layer == expected_layer
 
 
-def test_recoverable_subclasses_are_node_layer() -> None:
-    """Timeout/RateLimit/Conflict/Upstream are the recoverable cases per
-    spec (round-21 fold for 409 ConflictError per SDK retry set);
-    all surface as `retry_at_layer="node"` (the calling node retries)."""
-    recoverable = {LLMTimeoutError, LLMRateLimitError, LLMConflictError, LLMUpstreamError}
-    for cls in recoverable:
-        assert cls.retry_at_layer == "node"
-
-
 def test_provider_error_docstring_names_every_node_layer_class() -> None:
     """Pins the round-30 codex audit fold: `LLMProviderError.__doc__`'s
     `retry_at_layer` semantics section MUST name every concrete subclass
@@ -203,25 +194,6 @@ def test_provider_error_docstring_names_every_node_layer_class() -> None:
             f"section must enumerate every node-layer class. Add the name "
             f"to the bullet under `retry_at_layer semantics: - 'node': ...`."
         )
-
-
-def test_terminal_subclasses_are_none_layer() -> None:
-    """Auth/InvalidRequest/InvalidResponse/Unexpected/MissingAPIKey/
-    PersisterNotWired/Persister/Unknown/PricingMissing are terminal."""
-    terminal = {
-        LLMAuthError,
-        LLMInvalidRequestError,
-        LLMInvalidResponseError,
-        LLMUnexpectedContentBlocksError,
-        LLMRefusalError,
-        LLMMissingAPIKeyError,
-        LLMPersisterNotWiredError,
-        LLMPersisterError,
-        LLMPricingMissingError,
-        LLMUnknownError,
-    }
-    for cls in terminal:
-        assert cls.retry_at_layer == "none"
 
 
 # ---------------------------------------------------------------------------
