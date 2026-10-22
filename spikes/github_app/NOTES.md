@@ -30,8 +30,8 @@ the runbook-walk evidence.
 
 ## Post-closeout review pass (2026-04-23)
 
-Codex audit of the initial commit caught four genuine findings. Calibrated
-response rather than reopening the spike:
+A Codex audit of the initial commit found four issues. The fixes and
+deferred work are recorded below:
 
 Applied in-place:
 
@@ -61,9 +61,8 @@ Deferred, reasoning noted:
   deliverable. Producing it requires registering a GitHub App on a test
   repo, which needs credentials this session didn't have. `runbook.md`
   step 7 captures the ID and the real-vs-fixture payload diff into
-  NOTES.md when walked. The offline surface is complete; the live surface
-  is procedurally ready but not yet walked. This is an honest split, not
-  a reframing of the contract — the spike is complete-modulo-runbook-walk.
+  NOTES.md when walked. The offline work is complete and the live runbook is
+  ready, but the walk is still pending. The contract remains unchanged.
 - **`installation.deleted` route coverage.** Spec §6.2 requires both
   `created` and `deleted` action handling in production. The spike tests
   `created`; `deleted` has the same payload shape minus `repositories`,
@@ -81,7 +80,7 @@ because it depends on credentials.
 
 ## Live runbook split
 
-The spike is deliberately bifurcated. Cryptography + parsing + route
+The spike has offline and live parts. Cryptography + parsing + route
 behavior are verified mechanically and pass on any machine. The live
 round-trip requires a registered App and credentials that aren't in the
 repo. `runbook.md` is the manual procedure that produces the two live
@@ -126,7 +125,7 @@ The runbook walk on 2026-04-26 produced:
   `user_view_type` field is informational and does not affect Q4's
   finding that all `PRContext`-relevant fields are present and typed.
 
-Spike contract from `DECISIONS.md#006` is now complete-complete:
+Spike contract from `DECISIONS.md#006` is now complete:
 JWT signing (Q1), installation token mint (Q2 + verify script), webhook
 signature verification (Q3), payload shapes (Q4 + real-payload diff),
 FastAPI route (Q5), smee tunnel (Q6), githubkit surface (Q7).
@@ -212,11 +211,7 @@ canonical path and is now live-verified.
 
 ### What the live token signifies (closeout framing, 2026-04-26)
 
-Reviewer's framing of what the runbook walk actually proved, recorded
-here so the spike's *significance* is retrievable alongside its
-*findings*:
-
-The chain that now works end-to-end:
+The runbook walk verified the following chain:
 
 1. GitHub App exists and is installed on a target account/repo.
 2. The App private key can authenticate as the App (via JWT).
@@ -247,15 +242,15 @@ What the verified token signifies:
 
 What it does NOT mean:
 
-- Not broad account access. Not a user token. Not permanent. Scoped
-  strictly to the App's configured permissions. Expires after about
-  an hour; `githubkit` refreshes transparently.
+- The token is scoped strictly to the App's configured permissions. It is
+  not a user token and does not grant broad account access. It expires after
+  about an hour; `githubkit` refreshes transparently.
 
 **Practical meaning: the core GitHub App risk is retired.** Outrider
 can authenticate as the App, operate as an installation, receive
 signed webhooks, and parse real payloads. The Month 1
 `api/webhooks/router.py` and `src/outrider/github/` build can proceed
-against the spike's recommended-defaults table without re-litigating
+against the spike's recommended-defaults table without repeating
 the auth or transport mechanics.
 
 ---
@@ -435,10 +430,9 @@ will not match real Outrider installs.
 ### Vendor-SDK import is in-spike by design
 
 The spike formally violates `vendor-sdks-only-in-wrappers` (demos import
-`githubkit` directly). That's the whole point of the spike — we're
-auditing the SDK surface. Production code will consolidate inside
-`src/outrider/github/`; ruff's `spikes/**/*.py` exceptions allow the
-spike-level deviation.
+`githubkit` directly) to audit the SDK surface. Production code will
+consolidate inside `src/outrider/github/`; ruff's `spikes/**/*.py` exceptions
+allow the spike-level deviation.
 
 ---
 

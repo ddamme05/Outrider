@@ -1,16 +1,17 @@
 # Live Run — Expected Findings
 
-The diff sheet for the "everything gets hit" live run. Open a PR in the sandbox repo with the
-corpus below, run `scripts/live_github_demo.py` against it (once per host), then diff the actual
-findings against this file. Anything that doesn't match is a real signal — a silent parse skip,
-a provider drift, a coordinate bug, or a genuine model miss.
+Use this checklist to compare a live review with the expected findings. Open a PR in the
+sandbox repo with the sample files below, run `scripts/live_github_demo.py` against it (once per
+host), then compare the findings with this file. Differences can reveal skipped analysis,
+provider changes, incorrect line mapping, or findings the model missed.
 
-The PR is designed to exercise, in one review: **Python + JS/TS**, the **parallel analyze
-fan-out**, the **deterministic severity policy table**, and the **trace node** (cross-file
-resolution). It runs identically on Anthropic (Sonnet/Haiku tiered) and Fireworks GLM-5.2.
+The PR exercises **Python + JS/TS**, **parallel analyze workers** (one per file), the
+**deterministic severity policy table**, and the **trace node** (following imports into other
+files). Use the same sample files and checks on Anthropic (Sonnet/Haiku tiered) and Fireworks
+GLM-5.2.
 
-**Corpus location:** the 10 files live in `scripts/demo_fixtures/live_pr_corpus/`, laid out at
-**repo root** (`app/…`, `ops/`, `data/`, `components/`) to match the sandbox repo's import
+**Sample files (the corpus):** the 10 files live in `scripts/demo_fixtures/live_pr_corpus/`,
+laid out at **repo root** (`app/…`, `ops/`, `data/`, `components/`) to match the sandbox repo's import
 convention — Python imports resolve as `app.*` from root, so the trace edge
 (`reports.py` → `from app.db.queries import run_raw_query`) resolves to `app/db/queries.py`
 (offline-verified via the real resolver). To build the PR: copy `app/db/queries.py` onto the
@@ -22,9 +23,12 @@ against the real query producer (17 matches), so they fire when the sandbox revi
 
 ---
 
-## Two finding tiers, two confidence levels
+<a id="two-finding-tiers-two-confidence-levels"></a>
 
-- **OBSERVED** — a tree-sitter query in `queries/{python,javascript}/*.scm` fired. Deterministic:
+## Evidence tiers and expected certainty
+
+- **OBSERVED** — a tree-sitter syntax-pattern query in `queries/{python,javascript}/*.scm`
+  fired. Deterministic:
   if the code shape matches the `.scm`, the finding is **guaranteed** and its severity comes
   from `SEVERITY_POLICY` (never the model). These are the hard assertions. Carries a
   `query_match_id`.
@@ -34,12 +38,12 @@ against the real query producer (17 matches), so they fire when the sandbox revi
 - **INFERRED** — produced in the trace pass-2 over a fetched out-of-diff file; carries a
   `trace_path`.
 
-**Severity is deterministic** (`policy/severity.py`, `DECISIONS.md#001`): the model picks a
+**Severity is deterministic** (`policy/severity.py`): the model picks a
 `FindingType` from a constrained enum; the table assigns severity. So the severities below are
 fixed regardless of host — only *whether* a JUDGED finding appears can vary.
 
-HITL fires on any **CRITICAL or HIGH** finding. This PR has several OBSERVED criticals, so the
-gate is guaranteed to trip and the review will pause at `AWAITING_APPROVAL`.
+HITL (human review) fires on any **CRITICAL or HIGH** finding. This PR has several OBSERVED
+criticals, so the gate is guaranteed to trip and the review will pause at `AWAITING_APPROVAL`.
 
 ---
 
@@ -49,15 +53,15 @@ gate is guaranteed to trip and the review will pause at `AWAITING_APPROVAL`.
    must exist at the PR's head SHA but be **absent from the PR diff** — that's what gives the
    trace node something to resolve and fetch. Commit it to `main` in the sandbox repo, *then*
    open the PR that adds the other 9 files.
-2. The demo now honors `OUTRIDER_ANALYZE_MAX_CONCURRENCY` (landed in `fix(scripts): live-run
+2. The demo supports `OUTRIDER_ANALYZE_MAX_CONCURRENCY` (added in `fix(scripts): live-run
    readiness…`) — set it to `1` for the sequential A/B baseline, `4` (default) for parallel.
-3. Keep `OUTRIDER_LLM_REASONING` **off** for both hosts (the runner now fails clean at setup if
+3. Keep `OUTRIDER_LLM_REASONING` **off** for both hosts (the runner stops at setup if
    it's on for a GLM host).
-4. **Cache is cold-at-serve by construction.** The demo runs `cache_mode=SHADOW` (default): the
-   Outrider analyze-cache only records would-hit/miss telemetry and **never serves** — the model
-   runs on every pass, so the second run of the same head_sha is *not* served from cache. Do NOT
-   set `OUTRIDER_CACHE_MODE=serve` for the demo. Belt-and-suspenders (only if you ever flip to
-   serve, or want a truly pristine arm): clear the review's cache rows between runs —
+4. **Outrider's analyze cache does not serve results in this demo.** The demo runs
+   `cache_mode=SHADOW` (default): it records whether a cached result could have been reused
+   and **never serves** it. The model runs on every pass, including the second run of the same
+   head_sha. Do NOT set `OUTRIDER_CACHE_MODE=serve` for the demo. If you ever flip to
+   serve, or want an empty cache for comparison, clear the review's cache rows between runs —
    `DELETE FROM analyze_file_cache WHERE source_review_id = '<prior-review-id>';` — or push a new
    commit so the head_sha (part of the cache key) changes.
 
@@ -156,8 +160,8 @@ proves it won't (validated: 2 matches, not 5).
 | `weak_crypto` | HIGH | **[O]** | `javascript.weak_crypto_hash` bare-callee (`createHash` via named import) |
 
 ### 10. `README.md`
-No `analyze_file` worker Sent (triage classifies non-code as SKIM/SKIP). Verify **no**
-`FileExaminationEvent` for it — it keeps the kept-count honest for the concurrency A/B.
+No `analyze_file` worker runs (triage classifies non-code as SKIM/SKIP). Verify **no**
+`FileExaminationEvent` for it so the concurrency comparison counts only analyzed files.
 
 ---
 
@@ -210,20 +214,19 @@ Needs `ANTHROPIC_API_KEY`. Interrupts at HITL — resume via the dashboard to re
 
 **Run 1b — Anthropic sequential baseline (A/B), same PR/head_sha:** change **only**
 `OUTRIDER_ANALYZE_MAX_CONCURRENCY=1`. This is **functional** validation, not a latency
-benchmark: treat it as proving parallelization changes *scheduling, not outcome*. Wall-clock is
-**not** a clean signal here — the provider's own prompt cache warms on Run 1, so Run 1b's
-per-call latency/cost is confounded by provider-side cache hits (that's the LLM vendor's cache,
-separate from Outrider's SHADOW analyze-cache). What to assert instead:
+benchmark: check scheduling and the expected results below. The provider's prompt cache warms
+on Run 1, so its cache hits also affect Run 1b's per-call latency and cost. This LLM vendor cache
+is separate from Outrider's SHADOW analyze cache. Use the timeline to check concurrency:
 
-**Parallelism (the actual concurrency proof — NOT wall-clock, NOT LLMCallEvent count):** measure
-**keyed worker-phase overlap** from the timeline. Each analyzed file opens a `file:<path>#<pass>`
+**Parallelism:** measure **overlap between file workers** from the timeline. Each analyzed
+file opens a `file:<path>#<pass>`
 `review_phase` with start+end timestamps; "in-flight at instant *t*" = phases with `start ≤ t < end`.
 - Run 1 (n=4): **max concurrent** open `file:*#` phases must be **≥ 2** (up to 4). That temporal
   overlap is the *only* thing that proves workers ran concurrently.
 - Run 1b (n=1): max concurrent must be **exactly 1** — each worker phase closes before the next
   opens (no overlap). That's the sequential baseline.
-- Compute from the per-`phase_key` timeline (`inspect_review --phase analyze` now retains every
-  worker phase — the scalar-open bug that dropped interleaved siblings is fixed). Equal
+- Compute from the per-`phase_key` timeline (`inspect_review --phase analyze` shows every
+  worker phase, including overlapping workers). Equal
   `LLMCallEvent` count does **not** distinguish n=1 from n=4: n=1 makes all the same calls, serially.
 
 **No cache-serve leak (a separate check):**
@@ -232,8 +235,9 @@ separate from Outrider's SHADOW analyze-cache). What to assert instead:
   count in Run 1b = a cache-serve leak to investigate.
 - Inspect `CacheLookupEvent` rows (would_hit/miss) to confirm SHADOW behavior, not serves.
 
-**Functional equivalence:** findings/severities/HITL/trace/`policy_version` **identical** across
-Run 1 and Run 1b.
+**Functional equivalence:** compare OBSERVED findings, policy-assigned severity for each finding
+type, HITL, trace, and `policy_version` across Run 1 and Run 1b. These checks must match; compare
+JUDGED differences separately because their presence and wording are model-dependent.
 
 **Run 2 — Fireworks GLM-5.2 (single model, all nodes), same PR/head_sha:**
 ```
@@ -257,9 +261,10 @@ uv run python scripts/inspect_review.py --review-id <id> --compact
     # scan the interleaved parallel stream (phase_key/model/profile_id per line)
 ```
 
-**Cross-run invariants:** findings-by-severity, HITL-fired, trace rounds, and `policy_version`
-must match across all three arms. Only `analyze_model`/`standard_analyze_model`, `profile_id`,
-wall-clock, and phase overlap should differ.
+**Cross-run invariants:** the OBSERVED finding set, policy-assigned severity for each finding
+type, HITL-fired, trace rounds, and `policy_version` must match across all three arms. JUDGED
+presence and wording may vary. The configured `analyze_model`/`standard_analyze_model`, `profile_id`,
+wall-clock, and phase overlap can also differ.
 
 ---
 

@@ -19,9 +19,8 @@ suspenders against a real GitHub App key accidentally being dropped here.
 
 `githubkit.webhooks.parse` validates against the 2026-03-10 webhook schema,
 which has 127+ required fields on `pull_request` alone. Hand-constructing
-a valid minimal fixture would cost more than just downloading a real one,
+a valid minimal fixture would cost more than downloading a real one,
 and would diverge from GitHub's actual wire format in subtle ways. Using the
-octokit samples keeps the fixture grounded in reality, and the one spike
-finding we already surfaced (the missing `app_slug` on `installation`) is
-itself useful: it tells us the octokit samples can drift from GitHub's
-current schema.
+octokit samples reduces those differences. The missing `app_slug` on
+`installation` shows that octokit samples can drift from GitHub's current
+schema.

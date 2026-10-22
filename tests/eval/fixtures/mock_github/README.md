@@ -61,7 +61,7 @@ GitHub at the two network boundaries), and returns an `EvalRunResult`.
 ## Proof boundary: `OBSERVED` findings need a real `query_match_id`
 
 An analyze finding with `evidence_tier="observed"` MUST carry a `query_match_id`
-that is in the set of structural queries that actually fired on the file —
+that is in the set of structural queries that fired on the file —
 otherwise the parser rejects it (`query_match_id_not_in_registry`). The set is
 computed by `agent/nodes/analyze._build_query_match_id_set(content_bytes)` from
 the `.scm` queries in `src/outrider/queries/python/` (function/class/import
@@ -78,7 +78,7 @@ uv run python -c "from outrider.agent.nodes.analyze import _build_query_match_id
 
 `patch` is **hunks-only** — `@@ … @@` hunk(s) with NO `--- a/…` / `+++ b/…`
 headers and no `diff --git` line, mirroring what GitHub's `/pulls/{number}/files`
-actually returns. `coordinates/diff_parser.py::_wrap_github_hunks_with_headers`
+returns. `coordinates/diff_parser.py::_wrap_github_hunks_with_headers`
 synthesizes the headers when the first non-blank line begins with `@@`. (The
 smoke test's header-bearing patch is a tolerated quirk — the wrapper passes
 already-headered input through — but hunks-only is the real wire shape; match
