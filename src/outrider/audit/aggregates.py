@@ -1,30 +1,15 @@
 # See DECISIONS.md#030 — this helper populates the (nullable-for-read-compat)
 # ReviewMetrics / SynthesizeCompletedEvent LLM aggregates that #030 governs.
-"""Shared read-through aggregation of a review's LLM-call metrics.
+"""One query for dashboard and synthesis LLM-call totals.
 
-The single place that "sums this review's `LLMCallEvent` rows", consumed by BOTH the
-read side (dashboard `_aggregate_metrics`) AND the write side (the synthesize node, via
-`AuditPersister.query_review_llm_aggregates`, populating its `SynthesizeCompletedEvent`
-aggregates — FUP-093). Because both go through this one function, the persisted audit
-row and the dashboard badge are computed by one aggregation path and cannot diverge —
-the FUP-093 "single-source it" requirement.
+`aggregate_review_llm_metrics` sums a review's audit rows in the caller's
+session. The dashboard supplies its request session; `AuditPersister`
+opens a session for synthesis. Both use the same aggregation rules, though
+a later read can include calls made after an earlier synthesis snapshot.
 
-The function is session-taking (not session-opening) so each caller supplies its own
-session model: the persister method opens a per-call session and delegates here; the
-dashboard passes its request-scoped session.
-
-**V1 aggregation is a naive `COUNT`/`SUM` — correct only while the dispatcher is
-non-durable.** Exactly one `llm_call` row lands per logical call under
-`BackgroundTasksDispatcher` (it never replays a node body; HITL-resume re-enters
-at the hitl node, after the LLM-calling nodes). When durable retry lands (V2
-Celery + Redis), a crash-recovery re-emit mints a fresh `event_id` and lands a
-SECOND `llm_call` row — and `event_id`-PK dedup cannot catch a fresh-UUID re-emit.
-At that point this SUM double-counts cost/tokens/calls and MUST dedup to one row
-per logical call. The dedup key is a contract decision (the V2 `llm_call_event_id`
-binding, `DECISIONS.md#029`) deferred to V2 and tracked in FUP-145 — NOT part of
-FUP-093's close; decide it once HERE and both the dashboard read and the synthesize
-write inherit it automatically (single source). Until then, this is the documented
-V1 floor.
+V1 counts stored rows. Durable node retries that mint new event IDs would
+double-count a logical call; V2 must choose a logical-call dedup key here
+so both consumers inherit it (`DECISIONS.md#029`, FUP-145).
 """
 
 from __future__ import annotations
@@ -70,16 +55,11 @@ class ReviewLLMAggregates(BaseModel):
 async def aggregate_review_llm_metrics(
     session: AsyncSession, *, review_id: UUID, is_eval: bool
 ) -> ReviewLLMAggregates:
-    """Sum a review's `llm_call` rows: count + input/output tokens + cost.
+    """Sum call count, tokens, and known cost for a review and its eval scope.
 
-    Every event is scoped by BOTH `review_id` AND `is_eval` (the FUP-130 read-side
-    defense): a divergent eval `llm_call` row must not leak into a production
-    review's totals. `is_eval` is passed by the caller (it is the review's own
-    `is_eval`), never inferred from the events.
-
-    Read-only `SELECT` — respects the audit append-only boundary. `COALESCE(..., 0)`
-    makes a review with zero `llm_call` rows return zeros (not NULL). See the module
-    docstring for the V1-naive-SUM / V2-dedup contract.
+    The caller supplies the review's `is_eval`; mismatched event rows are excluded.
+    This read-only query respects the append-only audit boundary. Empty reviews
+    return zeros; unpriced calls make the cost subtotal incomplete.
     """
     stmt = select(
         func.count().label("calls"),

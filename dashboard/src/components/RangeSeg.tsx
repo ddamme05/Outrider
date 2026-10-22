@@ -1,8 +1,5 @@
-// Window selector for the Overview analytics (mockup .rangeseg): 24h | 7d | 30d,
-// a mutually-exclusive segmented control. The selected window is the /api/metrics
-// query param, so changing it refetches the whole analytics surface. Lives on the
-// Overview (not the shared topbar) because it scopes Overview's data only — a
-// global topbar control would be inert on every other route.
+// Select Overview's analytics window. The caller owns the value and uses it
+// in metric query keys; this control does not change filters on other routes.
 export type MetricsWindow = "24h" | "7d" | "30d";
 
 const WINDOWS: MetricsWindow[] = ["24h", "7d", "30d"];
@@ -16,15 +13,15 @@ export function RangeSeg({
 }) {
   return (
     <div className="rangeseg" role="group" aria-label="metrics window">
-      {WINDOWS.map((w) => (
+      {WINDOWS.map((metricsWindow) => (
         <button
-          key={w}
+          key={metricsWindow}
           type="button"
           className="rseg"
-          aria-pressed={w === value}
-          onClick={() => onChange(w)}
+          aria-pressed={metricsWindow === value}
+          onClick={() => onChange(metricsWindow)}
         >
-          {w}
+          {metricsWindow}
         </button>
       ))}
     </div>

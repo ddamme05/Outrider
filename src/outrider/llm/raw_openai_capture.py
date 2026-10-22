@@ -1,27 +1,12 @@
-"""Raw OpenAI wire-capture transport for evidence spikes — NOT a production provider.
+"""Project-owned OpenAI response capture for research spikes.
 
-This module exists for one reason: the `spikes/openai/` research probes need to make
-raw `chat.completions.create` calls and keep the response as evidence, yet the
-trust-boundary `#8` invariant forbids `import openai` outside `src/outrider/llm/` AND
-`vendor-payloads-normalized-at-boundary` forbids raw vendor SDK objects/exceptions from
-escaping the wrapper. So the openai SDK — its client, its response objects, AND its
-exception classes — is owned ENTIRELY here: `capture()` VALIDATES + normalizes the
-response into the frozen, strict `RawCapture` DTO (which retains the SDK's
-reserialization of the response as `sdk_response_json`), a malformed response shape
-becomes `RawCaptureShapeError`, and a vendor transport error becomes `RawOpenAICaptureError`.
-After this, no spike file references `openai` — not the import, not a response object, not
-an exception type, and no unvalidated SDK value enters a project DTO.
+`RawOpenAICaptureClient` owns SDK calls, objects, and errors inside `llm/`.
+It validates responses into frozen DTOs and translates vendor failures;
+spikes never receive raw SDK objects (`vendor-payloads-normalized-at-boundary`).
 
-It is deliberately the OPPOSITE of `OpenAICompatibleProvider` in every way except the
-boundary discipline: NOT part of the `LLMProvider` Protocol, NO `LLMResponse`, NO cost
-path, NO persister — but it DOES validate + normalize the vendor payload at the boundary
-(strict Pydantic models; `_valid_http_status`/`_valid_request_id` on the error fields).
-Construction reproduces the spikes' prior client shape (`max_retries=0`, SDK-default
-timeout) so evidence provenance is unchanged — deliberately NOT the production provider's
-custom `httpx.Timeout`, which would alter the observed wire.
-
-`tests/unit/test_raw_openai_capture.py` pins the normalization + validation + boundary
-contract (malformed choices/usage, invalid counts/status, non-string content, no-leak).
+This research transport has no production provider, pricing, or persistence
+contract. It preserves the spike client settings (`max_retries=0`, SDK-default
+timeout) and the SDK's JSON reserialization, rather than original wire bytes.
 """
 
 from __future__ import annotations
@@ -57,19 +42,12 @@ class RawUsage(BaseModel):
 
 
 class RawCapture(BaseModel):
-    """Strict, frozen, project-owned normalization of one `chat.completions.create`
-    response. Every field is a validated projection of what the spikes read, so no raw
-    SDK object crosses the `llm/` boundary.
+    """Frozen, validated values from one chat-completions response.
 
-    `sdk_response_json` is `response.model_dump_json()` — the SDK's RESERIALIZATION of
-    its parsed model, NOT the bytes off the wire. Measured against openai 2.44.0: unknown
-    vendor fields survive, but key order is rewritten to the SDK's field-declaration order.
-    An earlier docstring called this "the exact wire ... preserved verbatim", which is
-    false on precisely the property a probe measuring generative key order depends on.
-    Read it as a faithful record of the response's VALUES, never of its byte layout.
-
-    `response_model` is the model the API said answered — distinct from the model that
-    was requested, and the only field that can tell them apart."""
+    `sdk_response_json` is SDK reserialization: values are preserved, but key
+    order and byte layout may differ from the wire. `response_model` records
+    the model the API reported, which may differ from the requested model.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
@@ -139,9 +117,17 @@ def _normalize(response: Any) -> RawCapture:
         choice = choices[0]
         message = choice.message
         usage = response.usage
-        ptd = getattr(usage, "prompt_tokens_details", None)
-        cached = getattr(ptd, "cached_tokens", None) if ptd is not None else None
-        cache_write = getattr(ptd, "cache_write_tokens", None) if ptd is not None else None
+        prompt_token_details = getattr(usage, "prompt_tokens_details", None)
+        cached = (
+            getattr(prompt_token_details, "cached_tokens", None)
+            if prompt_token_details is not None
+            else None
+        )
+        cache_write = (
+            getattr(prompt_token_details, "cache_write_tokens", None)
+            if prompt_token_details is not None
+            else None
+        )
         if sdk_response_json is None:
             raise TypeError("response was not serializable to JSON")
         return RawCapture(

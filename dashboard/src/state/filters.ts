@@ -2,15 +2,13 @@ import { create } from "zustand";
 
 import type { paths } from "../api/schema";
 
-// The valid `?status=` filter values, derived from the actual query-param
-// contract (the endpoint's ReviewStatusFilter literal) — not ReviewListItem.status
-// (a plain string). Keeps the filter options in lockstep with the API.
+// Derive filter values from the endpoint query type, not the row status
+// string. The runtime options below must still be maintained explicitly.
 export type ReviewStatus = NonNullable<
   NonNullable<paths["/api/reviews"]["get"]["parameters"]["query"]>["status"]
 >;
 
-/** Runtime list of the filterable statuses (the `<select>` options); `satisfies`
- * guards against a typo'd value drifting from the contract type. */
+/** Select options checked for valid values; satisfies does not prove completeness. */
 export const REVIEW_STATUSES = [
   "running",
   "awaiting_approval",
@@ -20,15 +18,13 @@ export const REVIEW_STATUSES = [
   "skipped",
 ] as const satisfies readonly ReviewStatus[];
 
-// Client-only UI state (filters + the eval toggle). Server state lives in
-// react-query; this is the zustand half of the split.
+// Zustand stores UI selections; TanStack Query stores the fetched API data.
 interface FilterState {
-  /** Surface synthetic `is_eval=true` reviews (the topbar "Eval" toggle).
-   * Off by default — eval-isolation default per docs/testing.md. */
+  /** Include synthetic is_eval=true reviews; off by default (docs/testing.md). */
   includeEval: boolean;
   /** Server-side status filter (the queue's `?status=`), or null for all. */
   status: ReviewStatus | null;
-  /** Client-side free-text filter over the loaded rows (the ⌘K-ish bar). */
+  /** Free-text filter over the loaded review rows. */
   search: string;
   setIncludeEval: (value: boolean) => void;
   setStatus: (value: ReviewStatus | null) => void;

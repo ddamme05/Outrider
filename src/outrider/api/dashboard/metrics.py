@@ -1,35 +1,19 @@
-"""Dashboard analytics: cross-review metrics aggregation endpoint (`GET /api/metrics`).
+"""Read dashboard analytics from reviews and the permanent audit stream.
 
-Honest read-only aggregation over the audit stream + reviews table for the Signal
-Overview analytics (`DECISIONS.md#039`): per-bucket reviews / cost / findings / failed
-series, the findings distribution by severity AND evidence-tier, and period-over-period
-totals. Every number traces to an `audit_events` / `reviews` row; sparse windows render
-honest ZEROS, never interpolation. Eval rows are excluded by default (`is_eval`), like the
-rest of the dashboard. No writes, no new event type — `audit-events-append-only` is
-preserved by construction.
+UTC buckets contain review counts, known model costs, logical finding counts, and
+failed reviews (DECISIONS.md#039). Eval rows are excluded by default; joined event
+rows must agree with their review's is_eval flag (FUP-130). No writes are made
+(audit-events-append-only). Unpriced calls keep cost completeness visible.
 
-Time bucketing forces **UTC** (`date_trunc(field, col, 'UTC')`) regardless of the DB session
-timezone, and the granularity follows the window (hourly for `24h`, daily for `7d`/`30d`).
+Count each (review_id, finding_content_hash) once at its earliest sequence number
+before the window end, then filter by that representative's timestamp. A later
+re-emission cannot move an older finding into a new window. This represents the
+synthesized result for ordinary cross-round repeats; proposal-hash differences
+and backdated timestamps remain the spec's bounded edge.
 
-"Findings" means DEDUPED logical findings — distinct `(review_id, finding_content_hash)`,
-counted at the FIRST emission, NOT raw `FindingEvent` rows (raw is `n_findings_emitted`,
-semantically inflated). The severity/tier distributions read the REPRESENTATIVE
-(earliest-emission, `min(sequence_number)`) row per logical finding — a deterministic proxy
-for synthesize's kept finding (exact for the common cross-round re-emit case; bounded edge
-per the spec's Proof-boundary note, since analyze dedups on `(content_hash, proposal_hash)`).
-min-then-filter: the representative is chosen over ALL emissions up to the window END (NOT
-lower-bounded by the window start), then filtered by ITS first-emission timestamp — so a
-pre-window first emission isn't re-dated by an in-window re-emit. Under the production
-invariant (earlier emission = lower sequence_number = earlier timestamp) that representative's
-timestamp IS the true minimum; out-of-order/backdated inserts are the spec's bounded edge.
-
-Replay-% ships as a SIBLING route in this module (`GET /api/metrics/replay`,
-`get_replay_metrics`): it reads the PERSISTED `replay_verdict` events appended by the
-background projector (`sweep/replay_verdict.py`, `DECISIONS.md#039`) — equivalent / total
-bucketed by `reviews.completed_at`, with ONLY reviews carrying a persisted verdict in the
-denominator (a still-running or projector-pending review is excluded, never assumed
-equivalent, so projector lag does not distort the chart). The main `/api/metrics` response
-above does NOT carry Replay-%: the verdict is a separate append surfaced by its own route.
+The separate replay route counts only persisted replay verdicts, bucketed by
+review completion. Projector-pending reviews are excluded rather than assumed
+equivalent. Demo windows anchor to the latest scoped data and expose that anchor.
 """
 
 # See DECISIONS.md#039.
@@ -172,22 +156,11 @@ class ReplayMetricsResponse(BaseModel):
 async def _resolve_window_end(
     request: Request, session: AsyncSession, wall_now: datetime, *, include_eval: bool
 ) -> tuple[datetime, bool]:
-    """The instant windows compute against: wall clock in production; in demo mode
-    (`app.state.demo_mode`) the latest data instant across review clocks and the
-    audit stream, so a frozen seeded snapshot renders its real content instead of
-    honest-but-empty recent windows. #039's honest-data rule holds because the
-    response carries `window_end` + `anchored=True` and the frontend labels the
-    window as ending there — a re-anchored control never claims live recency.
-    Falls back to wall clock (`anchored=False`) on an empty database. Timestamp
-    MUTATION of the seed is the rejected alternative: audit rows are append-only
-    and the payload/column timestamp consistency check would fail a partial
-    rewrite on the demo box's own read path.
+    """Use wall_now in production or anchor a demo window to its latest scoped data.
 
-    The anchor respects `include_eval` identically to the bucket queries: with the
-    default (production) scope it excludes `is_eval=True` rows, so newer eval rows
-    sharing the DB can't drag the anchor past the production data and re-empty the
-    window. The audit-stream clock joins its review and applies the FUP-130
-    equality predicate, matching `_cost_by_bucket`/`_finding_representatives`.
+    The response exposes window_end and anchored so the UI cannot imply live recency
+    (DECISIONS.md#039). Respect include_eval and event/review equality (FUP-130).
+    An empty database falls back to wall_now without an anchor.
     """
     if not bool(getattr(request.app.state, "demo_mode", False)):
         return wall_now, False
@@ -248,12 +221,12 @@ def _truncate(ts: datetime, granularity: str) -> datetime:
 def _bucket_starts(start: datetime, end: datetime, granularity: str) -> list[datetime]:
     """The zero-fill scaffold: every UTC bucket boundary touched by [start, end]."""
     step = timedelta(hours=1) if granularity == "hour" else timedelta(days=1)
-    out: list[datetime] = []
-    cur = _truncate(start, granularity)
-    while cur <= end:
-        out.append(cur)
-        cur += step
-    return out
+    bucket_starts: list[datetime] = []
+    bucket_start = _truncate(start, granularity)
+    while bucket_start <= end:
+        bucket_starts.append(bucket_start)
+        bucket_start += step
+    return bucket_starts
 
 
 def _finding_representatives(start: datetime, end: datetime, *, include_eval: bool) -> Subquery:
@@ -315,9 +288,19 @@ async def _representatives(
     One query feeds the findings/bucket series + both distributions + the count, instead of
     re-executing the representative scan per aggregation.
     """
-    rep = _finding_representatives(start, end, include_eval=include_eval)
-    rows = (await session.execute(select(rep.c.first_ts, rep.c.sev, rep.c.tier))).all()
-    return [(r.first_ts, r.sev, r.tier) for r in rows]
+    representative_query = _finding_representatives(start, end, include_eval=include_eval)
+    finding_rows = (
+        await session.execute(
+            select(
+                representative_query.c.first_ts,
+                representative_query.c.sev,
+                representative_query.c.tier,
+            )
+        )
+    ).all()
+    return [
+        (finding_row.first_ts, finding_row.sev, finding_row.tier) for finding_row in finding_rows
+    ]
 
 
 async def _reviews_failed_by_bucket(
@@ -423,7 +406,7 @@ async def get_metrics(
     include_eval: Annotated[bool, Query()] = False,
 ) -> DashboardMetricsResponse:
     """Honest Signal Overview analytics — see module docstring + `DECISIONS.md#039`."""
-    delta = _WINDOWS[window]
+    window_duration = _WINDOWS[window]
     granularity = _GRANULARITY[window]
     generated_at = datetime.now(UTC)
 
@@ -432,51 +415,67 @@ async def get_metrics(
         end, anchored = await _resolve_window_end(
             request, session, generated_at, include_eval=include_eval
         )
-        start = end - delta
-        prev_start = start - delta
-        rf = await _reviews_failed_by_bucket(
+        start = end - window_duration
+        previous_start = start - window_duration
+        review_counts_by_bucket = await _reviews_failed_by_bucket(
             session, start, end, granularity, include_eval=include_eval
         )
-        cost = await _cost_by_bucket(session, start, end, granularity, include_eval=include_eval)
-        reps = await _representatives(session, start, end, include_eval=include_eval)
-        prev_reviews, prev_failed, prev_cost, prev_unpriced = await _review_cost_totals(
-            session, prev_start, start, include_eval=include_eval
+        costs_by_bucket = await _cost_by_bucket(
+            session, start, end, granularity, include_eval=include_eval
         )
-        prev_reps = await _representatives(session, prev_start, start, include_eval=include_eval)
+        finding_representatives = await _representatives(
+            session, start, end, include_eval=include_eval
+        )
+        (
+            previous_reviews,
+            previous_failed,
+            previous_cost,
+            previous_unpriced,
+        ) = await _review_cost_totals(session, previous_start, start, include_eval=include_eval)
+        previous_findings = await _representatives(
+            session, previous_start, start, include_eval=include_eval
+        )
 
-    findings_by_bucket: Counter[datetime] = Counter(_truncate(ts, granularity) for ts, _, _ in reps)
-    sev_dist: Counter[str] = Counter(sev for _, sev, _ in reps)
-    tier_dist: Counter[str] = Counter(tier for _, _, tier in reps)
+    findings_by_bucket: Counter[datetime] = Counter(
+        _truncate(first_emission_at, granularity)
+        for first_emission_at, _, _ in finding_representatives
+    )
+    severity_distribution: Counter[str] = Counter(
+        severity for _, severity, _ in finding_representatives
+    )
+    evidence_tier_distribution: Counter[str] = Counter(
+        tier for _, _, tier in finding_representatives
+    )
 
     buckets = tuple(
         MetricBucket(
-            bucket=b,
-            reviews=rf.get(b, (0, 0))[0],
-            failed=rf.get(b, (0, 0))[1],
-            cost_usd=cost.get(b, (0.0, 0))[0],
-            cost_complete=cost.get(b, (0.0, 0))[1] == 0,
-            findings=findings_by_bucket.get(b, 0),
+            bucket=bucket_start,
+            reviews=review_counts_by_bucket.get(bucket_start, (0, 0))[0],
+            failed=review_counts_by_bucket.get(bucket_start, (0, 0))[1],
+            cost_usd=costs_by_bucket.get(bucket_start, (0.0, 0))[0],
+            cost_complete=costs_by_bucket.get(bucket_start, (0.0, 0))[1] == 0,
+            findings=findings_by_bucket.get(bucket_start, 0),
         )
-        for b in _bucket_starts(start, end, granularity)
+        for bucket_start in _bucket_starts(start, end, granularity)
     )
     # `current` derived from the rendered series (cannot drift from the buckets); only
     # `previous` needs its own queries.
-    current_unpriced = sum(unpriced for _, unpriced in cost.values())
+    current_unpriced = sum(unpriced for _, unpriced in costs_by_bucket.values())
     current = PeriodTotals(
-        reviews=sum(b.reviews for b in buckets),
-        failed=sum(b.failed for b in buckets),
-        cost_usd=sum(b.cost_usd for b in buckets),
+        reviews=sum(bucket.reviews for bucket in buckets),
+        failed=sum(bucket.failed for bucket in buckets),
+        cost_usd=sum(bucket.cost_usd for bucket in buckets),
         unpriced_calls=current_unpriced,
         cost_complete=current_unpriced == 0,
-        findings=len(reps),
+        findings=len(finding_representatives),
     )
     previous = PeriodTotals(
-        reviews=prev_reviews,
-        failed=prev_failed,
-        cost_usd=prev_cost,
-        unpriced_calls=prev_unpriced,
-        cost_complete=prev_unpriced == 0,
-        findings=len(prev_reps),
+        reviews=previous_reviews,
+        failed=previous_failed,
+        cost_usd=previous_cost,
+        unpriced_calls=previous_unpriced,
+        cost_complete=previous_unpriced == 0,
+        findings=len(previous_findings),
     )
     return DashboardMetricsResponse(
         window=window,
@@ -485,8 +484,12 @@ async def get_metrics(
         window_end=end,
         anchored=anchored,
         buckets=buckets,
-        severity_distribution={s.value: sev_dist.get(s.value, 0) for s in FindingSeverity},
-        evidence_tier_distribution={t.value: tier_dist.get(t.value, 0) for t in EvidenceTier},
+        severity_distribution={
+            s.value: severity_distribution.get(s.value, 0) for s in FindingSeverity
+        },
+        evidence_tier_distribution={
+            t.value: evidence_tier_distribution.get(t.value, 0) for t in EvidenceTier
+        },
         deltas=MetricDeltas(current=current, previous=previous),
     )
 
@@ -586,7 +589,7 @@ async def get_replay_metrics(
     ever added) and still threads the FUP-130 is_eval-drift equality defense either way. The
     Overview Replay card therefore does NOT pass the global eval toggle (it is always production).
     """
-    delta = _WINDOWS[window]
+    window_duration = _WINDOWS[window]
     granularity = _GRANULARITY[window]
     generated_at = datetime.now(UTC)
 
@@ -595,28 +598,28 @@ async def get_replay_metrics(
         end, anchored = await _resolve_window_end(
             request, session, generated_at, include_eval=include_eval
         )
-        start = end - delta
-        prev_start = start - delta
-        by_bucket = await _replay_by_bucket(
+        start = end - window_duration
+        previous_start = start - window_duration
+        verdict_counts_by_bucket = await _replay_by_bucket(
             session, start, end, granularity, include_eval=include_eval
         )
-        prev_equivalent, prev_total = await _replay_totals(
-            session, prev_start, start, include_eval=include_eval
+        previous_equivalent, previous_total = await _replay_totals(
+            session, previous_start, start, include_eval=include_eval
         )
 
     buckets = tuple(
         ReplayBucket(
-            bucket=b,
-            equivalent=by_bucket.get(b, (0, 0))[0],
-            total=by_bucket.get(b, (0, 0))[1],
+            bucket=bucket_start,
+            equivalent=verdict_counts_by_bucket.get(bucket_start, (0, 0))[0],
+            total=verdict_counts_by_bucket.get(bucket_start, (0, 0))[1],
         )
-        for b in _bucket_starts(start, end, granularity)
+        for bucket_start in _bucket_starts(start, end, granularity)
     )
     current = ReplayPeriodTotals(
-        equivalent=sum(b.equivalent for b in buckets),
-        total=sum(b.total for b in buckets),
+        equivalent=sum(bucket.equivalent for bucket in buckets),
+        total=sum(bucket.total for bucket in buckets),
     )
-    previous = ReplayPeriodTotals(equivalent=prev_equivalent, total=prev_total)
+    previous = ReplayPeriodTotals(equivalent=previous_equivalent, total=previous_total)
     return ReplayMetricsResponse(
         window=window,
         granularity=granularity,

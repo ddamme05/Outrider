@@ -321,11 +321,8 @@ def _valid_args() -> dict[str, Any]:
 
 
 def test_build_graph_happy_path_returns_compiled_graph() -> None:
-    """Sanity test: with all three valid Protocol-satisfying deps, the
-    factory returns a compiled graph object. Validates the gate doesn't
-    fire on correct inputs."""
+    """Valid dependencies build a runnable graph with the optional Slack resolver omitted."""
     graph = build_graph(**_valid_args())
-    # CompiledStateGraph has an `ainvoke` method per LangGraph 1.1.6
     assert callable(graph.ainvoke)
 
 
@@ -746,10 +743,4 @@ def test_build_graph_accepts_callable_resolver() -> None:
     args = _valid_args()
     args["resolve_slack_target"] = _stub_resolver
     graph = build_graph(**args)
-    assert callable(graph.ainvoke)
-
-
-def test_build_graph_accepts_no_slack_resolver() -> None:
-    """resolve_slack_target unset (default None) → Slack disabled; the graph builds."""
-    graph = build_graph(**_valid_args())
     assert callable(graph.ainvoke)

@@ -1,35 +1,21 @@
 # See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
 # See also DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only
 # See also DECISIONS.md#031-replay-v1-verification-is-verify-only-no-source-span-re-run
-"""Replay-equivalence reconstruction over the append-only audit stream.
+"""Reconstruct and verify a review from its append-only audit stream.
 
-Read-only reconstructor: rebuilds a review from `audit_events` plus the
-content tables (`reviews` / `findings` / `llm_call_content`) and exposes
-`AuditReplayer.assert_replay_equivalent`. This turns the append-only audit
-rows from observability into a verifiable reconstruction surface.
+`AuditReplayer.reconstruct` reads audit rows and retained review/finding/LLM
+content in one repeatable-read snapshot. It restores event types and sequence
+numbers, checks row/payload and eval-scope agreement, groups phases, and
+labels content as full, mixed, or metadata-only by row presence.
 
-Two design commitments:
+`assert_equivalent` verifies that reconstruction: sequence and phase order,
+proof artifacts and hashes, cross-event references, content, and historical
+severity policy. Replay is verify-only (`DECISIONS.md#031`); it runs no graph,
+LLM call, or tree-sitter query against source bytes.
 
-  - **Verify-only.** Replay re-verifies the proof boundary, recomputes
-    content hashes, and reconstructs severity under the historical policy
-    version — it does NOT re-run the graph, call the LLM, or re-run a
-    tree-sitter query against source bytes (a full
-    `match(id, source, grammar)` re-run needs a durable source store plus
-    the file's per-language grammar selection, routed to future scope).
-  - **Mode by content-row presence.** `reconstruct` selects full vs
-    metadata-only vs mixed by whether the content row physically exists,
-    NOT by a `retention_expires_at` comparison and NOT by a NULL column.
-    `DECISIONS.md#016`'s single-transaction insert makes "audit row present,
-    content row absent" mean unambiguously "purged per retention," so
-    row-absence is a sound signal. Findings and LLM content can carry
-    different TTLs (the ordering `llm_content <= findings <= review` holds;
-    all three default to 90d but an operator may raise findings above llm),
-    so a single review can be legitimately MIXED; replay labels every item
-    rather than silently producing a hybrid.
-
-The canonical ordered reconstruction DTO (`ReconstructedReview`) is the
-single read model consumed by both `assert_replay_equivalent` and the
-future timeline-playback surface (`ROADMAP.md` feature 6).
+Content retention follows `llm_content <= findings <= review` (`#014/#016`).
+Missing content produces labeled stubs; incompatible surviving rows raise.
+The dashboard replay timeline and background verdict projector share this model.
 """
 
 from collections.abc import Mapping
@@ -265,8 +251,8 @@ class ReconstructedReviewMetadata(BaseModel):
 class ReconstructedReview(BaseModel):
     """Canonical ordered reconstruction of a review (the read model).
 
-    Consumed by `assert_replay_equivalent` (verification) and the future
-    timeline-playback surface (`ROADMAP.md` feature 6) — one reconstruction
+    Consumed by `assert_replay_equivalent` (verification) and the dashboard
+    replay-timeline surface (`ROADMAP.md` feature 6) — one reconstruction
     surface, not re-interpreted per consumer. `events` is the complete
     ordered stream; `phases` is the phase-grouped view over it.
     """
@@ -335,7 +321,12 @@ def _group_phases(events: tuple[AuditEvent, ...]) -> tuple[ReconstructedPhase, .
                     open_unkeyed = builder
             else:  # marker == "end"
                 match = open_by_id.pop(event.phase_id, None) or next(
-                    (b for b in builders if b.start.phase_id == event.phase_id and b.end is None),
+                    (
+                        phase_builder
+                        for phase_builder in builders
+                        if phase_builder.start.phase_id == event.phase_id
+                        and phase_builder.end is None
+                    ),
                     None,
                 )
                 if match is not None:
@@ -348,9 +339,10 @@ def _group_phases(events: tuple[AuditEvent, ...]) -> tuple[ReconstructedPhase, .
             owner = _required_phase_node(event)
             target = next(
                 (
-                    b
-                    for b in open_by_id.values()
-                    if b.start.phase_key == event_key and b.start.node_id == owner
+                    phase_builder
+                    for phase_builder in open_by_id.values()
+                    if phase_builder.start.phase_key == event_key
+                    and phase_builder.start.node_id == owner
                 ),
                 None,
             )
@@ -360,14 +352,14 @@ def _group_phases(events: tuple[AuditEvent, ...]) -> tuple[ReconstructedPhase, .
             open_unkeyed.events.append(event)
     return tuple(
         ReconstructedPhase(
-            phase_id=b.start.phase_id,
-            node_id=b.start.node_id,
-            phase_key=b.start.phase_key,
-            start=b.start,
-            end=b.end,
-            events=tuple(b.events),
+            phase_id=phase_builder.start.phase_id,
+            node_id=phase_builder.start.node_id,
+            phase_key=phase_builder.start.phase_key,
+            start=phase_builder.start,
+            end=phase_builder.end,
+            events=tuple(phase_builder.events),
         )
-        for b in builders
+        for phase_builder in builders
     )
 
 
@@ -456,16 +448,19 @@ def _classify_mode(
 
 def _verify_sequence_monotonic(events: tuple[AuditEvent, ...]) -> None:
     """Assert sequence numbers are present, strictly ascending, and unique."""
-    seqs = [e.sequence_number for e in events]
-    if any(s is None for s in seqs):
+    sequence_numbers = [event.sequence_number for event in events]
+    if any(sequence_number is None for sequence_number in sequence_numbers):
         raise ReplayEquivalenceError(
             "reconstructed event missing sequence_number; the row-level "
             "sequence_number was not merged into the payload on read"
         )
-    for prev, curr in zip(seqs, seqs[1:], strict=False):
-        if curr <= prev:  # type: ignore[operator]
+    for previous_sequence, current_sequence in zip(
+        sequence_numbers, sequence_numbers[1:], strict=False
+    ):
+        if current_sequence <= previous_sequence:  # type: ignore[operator]
             raise ReplayEquivalenceError(
-                f"sequence_number not strictly ascending: {prev} then {curr}; "
+                f"sequence_number not strictly ascending: {previous_sequence} "
+                f"then {current_sequence}; "
                 "the audit stream must replay in a deterministic total order"
             )
 
@@ -545,6 +540,167 @@ def _required_phase_node(event: AuditEvent) -> str | None:
     return _NODE_LESS_EVENT_OWNER.get(type(event))
 
 
+@dataclass(slots=True)
+class _PhaseState:
+    """Which phases have opened, closed, and remain open, as one stream is walked.
+
+    Owns every phase-structure rule in `_verify_phase_wellformed`. Together the
+    three collections separate the states a phase_id can be in — never started,
+    currently open, already ended — and the guards need all three told apart.
+    `started` is therefore never pruned: a closed phase must stay visible so a
+    second end is diagnosed as a duplicate rather than as an end with no start.
+    """
+
+    started: dict[str, ReviewPhaseEvent] = field(default_factory=dict)
+    ended: set[str] = field(default_factory=set)
+    open_phases: dict[str, ReviewPhaseEvent] = field(default_factory=dict)
+
+    def open_phase(self, event: ReviewPhaseEvent) -> None:
+        """Admit a start marker, or raise."""
+        # Uniqueness before non-nesting: a *reused* phase_id is the more
+        # specific diagnosis (it fires for both consecutive start→start
+        # and reopen-after-close), so check it first; the non-nesting
+        # guard then catches a *different* phase_id opened while one is
+        # still open. Together they enforce "≤1 open phase, no reuse".
+        if event.phase_id in self.started:
+            raise ReplayEquivalenceError(f"phase {event.phase_id!r} has more than one start marker")
+        # KEYED phases: verify the id-to-key BINDING. phase_id is a
+        # pure function of (review_id, node_id, phase_key) — the
+        # increment-4 recipe binds attempt_key = phase_key VERBATIM —
+        # so a forged id cannot shadow a legitimate (owner, key)
+        # pair, and two distinct ids claiming the same key are
+        # impossible (the honest one collides into the
+        # more-than-one-start check above; the forged one fails
+        # here). Without this, grouping's open-phase match for a
+        # duplicated key would be arbitrary.
+        if event.phase_key is not None:
+            expected_phase_id = compute_phase_id(
+                review_id=str(event.review_id),
+                node_id=event.node_id,
+                attempt_key=event.phase_key,
+            )
+            if event.phase_id != expected_phase_id:
+                raise ReplayEquivalenceError(
+                    f"keyed phase start (sequence {event.sequence_number}) "
+                    f"carries phase_id {event.phase_id!r} but its key "
+                    f"{event.phase_key!r} derives {expected_phase_id!r}; "
+                    f"keyed phase ids are bound to their keys "
+                    f"(compute_phase_id, attempt_key = phase_key verbatim)"
+                )
+        # Non-nesting applies to UN-KEYED phases only: the
+        # fan-out's keyed envelopes (plan# / file:<path># /
+        # aggregate#) legitimately overlap under concurrent
+        # workers, but an un-keyed phase may never overlap
+        # anything, in either direction (sequential-era
+        # semantics stay exact).
+        if self.open_phases and (
+            event.phase_key is None or any(p.phase_key is None for p in self.open_phases.values())
+        ):
+            open_ids = sorted(self.open_phases)
+            raise ReplayEquivalenceError(
+                f"phase {event.phase_id!r} starts while phase(s) {open_ids} "
+                "are still open; un-keyed phases must be sequential/"
+                "non-nested (phase-events-bound-work) — only the "
+                "parallel-analyze KEYED phases may be concurrently open"
+            )
+        self.started[event.phase_id] = event
+        self.open_phases[event.phase_id] = event
+
+    def close_phase(self, event: ReviewPhaseEvent) -> None:
+        """Admit an end marker, or raise. It must agree with the start it closes."""
+        start = self.started.get(event.phase_id)
+        if start is None:
+            raise ReplayEquivalenceError(
+                f"phase {event.phase_id!r} has an end marker with no preceding start"
+            )
+        if event.phase_id in self.ended:
+            raise ReplayEquivalenceError(f"phase {event.phase_id!r} has more than one end marker")
+        if event.node_id != start.node_id:
+            raise ReplayEquivalenceError(
+                f"phase {event.phase_id!r} end node_id {event.node_id!r} disagrees "
+                f"with start node_id {start.node_id!r}"
+            )
+        if event.phase_key != start.phase_key:
+            raise ReplayEquivalenceError(
+                f"phase {event.phase_id!r} end phase_key {event.phase_key!r} disagrees "
+                f"with start phase_key {start.phase_key!r}"
+            )
+        self.ended.add(event.phase_id)
+        del self.open_phases[event.phase_id]
+
+    def require_enclosing_phase(self, event: AuditEvent) -> None:
+        """Assert this work event sits inside an open phase belonging to its owner."""
+        if not self.open_phases:
+            raise ReplayEquivalenceError(
+                f"{type(event).__name__} (sequence {event.sequence_number}) occurs outside "
+                f"any open review phase; node work must be bounded by ReviewPhaseEvent "
+                f"start/end markers (phase-events-bound-work)"
+            )
+        # Node containment (graph-faithfulness): the event must sit in an
+        # open phase for the node that owns it — its own `node_id` if it has
+        # one, else the node-less owner map (`_required_phase_node`). An
+        # analyze-owned FindingEvent in a triage phase is not a stream any
+        # graph node would emit. The `_PHASE_UNBOUNDED_EVENTS` types are
+        # never routed here by the caller and so are never constrained.
+        required_node = _required_phase_node(event)
+        if required_node is None:
+            return
+        event_key = getattr(event, "phase_key", None)
+        if event_key is not None:
+            # KEYED event: an open phase must match BOTH the derived
+            # owner and the key — physical ownership is explicit.
+            if not any(
+                phase.node_id == required_node and phase.phase_key == event_key
+                for phase in self.open_phases.values()
+            ):
+                open_keys = sorted(f"{p.node_id}/{p.phase_key}" for p in self.open_phases.values())
+                raise ReplayEquivalenceError(
+                    f"{type(event).__name__} (sequence {event.sequence_number}) carries "
+                    f"phase_key {event_key!r} (owner {required_node!r}) but no open "
+                    f"phase matches that (owner, key) pair (open: {open_keys}); "
+                    f"keyed work must be bounded by its own keyed phase markers "
+                    f"(phase-events-bound-work)"
+                )
+            return
+        owner_open: list[ReviewPhaseEvent] = []
+        for open_phase in self.open_phases.values():
+            if open_phase.node_id == required_node:
+                owner_open.append(open_phase)
+        if not owner_open:
+            open_node_ids = sorted({phase.node_id for phase in self.open_phases.values()})
+            raise ReplayEquivalenceError(
+                f"{type(event).__name__} (sequence {event.sequence_number}) is owned by "
+                f"node {required_node!r} but no open phase matches that node "
+                f"(open phases: {open_node_ids}); a node's work must be bounded by its "
+                f"own phase markers (phase-events-bound-work)"
+            )
+        if any(p.phase_key is not None for p in owner_open):
+            # STRICT None-branch: None cannot always mean legacy — a
+            # worker/aggregate emission that FORGOT to stamp its key
+            # would otherwise fall through to adjacency grouping and
+            # silently lose physical ownership, reading a defect as
+            # old data. Inside an open KEYED owner phase, an
+            # owner-matched event with a None key is a replay
+            # failure — fail loud, never regroup.
+            open_keys = sorted(str(p.phase_key) for p in owner_open)
+            raise ReplayEquivalenceError(
+                f"{type(event).__name__} (sequence {event.sequence_number}) is owned by "
+                f"node {required_node!r} and carries NO phase_key while keyed "
+                f"{required_node!r} phase(s) {open_keys} are open; a missing key "
+                f"inside a keyed phase is a stamp-omission defect, not legacy data "
+                f"(strict hybrid, specs/2026-07-05-parallel-analyze.md)"
+            )
+
+    def require_every_phase_terminated(self) -> None:
+        """Assert no phase was left open. Only a completed review must satisfy this."""
+        unterminated = sorted(phase_id for phase_id in self.started if phase_id not in self.ended)
+        if unterminated:
+            raise ReplayEquivalenceError(
+                f"completed review has unterminated phase(s) {unterminated}; "
+                "phase-events-bound-work requires a phase end event on success"
+            )
+
+
 def _verify_phase_wellformed(
     events: tuple[AuditEvent, ...], *, require_all_terminated: bool = False
 ) -> None:
@@ -552,134 +708,35 @@ def _verify_phase_wellformed(
 
     `phase-events-bound-work` (spec §8.4): per-operation work events must fall
     within a `ReviewPhaseEvent` start/end pair — the causal barriers replay
-    relies on. Walking in sequence order, this enforces:
+    relies on. Walking in sequence order, `_PhaseState` enforces boundedness,
+    node containment, marker uniqueness and agreement, the phase_id-to-key
+    binding, and non-nesting. Each guard states its own rationale; the
+    `_PHASE_UNBOUNDED_EVENTS` types and the markers themselves are exempt.
 
-    - **Boundedness.** Every work event occurs while a phase is open. The
-      `_PHASE_UNBOUNDED_EVENTS` types (`AgentTransitionEvent`,
-      `ReplayVerdictEvent`, `SlackNotificationEvent`) and the phase markers
-      themselves are exempt — transitions occur before/between phases, the verdict
-      is post-completion replay metadata, the Slack notification is a
-      best-effort side effect with no single owning node.
-    - **Node containment.** A work event must occur inside a phase for the
-      node that owns it — its own `node_id` when it carries one (`LLMCallEvent`,
-      `FileExaminationEvent`, the analyze/synthesize aggregates), else the
-      node-less owner map (`_NODE_LESS_EVENT_OWNER`: `FindingEvent` → analyze,
-      `TraceDecisionEvent` → trace, HITL → hitl, publish events → publish). An
-      `analyze` LLM call belongs in an `analyze` phase, not a `triage` one; an
-      analyze-owned `FindingEvent` likewise. This makes the stream
-      graph-faithful, not merely phase-bounded. Containment is the STRICT
-      derived-owner HYBRID (specs/2026-07-05-parallel-analyze.md +
-      DECISIONS.md#064): a KEYED event requires an open phase matching BOTH
-      its derived owner and its `phase_key`; an un-keyed owner-matched event
-      is legacy ONLY while no keyed owner phase is open — inside one, a
-      missing key is a stamp-omission defect and fails loud, never regroups.
-      The `_PHASE_UNBOUNDED_EVENTS` types (`AgentTransitionEvent`,
-      `ReplayVerdictEvent`, `SlackNotificationEvent`) are unbounded; the
-      completeness guard test asserts every other node-less type has an owner.
-    - **Ordering.** An end never precedes its start (an end whose phase_id has
-      no prior start raises — this is the end-before-start case in sequence
-      order).
-    - **Uniqueness + key binding.** A phase_id has ≤1 start and ≤1 end; a
-      KEYED start's phase_id must equal
-      `compute_phase_id(review_id, node_id, attempt_key=phase_key)` — ids
-      are bound to their keys, so a forged id cannot shadow a legitimate
-      `(owner, key)` pair and a duplicated key cannot verify under two ids.
-    - **Non-nesting (un-keyed phases).** An UN-KEYED phase may not overlap
-      any other phase, in either direction — sequential-era semantics stay
-      exact. KEYED phases (the fan-out's `plan#` / `file:<path>#` /
-      `aggregate#` envelopes) may be concurrently open with each other:
-      concurrent workers are the design, and identity — not adjacency —
-      attributes their events. Distinct from Uniqueness: a *reused* phase_id
-      raises "more than one start marker"; a *different* phase_id opened
-      concurrently raises the non-nesting error.
-    - **Marker agreement.** An end's `node_id` / `phase_key` match its start.
-    - **Termination on success.** When `require_all_terminated` is set, every
-      started phase must also have an end. The invariant's "missing phase end
-      events on success are violations" clause: the caller sets this only for a
-      `completed` review. A trailing start-without-end is tolerated otherwise —
-      for a crashed / in-flight / failed review it is a real state, not a
-      corruption — and for a metadata-only reconstruction the review row is
-      purged so success can't be observed (so it can't be required).
+    The distinction cutting across those guards is KEYED versus UN-KEYED
+    phases (specs/2026-07-05-parallel-analyze.md + `DECISIONS.md#064`). The
+    fan-out's keyed envelopes (`plan#` / `file:<path>#` / `aggregate#`) may be
+    concurrently open, because concurrent workers are the design and identity
+    — not adjacency — attributes their events. An un-keyed phase may never
+    overlap anything, in either direction, so sequential-era semantics stay
+    exact. Containment splits the same way: a keyed event needs an open phase
+    matching both its owner and its key, while an un-keyed owner-matched event
+    is legacy ONLY while no keyed owner phase is open.
+
+    `require_all_terminated` is the caller's assertion that the review
+    completed, and then every started phase must also have an end. It stays
+    unset for a crashed / in-flight / failed review, where a trailing
+    start-without-end is a real state rather than corruption, and for a
+    metadata-only reconstruction, where the purged review row makes success
+    unobservable — so it cannot be required.
     """
-    started: dict[str, ReviewPhaseEvent] = {}
-    ended: set[str] = set()
-    open_phases: dict[str, ReviewPhaseEvent] = {}
+    state = _PhaseState()
     for event in events:
         if isinstance(event, ReviewPhaseEvent):
             if event.marker == "start":
-                # Uniqueness before non-nesting: a *reused* phase_id is the more
-                # specific diagnosis (it fires for both consecutive start→start
-                # and reopen-after-close), so check it first; the non-nesting
-                # guard then catches a *different* phase_id opened while one is
-                # still open. Together they enforce "≤1 open phase, no reuse".
-                if event.phase_id in started:
-                    raise ReplayEquivalenceError(
-                        f"phase {event.phase_id!r} has more than one start marker"
-                    )
-                # KEYED phases: verify the id-to-key BINDING. phase_id is a
-                # pure function of (review_id, node_id, phase_key) — the
-                # increment-4 recipe binds attempt_key = phase_key VERBATIM —
-                # so a forged id cannot shadow a legitimate (owner, key)
-                # pair, and two distinct ids claiming the same key are
-                # impossible (the honest one collides into the
-                # more-than-one-start check above; the forged one fails
-                # here). Without this, grouping's open-phase match for a
-                # duplicated key would be arbitrary.
-                if event.phase_key is not None:
-                    expected_phase_id = compute_phase_id(
-                        review_id=str(event.review_id),
-                        node_id=event.node_id,
-                        attempt_key=event.phase_key,
-                    )
-                    if event.phase_id != expected_phase_id:
-                        raise ReplayEquivalenceError(
-                            f"keyed phase start (sequence {event.sequence_number}) "
-                            f"carries phase_id {event.phase_id!r} but its key "
-                            f"{event.phase_key!r} derives {expected_phase_id!r}; "
-                            f"keyed phase ids are bound to their keys "
-                            f"(compute_phase_id, attempt_key = phase_key verbatim)"
-                        )
-                # Non-nesting applies to UN-KEYED phases only: the
-                # fan-out's keyed envelopes (plan# / file:<path># /
-                # aggregate#) legitimately overlap under concurrent
-                # workers, but an un-keyed phase may never overlap
-                # anything, in either direction (sequential-era
-                # semantics stay exact).
-                if open_phases and (
-                    event.phase_key is None
-                    or any(p.phase_key is None for p in open_phases.values())
-                ):
-                    open_ids = sorted(open_phases)
-                    raise ReplayEquivalenceError(
-                        f"phase {event.phase_id!r} starts while phase(s) {open_ids} "
-                        "are still open; un-keyed phases must be sequential/"
-                        "non-nested (phase-events-bound-work) — only the "
-                        "parallel-analyze KEYED phases may be concurrently open"
-                    )
-                started[event.phase_id] = event
-                open_phases[event.phase_id] = event
-            else:  # marker == "end"
-                start = started.get(event.phase_id)
-                if start is None:
-                    raise ReplayEquivalenceError(
-                        f"phase {event.phase_id!r} has an end marker with no preceding start"
-                    )
-                if event.phase_id in ended:
-                    raise ReplayEquivalenceError(
-                        f"phase {event.phase_id!r} has more than one end marker"
-                    )
-                if event.node_id != start.node_id:
-                    raise ReplayEquivalenceError(
-                        f"phase {event.phase_id!r} end node_id {event.node_id!r} disagrees "
-                        f"with start node_id {start.node_id!r}"
-                    )
-                if event.phase_key != start.phase_key:
-                    raise ReplayEquivalenceError(
-                        f"phase {event.phase_id!r} end phase_key {event.phase_key!r} disagrees "
-                        f"with start phase_key {start.phase_key!r}"
-                    )
-                ended.add(event.phase_id)
-                del open_phases[event.phase_id]
+                state.open_phase(event)
+            else:
+                state.close_phase(event)
         elif isinstance(event, _PHASE_UNBOUNDED_EVENTS):
             # Phase-unbounded events legitimately occur outside any open phase:
             # AgentTransitionEvent (a transition BETWEEN phases) and
@@ -687,71 +744,10 @@ def _verify_phase_wellformed(
             # tuple keeps this runtime gate in lockstep with the registry the
             # completeness guard test reads.
             continue
-        elif not open_phases:
-            raise ReplayEquivalenceError(
-                f"{type(event).__name__} (sequence {event.sequence_number}) occurs outside "
-                f"any open review phase; node work must be bounded by ReviewPhaseEvent "
-                f"start/end markers (phase-events-bound-work)"
-            )
         else:
-            # Node containment (graph-faithfulness): the event must sit in an
-            # open phase for the node that owns it — its own `node_id` if it has
-            # one, else the node-less owner map (`_required_phase_node`). An
-            # analyze-owned FindingEvent in a triage phase is not a stream any
-            # graph node would emit. The `_PHASE_UNBOUNDED_EVENTS` types are
-            # already `continue`d above and so are never constrained here.
-            required_node = _required_phase_node(event)
-            if required_node is None:
-                continue
-            event_key = getattr(event, "phase_key", None)
-            if event_key is not None:
-                # KEYED event: an open phase must match BOTH the derived
-                # owner and the key — physical ownership is explicit.
-                if not any(
-                    phase.node_id == required_node and phase.phase_key == event_key
-                    for phase in open_phases.values()
-                ):
-                    open_keys = sorted(f"{p.node_id}/{p.phase_key}" for p in open_phases.values())
-                    raise ReplayEquivalenceError(
-                        f"{type(event).__name__} (sequence {event.sequence_number}) carries "
-                        f"phase_key {event_key!r} (owner {required_node!r}) but no open "
-                        f"phase matches that (owner, key) pair (open: {open_keys}); "
-                        f"keyed work must be bounded by its own keyed phase markers "
-                        f"(phase-events-bound-work)"
-                    )
-                continue
-            owner_open = [p for p in open_phases.values() if p.node_id == required_node]
-            if not owner_open:
-                open_node_ids = sorted({phase.node_id for phase in open_phases.values()})
-                raise ReplayEquivalenceError(
-                    f"{type(event).__name__} (sequence {event.sequence_number}) is owned by "
-                    f"node {required_node!r} but no open phase matches that node "
-                    f"(open phases: {open_node_ids}); a node's work must be bounded by its "
-                    f"own phase markers (phase-events-bound-work)"
-                )
-            if any(p.phase_key is not None for p in owner_open):
-                # STRICT None-branch: None cannot always mean legacy — a
-                # worker/aggregate emission that FORGOT to stamp its key
-                # would otherwise fall through to adjacency grouping and
-                # silently lose physical ownership, reading a defect as
-                # old data. Inside an open KEYED owner phase, an
-                # owner-matched event with a None key is a replay
-                # failure — fail loud, never regroup.
-                open_keys = sorted(str(p.phase_key) for p in owner_open)
-                raise ReplayEquivalenceError(
-                    f"{type(event).__name__} (sequence {event.sequence_number}) is owned by "
-                    f"node {required_node!r} and carries NO phase_key while keyed "
-                    f"{required_node!r} phase(s) {open_keys} are open; a missing key "
-                    f"inside a keyed phase is a stamp-omission defect, not legacy data "
-                    f"(strict hybrid, specs/2026-07-05-parallel-analyze.md)"
-                )
+            state.require_enclosing_phase(event)
     if require_all_terminated:
-        unterminated = sorted(phase_id for phase_id in started if phase_id not in ended)
-        if unterminated:
-            raise ReplayEquivalenceError(
-                f"completed review has unterminated phase(s) {unterminated}; "
-                "phase-events-bound-work requires a phase end event on success"
-            )
+        state.require_every_phase_terminated()
 
 
 def _verify_proof_boundary(events: tuple[AuditEvent, ...]) -> None:
@@ -902,24 +898,24 @@ def _verify_full_finding(
             f"finding {finding.event.finding_id} expected full content but is a stub"
         )
     event = finding.event
-    mismatches = [
-        field_name
-        for field_name, content_value, event_value in (
-            ("content_hash", content.content_hash, event.finding_content_hash),
-            ("finding_type", content.finding_type, event.finding_type),
-            ("severity", content.severity, event.severity),
-            ("evidence_tier", content.evidence_tier, event.evidence_tier),
-            ("file_path", content.file_path, event.file_path),
-            ("line_start", content.line_start, event.line_start),
-            ("line_end", content.line_end, event.line_end),
-            ("policy_version", content.policy_version, event.policy_version),
-            # Proof artifacts — the content row must agree with the canonical
-            # FindingEvent on the evidence the proof boundary turns on.
-            ("query_match_id", content.query_match_id, event.query_match_id),
-            ("trace_path", content.trace_path, event.trace_path),
-        )
-        if content_value != event_value
-    ]
+    finding_field_comparisons = (
+        ("content_hash", content.content_hash, event.finding_content_hash),
+        ("finding_type", content.finding_type, event.finding_type),
+        ("severity", content.severity, event.severity),
+        ("evidence_tier", content.evidence_tier, event.evidence_tier),
+        ("file_path", content.file_path, event.file_path),
+        ("line_start", content.line_start, event.line_start),
+        ("line_end", content.line_end, event.line_end),
+        ("policy_version", content.policy_version, event.policy_version),
+        # Proof artifacts — the content row must agree with the canonical
+        # FindingEvent on the evidence the proof boundary turns on.
+        ("query_match_id", content.query_match_id, event.query_match_id),
+        ("trace_path", content.trace_path, event.trace_path),
+    )
+    mismatches: list[str] = []
+    for field_name, content_value, event_value in finding_field_comparisons:
+        if content_value != event_value:
+            mismatches.append(field_name)
     if mismatches:
         raise ReplayEquivalenceError(
             f"finding {event.finding_id} content row disagrees with audit event "
@@ -1001,14 +997,14 @@ def _verify_finding_override_projection(
             f"carries no SEVERITY_OVERRIDE decision for it"
         )
     # Both fields are non-NULL past the coherence gate, so compare directly.
-    mismatches = [
-        field_name
-        for field_name, claimed, canonical in (
-            ("original_severity", content.original_severity, decision.original_severity),
-            ("override_reason", content.override_reason, decision.reason),
-        )
-        if claimed != canonical
-    ]
+    override_field_comparisons = (
+        ("original_severity", content.original_severity, decision.original_severity),
+        ("override_reason", content.override_reason, decision.reason),
+    )
+    mismatches: list[str] = []
+    for field_name, claimed, canonical in override_field_comparisons:
+        if claimed != canonical:
+            mismatches.append(field_name)
     if mismatches:
         raise ReplayEquivalenceError(
             f"finding {finding_id} override projection disagrees with its "
@@ -1040,18 +1036,18 @@ def _verify_row_consistent(
     encode the same moment in different tz offsets still agree.
     """
     expected_phase_key = event.phase_key if isinstance(event, ReviewPhaseEvent) else None
-    mismatches = [
-        name
-        for name, column_value, payload_value in (
-            ("event_id", event_id, event.event_id),
-            ("review_id", review_id, event.review_id),
-            ("event_type", event_type, event.event_type),
-            ("timestamp", timestamp, event.timestamp),
-            ("is_eval", is_eval, event.is_eval),
-            ("phase_key", phase_key, expected_phase_key),
-        )
-        if column_value != payload_value
-    ]
+    row_field_comparisons = (
+        ("event_id", event_id, event.event_id),
+        ("review_id", review_id, event.review_id),
+        ("event_type", event_type, event.event_type),
+        ("timestamp", timestamp, event.timestamp),
+        ("is_eval", is_eval, event.is_eval),
+        ("phase_key", phase_key, expected_phase_key),
+    )
+    mismatches: list[str] = []
+    for name, column_value, payload_value in row_field_comparisons:
+        if column_value != payload_value:
+            mismatches.append(name)
     if mismatches:
         raise ReplayEquivalenceError(
             f"audit row {event_id} base column(s) disagree with the payload on: "
@@ -1156,16 +1152,9 @@ class AuditReplayer:
         (stored `findings` rows with no `FindingEvent` in the stream).
         """
         async with self._session_factory() as session:
-            # Pin all four content-table reads (audit_events, reviews, findings,
-            # llm_call_content) to ONE consistent snapshot. The default READ
-            # COMMITTED isolation gives each statement a fresh snapshot, so a
-            # retention purge committing mid-reconstruct (sweep/purge_expired.py
-            # commits per-table independently) could let replay combine pre- and
-            # post-purge rows into a reconstruction that never existed at any DB
-            # instant. REPEATABLE READ takes the snapshot at the first statement
-            # and holds it for the transaction — read-only, so it needs no
-            # write-skew protection (SERIALIZABLE would be overkill). Must be set
-            # before the first statement autobegins the transaction.
+            # Read immutable audit rows and mutable review/content rows from one
+            # snapshot. READ COMMITTED could mix pre- and post-purge content.
+            # Set REPEATABLE READ before the first statement starts the transaction.
             await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
             stmt = (
                 select(
@@ -1186,19 +1175,20 @@ class AuditReplayer:
             rows = (await session.execute(stmt)).all()
             if not rows:
                 raise ReplayReviewNotFoundError(f"no audit_events rows for review_id {review_id}")
-            reconstructed: list[AuditEvent] = [
-                reconstruct_event_from_row(
-                    payload=row.payload,
-                    sequence_number=row.sequence_number,
-                    event_id=row.event_id,
-                    review_id=row.review_id,
-                    event_type=row.event_type,
-                    timestamp=row.timestamp,
-                    is_eval=row.is_eval,
-                    phase_key=row.phase_key,
+            reconstructed: list[AuditEvent] = []
+            for audit_row in rows:
+                reconstructed.append(
+                    reconstruct_event_from_row(
+                        payload=audit_row.payload,
+                        sequence_number=audit_row.sequence_number,
+                        event_id=audit_row.event_id,
+                        review_id=audit_row.review_id,
+                        event_type=audit_row.event_type,
+                        timestamp=audit_row.timestamp,
+                        is_eval=audit_row.is_eval,
+                        phase_key=audit_row.phase_key,
+                    )
                 )
-                for row in rows
-            ]
             events: tuple[AuditEvent, ...] = tuple(reconstructed)
 
             review_row = (
@@ -1210,7 +1200,10 @@ class AuditReplayer:
                     await session.execute(select(Finding).where(Finding.review_id == review_id))
                 ).scalars()
             }
-            llm_event_ids = [e.event_id for e in events if isinstance(e, LLMCallEvent)]
+            llm_event_ids: list[UUID] = []
+            for llm_event in events:
+                if isinstance(llm_event, LLMCallEvent):
+                    llm_event_ids.append(llm_event.event_id)
             content_rows: dict[UUID, LLMCallContent] = {}
             if llm_event_ids:
                 content_rows = {
@@ -1357,7 +1350,10 @@ class AuditReplayer:
         skips this for non-ACTIVE rows). `FindingEvent.severity` is the
         policy-assigned (pre-override) severity, so the comparison is direct.
         """
-        finding_events = [e for e in review.events if isinstance(e, FindingEvent)]
+        finding_events: list[FindingEvent] = []
+        for finding_event in review.events:
+            if isinstance(finding_event, FindingEvent):
+                finding_events.append(finding_event)
         if not finding_events:
             return
         historical_versions = {

@@ -1,26 +1,16 @@
 # AST-facts domain models per docs/spec.md §5.4 + specs/2026-04-30-ast-facts-module.md.
 # AST firewall per docs/trust-boundaries.md §4.
-"""Domain models for the AST-facts module.
+"""Core extraction shapes, parser verdicts, and skip reasons.
 
-This file is the **single source of truth for typed shapes** in the
-ast_facts/ surface. All Pydantic models, Literal types, and the str-enum
-live here; pure logic lives in `parser_outcome.py` and adapter code in
-`python_adapter.py`. Audit code (`outrider/audit/events.py`) imports
-`SkipReason` from this module per `DECISIONS.md#018` point 6 — this
-module must therefore stay import-light (no `tree_sitter`, no adapter
-code), and `outrider/ast_facts/__init__.py` lazy-loads `parse_python` so
-that `from outrider.ast_facts.models import SkipReason` doesn't pull
-the adapter into audit's module graph.
+Adapters return these domain models; specialized scan and triviality shapes
+live beside their producers. Audit imports `SkipReason` here per
+`DECISIONS.md#018` point 6, so this module stays import-light: no tree-sitter
+or adapter imports.
 
-Field validators are added only on `ParseResult`, `ImportResolution`,
-`QueryMatchSpan`/`QueryCaptureSpan`, and `ExclusionRule`, where
-load-bearing for replay correctness or where canonical contradictions
-would otherwise silently produce wrong results. The §5.4 canonical
-types (`ScopeUnit`, `ImportRef`, `CallSite`, `AssignmentSite`,
-`ChangedRegion`, `SymbolCandidate`) carry no validators beyond their
-typing — per spec-fidelity discipline, a canonical type is shipped
-verbatim unless `DECISIONS.md` amends it.
-"""
+The canonical §5.4 shapes (`ScopeUnit`, `ImportRef`, `CallSite`,
+`AssignmentSite`, `ChangedRegion`, `SymbolCandidate`) retain the spec's
+fields without extra validators unless `DECISIONS.md` amends them.
+Other models validate replay-critical bounds and coherence."""
 
 import hashlib
 from enum import StrEnum
@@ -247,14 +237,10 @@ class ScopeUnit(BaseModel):
     parent_scope_id: str | None = None
 
     def to_span(self) -> "Span":
-        """Return a `Span` covering this scope unit's byte range.
+        """Return this scope's byte range in the shared Span shape.
 
-        callers need to bridge from
-        `ScopeUnit.byte_start/byte_end` (raw int) to `Span` (Pydantic
-        model used by the analyze proposal schemas + coordinate
-        helpers). Without this helper, every call site reinvents
-        `Span(byte_start=su.byte_start, byte_end=su.byte_end)`,
-        defeating the "single chokepoint for span shape" property.
+        Analyze proposal schemas and coordinate helpers consume Span rather
+        than separate byte_start/byte_end integers.
         """
         return Span(byte_start=self.byte_start, byte_end=self.byte_end)
 
@@ -381,10 +367,8 @@ class Span(BaseModel):
     coordinates span-containment helpers can pass the same shape end-to-end.
     Per §1 of `specs/2026-05-19-analyze-foundation.md`.
 
-    Upper bound is the JS-safe-int ceiling (2^53 - 1) per the -crazy-
-    audit DI-L5: source files >9 PB are exotic enough to make fail-loud the
-    right default, and the bound also makes the boundary citable for JS
-    dashboard consumers.
+    Both offsets are bounded by the JS-safe-int ceiling (2^53 - 1), so dashboard
+    consumers can represent them exactly.
 
     Interval semantics: half-open `[byte_start, byte_end)` — `byte_end` is
     exclusive. A 4-byte span starting at 0 has `byte_start=0, byte_end=4`,
@@ -537,15 +521,8 @@ class ParseResult(BaseModel):
     def _enforce_empty_collections_on_non_clean(self) -> Self:
         """Failed and skipped paths emit empty tuples per the docstring.
 
-        Category F sweep — the docstring promises "Empty-tuples shape on
-        the failed and skipped paths." Without a validator, a producer
-        bug (or stale audit row from a previous schema iteration) could
-        present `parser_outcome="failed"` AND non-empty `scope_units` —
-        the downstream consumer would believe the file parsed (because
-        scope_units exists) AND failed (because parser_outcome says so),
-        which is the kind of contradiction the schema layer exists to
-        rule out. `clean` allows empty collections (an empty Python
-        file is a valid clean parse with 0 scope_units).
+        Reject extracted facts alongside a failed/skipped verdict. A clean
+        parse may still have no scopes or other facts, as with an empty file.
         """
         if self.parser_outcome == "clean":
             return self

@@ -3,67 +3,24 @@
 # transport surface; vendor SDK imports stay inside `src/outrider/llm/` per the
 # folder-scoped `vendor-sdks-only-in-wrappers` invariant (trust boundary #8).
 # Second deployment family alongside AnthropicProvider.
-"""OpenAI-compatible concrete provider (DECISIONS.md#056).
+"""Call an OpenAI-compatible host through a frozen `HostProfile`.
 
-Mirror of `AnthropicProvider` using the `openai` SDK against any host that fits
-the `HostProfile` contract. The profile supplies the per-host axes — base_url,
-model-slug pattern, reasoning-off shaper, §8a token-accounting mode, JSON mode,
-privacy posture — so this provider carries no host-specific constants. Same
-`LLMProvider` Protocol, same `LLMRequest` / `LLMResponse` shapes, same
-metadata-only error discipline, same per-call `LLMCallEvent` +
-`compute_cost_usd()` cost path. `GLMProvider` is the transitional alias that
-binds `BASETEN_PROFILE`, preserving the merged spike's surface.
+The profile selects endpoint, model pattern, reasoning directive, JSON mode,
+token accounting, and privacy posture (`DECISIONS.md#056`). Construction
+validates these contracts and pricing. Before spending, `complete` checks
+the configured model, persister, closed state, and flat-rate input ceiling.
 
-Wire deltas are now PROFILE DATA; the `BASETEN_PROFILE` values are the merged
-GLM spike's choices (verified against the aegis-docs mirror + introspection of
-the installed openai==2.44.0):
+The call path shapes the request, translates SDK errors, extracts one choice,
+normalizes usage/finish reason, hashes prompts, and computes a pricing outcome.
+Request model identity anchors cost and audit even when the response model
+echo is empty. Completed calls persist before returning or raising a terminal
+pricing-contract error. Known billing-pending outcomes remain unpriced and
+return their response; runtime deviations raise after persistence.
 
-  - Token accounting: Baseten `usage.prompt_tokens` INCLUDES cached tokens
-    (cached is a SUBSET), whereas Anthropic's `input_tokens` EXCLUDES
-    cache. `compute_cost_usd` charges `input_tokens` at the full input
-    rate, so the uncached portion is `prompt_tokens - cached_tokens`. The
-    `*_details` objects are nullable — guard before nested access.
-  - Model identity: cost and the audit event key on the REQUEST-side model id,
-    not `response.model`. request.model is deterministic + pre-validated
-    (constructor GLM-family + per-call configured-set guards), so it's the
-    reliable cost key. The live probe returned `response.model` populated with
-    the slug, but Baseten's GLM library example shows it can echo `""` — keying
-    on the request side is correct regardless of what `response.model` carries.
-  - Caching: automatic prefix caching, no `cache_control` marker. GLM hosts
-    have no cache-write token class → `cache_write_tokens=0`; 5.6+ hosts report
-    writes distinctly (`prompt_tokens_details.cache_write_tokens`, validated
-    extras-read) and the openai profile sends `prompt_cache_key`. The Anthropic
-    silently-disabled-cache diagnostic does not apply (FUP-237).
-  - Structured output: schema modes send `response_format={"type":"json_schema",
-    "json_schema":{"name",strict:true,"schema"}}` (name required), not
-    Anthropic's `output_config.format`; the JSON_OBJECT mode (openai host)
-    sends `{"type":"json_object"}` instead. NOTE: GLM wraps the JSON in a markdown
-    code fence even under strict mode (confirmed live) — the wrapper returns the
-    raw text and the node parsers strip it via `strip_outer_json_fence` (same as
-    Anthropic's occasional fences). Schema CONFORMANCE inside the fence is a yield
-    question the eval scorecard measures (non-conforming → Pydantic rejects →
-    fewer findings, never corrupted output).
-  - Reasoning: opt-in via `extra_body={"chat_template_args":
-    {"enable_thinking": <bool>}}`; off by default. `reasoning_content`
-    (when on) is an untyped extra field, stripped — only `message.content`
-    becomes `LLMResponse.text`. Reasoning tokens are already inside
-    `completion_tokens`; never added to the cost path.
-
-`complete()` step ordering (mirrors AnthropicProvider):
-  0. post-teardown guard (`_closed`).
-  1. fail-closed pre-call: persister=None → raise.
-  2. translate `LLMRequest` → openai `chat.completions.create` kwargs.
-  3. await create(stream=False); catch openai.OpenAIError → typed subclass.
-  4. extract assistant text (exactly one choice, non-empty content).
-  5. normalize usage (§8a cached subtraction) → LLMResponse + latency.
-  6. compute prompt/system hashes.
-  7. canonical pricing outcome (compute_cost_outcome — tier + >272K derived in
-     pricing.py from the response's billed count and echoed service tier).
-  8. build LLMCallEvent (nullable cost + typed unpriced reason + pricing
-     context); await persister.persist(); wrap failures.
-  9. post-persist pricing-contract raise (terminal LLMPricingContractError) on
-     an over-ceiling / tier-deviation / unpriceable outcome — persist-first.
-  10. return LLMResponse.
+Structured refusals become empty content with `finish_reason='refusal'`.
+Downstream admission handles that response; the native Anthropic wrapper
+instead persists and raises `LLMRefusalError` (FUP-203).
+`GLMProvider` retains the Baseten constructor surface for existing callers.
 """
 
 import asyncio
@@ -286,28 +243,28 @@ class OpenAICompatibleProvider:
         # The notice carries the FULL auditable claim (#013/#015/#056): egress + origin,
         # the no-training posture, AND the provenance (source_url + verified_date) that make
         # the claim checkable + stale-detectable — not just egress.
-        priv = profile.privacy
+        privacy_posture = profile.privacy
         _PRIVACY_NOTICE_LOGGER.info(
             "privacy_notice openai_compatible_provider host=%s egress=%s model_origin=%s "
             "direct_hosted=%s trains_on_inputs=%s retention=%s source_url=%s verified=%s",
             profile.host_id,
-            priv.egress_host,
-            priv.model_origin,
-            priv.direct_hosted,
-            priv.trains_on_inputs,
-            priv.retention,
-            priv.source_url,
-            priv.verified_date,
+            privacy_posture.egress_host,
+            privacy_posture.model_origin,
+            privacy_posture.direct_hosted,
+            privacy_posture.trains_on_inputs,
+            privacy_posture.retention,
+            privacy_posture.source_url,
+            privacy_posture.verified_date,
             extra={
                 "privacy_notice": True,
-                "egress_destination": priv.egress_host,
-                "model_origin": priv.model_origin,
+                "egress_destination": privacy_posture.egress_host,
+                "model_origin": privacy_posture.model_origin,
                 "host": profile.host_id,
-                "direct_hosted": priv.direct_hosted,
-                "trains_on_inputs": priv.trains_on_inputs,
-                "retention": priv.retention,
-                "source_url": priv.source_url,
-                "verified_date": priv.verified_date,
+                "direct_hosted": privacy_posture.direct_hosted,
+                "trains_on_inputs": privacy_posture.trains_on_inputs,
+                "retention": privacy_posture.retention,
+                "source_url": privacy_posture.source_url,
+                "verified_date": privacy_posture.verified_date,
             },
         )
 
@@ -414,15 +371,17 @@ class OpenAICompatibleProvider:
         usage = sdk_response.usage
         if usage is None:
             raise LLMInvalidResponseError()
-        ptd = usage.prompt_tokens_details
-        raw_cached = (ptd.cached_tokens or 0) if ptd is not None else 0
+        prompt_token_details = usage.prompt_tokens_details
+        raw_cached = (
+            (prompt_token_details.cached_tokens or 0) if prompt_token_details is not None else 0
+        )
         # 5.6+ hosts report cache WRITES as a distinct billed class. The pinned SDK
         # (openai==2.44.0) does not type `cache_write_tokens` on PromptTokensDetails,
         # but its models preserve unknown extras — validated read, wire-fixture-pinned
         # (openai-native-host spec). Only consulted for the writes-reported accounting.
         raw_cache_write = 0
         if self._profile.token_accounting is TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED:
-            raw_cache_write = _read_cache_write_tokens(ptd)
+            raw_cache_write = _read_cache_write_tokens(prompt_token_details)
         # `read_usage` applies the host's includes/excludes-cached rule (Baseten INCLUDES
         # cached → subtract, capping at prompt_tokens so a malformed cached can't drive
         # input negative or break input+cache_read==prompt) and rejects negative components.
@@ -506,8 +465,12 @@ class OpenAICompatibleProvider:
         # exchange PERSISTS FIRST (correctly costed or provenance-marked — the
         # FUP-205 persist-before-raise shape under #016), then raises the
         # terminal LLMPricingContractError so no retry can bill a second call.
-        billed = response.billed_prompt_tokens
-        over_ceiling = ceiling is not None and billed is not None and billed > ceiling
+        billed_prompt_tokens = response.billed_prompt_tokens
+        over_ceiling = (
+            ceiling is not None
+            and billed_prompt_tokens is not None
+            and billed_prompt_tokens > ceiling
+        )
         tier_deviated = (
             expects_tier_echo
             and response.service_tier_actual != self._profile.requested_service_tier
@@ -546,7 +509,7 @@ class OpenAICompatibleProvider:
             phase_key=request.phase_key,
             response_format_digest=request.response_format_digest,
             # Triad mirrored from the response (single source) so the persister cross-check
-            # (a later step-4 commit) is trivially consistent (DECISIONS.md#056).
+            # verifies this identity (DECISIONS.md#056).
             profile_id=response.profile_id,
             reasoning_enabled=response.reasoning_enabled,
             profile_contract_digest=response.profile_contract_digest,
@@ -655,13 +618,11 @@ class OpenAICompatibleProvider:
 
 
 class GLMProvider(OpenAICompatibleProvider):
-    """Transitional alias — `OpenAICompatibleProvider` bound to `BASETEN_PROFILE`.
+    """Baseten-bound compatibility constructor for `OpenAICompatibleProvider`.
 
-    Preserves the merged GLM spike's constructor surface so existing importers (the
-    wire-equivalence golden, the GLM scorecard) keep working across the rename. Removed
-    once callers migrate to `OpenAICompatibleProvider` + host selection (step 4). The
-    spike's `enable_thinking=True` eval-tunable is superseded by the step-4 identity
-    triad (`reasoning_enabled` / `OUTRIDER_LLM_REASONING`); reasoning is off on every call.
+    Existing wire-golden and scorecard callers retain their GLM import and
+    constructor surface. The parent supplies the Baseten host identity and
+    keeps reasoning disabled.
     """
 
     def __init__(
@@ -675,21 +636,13 @@ class GLMProvider(OpenAICompatibleProvider):
 
 
 def _build_sdk_kwargs(request: LLMRequest, *, profile: HostProfile) -> dict[str, Any]:
-    """Translate `LLMRequest` to openai `chat.completions.create()` kwargs.
+    """Build chat-completions kwargs from the request and host contract.
 
-    Deltas from the Anthropic translation:
-      - `system_prompt` → a `{"role":"system"}` message (not the SDK
-        `system` kwarg); `user_prompt` → a `{"role":"user"}` message.
-      - NO `cache_control` marker — OpenAI-compatible hosts cache automatically.
-      - the completion-token ceiling rides under the PROFILE-declared kwarg name
-        (`token_limit_param`, SHAPER v3): `max_completion_tokens` on the native
-        openai host (the GPT-5.6 wire 400s on `max_tokens`), `max_tokens` on the
-        GLM hosts' verified wire.
-      - reasoning OFF via the host's `apply_reasoning_off` shaper (V1 runs reasoning
-        off on every call; operator-controlled reasoning is the step-4 substrate).
-      - `response_schema_json` → `response_format.json_schema` (name
-        required, strict const-true), not `output_config.format`.
-      - `stream` omitted → non-streaming single response (usage is present).
+    System/user text becomes two messages. The profile selects the token-limit
+    parameter, reasoning-off directive, requested tier, and prompt-cache key.
+    Schema modes send `response_format.json_schema`; JSON-object mode requests
+    syntactic JSON and leaves schema admission to the node parser. No explicit
+    cache-control breakpoint is sent; compatible hosts manage prefix caching.
     """
     kwargs: dict[str, Any] = {
         "model": request.model,

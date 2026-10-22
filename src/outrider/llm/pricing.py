@@ -72,7 +72,7 @@ _DATED_SUFFIX_PATTERN: Final = re.compile(r"-\d{8}$")
 
 
 def normalize_to_pricing_key(model: str) -> str:
-    """Strip a trailing `-YYYYMMDD` date suffix so dated SDK-catalog pins
+    """Strip a trailing `-YYYYMMDD` date suffix so dated exact model-version IDs
     resolve to their undated pricing alias.
 
     Idempotent: undated input is returned unchanged.
@@ -519,14 +519,14 @@ def compute_cost_outcome(
             return Unpriced(CostUnpricedReason.NOVEL_TIER)
         tier_mult = SERVICE_TIER_MULTIPLIERS[service_tier]
 
-    candidate = LONG_CONTEXT_POLICY.get(key)
+    long_context_candidate = LONG_CONTEXT_POLICY.get(key)
     long_policy: LongContextPolicy | None = None
     if (
-        candidate is not None
+        long_context_candidate is not None
         and billed_prompt_tokens is not None
-        and billed_prompt_tokens > candidate.threshold_tokens
+        and billed_prompt_tokens > long_context_candidate.threshold_tokens
     ):
-        long_policy = candidate
+        long_policy = long_context_candidate
     if long_policy is not None and expects_tier_echo and service_tier == "priority":
         return Unpriced(CostUnpricedReason.PRIORITY_LONG_CONTEXT)
 
@@ -538,8 +538,8 @@ def compute_cost_outcome(
     if profile_id in COST_UNADJUDICATED_PROFILE_IDS:
         return Unpriced(CostUnpricedReason.BILLING_PENDING)
 
-    with decimal.localcontext() as ctx:
-        ctx.prec = 28  # Python's documented default; insulates against caller mutations.
+    with decimal.localcontext() as cost_context:
+        cost_context.prec = 28  # Python's documented default; insulates against caller mutations.
         if long_policy is not None:
             cost = (
                 rates.in_per_token * long_policy.in_mult * input_tokens
@@ -568,41 +568,16 @@ def compute_cost_usd(
     billed_prompt_tokens: int | None = None,
     service_tier: str | None = None,
 ) -> Decimal:
-    """Compute total cost in USD for one LLM call on `(profile_id, model)`.
+    """Return the canonical Decimal cost for a host-qualified model call.
 
-    `profile_id` host-qualifies the rate lookup (DECISIONS.md#056): the same model
-    slug served by two hosts bills at two rates. At response-derived call sites pass
-    `response.profile_id` so the call is priced under the host that served it; the
-    parameter is `str | None` to accept that field directly, but a `None` raises —
-    an unqualified response can't be priced, and a real provider always stamps the
-    host-identity triad, so `None` is a provider/fixture bug, not a billable call.
+    Token counts are keyword-only to prevent swapping billable classes.
+    `compute_cost_outcome` owns tier and long-context policy and runs arithmetic
+    at local precision 28, independent of the caller's Decimal context.
 
-    Token args are keyword-only so the four same-typed `int` parameters
-    can't be swapped by a positional caller. The swap that matters most
-    is `cache_write_tokens` ↔ `cache_read_tokens` — they bill at
-    OPPOSITE rates (1.25× input premium for writes vs 0.10× input
-    discount for reads), so a swap silently overcharges or undercharges
-    by an order of magnitude. Same misuse-resistance pattern as
-    `coordinates.tree_sitter_to_github`'s keyword-only barrier.
-
-    Four-term sum per spec — earlier designs missed cache-write tokens,
-    undercounting Anthropic's actual bill since cache writes are
-    premium-rated.
-
-    Returns a `Decimal`; the caller (provider's complete() step 9)
-    casts to `float` for `LLMCallEvent.cost_usd`. Raising `KeyError`
-    on a missing model is intentional — `AnthropicProvider.__init__`'s
-    eager pricing-coverage validation should make this unreachable
-    in production (see AC#24).
-
-    The body wraps in `decimal.localcontext()` AND explicitly resets
-    `ctx.prec = 28` so the computation is self-contained against
-    ambient `decimal.getcontext().prec` mutations. A bare
-    `decimal.localcontext()` copies the caller's thread context —
-    a caller that set `prec=5` before calling would still run cost
-    arithmetic at precision 5 and silently truncate. Resetting prec to
-    Python's documented default (28) inside the local context produces
-    deterministic 28-digit results regardless of caller state.
+    A missing rate raises `KeyError`; an unqualified host or `Unpriced` outcome
+    raises `ValueError`. Callers that handle unpriced completed calls use
+    `compute_cost_outcome` directly. Rates and admission changes require a
+    `PRICING_VERSION` bump (`DECISIONS.md#056`).
     """
     if profile_id is None:
         raise ValueError(

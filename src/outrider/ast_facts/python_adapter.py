@@ -126,26 +126,49 @@ class PythonAdapter:
 
     def _extract_scopes_from_tree(self, tree: Tree, file_path: str) -> tuple[ScopeUnit, ...]:
         scopes: list[ScopeUnit] = []
-        self._walk_for_scopes(
-            tree.root_node,
-            file_path=file_path,
-            qual_path=(),
-            in_class=False,
-            parent_unit_id=None,
-            out=scopes,
-        )
+        self._walk_for_scopes(tree.root_node, file_path=file_path, out=scopes)
         return tuple(scopes)
 
-    def _walk_for_scopes(
+    def _emit_scope(
         self,
+        out: list[ScopeUnit],
         node: Node,
         *,
-        file_path: str,
+        kind: str,
+        name: str,
         qual_path: tuple[str, ...],
-        in_class: bool,
+        file_path: str,
         parent_unit_id: str | None,
-        out: list[ScopeUnit],
-    ) -> None:
+    ) -> str:
+        """Append one `ScopeUnit` and return its `unit_id`.
+
+        The byte and line ranges come from `_scope_byte_range` /
+        `_scope_line_range`, which widen a decorated definition to cover its
+        decorators — which is why the `decorated_definition` wrapper node itself
+        never emits.
+        """
+        qualified_name = ".".join((*qual_path, name))
+        byte_start, byte_end = self._scope_byte_range(node)
+        line_start, line_end = self._scope_line_range(node)
+        unit_id = compute_unit_id(file_path, kind=kind, qualified_name=qualified_name)
+        out.append(
+            ScopeUnit(
+                unit_id=unit_id,
+                kind=kind,
+                name=name,
+                qualified_name=qualified_name,
+                file_path=file_path,
+                line_start=line_start,
+                line_end=line_end,
+                byte_start=byte_start,
+                byte_end=byte_end,
+                decorators=self._decorator_strings(node),
+                parent_scope_id=parent_unit_id,
+            )
+        )
+        return unit_id
+
+    def _walk_for_scopes(self, node: Node, *, file_path: str, out: list[ScopeUnit]) -> None:
         """Iterative pre-order scope walk with state carried per frame.
 
         Each stack frame is a `(node, qual_path, in_class, parent_unit_id)`
@@ -169,9 +192,9 @@ class PythonAdapter:
         function/class node handles decorator-span detection via
         `_scope_byte_range` / `_decorator_strings`.
         """
-        stack: list[tuple[Node, tuple[str, ...], bool, str | None]] = [
-            (node, qual_path, in_class, parent_unit_id)
-        ]
+        # The root frame is invariant: module scope has no qualified path, is not
+        # inside a class, and has no parent unit.
+        stack: list[tuple[Node, tuple[str, ...], bool, str | None]] = [(node, (), False, None)]
         while stack:
             cur_node, cur_qual_path, cur_in_class, cur_parent_unit_id = stack.pop()
             node_type = cur_node.type
@@ -181,29 +204,18 @@ class PythonAdapter:
                 if name_node is None:
                     continue
                 name = self._node_text(name_node)
-                kind = "method" if cur_in_class else "function"
-                qualified_name = ".".join(cur_qual_path + (name,))
-                byte_start, byte_end = self._scope_byte_range(cur_node)
-                line_start, line_end = self._scope_line_range(cur_node)
-                unit_id = compute_unit_id(file_path, kind=kind, qualified_name=qualified_name)
-                out.append(
-                    ScopeUnit(
-                        unit_id=unit_id,
-                        kind=kind,
-                        name=name,
-                        qualified_name=qualified_name,
-                        file_path=file_path,
-                        line_start=line_start,
-                        line_end=line_end,
-                        byte_start=byte_start,
-                        byte_end=byte_end,
-                        decorators=self._decorator_strings(cur_node),
-                        parent_scope_id=cur_parent_unit_id,
-                    )
+                unit_id = self._emit_scope(
+                    out,
+                    cur_node,
+                    kind="method" if cur_in_class else "function",
+                    name=name,
+                    qual_path=cur_qual_path,
+                    file_path=file_path,
+                    parent_unit_id=cur_parent_unit_id,
                 )
                 body = cur_node.child_by_field_name("body")
                 if body is not None:
-                    stack.append((body, cur_qual_path + (name,), False, unit_id))
+                    stack.append((body, (*cur_qual_path, name), False, unit_id))
                 continue
 
             if node_type == "class_definition":
@@ -211,28 +223,18 @@ class PythonAdapter:
                 if name_node is None:
                     continue
                 name = self._node_text(name_node)
-                qualified_name = ".".join(cur_qual_path + (name,))
-                byte_start, byte_end = self._scope_byte_range(cur_node)
-                line_start, line_end = self._scope_line_range(cur_node)
-                unit_id = compute_unit_id(file_path, kind="class", qualified_name=qualified_name)
-                out.append(
-                    ScopeUnit(
-                        unit_id=unit_id,
-                        kind="class",
-                        name=name,
-                        qualified_name=qualified_name,
-                        file_path=file_path,
-                        line_start=line_start,
-                        line_end=line_end,
-                        byte_start=byte_start,
-                        byte_end=byte_end,
-                        decorators=self._decorator_strings(cur_node),
-                        parent_scope_id=cur_parent_unit_id,
-                    )
+                unit_id = self._emit_scope(
+                    out,
+                    cur_node,
+                    kind="class",
+                    name=name,
+                    qual_path=cur_qual_path,
+                    file_path=file_path,
+                    parent_unit_id=cur_parent_unit_id,
                 )
                 body = cur_node.child_by_field_name("body")
                 if body is not None:
-                    stack.append((body, cur_qual_path + (name,), True, unit_id))
+                    stack.append((body, (*cur_qual_path, name), True, unit_id))
                 continue
 
             # Other node (including `decorated_definition` wrapper): push
@@ -373,8 +375,7 @@ class PythonAdapter:
         file_path: str,
         scope_units: tuple[ScopeUnit, ...],
     ) -> tuple[CallSite, ...]:
-        # Pre-sort scopes by byte_start ASC, byte_end DESC so the most
-        # tightly-enclosing scope is found first by linear search.
+        # Sort deterministically; the shared lookup selects the smallest enclosing span.
         sorted_scopes = sorted(scope_units, key=lambda s: (s.byte_start, -s.byte_end))
         calls: list[CallSite] = []
         for node in self._walk(tree.root_node):
@@ -387,15 +388,8 @@ class PythonAdapter:
             function_node = node.child_by_field_name("function")
             if function_node is None:
                 continue
-            # `callee_name` is RAW SOURCE TEXT per canonical spec.md §5.4
-            # ("raw text; resolution is a separate concern"). For `obj.method()`
-            # this is `"obj.method"`; for multi-line `(\n  chain\n  .step\n)()`
-            # it preserves embedded newlines and parens. The trace-node spec
-            # (when written) is responsible for normalizing this text when
-            # matching against `ImportRef.names` — the field stays raw on the
-            # `ast_facts/` side per spec-fidelity discipline. Changing this
-            # contract requires a `DECISIONS.md` entry that supersedes §5.4,
-            # not a silent shape change here.
+            # Preserve raw callee text, including newlines and parentheses (spec.md §5.4).
+            # Resolution belongs downstream; changing this requires a DECISIONS.md amendment.
             calls.append(
                 CallSite(
                     file_path=file_path,
@@ -491,9 +485,10 @@ class PythonAdapter:
         candidates = self._resolver.resolve_candidate_paths(import_ref.module, import_root)
         # Existence check via the symlink-safe primitive per Internal
         # contracts (allowlist: only `.is_file(follow_symlinks=False)`).
-        existing: list[Path] = [
-            c for c in candidates if (import_root / c).is_file(follow_symlinks=False)
-        ]
+        existing: list[Path] = []
+        for candidate_path in candidates:
+            if (import_root / candidate_path).is_file(follow_symlinks=False):
+                existing.append(candidate_path)
         if len(existing) == 1:
             return ImportResolution(
                 status="resolved",
@@ -536,52 +531,21 @@ class PythonAdapter:
         tree: Tree,
         scope_units: tuple[ScopeUnit, ...],
     ) -> tuple[ComputedParserOutcome, dict[str, bool]]:
-        # Map each ScopeUnit to its tree-sitter node by byte range.
-        # ScopeUnit byte ranges include decorators when wrapped; the
-        # underlying function/class node may have a narrower span.
-        # We pass the full ScopeUnit span (via `_inner_span`) to
-        # `_find_node_by_span`, which uses containment-based lookup —
-        # smallest start_byte / largest end_byte tiebreaker — to locate
-        # the OUTERMOST scope-defining node enclosed by the ScopeUnit.
+        # Map each ScopeUnit to its tree-sitter node by byte range. A decorated
+        # ScopeUnit's `byte_start` includes its `@decorator`s while the underlying
+        # function/class node starts narrower, and the exact inner span is not
+        # recoverable from the ScopeUnit alone — so the full stored span is passed
+        # as a conservative bound and `_find_node_by_span`'s containment lookup
+        # (smallest start_byte / largest end_byte tiebreaker) picks the OUTERMOST
+        # scope-defining node enclosed by it.
         # `decorated_definition` is in target_types so a decorator-region
         # syntax error propagates to the wrapping scope's `has_error`.
-        # NOTE: this currently always returns `"clean"` — syntax errors
-        # surface as per-scope-unit `has_error[unit_id] == True`, not as
-        # a file-wide "failed" outcome. A future syntax-fatal classifier
-        # (e.g., "more than N% of root children are ERROR nodes") could
-        # return `"failed"` and would feed analyze's `failed+degraded_llm`
-        # outcome alongside the FUP-053 raw-bytes path. Not in V1 scope.
+        # Syntax errors remain per-scope flags; the file verdict stays clean.
         has_error: dict[str, bool] = {}
         for scope in scope_units:
-            inner_start, inner_end = self._inner_span(scope)
-            node = _find_node_by_span(tree.root_node, inner_start, inner_end)
+            node = _find_node_by_span(tree.root_node, scope.byte_start, scope.byte_end)
             has_error[scope.unit_id] = bool(node and node.has_error)
         return "clean", has_error
-
-    @staticmethod
-    def _compute_error_lines_from_tree(tree: Tree) -> frozenset[int]:
-        """1-indexed source lines covered by tree-sitter ERROR or MISSING nodes.
-
-        Delegates to the shared `scope_search.error_lines_from_tree`
-        (language-agnostic ERROR/MISSING walk); semantics documented
-        there. See DECISIONS.md#033.
-        """
-        return error_lines_from_tree(tree)
-
-    @staticmethod
-    def _inner_span(scope: ScopeUnit) -> tuple[int, int]:
-        """Return the `ScopeUnit` byte range as the conservative match bound
-        for `_find_node_by_span`'s containment lookup.
-
-        For decorated scopes, `byte_start` includes `@decorator`s; the
-        underlying `function_definition` / `class_definition` node has
-        a narrower start. We can't recover the exact inner span from
-        `ScopeUnit` alone, so the ScopeUnit-to-node match in
-        `compute_parser_outcome` uses the full stored ScopeUnit span as
-        the conservative bound and lets `_find_node_by_span` pick the
-        outermost contained scope-defining node from within it.
-        """
-        return scope.byte_start, scope.byte_end
 
     # ------------------------------------------------------------------
     # Generic tree walker
@@ -649,30 +613,12 @@ def _find_node_by_span(root: Node, byte_start: int, byte_end: int) -> Node | Non
 
 
 def parse_python(source: bytes, file_path: str, resolver: ImportPathResolver) -> ParseResult:
-    """Run the size→pattern→decode→parse pipeline per Internal contracts.
+    """Run exclusions, UTF-8 validation, one parse, and ordered extraction.
 
-    Surfaces a `TypeError` at the top of the pipeline if `source` is not
-    `bytes`. Without this guard, `should_skip` would silently iterate
-    rules and crash deeper in the loop with a confusing traceback when
-    a caller passes `str` by accident.
-
-    Returns:
-      * `ParseResult(parser_outcome="skipped", skip_reason=...)` if any
-        rule in `EXCLUSION_RULES` matches.
-      * `ParseResult(parser_outcome="failed")` if UTF-8 decode fails or
-        if `compute_parser_outcome` returns `"failed"` after extraction.
-        BOTH paths are V1-unreachable through analyze — see the step-2
-        comment below for the decode path and the
-        `_compute_parser_outcome_from_tree` comment for the extraction
-        path. Future raw-bytes intake (FUP-053) and a future syntax-fatal
-        classifier are the respective triggers.
-      * `ParseResult(parser_outcome="clean", scope_units=..., ...,
-        has_error=...)` on the clean path.
-
-    `resolver` is required by `PythonAdapter`'s constructor (the adapter
-    holds it for `resolve_simple_direct_import`); `parse_python` does
-    not invoke the resolver on the clean path, but the constructor
-    parameter is uniform.
+    Non-bytes input raises TypeError. Skipped and failed results contain no facts.
+    Invalid UTF-8 fails; the current adapter reports syntax errors as per-scope
+    flags with a clean file verdict. A defensive failed extraction discards facts.
+    The adapter stores resolver for import resolution; this pipeline does not call it.
     """
     if not isinstance(source, bytes):
         raise TypeError(
@@ -685,25 +631,11 @@ def parse_python(source: bytes, file_path: str, resolver: ImportPathResolver) ->
     skip_reason: SkipReason | None = should_skip(file_path, source)
     if skip_reason is not None:
         return ParseResult(parser_outcome="skipped", skip_reason=skip_reason)
-    # Step 2: UTF-8 strict decode (validity gate; we do not retain the
-    # decoded str, since tree-sitter accepts bytes directly).
-    # NOTE: V1 callers (analyze) re-encode a Python `str` to bytes
-    # before reaching this gate, and intake's `_classify_or_reserve_decode`
-    # rejects invalid UTF-8 upstream with SkipReason.OVERSIZED. The
-    # `parser_outcome="failed"` return is therefore V1-unreachable
-    # through analyze; kept for the raw-bytes intake path (FUP-053) and
-    # for direct `parse_python` consumers that hand it untrusted bytes.
-    #
-    # BOM / CRLF tolerance (FUP-058 closed 2026-05-21): a UTF-8 BOM
-    # (`\xef\xbb\xbf`) is valid UTF-8 (encodes U+FEFF), so strict decode
-    # accepts BOM-prefixed source. CRLF line endings are also accepted —
-    # tree-sitter parses both line-ending conventions correctly and
-    # produces scope-unit byte ranges that include the BOM bytes / CR
-    # bytes as-is. Downstream coordinate translation in `coordinates/`
-    # consumes those byte ranges with the same byte view, so the bytes
-    # round-trip. Pinned by `test_parse_python_handles_utf8_bom_prefix`
-    # and `test_parse_python_handles_crlf_line_endings` in
-    # `tests/unit/test_ast_facts_python.py`.
+    # Validate UTF-8 without retaining decoded text; tree-sitter consumes raw bytes.
+    # Analyze re-encodes already-decoded text, while intake classifies invalid UTF-8
+    # as BINARY. Direct byte callers can still reach this failed return (FUP-053).
+    # BOM and CRLF bytes remain intact for downstream coordinate translation;
+    # tests/unit/test_ast_facts_python.py pins both cases (FUP-058).
     try:
         source.decode("utf-8")
     except UnicodeDecodeError:
@@ -733,5 +665,5 @@ def parse_python(source: bytes, file_path: str, resolver: ImportPathResolver) ->
         call_sites=call_sites,
         assignment_sites=assignment_sites,
         has_error=has_error,
-        error_lines=adapter._compute_error_lines_from_tree(tree),
+        error_lines=error_lines_from_tree(tree),
     )

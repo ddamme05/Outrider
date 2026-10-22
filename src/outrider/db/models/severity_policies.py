@@ -1,13 +1,9 @@
-"""SEVERITY_POLICIES.
+"""Stored severity mappings keyed by version for historical replay.
 
-Versioned mapping from `FindingType` to severity, keyed by `version` PK so a
-finding's classification can be replayed under the policy in effect at the time
-of review per `severity-policy-versioned-for-replay`. The policy itself lives in
-JSONB; its shape is owned by `policy/severity.py` (when it lands), not the DB.
-
-Migration 0001 seeds version "1.0.0" as a non-negotiable migration step — the
-FK from FINDINGS.policy_version is RESTRICT, so without this row every finding
-insert FK-fails on a fresh DB.
+policy/severity.py owns the mapping; policy/versions.py loads and checks stored
+versions (severity-policy-versioned-for-replay). Migration 0001 seeds 1.0.0 so
+findings can reference it on a fresh database; their RESTRICT foreign key prevents
+deleting a referenced policy.
 """
 
 from datetime import datetime

@@ -21,17 +21,9 @@ from outrider.policy.versions import (
     load_policy_for_version,
 )
 
-# Deliberately NOT re-exported (per §1 LOW + §6 implementation
-# discovery): `outrider.policy.canonical` and `outrider.policy.dimensions`
-# are consumed via deep import paths (`from outrider.policy.canonical
-# import SHA256_HEX_PATTERN`, `from outrider.policy.dimensions import
-# FINDING_TYPE_TO_DIMENSION`). Re-exporting from this `__init__.py`
-# creates a circular import for `dimensions` (which imports
-# `ReviewDimension` from `outrider.schemas.review_finding`, which
-# imports back into `outrider.policy` for `EvidenceTier`), and would
-# create two coexisting public paths for `canonical` — defeating the
-# "single chokepoint for identity-hash encoding" property the module
-# exists to enforce. Deep-import is canonical for both.
+# Import canonical and dimensions from their own modules. Re-exporting
+# dimensions here would create a cycle through schemas.review_finding;
+# canonical keeps one public location for identity-hash recipes.
 
 __all__ = [
     "SEVERITY_POLICY",

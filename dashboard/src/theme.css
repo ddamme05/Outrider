@@ -1,11 +1,8 @@
-/* Signal — the single V1 theme. Tokens from
- * dashboard-mockups/22-signal-analytics.html (graphite default). The mockup's other
- * [data-theme] variants AND its theme switcher are intentionally NOT carried — one
- * theme, no switcher (standing scope decision). Graphite surfaces, indigo accent,
- * mono tabular numerics, four semantic palettes (severity / evidence-tier / dimension
- * / event-type). */
+/* Signal theme: graphite surfaces, indigo accent, and shared severity,
+ * evidence-tier, dimension, and audit-event colors. Based on
+ * dashboard-mockups/22-signal-analytics.html. */
 :root {
-  /* surfaces (darkest → lightest) */
+  /* surfaces */
   --sidebar: #0a0c10;
   --header: #111419;
   --bg: #0d0f12;
@@ -17,8 +14,7 @@
   --text: #e7e9ee;
   --muted: #8b919c;
   --faint: #646b76;
-  /* legacy alias the mockup uses for the faintest text tier (audit-feed
-     timestamps, override-field labels, sticky-bar hint) */
+  /* alias for secondary timestamps and labels */
   --muted2: var(--faint);
 
   /* lines */
@@ -81,7 +77,7 @@
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 
-  /* sharp, architectural radii */
+  /* corner radii */
   --radius: 5px;
   --radius-sm: 4px;
 
@@ -116,10 +112,7 @@ a:hover {
   text-decoration: underline;
 }
 
-/* ============================================================
- * Chrome — sidebar + topbar (Signal). Two-tone graphite rails, sharp
- * hairline seams, mono kickers. Single theme, no switcher.
- * ============================================================ */
+/* Application shell: sidebar and topbar. */
 .app {
   position: relative;
   display: grid;
@@ -140,7 +133,7 @@ a:hover {
   overflow-y: auto;
 }
 
-/* Static org/brand mark (no org-switcher dropdown — single-tenant admin scope). */
+/* Brand mark for the operator console. */
 .org {
   display: flex;
   align-items: center;
@@ -258,7 +251,7 @@ a:hover {
   flex: 1;
 }
 
-/* Footer — sharp top hairline + the faint edge-dither signature. */
+/* Sidebar footer and decorative background. */
 .sb-footer {
   border-top: 1px solid var(--hair);
   margin-top: 8px;
@@ -290,7 +283,7 @@ a:hover {
   position: relative;
   z-index: 1;
 }
-/* B3: persistent privacy link at the bottom of the sidebar footer. */
+/* Privacy link in the sidebar footer. */
 .sb-privacy {
   display: block;
   margin-top: 10px;
@@ -446,8 +439,7 @@ h1 {
   min-width: 0;
 }
 
-/* Topbar (Signal chrome) — kicker + screen title + a client-side search field.
- * Eval toggle lives in the sidebar footer; no avatar, no theme switcher. */
+/* Topbar title and client-side review search. */
 .topbar {
   display: flex;
   align-items: center;
@@ -488,8 +480,7 @@ h1 {
   background: var(--accent);
   flex: 0 0 auto;
 }
-/* Demo-deployment brand tag, inline after OUTRIDER in the kicker. Accent-colored and
-   divided so it reads as a distinct label, not part of the product name. */
+/* Demo label beside the product name. */
 .tb-demo {
   color: var(--accent);
   padding-left: 6px;
@@ -530,11 +521,9 @@ h1 {
   font-size: 12.5px;
 }
 
-/* Status pills — sharp Signal chips, color from the semantic palette (never
- * hardcoded). running=info, awaiting=high, expired=neutral(dashed), completed=pos,
- * failed=critical, skipped=faint. */
-/* Read-only demo banner (App shell, under the topbar). Deliberately quiet:
-   informative chrome, not an alert. */
+/* Status colors: running=info, awaiting=high, completed=positive,
+ * failed=critical; expired and skipped use neutral colors. */
+/* Demo banner rendered before the auth gate and routed shell. */
 .demo-banner {
   padding: 6px 20px;
   font-size: 12px;
@@ -616,8 +605,7 @@ h1 {
   background: var(--faint);
 }
 
-/* Reviews list — status groups + rows (severity-counts column omitted: not in
- * the V1 /api/reviews contract). */
+/* Review-list filters, groups, and rows. */
 .filterbar {
   display: flex;
   align-items: center;
@@ -739,11 +727,7 @@ h1 {
   text-align: right;
 }
 
-/* ============================================================
- * Review detail view — mockup-faithful Signal layout: panels, hero head, 3-card
- * metrics strip, per-node pipeline cards. Subject identity (repo + PR) is the
- * hero title; the topbar carries the generic "Review" screen title.
- * ============================================================ */
+/* Review detail: identity panel, four metrics cards, and pipeline strip. */
 .card {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -864,7 +848,7 @@ h1 {
   font-size: 13px;
   margin: 2px 0 6px;
 }
-/* The verdict pill is a button (click -> ReplayInfoModal), like the policy chip. */
+/* Replay verdict button opens ReplayInfoModal. */
 button.verdict-pill {
   cursor: pointer;
   font: inherit;
@@ -979,7 +963,7 @@ button.verdict-pill:hover {
   color: var(--text);
 }
 
-/* Tabs — Findings / Timeline (both backed; the replay-verified timeline landed with feature 6) */
+/* Review-detail findings and timeline tabs. */
 .tabs {
   display: flex;
   gap: 4px;
@@ -1164,9 +1148,8 @@ button.verdict-pill:hover {
   align-items: center;
   gap: 5px;
 }
-/* publish-destination color variants (mockup .dest-inline/.dest-review/.dest-dashboard):
-   the routing destination reads at a glance — INLINE_COMMENT (info), REVIEW_BODY (medium),
-   DASHBOARD_ONLY (faint/dashed, "won't post to GitHub"). The square .tdot carries the color. */
+/* Routing destination chips; dashboard-only uses a dashed border.
+ * These describe routing, not a GitHub publication receipt. */
 .dest-inline {
   color: color-mix(in srgb, var(--sev-info) 62%, var(--text));
   border: 1px solid color-mix(in srgb, var(--sev-info) 40%, transparent);
@@ -1186,8 +1169,8 @@ button.verdict-pill:hover {
   flex: 0 0 auto;
 }
 
-/* Finding cards — mockup-faithful: head chips, body (desc + proof + fix). Gated
- * findings carry a sev-high left edge. */
+/* Finding cards: labels, description, proof, and fix. Gated cards
+ * receive a high-severity-colored left border regardless of severity. */
 .finding {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1279,16 +1262,14 @@ button.verdict-pill:hover {
 .f-proof .trace-chain .arr {
   color: var(--faint);
 }
-/* Finding title — the one-line summary, promoted above the description (matches the
- * GitHub/Slack renderers, which lead with the title). */
+/* Finding title above its description. */
 .f-title {
   font-size: 13.5px;
   font-weight: 600;
   color: var(--text);
   line-height: 1.5;
 }
-/* Evidence code block (CodeBlock.tsx): monospace, wide lines scroll INSIDE the block
- * (overflow-x: auto) so the page body never scrolls horizontally. Optional language chip. */
+/* CodeBlock evidence: wide lines scroll inside the preformatted block. */
 .codeblock {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1331,11 +1312,7 @@ button.verdict-pill:hover {
   color: var(--faint);
 }
 
-/* ============================================================
- * HITL decision controls — inline on gated finding cards while the review is at
- * the gate; sticky submit bar. Outcome selection uses the semantic palette:
- * approve=pos, reject=neg, suppress=neutral, severity_override=judged.
- * ============================================================ */
+/* Approval controls: outcomes, reasons, severity overrides, and submit bar. */
 .hitl {
   margin: 0;
   padding: 13px 14px;
@@ -1356,7 +1333,7 @@ button.verdict-pill:hover {
   color: color-mix(in srgb, var(--sev-high) 62%, var(--text));
   font-family: var(--mono);
 }
-/* segmented decision control (mockup .seg-choice look, button semantics kept) */
+/* Grouped outcome buttons. */
 .outcome-row {
   display: flex;
   border: 1px solid var(--line2);
@@ -1502,13 +1479,8 @@ button.verdict-pill:hover {
   border-radius: var(--radius-sm);
   padding: 7px 11px;
 }
-/* HITL decision bar (.hitl-sticky): pinned to the bottom of the VIEWPORT with position:fixed
-   so "Submit decision" is always reachable while deciding, no matter the scroll position. (Sticky
-   was inert here: .content's overflow:auto traps the sticky context while the window is what
-   actually scrolls.) Spans the content column — left = sidebar width (248px grid track), right
-   edge — with a top hairline + lift shadow so it reads as chrome, not a floating pill. React gates
-   visibility by rendering it conditionally; the review section adds bottom padding (.has-sticky-bar)
-   so the last content clears the bar. */
+/* Fix the decision bar to the viewport bottom within the content column.
+ * ReviewDetail renders it conditionally and adds .has-sticky-bar clearance. */
 .hitl-sticky {
   position: fixed;
   left: 248px;
@@ -1523,7 +1495,7 @@ button.verdict-pill:hover {
   border-top: 1px solid var(--hair);
   box-shadow: 0 -10px 22px -16px rgba(0, 0, 0, 0.85);
 }
-/* Clearance so the fixed bar never covers the last content of the review. */
+/* Reserve space below the review for the fixed decision bar. */
 .has-sticky-bar {
   padding-bottom: 76px;
 }
@@ -1548,7 +1520,7 @@ button.verdict-pill:hover {
   align-items: center;
   gap: 12px;
 }
-/* decision pips — one per gated finding, fill green as decided */
+/* One pip per gated finding; green means its draft passes client checks. */
 .hs-pips {
   display: flex;
   gap: 3px;
@@ -1594,9 +1566,7 @@ button.verdict-pill:hover {
   cursor: not-allowed;
 }
 
-/* ============================================================
- * Audit feed + per-node Details grid (FUP-133).
- * ============================================================ */
+/* Audit feed and per-node details (FUP-133). */
 .details-disc {
   margin: 0 0 14px;
 }
@@ -1649,8 +1619,7 @@ table.details-grid .num {
   color: var(--faint);
 }
 
-/* Audit feed — one row per event, left-accent + type chip colored by event family
- * (--ev-* palette). Family class (.ev-c-*) is set per row in AuditFeed.tsx. */
+/* AuditFeed rows use the shared event-family palette (.ev-c-*). */
 .audit-feed {
   border-top: 1px solid var(--line);
 }
@@ -1767,9 +1736,7 @@ table.details-grid .num {
   background: var(--evc);
 }
 
-/* ============================================================
- * Policy MODAL (FUP-132) — the policy chip opens a real dialog overlay.
- * ============================================================ */
+/* Policy chip and dialog (FUP-132). */
 .chip.policy {
   color: var(--accent-on);
   border-color: var(--accent-line);
@@ -1890,10 +1857,8 @@ table.policy tbody tr:hover {
   color: var(--muted);
 }
 
-/* ============================================================
- * Overview — stat cards + section rail (Signal, layer 3).
- * ============================================================ */
-/* hair-thin accent tick at the card's top-left — Signal signature */
+/* Overview stat cards and decision queue. */
+/* Accent mark on shared cards. */
 .card {
   position: relative;
   overflow: hidden;
@@ -1934,7 +1899,7 @@ table.policy tbody tr:hover {
   color: var(--faint);
   margin-top: 7px;
 }
-/* needs-decision list — mockup .nd-item rows (clickable links, full-width dividers) */
+/* Links to reviews awaiting a decision. */
 .nd-item {
   display: flex;
   align-items: center;
@@ -1992,12 +1957,8 @@ table.policy tbody tr:hover {
   color: var(--muted);
 }
 
-/* ============================================================
- * Overview analytics — KPI deltas/sparklines, hero chart,
- * findings distributions, window selector (Signal, DECISIONS#039).
- * Every surface here renders a REAL aggregate; honest zeros, no
- * interpolation. Charts are hand-rolled SVG (no charting dep).
- * ============================================================ */
+/* Overview analytics (DECISIONS#039): recorded aggregates, window controls,
+ * SVG charts, and findings distributions. */
 .ov-head {
   display: flex;
   justify-content: flex-end;
@@ -2362,7 +2323,7 @@ table.policy tbody tr:hover {
   color: var(--faint);
 }
 
-/* ── Replay timeline (ROADMAP feature 6): playable phase-grouped audit view ── */
+/* Replay timeline: playback controls and phase-grouped events. */
 .tl-scrub {
   display: flex;
   align-items: center;
@@ -2443,8 +2404,8 @@ table.policy tbody tr:hover {
 .tl-inter .tl-evrow {
   grid-template-columns: 168px 1fr;
 }
-/* progressive reveal (Replay page): un-reached rows are hidden, the cursor row fades in. The
-   static audit feed passes shown=Infinity, so no row is future/current — everything renders. */
+/* Playback hides future rows and highlights the cursor. The static
+ * review feed shows every row with shown=Infinity. */
 .tl-evrow.future {
   display: none;
 }
@@ -2468,7 +2429,7 @@ table.policy tbody tr:hover {
     animation: none;
   }
 }
-/* expandable finding/llm rows (PR 2 content panels) */
+/* Expandable finding and model-call rows. */
 .tl-evrow.tl-expandable {
   cursor: pointer;
 }
@@ -2518,15 +2479,13 @@ table.policy tbody tr:hover {
   word-break: break-word;
   margin: 0;
   color: var(--text);
-  /* analyze-node prompts/completions (and finding evidence) can be 30–100 KB — cap the
-     render height and scroll the overflow so an expanded row can't blow out page height
-     or freeze the tab. */
+  /* Scroll large prompt, completion, and evidence blocks within a capped height. */
   max-height: 320px;
   overflow-y: auto;
 }
 
-/* ── Replay reconstruction page (ROADMAP feature 6 — "watch the reconstruction") ──────────── */
-/* `.panel-h .right` (margin-left:auto, flex row) is already defined above and applies here. */
+/* Replay reconstruction: transport, progress, and verification result. */
+/* Reuse the shared panel-header action row. */
 .rp-transport {
   display: flex;
   align-items: center;
@@ -2630,11 +2589,8 @@ table.policy tbody tr:hover {
   color: var(--pos);
 }
 
-/* ── Flat audit feed (review-detail audit-of-record, mockup #screen-detail) ──────────────────
- * The rich flat aesthetic: an append-only banner, .ae-phase dividers, and .ae event rows with an
- * event-family left accent + a colored type chip + a relative timestamp. Selectors verbatim from
- * dashboard-mockups/22-signal-analytics. Rows reuse the .ev-c-* family classes (which set --evc)
- * and the shared .tl-content expand panels. */
+/* Review-detail audit feed: phase dividers, event-family colors, and
+ * relative timestamps. Reuse .tl-content for expanded event details. */
 .audit-note {
   font-size: 11px;
   color: var(--muted);
@@ -2734,9 +2690,7 @@ table.policy tbody tr:hover {
   background: var(--evc);
 }
 
-/* Reviews queue table — Signal mockup (22-signal-analytics.html): filter
-   chips, per-severity tally badges, row-cell typography, the ↻ replay action.
-   Reuses the existing --sev-* / --panel / --line2 / --mono theme vars. */
+/* Reviews table: filter chips, severity tallies, and replay links. */
 .panel-h .right {
   margin-left: auto;
 }
@@ -2813,7 +2767,7 @@ table.policy tbody tr:hover {
   color: var(--muted);
 }
 
-/* Whole reviews-table row is a click target into the review (mockup parity). */
+/* Clickable review rows. */
 tr.review-row {
   cursor: pointer;
 }
@@ -2841,20 +2795,10 @@ tr.review-row:hover {
   outline-offset: 1px;
 }
 
-/* ============================================================
- * Mobile / narrow-viewport layer (≤768px).
- *
- * Desktop chrome is a fixed 248px sidebar + content grid. Below this width the
- * sidebar lifts out of the grid into an off-canvas drawer (the Topbar hamburger
- * toggles `.app.nav-open`; a scrim tap / Escape / nav-link tap closes it), the
- * topbar wraps the search to a full-width second row, the gutters tighten, and
- * the dense data grids collapse their fixed tracks or scroll as a unit. Purely
- * additive — every rule is gated behind the breakpoint, so the desktop layout
- * is unchanged.
- * ============================================================ */
+/* Mobile layout (up to 768px): drawer and close overlay, wrapped topbar,
+ * tighter gutters, and scrolling or narrower data grids. */
 
-/* The mobile-only chrome is hidden on desktop. Kept OUT of the grid flow
- * (display:none) so .app's two-column desktop layout is never perturbed. */
+/* Drawer controls stay outside the desktop layout. */
 .nav-toggle {
   display: none;
 }
@@ -2885,9 +2829,7 @@ tr.review-row:hover {
     box-shadow: var(--shadow-pop);
   }
 
-  /* Full-viewport scrim behind the open drawer (a real <button> so it's a
-     keyboard-reachable close target). Transparent + pointer-events:none when
-     closed so it never intercepts taps on the page beneath. */
+  /* Close overlay behind the drawer; pointer events are disabled when closed. */
   .nav-scrim {
     display: block;
     position: fixed;
@@ -2976,9 +2918,7 @@ tr.review-row:hover {
     gap: 12px;
   }
 
-  /* The five-column audit feed stays honest (no hidden columns) but scrolls
-     horizontally as a unit; header + rows share a min-width so the columns
-     keep their alignment under the scroll. */
+  /* Scroll header and rows together, retaining column alignment. */
   .audit-feed {
     overflow-x: auto;
   }
@@ -2987,9 +2927,7 @@ tr.review-row:hover {
     min-width: 560px;
   }
 
-  /* Replay timeline: shrink the fixed leading tracks so the detail column keeps
-     usable width, and let preformatted proof blocks scroll instead of blowing
-     out the row. */
+  /* Narrow timeline labels and scroll wide proof blocks. */
   .tl-evrow {
     grid-template-columns: 104px 60px 1fr;
     gap: 10px;
@@ -3002,7 +2940,7 @@ tr.review-row:hover {
     overflow-x: auto;
   }
 
-  /* Token gate goes fluid so it never collides with the viewport edges. */
+  /* Keep the key form within mobile gutters. */
   .token-gate {
     padding: 16px;
   }
@@ -3019,15 +2957,9 @@ tr.review-row:hover {
   }
 }
 
-/* ============================================================
- * GitHub App setup (/setup, DECISIONS.md#070) — polished onboarding
- * card matching the Signal system: padded card with the accent tick,
- * a real labelled field with a focus ring, a custom checkbox, and
- * semantic status/callout chrome. (Replaces the unstyled default form.)
- * ============================================================ */
+/* GitHub App and Slack setup cards (DECISIONS.md#070). */
 .setup-page {
-  /* No side padding and no own scroll container: the parent `.content` already
-     pads (24px) and scrolls. Only a modest top offset is added here. */
+  /* The parent .content provides gutters; this page centers the card. */
   padding: 16px 0 40px;
   display: flex;
   justify-content: center;
@@ -3140,8 +3072,7 @@ tr.review-row:hover {
   margin-top: 4px;
 }
 
-/* The field — the centrepiece. Micro-label, generous input with a focus glow,
- * a quiet hint. Replaces the browser-default box. */
+/* Setup form labels, input states, and hints. */
 .setup-form {
   margin-top: 4px;
 }
@@ -3195,8 +3126,7 @@ tr.review-row:hover {
   line-height: 1.5;
 }
 
-/* Custom checkbox — native <input> (a11y + testing preserved) restyled via
- * appearance:none, accent fill + checkmark on :checked, focus ring. */
+/* Style the native checkbox with a checked mark and keyboard focus ring. */
 .setup-check {
   display: flex;
   align-items: flex-start;
@@ -3253,7 +3183,7 @@ tr.review-row:hover {
   padding-top: 0;
 }
 
-/* Buttons inherit the shared .btn / .btn.primary; add a spacing + danger tone. */
+/* Setup buttons reuse .btn; reset adds a danger color. */
 .setup-btn {
   margin-top: 2px;
 }

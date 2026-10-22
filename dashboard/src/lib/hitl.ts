@@ -7,22 +7,18 @@ export type Outcome = "approve" | "reject" | "suppress" | "severity_override";
 
 export const SEVERITIES = ["critical", "high", "medium", "low", "info"] as const;
 
-// After a 202 the graph resumes in the background and the status flips
-// awaiting → running. If it hasn't advanced within this window, the resume may
-// have failed (e.g. the natural-key-conflict stuck case) — the UI stops showing
-// a bare "submitted" and offers refresh + re-submit. See FUP-135.
+// After an accepted submit, a still-pending review offers a same-payload retry
+// once this resume window passes. Background resume may have failed (FUP-135).
 export const RESUME_WINDOW_MS = 12000;
 
-// A review only accepts decisions while it sits at the HITL gate. The detail
-// view can also show old completed/running/failed reviews that carried gated
-// findings — those must be READ-ONLY, not controls that 409.
+// Controls are actionable only at the current or expired approval gate.
+// Old gated findings on running/completed/failed reviews stay read-only.
 export function isActionable(status: string): boolean {
   return status === "awaiting_approval" || status === "awaiting_approval_expired";
 }
 
-// The gated set is the AUTHORITATIVE `ReviewDetail.findings_requiring_approval`
-// from the server (FUP-134) — membership by finding_id, not inferred from
-// severity. The decide endpoint enforces the exact same set.
+// ReviewDetail uses the server approval snapshot for membership by finding_id
+// (FUP-134); severity alone cannot identify the exact gated set.
 
 // In-progress reviewer state for one finding. Final shape is built at submit.
 export interface DecisionDraft {
@@ -33,10 +29,8 @@ export interface DecisionDraft {
 
 export const EMPTY_DRAFT: DecisionDraft = { outcome: null, reason: "", overrideSeverity: null };
 
-// Mirrors the server payload validator (PerFindingDecisionPayload): non-approve
-// needs a non-blank reason; severity_override needs an override that differs
-// from the finding's current (baseline) severity. Server stays authoritative;
-// this only gates the submit button to avoid pointless 422 round-trips.
+// Client-side submit checks cover a non-blank reason for non-approve outcomes
+// and a changed severity for overrides. The server validates the full payload.
 export function isDraftValid(draft: DecisionDraft, finding: FindingView): boolean {
   if (draft.outcome === null) return false;
   if (draft.outcome !== "approve" && draft.reason.trim() === "") return false;
@@ -47,9 +41,8 @@ export function isDraftValid(draft: DecisionDraft, finding: FindingView): boolea
   return true;
 }
 
-// Build one payload entry. approve still sends reason: "" (the field is required
-// in the payload; only non-approve needs it non-blank). original_severity and
-// reviewer_id are NOT sent — the server derives/sets them.
+// Approve sends the required reason field as empty text. The server supplies
+// original severity and reviewer identity; neither belongs in this payload.
 export function toPayload(draft: DecisionDraft, finding: FindingView): PerFindingDecisionPayload {
   const entry: PerFindingDecisionPayload = {
     finding_id: finding.finding_id,
@@ -62,10 +55,8 @@ export function toPayload(draft: DecisionDraft, finding: FindingView): PerFindin
   return entry;
 }
 
-// We can't read the HTTP status off an openapi-react-query mutation error (it
-// throws only the parsed body), so classify on the body shape. The mismatch 422
-// carries {detail:{missing,extras}}; everything else (409 conflict, etc.) gets
-// the honest generic message.
+// Mutation errors expose the parsed body, not the HTTP status. Recognize the
+// gated-set mismatch shape; use a generic refresh message for other failures.
 export function decideErrorMessage(error: unknown): string {
   const detail = (error as { detail?: unknown } | null)?.detail;
   if (detail && typeof detail === "object" && ("missing" in detail || "extras" in detail)) {

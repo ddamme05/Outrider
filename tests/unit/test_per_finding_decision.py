@@ -1,10 +1,8 @@
-"""PerFindingDecision: enforce_override_fields covers three spec §7.4 rules.
+"""PerFindingDecision cross-field validation and the frozen-artifact guard.
 
-Rule 1: SEVERITY_OVERRIDE requires both override_severity and original_severity.
-Rule 2: APPROVE / REJECT / SUPPRESS must NOT carry override_severity or
-        original_severity — those fields are SEVERITY_OVERRIDE-specific per
-        the field docstrings.
-Rule 3: any non-APPROVE outcome requires a non-empty reason.
+Exercises `enforce_override_fields` directly: override fields must appear
+together only on `SEVERITY_OVERRIDE`, a severity override must change the
+baseline, and every non-`APPROVE` outcome requires a non-empty reason.
 
 APPROVE is the only outcome where reason="" admits — the field itself is
 required (no default), so APPROVE callers pass reason="" to keep the
@@ -57,6 +55,20 @@ def test_severity_override_admits_with_both_severities() -> None:
     assert decision.original_severity == FindingSeverity.HIGH
 
 
+def test_severity_override_must_change_severity() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="requires override_severity != original_severity",
+    ):
+        PerFindingDecision(
+            finding_id=uuid4(),
+            outcome=PerFindingOutcome.SEVERITY_OVERRIDE,
+            reason="no change intended",
+            override_severity=FindingSeverity.HIGH,
+            original_severity=FindingSeverity.HIGH,
+        )
+
+
 def test_reject_requires_reason() -> None:
     """REJECT with empty reason raises (non-APPROVE rule)."""
     with pytest.raises(ValidationError, match="requires a non-blank reason"):
@@ -92,8 +104,8 @@ def test_severity_override_requires_reason() -> None:
 def test_approve_allows_empty_reason() -> None:
     """APPROVE is the only outcome where reason="" admits.
 
-    The field itself is required at construction (no default per spec §7.4
-    line 269); APPROVE callers pass reason="" explicitly. A non-empty reason
+    The field itself is required at construction (no default on
+    PerFindingDecision.reason); APPROVE callers pass reason="" explicitly. A non-empty reason
     on APPROVE is also allowed (positive note).
     """
     silent_approve = PerFindingDecision(

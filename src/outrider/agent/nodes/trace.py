@@ -1,18 +1,15 @@
 # See specs/2026-05-23-trace-node.md and DECISIONS.md#017, #024, #025, #026.
-"""Trace node — consumes `state.trace_candidates`, ranks via Haiku,
-resolves via two-phase fetch (probe + content), emits
-`TraceDecisionEvent` audit-first.
+"""Find other files that may explain an analysis finding.
 
-Audit-first emission contract + two-phase fetch design + failure
-semantics: see `specs/2026-05-23-trace-node.md` (the spec is the
-source of truth for the audit-boundary invariants). The step-by-step
-flow is also visible inline in the `trace()` body via step comments.
+`trace()` groups suggested imports by finding, chooses candidates to check,
+probes their paths, records each decision, and fetches resolved files for the
+next analysis pass. Probing checks which path exists; the separate content
+fetch supplies the text analysis will read.
 
-Security-relevant: the Haiku-flatten step (in `trace()`'s step 6 +
-the comment block above `flat_candidates`) carries the candidate-
-ordering attack rationale — cross-bucket sort vs intra-bucket
-insertion order; insertion-order's PR-content influence surface;
-the FOLLOWUP for `TraceRankingRejectedEvent` audit-attribution.
+`_rank_pending_candidates` owns candidate selection and ordering.
+`_resolve_via_probes` owns path resolution. Decisions are persisted before
+they enter graph state, so retries can recover from the audit record.
+See `specs/2026-05-23-trace-node.md` for the audit and failure contracts.
 """
 
 from __future__ import annotations
@@ -57,66 +54,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Cap on candidates probed per source-finding bucket per trace invocation.
-# Without a cap, a hostile (or buggy) analyze pass can emit N candidates
-# per finding × M findings × up to 7 paths-per-candidate GitHub fetches
-# in Phase 1 (module form — the suffix-strip ladder: 2 module-form
-# probes + 2 per strip level × `MAX_SUFFIX_STRIP_LEVELS` = 6, FUP-209;
-# specifier form — the pragmatic-six fan-out at level 0 only, plus the
-# literal target for extension-bearing specifiers = 7-path worst case
-# per DECISIONS.md#024 Amended 2026-07-03 + addendum). The cap is applied
-# to insertion order (the order analyze emitted candidates into
-# `state.trace_candidates`, reducer-controlled) BEFORE the Haiku
-# ranking call, so membership in the probed set is
-# reducer-deterministic — a hostile analyze-LLM cannot use ranking to
-# smuggle attacker-chosen candidates past the cap. The HARD per-pass
-# fetch ceiling is `MAX_PROBE_FETCHES_PER_PASS` (below) — the
-# per-candidate ladder bounds shape, the pass budget bounds total.
-# The Haiku ranking step orders the post-cap bucket (informs
-# intra-bucket probe order; reserved for future probe-behavior changes
-# per spec M6 where order will gate early-exit). The full pre-cap
-# admitted candidate list (canonicalized, plus corrected module-form
-# siblings per #024's from-import amendment) lives in
-# `state.trace_candidates` for forensic inspection; raw model strings
-# live in the stored LLM exchange (recoverable within the content
-# retention window). `TraceDecisionEvent.proposed_import_strings`
-# carries ONLY the deduped+capped bucket per finding.
+# Limit unique imports checked per finding. Deduplicate and cap in reducer
+# insertion order before ranking, so model ranking cannot change membership.
+# The full admitted list remains in state.trace_candidates; audit decisions
+# contain only the selected imports. MAX_PROBE_FETCHES_PER_PASS bounds total I/O.
 MAX_CANDIDATES_PER_FINDING: Final[int] = 5
 
-# Suffix-strip ladder depth for Phase 1 resolution (FUP-209). Level 0
-# reads the whole import_string as a module; level k strips the trailing
-# k components (symbol-form fallback: `svc.queries.run_query` needs
-# strip 1; `app.views.UserView.get` — method on a class — needs strip
-# 2). Depth 2 covers the common module.symbol and module.Class.method
-# emission shapes; deeper chains (e.g. nested-class methods,
-# `pkg.mod.Outer.Inner.method`) are real Python but rare, and degrade
-# gracefully to `unresolved`. The cap is a deliberate probe-cost bound.
+# Python candidates may name a function or class method instead of a module.
+# Strip up to two trailing names to find the module (FUP-209); deeper chains
+# can remain unresolved. JS/TS relative paths do not use this fallback.
 MAX_SUFFIX_STRIP_LEVELS: Final[int] = 2
 
-# Hard ceiling on trace GitHub fetches per pass — Phase 1 probes AND
-# Phase 2 content fetches draw from the same budget (a probes-only cap
-# would leave up to one uncapped content fetch per resolved finding on
-# top, and the stated ceiling wouldn't be real). The deterministic
-# control that keeps a hostile analyze pass (max findings × max
-# candidates, all misses — every miss pays the full ladder) from
-# exhausting the installation's 5000/hr GitHub rate limit: without it
-# the ladder worst case is ~6000-7680 requests/pass before content
-# fetches. 1024/pass × depth-2 rounds ≈ 2048/review, ~40% of the
-# hourly budget. Legitimate passes sit far below (a handful of
-# findings with candidates; the probe memo dedupes shared-parent
-# paths; in-PR paths are pre-seeded and cost zero fetches). On
-# exhaustion, unfunded probe paths count as not-real (candidates land
-# `unresolved`) and unfunded Phase 2 fetches are skipped (the decision
-# stays `resolved`; no fetched file lands this pass); a WARN is logged
-# once per pass. Per-installation cross-review budget tracking stays
-# FUP-077.
+# Probes and content fetches share one budget to bound GitHub requests.
+# Unfunded probes count as missing; an unfunded content fetch leaves its
+# decision resolved but adds no file. Warn once per pass. Cross-review rate
+# accounting is deferred to FUP-077.
 MAX_PROBE_FETCHES_PER_PASS: Final[int] = 1024
 
-# Depth limit on the analyze ⇄ trace loop. After round 2, the trace
-# router unconditionally routes to `hitl` (the next non-trace
-# destination; `hitl` then pass-throughs or interrupts depending on
-# the finding set) — bounds the loop's total wall-clock cost and
-# matches the spec's depth-2 ceiling.
+# graph._trace_router permits another analysis pass only below this limit
+# and when this trace pass fetched new files. Otherwise it routes to synthesize.
 MAX_ANALYSIS_ROUNDS: Final[int] = 2
 
 
@@ -166,28 +122,20 @@ async def trace(
     trace_sink: TraceEventSink,
     github_factory: Callable[[int], Awaitable[InstallationGitHubClient]],
 ) -> dict[str, object]:
-    """Run one trace pass.
+    """Resolve suggested imports and return decisions plus newly fetched files.
 
-    Returns `{"trace_decisions": [...], "trace_fetched_files": [...],
-    "last_trace_pass_fetched_count": int}` for LangGraph's reducer to
-    merge (the two list fields use `append_with_dedup_by`;
-    `last_trace_pass_fetched_count` is a scalar overwrite per invocation
-    — the per-pass-delta signal `_trace_router` reads).
-
-    Step order matches the module docstring. The Haiku ranking call is
-    one per invocation (not per finding); the LLM sees all candidates
-    at once and orders them.
+    LangGraph deduplicates the two returned lists. The fetched-file count
+    describes this invocation alone, so the router can decide whether another
+    analysis pass has new work. Ranking uses at most one model call per pass.
     """
-    # Deterministic per-invocation phase_id: same `state.analysis_rounds`
-    # length on resume re-runs produces the same key, so the PhaseEventSink
-    # idempotency collapses re-emissions.
+    # Retrying the same analysis round reuses its audit phase identity.
     phase_id = compute_phase_id(
         review_id=str(state.review_id),
         node_id="trace",
         attempt_key=f"trace-pass-{len(state.analysis_rounds)}",
     )
 
-    # Step 1: start phase event.
+    # Mark the start of this pass.
     await phase_event_sink.emit_phase(
         ReviewPhaseEvent(
             review_id=state.review_id,
@@ -199,158 +147,32 @@ async def trace(
         )
     )
 
-    # Step 2: build join lookup. Raises TraceJoinIntegrityError on collision.
+    # Link candidates to findings; duplicate proposal hashes raise.
     join_lookup = _build_proposal_hash_join(state)
-    # The importing-file anchor per finding — relative-specifier probe
-    # construction is importing-file-relative (DECISIONS.md#024 Amended
-    # 2026-07-03); module-form probes ignore it.
+    # Relative imports resolve from the finding's file (DECISIONS.md#024).
     finding_file_paths = _build_finding_file_paths(state)
 
-    # Step 3: already-traced set for within-graph idempotency.
-    already_traced: set[UUID] = {d.source_finding_id for d in state.trace_decisions}
+    # Choose candidates for findings that still need a decision.
+    ranked_by_finding = await _rank_pending_candidates(
+        state=state,
+        join_lookup=join_lookup,
+        provider=provider,
+        trace_model=trace_model,
+    )
 
-    # Step 4: bucket candidates by source_finding_id via the join.
-    # Unjoinable candidates are the documented forensic-only case per
-    # DECISIONS.md#025 point 6 (rejected-parent proposals whose
-    # candidates stay in state.trace_candidates for replay but produce
-    # no TraceDecisionEvent and no GitHub fetch). They are skipped here,
-    # logged at INFO inside the helper, and remain visible in state.
-    candidate_buckets = _bucket_candidates_by_finding(state.trace_candidates, join_lookup)
-
-    # Step 5: drop already-traced buckets.
-    pending_buckets = {
-        finding_id: bucket
-        for finding_id, bucket in candidate_buckets.items()
-        if finding_id not in already_traced
-    }
-
-    # Step 6: Haiku ranking. One call across the capped candidate set.
-    # Empty pending_buckets → no Haiku call, no decisions to emit.
-    #
-    # DEDUPE-THEN-CAP: each bucket is FIRST deduped by `import_string`
-    # (first-occurrence-wins, order-stable),
-    # THEN truncated to MAX_CANDIDATES_PER_FINDING. Two candidates with
-    # the same `import_string` but different `reason` are distinct
-    # `candidate_id`s (content-hash) and both survive the reducer's
-    # `append_with_dedup_by(candidate_id)`; without pre-cap dedup, a
-    # benign-but-loquacious LLM that proposed the same import 5+ times
-    # with different rationales would fill every slot with the same
-    # import_string, crowding out unique candidates from ranking,
-    # probe-fetch fanout, and the audit row's set-semantic
-    # `proposed_import_strings`. Dedupe-then-cap means
-    # MAX_CANDIDATES_PER_FINDING bounds UNIQUE imports per finding —
-    # matching the cap's stated intent + the downstream audit-event
-    # validator's set semantics. PRE-RANK (per earlier F3) is preserved:
-    # the Haiku call still receives ≤ MAX_CANDIDATES_PER_FINDING ×
-    # len(pending_buckets) candidates; the dedup tightens the bound by
-    # eliminating duplicate work. Trade-off remains: the audit row's
-    # `proposed_import_strings` carries the post-dedup-and-cap set, NOT
-    # the full admitted list. Operators wanting the full pre-cap
-    # list read `state.trace_candidates` (reducer-deduped per finding).
-    #
-    # Flatten: cross-bucket order is `sorted(pending_buckets)` (by
-    # `source_finding_id` UUID — content-derived from `proposal_hash`
-    # which #022 + M5 make collision-resistant); intra-bucket order
-    # is the reducer's insertion order (the order analyze emitted
-    # candidates into `state.trace_candidates`).
-    #
-    # Intra-bucket is deliberately NOT sorted by `candidate_id`
-    # (SHA-256 of LLM-controlled fields): a hostile analyze-LLM could
-    # grind candidate_ids to win lexicographic order, then force
-    # parser fallback (e.g., via a malformed ranking response) to
-    # smuggle attacker-chosen candidates into the top-K. Insertion
-    # order is reducer-controlled.
-    #
-    # Residual attack surface (see FOLLOWUPS — TraceRankingRejectedEvent):
-    # PR-author content can influence analyze-LLM's emission order,
-    # so insertion order is influenced (but not deterministic) by
-    # PR content. The dedicated rejected-event audit type is the V1.5
-    # mitigation that lets operators observe rejection-rate spikes.
-    ordered_candidates: tuple[TraceCandidate, ...] = ()
-    if pending_buckets:
-        # Dedupe each bucket BEFORE applying the per-finding cap so
-        # MAX_CANDIDATES_PER_FINDING bounds unique imports, not raw
-        # entries. Downstream consumers (rank, probe, audit) all see
-        # this same deduped+capped set.
-        capped_buckets: dict[UUID, tuple[TraceCandidate, ...]] = {
-            finding_id: _dedupe_by_import_string(bucket)[:MAX_CANDIDATES_PER_FINDING]
-            for finding_id, bucket in pending_buckets.items()
-        }
-        flat_candidates = tuple(
-            c for finding_id in sorted(capped_buckets) for c in capped_buckets[finding_id]
-        )
-        # Defensive: a non-empty `pending_buckets` MUST flatten non-empty.
-        # Guard against a future refactor that empties a bucket without
-        # removing the key.
-        if flat_candidates:
-            # Skip the Haiku ranking call when ranking can't change the
-            # outcome:
-            #
-            #   (a) a single flat candidate is trivially its own top-K
-            #       (the original short-circuit), and
-            #   (b) every per-finding bucket already has exactly one
-            #       candidate — ranking only reorders WITHIN buckets
-            #       (Step 7 re-groups by `source_finding_id`), so
-            #       singleton buckets get an inconsequential reordering.
-            #
-            # (b) is the common shape: many findings × 1 unique import
-            # each. Without it, every trace pass with N≥2 distinct
-            # findings (one candidate each) fires a Haiku call whose
-            # ordering output is discarded by the re-grouping. The
-            # post-cap-flatten order is preserved as-is on both
-            # short-circuits.
-            if len(flat_candidates) == 1 or all(
-                len(bucket) == 1 for bucket in capped_buckets.values()
-            ):
-                ordered_candidates = flat_candidates
-            else:
-                ordered_candidates = await _rank_candidates_via_haiku(
-                    state=state,
-                    candidates=flat_candidates,
-                    provider=provider,
-                    trace_model=trace_model,
-                )
-
-    # Step 7: process each source_finding_id bucket. Trace_decisions +
-    # trace_fetched_files accumulate locally; emitted via the audit-first
-    # sink per decision, returned in the state delta atomically at step 8.
+    # Accumulate decisions and files locally; return state only after success.
     accumulated_decisions: list[TraceDecision] = []
     accumulated_fetched_files: list[TraceFetchedFile] = []
-
-    # Group the ranked-and-ordered candidates back into per-finding
-    # buckets, preserving the LLM's intra-bucket priority order.
-    ranked_by_finding: dict[UUID, list[TraceCandidate]] = {}
-    for candidate in ordered_candidates:
-        # Re-derive finding_id via the join (already validated at step 2).
-        finding_id = join_lookup.get(candidate.source_proposal_hash)
-        if finding_id is None:
-            # Unjoinable — was dropped at step 4 but defensive against
-            # mutation between bucket-build and rank-call.
-            continue
-        ranked_by_finding.setdefault(finding_id, []).append(candidate)
 
     gh_client = await github_factory(state.pr_context.installation_id)
     head_sha = state.pr_context.head_sha
     pr_file_paths: frozenset[str] = frozenset(cf.path for cf in state.pr_context.changed_files)
-    # Seed the within-pass fetch-dedup set with paths already in state
-    # (replay / multi-pass) so a Phase-2 fetch never repeats a
-    # `(target_file, head_sha)` round-trip that would land on a path
-    # the reducer's first-write-wins dedup-by-path is going to drop
-    # anyway. Also drives the `last_trace_pass_fetched_count` scalar
-    # the router reads: the count must reflect NEW state, not all
-    # successful Phase-2 calls (two findings resolving to the same
-    # target_file would otherwise count as 2 when only 1 file lands).
+    # Already-fetched paths need no new content fetch and must not inflate
+    # the count that tells the router whether this pass added new work.
     fetched_target_files: set[str] = {f.path for f in state.trace_fetched_files}
 
-    # Pass-level probe memo + budget (FUP-209 review). The memo dedupes
-    # byte-identical Phase 1 probes across candidates AND buckets
-    # (sibling symbol-form candidates share parent-module paths), and is
-    # seeded with the head content state already carries for PR-diff
-    # files — probing a path the PR itself changed needs no GitHub
-    # round-trip (removed files have no head content and are deliberately
-    # not seeded, so a candidate naming a deleted module still probes and
-    # misses). The budget hard-caps Phase 1 fetches per pass; see the
-    # `MAX_PROBE_FETCHES_PER_PASS` comment for the hostile-PR math.
+    # Reuse probe results across findings and seed them with known PR content.
+    # Deleted files have no head content, so they still require a probe.
     probe_memo: dict[str, bytes | None] = {
         cf.path: cf.content_head.encode("utf-8")
         for cf in state.pr_context.changed_files
@@ -358,19 +180,9 @@ async def trace(
     }
     probe_budget = _ProbeBudget(remaining=MAX_PROBE_FETCHES_PER_PASS)
 
-    # Crash-resume recovery (audit-ahead-of-state window). A decision row
-    # persisted by a run that crashed after `emit_trace_decision` but
-    # before this node's state delta merged is invisible to the step-5
-    # `already_traced` gate (state lags audit). Re-probing would re-decide
-    # the finding under possibly-newer resolver semantics and trip the
-    # persister's natural-key identity guard, aborting the resumed
-    # review. Adopt the persisted row instead — it is canonical per
-    # M7 (b) — and skip probe + emit for that finding; the loud guard
-    # keeps firing for concurrent-run / cross-run divergence (V1.5
-    # parallel-analyze, webhook redispatch) that this pass-start
-    # snapshot can miss. (Within one continuous run the guard cannot
-    # fire for a finding: `already_traced` blocks cross-pass re-entry
-    # and the bucket loop visits each finding once.)
+    # A crash can leave audit ahead of state. Recover persisted decisions
+    # rather than resolve them again under potentially changed rules.
+    # Concurrent conflicts still raise through the persister (spec M7).
     persisted_decisions: dict[UUID, TraceDecisionEvent] = {}
     if ranked_by_finding:
         persisted_decisions = {
@@ -379,19 +191,7 @@ async def trace(
         }
 
     for finding_id in sorted(ranked_by_finding):
-        # Bucket here is dedup'd-then-capped to MAX_CANDIDATES_PER_FINDING:
-        # step 6 deduped each `pending_buckets[finding_id]` by
-        # `import_string` (first-occurrence-wins, order-stable) BEFORE
-        # the cap, then truncated to MAX_CANDIDATES_PER_FINDING. Ranking
-        # reorders but does not introduce duplicates. So
-        # `ranked_by_finding[finding_id]` already satisfies the audit
-        # event's `_enforce_proposed_import_strings_unique` validator
-        # (set-semantic per #024) by construction — no further dedup
-        # call needed here. The full pre-cap candidate set lives in
-        # `state.trace_candidates` (reducer-deduped per source finding);
-        # operators wanting the full admitted proposal set for forensic
-        # inspection read it from there (raw model strings: the stored
-        # LLM exchange, within the content retention window).
+        # Selection already deduplicated and capped this finding's imports.
         bucket = ranked_by_finding[finding_id]
 
         existing_event = persisted_decisions.get(finding_id)
@@ -407,12 +207,9 @@ async def trace(
             # Phase 1: probe fetches across this finding's ranked candidates.
             source_finding_file = finding_file_paths.get(finding_id)
             if source_finding_file is None:
-                # Unreachable while the join builds from the same rounds;
-                # WARN loudly rather than degrade silently if a future
-                # change ever forks the two walks. "" is an invalid
-                # importing path, so specifier candidates construct zero
-                # probe paths and land `unresolved` (module-form probes
-                # ignore the anchor).
+                # An absent file indicates inconsistent finding lookups.
+                # The empty anchor makes relative imports unresolved;
+                # module-form probes do not use it.
                 logger.warning(
                     "trace: finding %s has no file_path in analysis rounds "
                     "(join/rounds divergence?); specifier-form candidates in "
@@ -431,13 +228,7 @@ async def trace(
                 probe_budget=probe_budget,
             )
 
-            # Construct TraceDecisionEvent. `proposed_import_strings` carries
-            # the dedup'd-then-capped Haiku-ranked import strings (≤
-            # MAX_CANDIDATES_PER_FINDING UNIQUE imports per bucket; see
-            # step 6 for the ordering rationale). The full pre-cap LLM
-            # proposal lives in `state.trace_candidates` for forensic
-            # inspection. `resolved_candidate_paths` is the probe output
-            # (only the paths that fetched OK).
+            # Record the selected imports and the paths resolution accepted.
             decision_event = TraceDecisionEvent(
                 review_id=state.review_id,
                 is_eval=state.is_eval,
@@ -449,15 +240,11 @@ async def trace(
                 resolved_candidate_paths=probe_outcome.resolved_candidate_paths,
             )
 
-            # Audit-first per M7: emit BEFORE returning state delta. The sink
-            # returns the canonical persisted event (incoming on insert,
-            # existing on natural-key no-op per M7 b).
+            # Persist first; a retry may return an existing canonical event.
             persisted_event = await trace_sink.emit_trace_decision(decision_event)
 
-        # Build state-layer TraceDecision from the RETURNED event so
-        # state + audit stay in lockstep across retry/replay even when
-        # per-emission fields (reason, proposed_import_strings,
-        # resolved_candidate_paths) differ between attempts.
+        # Build state from the event the sink returned, keeping retry/replay
+        # consistent even when this attempt proposed different metadata.
         accumulated_decisions.append(
             TraceDecision(
                 source_finding_id=persisted_event.source_finding_id,
@@ -466,23 +253,13 @@ async def trace(
                 resolution_status=persisted_event.resolution_status,
                 proposed_import_strings=persisted_event.proposed_import_strings,
                 resolved_candidate_paths=persisted_event.resolved_candidate_paths,
-                # Mirror the full persisted event — `trace_path` is None
-                # in V1 trace emission but the audit→state lift must
-                # carry whatever the persister returns so state and
-                # audit don't diverge if the persisted row ever has a
-                # non-None trace_path (V1.5 + replay reconstruction).
+                # Retain a persisted trace_path even though new events omit it.
                 trace_path=persisted_event.trace_path,
             )
         )
 
-        # Phase 2: content fetch only for resolved AND not-in-PR per M8
-        # AND not-already-fetched (within-pass OR carried-from-state).
-        # Probe outcomes do NOT populate trace_fetched_files; only this
-        # explicit second fetch does. The `fetched_target_files` set
-        # prevents duplicate Phase-2 round-trips when multiple findings
-        # resolve to the same target (the reducer would drop dupes via
-        # first-write-wins on `path`, but the GitHub call already
-        # happened, and the scalar would have over-counted).
+        # Phase 2 fetches content only for resolved paths outside the PR.
+        # Deduplicate before I/O so shared targets count as one new file.
         if (
             persisted_event.resolution_status == "resolved"
             and persisted_event.target_file is not None
@@ -502,9 +279,7 @@ async def trace(
                 accumulated_fetched_files.append(fetched_file)
                 fetched_target_files.add(fetched_file.path)
 
-    # Step 8: phase-end + state delta. Coupled atom — either both happen
-    # (success path) or neither (any earlier exception propagates without
-    # phase-end nor state delta merge).
+    # Earlier failures propagate without an end marker or state delta.
     await phase_event_sink.emit_phase(
         ReviewPhaseEvent(
             review_id=state.review_id,
@@ -516,14 +291,8 @@ async def trace(
         )
     )
 
-    # Single return path. `last_trace_pass_fetched_count` is the router's
-    # per-invocation delta signal — see ReviewState's field comment.
-    # MUST be present in EVERY return delta from this function (including
-    # zero-fetch calls AND any future early-return). The default-overwrite
-    # reducer means a delta missing the key leaves the prior invocation's
-    # value in state, and `_trace_router` would route on stale data
-    # (infinite loop / unwanted re-entry under depth > 2). If you add an
-    # early return below, include the key.
+    # Always overwrite the per-pass count, including zero, so the router
+    # cannot mistake a previous pass's fetched files for new work.
     state_delta: dict[str, object] = {
         "trace_decisions": accumulated_decisions,
         "trace_fetched_files": accumulated_fetched_files,
@@ -532,9 +301,71 @@ async def trace(
     return state_delta
 
 
-# ---------------------------------------------------------------------------
-# Helpers (private; tested via the trace node's unit tests).
-# ---------------------------------------------------------------------------
+async def _rank_pending_candidates(
+    *,
+    state: ReviewState,
+    join_lookup: dict[str, UUID],
+    provider: LLMProvider,
+    trace_model: str,
+) -> dict[UUID, list[TraceCandidate]]:
+    """Choose unique imports for each undecided finding, then rank if useful.
+
+    Deduplicate and cap each group in reducer insertion order. Sorting by
+    candidate_id would let model-controlled hashes influence selection.
+    PR content can still influence analysis emission order; see FOLLOWUPS
+    for TraceRankingRejectedEvent attribution.
+
+    Groups flatten in finding-id order. The model may reorder candidates
+    within groups, but cannot change membership. Skip ranking when every
+    group has one candidate, since there is no within-group order to choose.
+    """
+    # Do not decide a finding again on graph re-entry (DECISIONS.md#025).
+    already_traced: set[UUID] = {d.source_finding_id for d in state.trace_decisions}
+    # Rejected-parent candidates remain in state for inspection, but cannot
+    # join a finding and therefore produce no decision or fetch (#025).
+    candidate_buckets = _bucket_candidates_by_finding(state.trace_candidates, join_lookup)
+
+    pending_buckets = {
+        finding_id: bucket
+        for finding_id, bucket in candidate_buckets.items()
+        if finding_id not in already_traced
+    }
+
+    ordered_candidates: tuple[TraceCandidate, ...] = ()
+    if pending_buckets:
+        # Different reasons can share an import string. Deduplicate first so
+        # repeated imports do not consume the cap.
+        capped_buckets: dict[UUID, tuple[TraceCandidate, ...]] = {
+            finding_id: _dedupe_by_import_string(bucket)[:MAX_CANDIDATES_PER_FINDING]
+            for finding_id, bucket in pending_buckets.items()
+        }
+        flat_candidates = tuple(
+            c for finding_id in sorted(capped_buckets) for c in capped_buckets[finding_id]
+        )
+        # Guard against a group retaining its key after losing all candidates.
+        if flat_candidates:
+            # Keep the existing order when ranking adds no useful priority.
+            if len(flat_candidates) == 1 or all(
+                len(bucket) == 1 for bucket in capped_buckets.values()
+            ):
+                ordered_candidates = flat_candidates
+            else:
+                ordered_candidates = await _rank_candidates_via_haiku(
+                    state=state,
+                    candidates=flat_candidates,
+                    provider=provider,
+                    trace_model=trace_model,
+                )
+
+    # Regroup while retaining each finding's candidate priority.
+    ranked_by_finding: dict[UUID, list[TraceCandidate]] = {}
+    for candidate in ordered_candidates:
+        finding_id = join_lookup.get(candidate.source_proposal_hash)
+        if finding_id is None:
+            # Defensive against mutation during the ranking call.
+            continue
+        ranked_by_finding.setdefault(finding_id, []).append(candidate)
+    return ranked_by_finding
 
 
 def _build_proposal_hash_join(state: ReviewState) -> dict[str, UUID]:
@@ -561,13 +392,10 @@ def _build_proposal_hash_join(state: ReviewState) -> dict[str, UUID]:
 
 
 def _build_finding_file_paths(state: ReviewState) -> dict[UUID, str]:
-    """`{finding_id → file_path}` across all rounds — the importing-file
-    anchor for relative-specifier probe construction (resolution is
-    importing-file-relative per `DECISIONS.md#024` Amended 2026-07-03).
-    `finding_id` is unique across rounds (content-derived provenance,
-    same property the proposal-hash join relies on), so last-write-wins
-    here cannot mix files.
-    """
+    """Map finding IDs to source paths for relative import resolution.
+
+    Read all analysis rounds in order; a repeated ID uses its last recorded path.
+    Resolution is importing-file-relative (DECISIONS.md#024, Amended 2026-07-03)."""
     return {
         finding.finding_id: finding.file_path
         for analysis_round in state.analysis_rounds
@@ -579,23 +407,11 @@ def _bucket_candidates_by_finding(
     candidates: Sequence[TraceCandidate],
     join_lookup: dict[str, UUID],
 ) -> dict[UUID, list[TraceCandidate]]:
-    """Group candidates by their joined source_finding_id.
+    """Group candidates whose source_proposal_hash joins an admitted finding.
 
-    Candidates whose `source_proposal_hash` doesn't resolve via the
-    join are dropped at this point per `DECISIONS.md#025` point 6:
-    `state.trace_candidates` may contain TraceCandidates from
-    REJECTED PARENT PROPOSALS (the parser preserves them per
-    `test_step10_trace_candidates_collected_from_rejected_proposal`)
-    — those candidates stay in state for replay/forensic visibility
-    but produce no `TraceDecisionEvent` and no GitHub fetch. The
-    drop here is the documented enforcement of "unjoined candidates
-    remain forensic-only." Logged at INFO (not WARN) because this
-    is normal forensic behavior, not a producer bug. A genuine
-    producer bug would manifest as a candidate whose
-    `source_proposal_hash` doesn't match any proposal the parser
-    has ever seen — distinguishable only at the
-    `TraceJoinIntegrityError` site upstream.
-    """
+    Unjoined candidates remain in state for inspection but cause no decision or
+    fetch (DECISIONS.md#025 point 6). Rejected parents can produce this normal
+    forensic path, so it logs at INFO."""
     buckets: dict[UUID, list[TraceCandidate]] = {}
     for candidate in candidates:
         finding_id = join_lookup.get(candidate.source_proposal_hash)
@@ -625,16 +441,10 @@ async def _rank_candidates_via_haiku(
     provider: LLMProvider,
     trace_model: str,
 ) -> tuple[TraceCandidate, ...]:
-    """One Haiku call ranks all candidates across all findings.
+    """Use the configured trace model to rank the full selected candidate list.
 
-    On parse rejection: falls back to input order (V1 simplification —
-    FOLLOWUP for dedicated `TraceRankingRejectedEvent` audit type).
-    Rejection is logged at WARN with the rejection reason.
-
-    The LLMCallEvent for this call is NOT emitted here; the provider's
-    wrapper handles the audit emission via the standard LLM persister
-    path. Trace consumes the response text.
-    """
+    A rejected ranking warns and retains input order; TraceRankingRejectedEvent
+    attribution remains deferred. The provider records the model call."""
 
     prompt_parts = trace_prompt.render(candidates)
     request = LLMRequest(
@@ -669,15 +479,11 @@ async def _rank_candidates_via_haiku(
 def _dedupe_by_import_string(
     candidates: Sequence[TraceCandidate],
 ) -> tuple[TraceCandidate, ...]:
-    """Dedupe candidates by `import_string`, preserving first-occurrence
-    order. Two candidates with the same import_string but different
-    `reason` are distinct `candidate_id`s (content-derived) and both
-    survive `state.trace_candidates`'s `append_with_dedup_by(candidate_id)`
-    reducer — but `TraceDecisionEvent.proposed_import_strings` is set-
-    semantic per #024's `_enforce_proposed_import_strings_unique`
-    validator. First-occurrence-wins gives a deterministic, order-stable
-    dedup that matches the LLM's ranked preference.
-    """
+    """Keep the first candidate per import, in supplied order.
+
+    Different reasons can produce distinct candidate IDs for one import, while
+    TraceDecisionEvent requires unique proposed_import_strings (#024). Selection
+    happens before ranking, so duplicate reasons cannot consume the group cap."""
     seen: set[str] = set()
     out: list[TraceCandidate] = []
     for candidate in candidates:
@@ -724,17 +530,11 @@ class _ProbeOutcome:
 
 @dataclass(slots=True)
 class _ProbeBudget:
-    """Mutable per-pass fetch budget (`MAX_PROBE_FETCHES_PER_PASS`),
-    shared by Phase 1 probes and Phase 2 content fetches.
+    """Remaining GitHub requests, shared by probes and content fetches.
 
-    Cross-bucket funding order is reducer-deterministic (buckets
-    process in sorted `source_finding_id` order). Intra-bucket funding
-    under starvation follows the Haiku ranking's candidate order —
-    PR-author-influenceable per the ordering rationale at the flatten
-    step — so the funded SUBSET is not reducer-deterministic; an
-    accepted tradeoff, since starvation only changes outcomes for
-    passes already past the 1024-fetch hostile threshold.
-    `exhausted_logged` keeps the WARN to one line per pass.
+    Findings consume budget in finding-id order; candidates follow ranking
+    order. When the budget runs out, that ranking influences which paths
+    receive requests. Log exhaustion only once per pass.
     """
 
     remaining: int
@@ -752,59 +552,23 @@ async def _resolve_via_probes(
     probe_memo: dict[str, bytes | None],
     probe_budget: _ProbeBudget,
 ) -> _ProbeOutcome:
-    """Phase 1 per M8 — resolve the bucket via a suffix-strip probe ladder.
+    """Phase 1: find a single verified path for this finding (spec M8).
 
-    Probe-path construction branches on candidate form per
-    `DECISIONS.md#024` (Amended 2026-07-03), dispatched by the leading-dot
-    syntax via `_probe_paths_for`:
+    Python candidates first try the whole dotted name as a module, then
+    strip trailing names for function/class fallbacks (FUP-209). A fallback
+    must find the first stripped name in a defining context in the content;
+    an existing parent package alone does not prove the candidate exists.
+    JS/TS relative imports resolve from the finding's file at level zero
+    only, using the contained path rules in coordinates (DECISIONS.md#024).
 
-    - **Module form** (dotted Python import string): level 0 reads each
-      candidate's whole import_string as a module (`foo.bar` →
-      `foo/bar.py` + `foo/bar/__init__.py`). Level k
-      (1..`MAX_SUFFIX_STRIP_LEVELS`) strips the trailing k components and
-      probes the remaining prefix as a module — the symbol-form fallback
-      (FUP-209): real models emit `svc.queries.run_query` (function in
-      module) and `app.views.UserView.get` (method on class) despite the
-      prompt's module-form instruction.
-    - **Relative-specifier form** (leading-dot JS/TS path): level 0 fans
-      out via `coordinates.relative_specifier_candidate_paths` against
-      `source_finding_file` (the proposing finding's file — resolution is
-      importing-file-relative), pre-contained and `validate_diff_path`-
-      gated inside `coordinates/`. NO suffix-strip levels — specifiers
-      are already paths, there is no dotted suffix to strip — so a
-      specifier candidate contributes zero paths at level >= 1 and never
-      enters symbol verification.
+    Stop at the first level with any verified paths across the group. One
+    distinct path resolves; several are ambiguous; none at any level is
+    unresolved. Deeper fallbacks cannot interfere with a shallower match.
 
-    Levels are bucket-level barriers: the ladder stops at the SHALLOWEST
-    level where any candidate has a verified real path, so a deeper
-    fallback can never demote a sibling's clean module-form resolution
-    to ambiguous (a hallucinated candidate's parent-package
-    `__init__.py` cannot pollute level 0).
-
-    A level-k hit (k >= 1) must pass symbol verification: the fetched
-    module text must name the first stripped component in a defining
-    context — def/class, module-level binding, or import
-    (`_symbol_in_content`). Existence alone would resolve any
-    hallucinated `pkg.ghost` to `pkg/__init__.py` — which exists in
-    essentially every package — so verification keeps hallucinated and
-    PR-deleted module candidates `unresolved`, exactly as before the
-    fallback existed.
-
-    Every path is validated via `coordinates.validate_diff_path` before
-    any fetch (validation failure = probe negative). Unique unfetched
-    paths per level fetch concurrently in deterministic order via
-    `_fetch_paths_into_memo`; `probe_memo` (pass-level, seeded with
-    in-PR head content) dedupes byte-identical probes across candidates
-    and buckets; `probe_budget` enforces the per-pass fetch ceiling —
-    unfunded paths count as not-real.
-
-    Aggregate outcomes (within the winning level, across the bucket):
-      - 1 unique verified real path → resolved
-      - 2+ → ambiguous (M8's single-target contract)
-      - no level yields any → unresolved
-
-    Probe failures (non-404 errors) propagate per M8 transient semantics;
-    404 / None content is admitted as "candidate did not resolve."
+    Validate paths before I/O, reuse known content, and fetch new paths
+    concurrently within the shared budget. Invalid, missing, and unfunded
+    paths count as negatives. Probe failures (non-404 errors) propagate;
+    404 / None content means the candidate did not resolve.
     """
     for strip_level in range(MAX_SUFFIX_STRIP_LEVELS + 1):
         candidate_paths: list[tuple[TraceCandidate, tuple[str, ...]]] = []
@@ -819,8 +583,13 @@ async def _resolve_via_probes(
                     continue
             candidate_paths.append((candidate, tuple(validated_paths)))
 
-        await _fetch_paths_into_memo(
-            [path for _, paths in candidate_paths for path in paths],
+        fetch_paths_into_memo = _fetch_paths_into_memo
+        probe_paths: list[str] = []
+        for _probe_candidate, candidate_probe_paths in candidate_paths:
+            for candidate_probe_path in candidate_probe_paths:
+                probe_paths.append(candidate_probe_path)
+        await fetch_paths_into_memo(
+            probe_paths,
             gh_client=gh_client,
             owner=owner,
             repo=repo,
@@ -878,22 +647,16 @@ async def _fetch_paths_into_memo(
     probe_memo: dict[str, bytes | None],
     probe_budget: _ProbeBudget,
 ) -> None:
-    """Fetch-probe validated paths into `probe_memo`, deduped + budgeted.
+    """Fetch new validated paths into the shared memo, within the budget.
 
-    Paths already in the memo (probed earlier this pass, or seeded from
-    in-PR head content) cost nothing. A deterministic prefix of the
-    remaining unique paths is funded from `probe_budget`; unfunded paths
-    stay out of the memo and read as not-real to the caller.
-
-    Funded paths fetch concurrently via `asyncio.gather` — probes are
-    independent, and results are processed in path order so the FIRST
-    non-404 error in path order propagates deterministically per M8
-    transient semantics. Deliberately gather-not-TaskGroup (intake's
-    fan-out pattern): sibling cancellation buys nothing for a handful
-    of probes, and ExceptionGroup unwrapping would make which-error-
-    propagates nondeterministic.
+    Known paths cost no requests. Fund the first unique new paths in order;
+    unfunded paths stay absent. Gather completes all funded probes, then
+    processes results in path order so the first error is deterministic.
     """
-    to_fetch = [path for path in dict.fromkeys(paths) if path not in probe_memo]
+    to_fetch: list[str] = []
+    for pending_probe_path in dict.fromkeys(paths):
+        if pending_probe_path not in probe_memo:
+            to_fetch.append(pending_probe_path)
     if not to_fetch:
         return
 
@@ -909,15 +672,8 @@ async def _fetch_paths_into_memo(
         probe_budget.exhausted_logged = True
     if not funded:
         return
-    # Charged for fetches ISSUED, not fetches memoized: gather
-    # (return_exceptions=True) dispatches every funded probe to GitHub
-    # even when a sibling fails, so rate-limit accounting must count
-    # all of them. On a non-404 abort the successful tail is never
-    # memoized while its budget stays consumed — deliberate, and moot
-    # today (the per-pass budget dies with the aborted pass). If
-    # fallback-level transients are ever softened to soft-misses
-    # (FUP-211), do the softening inside `_probe_single_path` (return
-    # None) and keep this decrement where it is.
+    # Charge every issued request, even if an error stops result processing.
+    # Any future transient-error softening (FUP-211) must retain this accounting.
     probe_budget.remaining -= len(funded)
 
     results = await asyncio.gather(
@@ -947,16 +703,10 @@ async def _probe_single_path(
     repo: str,
     head_sha: str,
 ) -> bytes | None:
-    """Fetch-probe one validated path at head SHA; None = not real.
+    """Fetch one validated path at head SHA; a 404 means no match.
 
-    404 is the COMMON probe outcome: the LLM proposed a path that
-    doesn't exist in this repo — admitted as "did not resolve". All
-    other HTTP errors (5xx / 403 / timeout / connection) propagate per
-    M8 transient semantics — they signal GitHub-side issues that should
-    abort the trace pass rather than silently miss a real path.
-    Duck-typed `status_code` access mirrors the pattern at
-    `github/publisher.py:355` (avoids importing the SDK-exception class
-    outside the wrapper).
+    Other failures propagate instead of hiding unavailable context (spec M8).
+    Read status_code without importing vendor exceptions outside github/.
     """
     try:
         return await fetch_file_content_at(
@@ -974,26 +724,12 @@ async def _probe_single_path(
 
 
 def _symbol_in_content(symbol: str, content: bytes) -> bool:
-    """Context-restricted check that the module text binds `symbol`.
+    """Check for defining-looking text before accepting a suffix-strip fallback.
 
-    Guards the suffix-strip fallback against existence-only false
-    resolution: a level-k hit counts only if the fetched text names the
-    first stripped component in a DEFINING context — `def`/`async def`/
-    `class` statements, a module-level binding or annotation
-    (`name = …`, `name: T`), an import line naming it, or a bare name
-    on its own line (a parenthesized multi-line from-import
-    continuation). Incidental uses reject: attribute access
-    (`session.get(url)`), comments (`# process data`), and string
-    literals (`{"id": 1}`) are not bindings — a bare anywhere-in-text
-    word match would falsely resolve candidates with common trailing
-    names (`get`/`data`/`id`) to modules that never define them.
-    Deliberately textual, not parsed: scope-level extraction would put
-    an ast_facts parse on every fallback probe for a yes/no gate.
-    Wildcard re-exports (`from .x import *`) don't name the symbol and
-    reject — the same `unresolved` outcome as before the fallback
-    existed, never a regression. Non-UTF-8 content rejects (a binary
-    blob is not the module the candidate names).
-    """
+    Accept def/class, assignment/annotation, import and bare continuation-line
+    patterns. This is a textual heuristic, not AST proof: indentation and text
+    inside string literals are not parsed. Wildcard re-exports do not name the
+    symbol. Invalid UTF-8 returns False."""
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
@@ -1015,17 +751,10 @@ def _symbol_in_content(symbol: str, content: bytes) -> bool:
 
 
 def _candidate_paths_for(import_string: str) -> tuple[str, ...]:
-    """Construct module-form probe paths from a dotted import string.
+    """Map a dotted module name to its Python file and package paths.
 
-    `foo.bar` → `('foo/bar.py', 'foo/bar/__init__.py')` — the string
-    read as a module. THE single module→path mapping rule; the ladder's
-    deeper levels reach it through `_tier_paths_for`. Does NOT consult
-    the filesystem; the existence test is the subsequent fetch-probe.
-
-    Defensive: the schema validator already requires valid dotted
-    identifiers, so `.split('.')` yields well-formed parts. The
-    fail-loud here is a producer-bug catcher if a malformed string
-    somehow reaches the helper.
+    `foo.bar` becomes `foo/bar.py` and `foo/bar/__init__.py`.
+    This only constructs paths; the subsequent probe checks existence.
     """
     parts = import_string.split(".")
     base = "/".join(parts)
@@ -1082,29 +811,12 @@ async def _phase_two_content_fetch(
     head_sha: str,
     probe_budget: _ProbeBudget,
 ) -> TraceFetchedFile | None:
-    """Phase 2 per M8 — fetch the resolved target_file at head SHA.
+    """Phase 2: fetch a resolved file's UTF-8 content for analysis (spec M8).
 
-    Constructs `TraceFetchedFile` with `content_head` from the fetched
-    bytes. Returns None if the pass fetch budget is exhausted (Phase 2
-    draws from the same `MAX_PROBE_FETCHES_PER_PASS` budget as Phase 1
-    probes — the decision stays `resolved` in audit; no fetched file
-    lands this pass), if the fetch returns None (the target was
-    resolved by Phase 1 but disappeared between probe and Phase 2 —
-    races, force-pushes; rare but defensive), OR if the bytes don't
-    decode as UTF-8 (a `.py`-named path that's actually a binary
-    blob — compiled `.pyc` misnamed, vendor-injected bytes-as-`.py`,
-    generated-stub binary). The decode-failure case is logged at WARN
-    so an operator can investigate; trace continues for other decisions
-    rather than failing the whole pass on a single producer-bug-shaped
-    candidate.
-
-    Fields per Q3:
-      - `path`: from `target_file` (already validated by Phase 1's
-        `validate_diff_path` upstream).
-      - `content_head`: bytes-as-utf8 from the head-SHA fetch.
-      - `source_finding_id`: from the persisted event (lockstep).
-    No `source_import_string` / `source_proposal_hash` per Q3 revision;
-    cross-reference recovers via `state.trace_decisions`.
+    The caller supplies a validated path and persisted finding identity.
+    Return None for an exhausted budget, missing content, or invalid UTF-8;
+    the audit decision stays resolved. Invalid UTF-8 logs a warning, while
+    non-404 fetch failures propagate.
     """
     if probe_budget.remaining <= 0:
         if not probe_budget.exhausted_logged:
@@ -1118,12 +830,7 @@ async def _phase_two_content_fetch(
             probe_budget.exhausted_logged = True
         return None
     probe_budget.remaining -= 1
-    # Phase-2 race window: Phase 1 probe confirmed the path existed at
-    # head_sha, but the file can disappear between probe and Phase 2
-    # (force-push, file deletion in a concurrent push to the same SHA
-    # — rare but real). `_probe_single_path` carries the shared
-    # 404→soft-miss / non-404→propagate contract, so the race lands as
-    # None here rather than aborting the pass, matching the M8 design.
+    # A second fetch may return no content even after a successful probe.
     content_bytes = await _probe_single_path(
         target_file,
         gh_client=gh_client,
@@ -1136,12 +843,7 @@ async def _phase_two_content_fetch(
     try:
         content_head = content_bytes.decode("utf-8")
     except UnicodeDecodeError:
-        # Skip — a binary blob masquerading as Python would corrupt
-        # the audit trail (mojibake string in content_head) AND mislead
-        # analyze pass 2 (LLM hallucinates findings off replacement
-        # chars). Skipping keeps the TraceDecision audit row intact
-        # (resolution_status="resolved" reflects what Phase 1 saw)
-        # while preventing the bad bytes from entering state.
+        # Keep invalid text out of analysis state without changing the decision.
         logger.warning(
             "trace: Phase 2 fetched bytes at %s (source_finding_id=%s) do "
             "not decode as UTF-8; skipping TraceFetchedFile construction. "

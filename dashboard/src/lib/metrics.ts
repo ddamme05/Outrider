@@ -1,8 +1,6 @@
-// Pure helpers for the Signal Overview analytics (DECISIONS#039). The /api/metrics
-// endpoint returns honest aggregates; these functions DERIVE the operator-facing
-// display values (deltas, per-day series, labels) from them — no fabrication, no
-// interpolation. Kept pure + separate from the components so they unit-test
-// directly (mirrors lib/hitl.ts).
+// Derive analytics labels, deltas, and series statistics from API aggregates.
+// These pure helpers preserve missing-data and zero-value distinctions
+// (DECISIONS#039); components own rendering.
 import type { components } from "../api/schema";
 
 export type MetricsResponse = components["schemas"]["DashboardMetricsResponse"];
@@ -10,54 +8,41 @@ export type MetricBucket = components["schemas"]["MetricBucket"];
 export type PeriodTotals = components["schemas"]["PeriodTotals"];
 export type ReplayMetricsResponse = components["schemas"]["ReplayMetricsResponse"];
 
-// Replay-equivalence rate as a percentage, or null when the window has NO verdicts.
-// Honest-zeros sibling of seriesStats: a window with zero verdicted reviews has no
-// DEFINED rate, so we return null and the card renders "—" — never 0%, which would
-// wrongly imply "every replay diverged" (the denominator is verdicted reviews only,
-// DECISIONS#039). The frontend derives the %, never the server (no /0 server-side).
+// No verdicts means an undefined rate, distinct from a measured 0% equivalence
+// rate. The denominator includes only reviews with verdicts (DECISIONS#039).
 export function replayRate(equivalent: number, total: number): number | null {
   return total > 0 ? (equivalent / total) * 100 : null;
 }
 
-// Period-over-period delta for the Replay-% card. UNLIKE deltaInfo (built for COUNTS,
-// where a relative %-change from a 0 baseline is undefined → "new"), the equivalence
-// rate is a RATE, so its honest delta is the percentage-POINT change (curRate − prevRate),
-// which is defined at ANY baseline — including a real prior 0% (every replay diverged),
-// which a count-style delta would wrongly collapse with "no prior data". Magnitude label
-// + directional glyph match the sibling cards; up = higher equivalence = good.
+// Compare replay rates in percentage points. A real prior 0% remains a valid
+// baseline; null means no verdict data. Higher equivalence uses the positive style.
 export function replayDeltaInfo(curRate: number | null, prevRate: number | null): DeltaInfo {
   if (curRate === null) return { cls: "flat", glyph: "—", label: "vs prev" }; // no current verdicts
   if (prevRate === null) return { cls: "flat", glyph: "—", label: "new" }; // no PRIOR verdicts
-  const diff = curRate - prevRate; // percentage points
-  if (Math.abs(diff) < 0.05) return { cls: "flat", glyph: "—", label: "vs prev" };
-  const up = diff > 0;
-  return { cls: up ? "up" : "down", glyph: up ? "▲" : "▼", label: `${Math.abs(diff).toFixed(1)}pp` };
+  const percentagePointChange = curRate - prevRate; // percentage points
+  if (Math.abs(percentagePointChange) < 0.05) return { cls: "flat", glyph: "—", label: "vs prev" };
+  const isIncrease = percentagePointChange > 0;
+  return { cls: isIncrease ? "up" : "down", glyph: isIncrease ? "▲" : "▼", label: `${Math.abs(percentagePointChange).toFixed(1)}pp` };
 }
 
-// Canonical display order — matches the policy severity enum (5 values) and the
-// evidence-tier enum (3 values). The endpoint zero-fills every key, so a key may
-// be present with count 0; render it honestly rather than dropping it.
+// Policy/schema display order, including categories with zero findings.
 export const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"] as const;
 export const TIER_ORDER = ["observed", "inferred", "judged"] as const;
 
-// A metric's delta polarity: does "up" mean better, worse, or neither? The mockup
-// encodes this in the delta CSS class (up/down are green/red; up-bad/down-good
-// invert; flat is grey) — direction alone does NOT imply color.
+// Polarity determines whether an increase is positive, negative, or neutral.
 export type DeltaPolarity = "up-good" | "up-bad" | "neutral";
 
 export interface DeltaInfo {
-  /** the mockup delta class: up | down | up-bad | down-good | flat */
+  /** Direction/polarity class used by the metric card. */
   cls: "up" | "down" | "up-bad" | "down-good" | "flat";
   /** ▲ / ▼ / — */
   glyph: string;
-  /** "21.6%" when the prior window is non-empty; "new"/"vs prev" otherwise */
+  /** Relative percentage, percentage-point change, or a missing/unchanged label. */
   label: string;
 }
 
-// Period-over-period delta. The endpoint returns current + previous totals and the
-// FRONTEND computes the %, so an empty prior window (previous === 0) is honest
-// facts, never a server-side divide-by-zero (DECISIONS#039): we show "new"/"vs
-// prev" instead of a fabricated ratio.
+// Compare period totals. Equal totals are flat; a non-positive prior baseline
+// uses "new". Positive baselines produce a relative percentage (DECISIONS#039).
 export function deltaInfo(
   current: number,
   previous: number,
@@ -66,50 +51,47 @@ export function deltaInfo(
   if (current === previous) {
     return { cls: "flat", glyph: "—", label: "vs prev" };
   }
-  const up = current > previous;
+  const isIncrease = current > previous;
   let label: string;
   if (previous > 0) {
-    const pct = (Math.abs(current - previous) / previous) * 100;
-    label = `${pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}%`;
+    const changePercent = (Math.abs(current - previous) / previous) * 100;
+    label = `${changePercent < 10 ? changePercent.toFixed(1) : changePercent.toFixed(0)}%`;
   } else {
-    // previous === 0 and current !== previous: counts are ≥ 0, so current > 0 — no finite
-    // ratio, render honest "new" rather than ∞%. (A decrease can't reach here.)
+    // No positive baseline for a relative change. API count/cost totals are nonnegative.
     label = "new";
   }
-  // `neutral` (e.g. Findings) still shows direction + magnitude — more/fewer findings is real
-  // signal — but in grey, because up/down isn't inherently good or bad. up-good/up-bad colour it.
+  // Neutral metrics still show direction and magnitude, with no good/bad color.
   let cls: DeltaInfo["cls"];
   if (polarity === "neutral") {
     cls = "flat";
   } else if (polarity === "up-good") {
-    cls = up ? "up" : "down";
+    cls = isIncrease ? "up" : "down";
   } else {
-    cls = up ? "up-bad" : "down-good";
+    cls = isIncrease ? "up-bad" : "down-good";
   }
-  return { cls, glyph: up ? "▲" : "▼", label };
+  return { cls, glyph: isIncrease ? "▲" : "▼", label };
 }
 
-// Bucket timestamp → short axis label. Buckets are UTC (the endpoint forces
-// date_trunc(..,'UTC')), so read UTC fields to match the bucket boundary exactly.
+// Use UTC fields so axis labels match the API's UTC bucket boundaries.
 const MONTHS = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 export function formatBucketLabel(iso: string, granularity: string): string {
-  const d = new Date(iso);
+  const bucketDate = new Date(iso);
   if (granularity === "hour") {
-    return `${String(d.getUTCHours()).padStart(2, "0")}:00`;
+    return `${String(bucketDate.getUTCHours()).padStart(2, "0")}:00`;
   }
-  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+  return `${MONTHS[bucketDate.getUTCMonth()]} ${bucketDate.getUTCDate()}`;
 }
 
-// Thin a label array down to at most `max` evenly-spaced ticks (first + last
-// always kept) — 24h/30d windows have too many buckets to label every one.
+// Keep regularly spaced ticks plus the last label, which can add one beyond max.
+// Return the original array when no thinning is needed.
 export function thinLabels(labels: string[], max: number): (string | null)[] {
-  const n = labels.length;
-  if (n <= max) return labels;
-  const step = Math.ceil(n / max);
-  return labels.map((l, i) => (i % step === 0 || i === n - 1 ? l : null));
+  const labelCount = labels.length;
+  if (labelCount <= max) return labels;
+  const step = Math.ceil(labelCount / max);
+  return labels.map((tickLabel, index) => (index % step === 0 || index === labelCount - 1 ? tickLabel : null));
 }
 
 export interface SeriesStats {
@@ -119,21 +101,19 @@ export interface SeriesStats {
   peakIndex: number;
 }
 
-// Total / average / peak over a per-day series — the hero chart's legend line.
-// All client-derived from the bucket array; no dedicated endpoint field.
+// Summarize a bucket series, keeping the first peak when values tie.
 export function seriesStats(values: number[]): SeriesStats {
   if (values.length === 0) return { total: 0, avg: 0, peak: 0, peakIndex: -1 };
   let total = 0;
   let peak = -Infinity;
   let peakIndex = 0;
-  values.forEach((v, i) => {
-    total += v;
-    if (v > peak) {
-      peak = v;
-      peakIndex = i;
+  values.forEach((value, index) => {
+    total += value;
+    if (value > peak) {
+      peak = value;
+      peakIndex = index;
     }
   });
-  // An all-zero (honest-empty) window has no meaningful peak DAY — report peakIndex -1 so the
-  // chart legend doesn't fabricate "peak $0.00 on <first bucket>" (DECISIONS#039 honest-zeros).
+  // A non-positive peak has no meaningful peak-day attribution (DECISIONS#039).
   return { total, avg: total / values.length, peak, peakIndex: peak > 0 ? peakIndex : -1 };
 }

@@ -1,45 +1,15 @@
 # Deterministic OBSERVED-tier finding producer per
 # specs/2026-06-14-observed-query-library-v1.md (Cost Lever 3).
-"""Run the OBSERVED security queries once, then turn the matches into
-`ReviewFinding`s with NO model text.
+"""Find structural security evidence without model text.
 
-`run_observed_matches` is the single deterministic query pass for a file: it
-runs every OBSERVED query registered for the file's catalog language (via
-`queries.registry.match` under the file's grammar — the registry owns both
-the tree-sitter execution and the per-language selection; a catalog-less
-language yields zero queries and the producer stays inert), applies the
-admission rules (test-file suppression, scope containment — with the
-module-scope arm for `module_scope_eligible` queries: scope-DISJOINT matches
-fully inside a head-side added-line byte range admit without an enclosing
-scope — import-binding admission, zero-width skip,
-byte->line mapping), and returns plain `ObservedMatch` domain records —
-`query_class` included. Every consumer reads
-the SAME records, so there is one definition of "the OBSERVED query facts for
-this file": `produce_observed_findings` builds findings from them, and the skip
-routing (the routing increment) computes coverage from the `skip_safe` subset.
+`run_observed_matches` owns query execution and ordered proof admission.
+`produce_observed_findings` maps admitted matches to policy-owned findings;
+`compute_observed_skip_shadow` measures coverage using only skip-safe matches.
 
-A match becomes a finding by a fixed mapping: `finding_type` / `severity` /
-`dimension` are policy-set (never model-set), `title` / `description` are the
-registry's static text, the byte envelope maps to source lines through
-`coordinates.query_span_to_source_lines`, and `evidence` is the matched source
-text. Construction goes through `ReviewFinding(...)` so `enforce_proof_boundary`
-(OBSERVED ⇒ non-empty `query_match_id`) and `_verify_content_hash` validate at
-the schema floor.
-
-Degraded-route gating: the caller keeps the producer OFF under the
-error-caused degraded routes (parse_failed / tree_has_error_*) — with ONE
-exception, the module-scope route (`module_level_observed_match`), whose parse
-IS clean and whose whole point is the module-level OBSERVED emission alongside
-the bounded-hunks JUDGED pass. In CLEAN mode the producer runs even when the
-file carries error nodes OUTSIDE the included changed scopes (containment
-anchors proof inside error-free included units; the module ARM additionally
-requires a fully error-free parse via the node's candidate gate). In the
-default/production config OBSERVED findings AUGMENT
-the LLM pass and never skip it (the registry seeds zero `skip_safe` queries and
-`analyze_observed_skip_enforced` defaults False). `compute_observed_skip_shadow`
-records the per-file `would_skip` / `not_eligible` decision; the ENFORCED pre-LLM
-skip that consumes it is wired in `analyze._process_one_file` behind that flag
-(Step 3b-mechanism, `DECISIONS.md#049`), dormant until a query is promoted.
+Callers suppress queries on error-caused degraded routes. Module-level proof
+requires a fully error-free parse, even when ordinary scope-contained proof
+can safely ignore errors outside the included scopes. Production defaults
+augment the model pass: skip enforcement is off and no query is skip-safe.
 """
 
 from __future__ import annotations
@@ -91,64 +61,17 @@ if TYPE_CHECKING:
     from outrider.queries.observed import BindingRule, ObservedQuery, QueryLanguage
 
 
-# Version of the OBSERVED producer's ADMISSION logic — the rules in
-# `run_observed_matches` that decide which matches are admitted: the
-# per-language query-set selection, the scope-CONTAINMENT predicate, test-file
-# suppression (`_is_test_file`), the import-binding step
-# (`_binding_admits`), the zero-width-span skip, and the byte->line
-# mapping. Folded into the analyze cache key
-# (`cache.key.compute_analyze_cache_key`) so a change to these rules
-# invalidates cached analyze outcomes written under the old rules — the same
-# staleness guard `ANALYZE_PARSER_VERSION` gives the LLM parser. The query `.scm`
-# bodies + their registry metadata are pinned SEPARATELY by
-# `QUERY_REGISTRY_DIGEST`; this constant covers only the producer's admission
-# logic. BUMP on any rule change.
-# v2 (JS/TS OBSERVED catalog): the query set became per-language-selected and
-# `_is_test_file` learned the JS/TS test conventions (`__tests__/`,
-# `*.test.*`, `*.spec.*`).
-# v3: the JS/TS conventions — the inner `.test.`/`.spec.` NAME markers and
-# the `__tests__/` DIRECTORY marker — became language-scoped. Under v2 they
-# applied to every language, silently suppressing OBSERVED findings on
-# Python production files: `report.spec.py` (name marker),
-# `pkg/__tests__/util.py` (directory marker).
-# v4: import-binding admission (`_binding_admits`) — a name-anchored match
-# is admitted only when its anchor identifier is bound by an import from the
-# query's `BindingRule.modules` (or, mode="module_presence", when the file
-# imports one of them). Under v3 any callee/receiver NAME matched — an
-# `exec` helper imported from `./jobs` produced a CRITICAL OBSERVED finding.
-# v5: binding-module matching is package-root aware — a subpath specifier
-# (`require("mysql2/promise")`) satisfies a rule naming its package root.
-# Under v4 the join was exact-string, silently dropping matches whose file
-# imported the driver through the dominant subpath idiom.
-# v6: lexical shadowing guard + value-import requirement
-# (`DECISIONS.md#060`). A match is denied when its
-# anchor (or a `shadow_guard` global captured at a guard POSITION —
-# `GUARD_POSITION_CAPTURES`) is locally rebound: a `LexicalBinding` whose
-# visibility span contains the match, or (for a guarded global) a VALUE
-# import/require of that name. Binding rules only count
-# VALUE imports (`ImportRef.is_value_import` — False when no value binding
-# survives: type-only forms, re-exports, side-effect imports, and
-# binding-less requires like `const {} = require("pg")`). Under v5 the
-# join was file-level: `function f(createHash) {...}` still admitted after
-# a real crypto import, `function apply(process) {...}` fired the TLS
-# kill-switch query, and `import type { Pool } from "pg"` proved DB
-# presence.
-# v7: module-scope admission arm
-# (DECISIONS.md#062). A `module_scope_eligible`
-# query's match (binding=None by registry validation) is admitted WITHOUT an
-# enclosing ScopeUnit when its envelope is DISJOINT from every parsed scope
-# and fully inside a head-side added-line byte range. Under v6 the
-# containment gate dropped every module-top-level match — including
-# tls_env_verify_disabled's canonical kill-switch form.
+# Controls cache invalidation when `run_observed_matches` changes which query
+# matches are admitted (`cache.key.compute_analyze_cache_key`).
+# Bump on any admission-rule change: language selection, test-file suppression,
+# scope containment (including module scope), import/value-binding checks,
+# lexical shadowing, zero-width handling, or byte-to-line mapping.
+# Binding/shadowing: DECISIONS.md#060; module scope: DECISIONS.md#062.
+# Query bodies and registry metadata use QUERY_REGISTRY_DIGEST separately.
 OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v7"
 
-# A query match envelope spans the whole matched construct (e.g. an entire
-# `cursor.execute(f"...long SQL...")` call), so the matched source can exceed
-# `ReviewFinding.evidence`'s `max_length=2000`. Truncate to that cap so a long but
-# legitimate match yields a (truncated-evidence) finding rather than a
-# ValidationError that would crash analyze for the file. Truncation only affects
-# >2000-char matches (which previously crashed, so never reached the cache), so it
-# needs no OBSERVED_PRODUCER_VERSION bump.
+# Cap source evidence at `ReviewFinding.evidence`'s schema limit so long query
+# matches still construct a valid finding.
 _EVIDENCE_MAX_CHARS: Final[int] = 2000
 
 logger = logging.getLogger(__name__)
@@ -182,18 +105,11 @@ class ObservedMatch:
 
 
 def _is_test_file(file_path: str, language: QueryLanguage | None) -> bool:
-    """A repo-relative path is test code if any directory component is `tests`/
-    `test`, or the filename is `conftest.py` / `test_*` / `*_test.py`. For
-    JS/TS files (`language == "javascript"`) two ecosystem conventions apply
-    on top: a `__tests__` directory component and the tier marker as an inner
-    dotted segment (`auth.test.ts`, `login.spec.js`). Those two are
-    language-scoped because dotted segments are ordinary naming elsewhere —
-    `report.spec.py` is a production Python file, not a test.
+    """Suppress test fixtures as production findings (spec §11.2).
 
-    Per `docs/spec.md` §11.2: a security pattern in test code (e.g. `eval()` in a
-    test fixture) is NOT a production finding. The deterministic producer can't
-    make the test-context judgment the LLM does, so it suppresses OBSERVED
-    findings in test files structurally.
+    `test`/`tests` directories and Python test filenames apply to all paths.
+    JS/TS additionally recognizes `__tests__` and inner `.test`/`.spec`
+    segments; `report.spec.py` remains production Python code.
     """
     path = PurePosixPath(file_path)
     if any(part in ("tests", "test") for part in path.parts[:-1]):
@@ -206,27 +122,21 @@ def _is_test_file(file_path: str, language: QueryLanguage | None) -> bool:
     if "__tests__" in path.parts[:-1]:
         return True
     inner_segments = name.split(".")[1:-1]
-    return any(seg in ("test", "spec") for seg in inner_segments)
+    return any(segment in ("test", "spec") for segment in inner_segments)
 
 
 def _module_matches(specifier: str, modules: tuple[str, ...]) -> bool:
-    """True when an import specifier resolves into one of the rule's
-    packages: an exact match, or a subpath of one (`mysql2/promise`,
-    `pg/lib/...`) — Node resolves `pkg/subpath` inside `pkg`, so the
-    subpath import proves the same package presence. The prefix is
-    `/`-delimited, so a lookalike package (`mysql2-mock`) never matches.
+    """Match a package or its slash-delimited subpath, never a lookalike.
+
+    `mysql2/promise` matches `mysql2`; `mysql2-mock` does not.
     """
-    return any(specifier == m or specifier.startswith(m + "/") for m in modules)
+    return any(specifier == module or specifier.startswith(module + "/") for module in modules)
 
 
 def _module_presence_satisfied(
     modules: tuple[str, ...], import_refs: tuple[ImportRef, ...]
 ) -> bool:
-    """The single module_presence predicate — a VALUE import of one of the
-    rule's packages exists in the file. Consumed by BOTH the per-query
-    pre-gate in `run_observed_matches` (skip the tree-sitter run) and the
-    per-span admission in `_binding_admits`; one helper so the two sites
-    cannot drift apart."""
+    """Share value-import admission between query prefilter and span checks."""
     return any(ref.is_value_import and _module_matches(ref.module, modules) for ref in import_refs)
 
 
@@ -236,16 +146,15 @@ def _shadowed(
     match_byte_end: int,
     lexical_bindings: tuple[LexicalBinding, ...],
 ) -> bool:
-    """True when a local binding of `name` is visible at the match site —
-    its visibility span CONTAINS the match span. Span containment is the
-    whole design (shadowing-guard spec): a `catch (crypto)` binding does
-    not shadow a call after the catch block, and a shadow in one function
-    does not shadow a sibling function."""
+    """A local binding shadows the name only while its span contains the match.
+
+    A catch binding cannot shadow a later call or a sibling function.
+    """
     return any(
-        b.name == name
-        and b.visibility_byte_start <= match_byte_start
-        and match_byte_end <= b.visibility_byte_end
-        for b in lexical_bindings
+        binding.name == name
+        and binding.visibility_byte_start <= match_byte_start
+        and match_byte_end <= binding.visibility_byte_end
+        for binding in lexical_bindings
     )
 
 
@@ -258,42 +167,28 @@ def _guarded_global_shadowed(
     lexical_bindings: tuple[LexicalBinding, ...],
     import_refs: tuple[ImportRef, ...],
 ) -> bool:
-    """True when a guarded global PARTICIPATES in this match and is locally
-    rebound, so the name resolves to the local, not the global.
-    Participation is decided per match, not per query, and ONLY through
-    guard-POSITION captures (`GUARD_POSITION_CAPTURES` — the callee/receiver
-    identifier, not the argument): a guarded name counts only when its text
-    appears in one of those captures. So `eval(Function)` with a shadowed
-    `Function` argument keeps admitting (only `@_fn`="eval" is a guard
-    position, and `eval` is unshadowed).
+    """Reject a guarded callee/receiver rebound by a local or value import.
 
-    Rebinding is either a lexical declaration whose visibility span
-    contains the match (`_shadowed`) OR a VALUE import/require binding of
-    the name — a global like `process`/`eval`/`Function` is never
-    legitimately imported, so `const process = require("./mock")` is a
-    definitional shadow that no `LexicalBinding` records (require
-    declarators are excluded to avoid anchor-import self-shadow).
-    Non-value refs never count: `export { process } from "./shim"` and
-    `import type` forms create NO runtime binding, so the global they
-    name is still the global — denying on them would drop a real match.
-    The import check is file-level: a module-scope rebind shadows the
-    whole file (the common case); a function-scope require-rebind of a
-    global over-denies a sibling use (degrades to JUDGED — the safe
-    direction; documented residual, FUP-214)."""
+    Argument captures do not participate: a shadowed `Function` argument in
+    `eval(Function)` cannot shadow the `eval` callee. Type imports and
+    re-exports create no runtime binding. The import check is file-level;
+    function-local require bindings can over-deny sibling uses (FUP-214).
+    """
     if not shadow_guard:
         return False
     capture_texts = {
-        content_bytes[c.byte_start : c.byte_end].decode("utf-8", errors="replace")
-        for c in captures
-        if c.name in GUARD_POSITION_CAPTURES
+        content_bytes[capture.byte_start : capture.byte_end].decode("utf-8", errors="replace")
+        for capture in captures
+        if capture.name in GUARD_POSITION_CAPTURES
     }
     imported_names = {name for ref in import_refs if ref.is_value_import for name in ref.names}
     return any(
-        g in capture_texts
+        guarded_name in capture_texts
         and (
-            _shadowed(g, match_byte_start, match_byte_end, lexical_bindings) or g in imported_names
+            _shadowed(guarded_name, match_byte_start, match_byte_end, lexical_bindings)
+            or guarded_name in imported_names
         )
-        for g in shadow_guard
+        for guarded_name in shadow_guard
     )
 
 
@@ -307,38 +202,27 @@ def _binding_admits(
     match_byte_start: int,
     match_byte_end: int,
 ) -> bool:
-    """Deterministic import-binding admission for a name-anchored match.
+    """Prove that a name-anchored match resolves to the rule's dangerous API.
 
-    `anchor_import`: the anchor identifier — the `@_recv` receiver capture
-    when present, else the `@_fn` callee capture — must be UNSHADOWED at
-    the match site (`_shadowed`: no local binding's visibility span
-    contains the match) and bound by a VALUE import whose `module` matches
-    the rule's set (`ImportRef.names` carries local binding names for ESM
-    named/default/namespace and CJS `require` forms alike; type-only /
-    re-export / side-effect refs are `is_value_import=False` and never
-    count). A match with neither capture is NOT admitted — default-deny,
-    the proof-boundary direction. `module_presence`: the file must VALUE-
-    import at least one of the rule's modules. Module matching is
-    package-root aware in both modes (`_module_matches`). `binding=None`
-    admits on structure alone (globals / import-free text-constrained
-    patterns — their globals are guarded separately via
-    `ObservedQuery.shadow_guard`).
-
-    Known precision residual (signal_only-acceptable; FUP-214):
-    `module_presence` stays file-level — a DB-driver file with an
-    unrelated `.query(concat)` still fires; per-receiver proof needs
-    assignment-flow, which is corpus-arc scope.
+    `anchor_import` requires an unshadowed value-import binding, preferring
+    receiver over callee. Missing captures deny admission. `module_presence`
+    requires a value import anywhere in the file; this can over-admit an
+    unrelated receiver (FUP-214). No binding rule admits on structure alone,
+    with guarded globals checked separately.
     """
     if binding is None:
         return True
     if binding.mode == "module_presence":
         return _module_presence_satisfied(binding.modules, import_refs)
     if binding.mode == "anchor_import":
-        # First participating protocol capture wins — all `_recv` before any
-        # `_fn` (the receiver-over-callee preference the bound-sibling test
-        # pins).
+        # A receiver identifies the API before a callee name does.
         anchor_span = next(
-            (c for name in ANCHOR_CAPTURE_PREFERENCE for c in captures if c.name == name),
+            (
+                capture
+                for name in ANCHOR_CAPTURE_PREFERENCE
+                for capture in captures
+                if capture.name == name
+            ),
             None,
         )
         if anchor_span is None:
@@ -347,8 +231,6 @@ def _binding_admits(
             "utf-8", errors="replace"
         )
         if _shadowed(anchor, match_byte_start, match_byte_end, lexical_bindings):
-            # A local declaration owns the name at this site — the call
-            # cannot resolve to the import, so the import proves nothing.
             return False
         return any(
             ref.is_value_import
@@ -360,81 +242,54 @@ def _binding_admits(
 
 
 def import_bindings_digest(import_refs: tuple[ImportRef, ...]) -> str:
-    """SHA-256 over the binding-relevant view of the file's imports — the
-    analyze-cache-key component pinning `_binding_admits`'s per-file input
-    (the `from_import_map_digest` / FUP-171 precedent).
+    """Pin imports that influence admission but may be absent from the prompt.
 
-    Import-binding admission decides which OBSERVED matches survive from
-    module-level imports the rendered prompt does NOT carry (scope-unit
-    bodies + hunks only), so two reviews with byte-identical prompts but
-    different imports admit different finding sets and must never share a
-    cache entry. `from_import_map_digest` cannot cover this: it folds only
-    `from`-kind refs whose module survives the Python-shaped
-    `is_valid_import_string` gate, which excludes exactly the JS/TS binding
-    inputs (`node:`-prefixed and hyphenated specifiers; whole-module
-    `require` / namespace / default / side-effect imports are kind
-    "direct").
+    Hash the order/duplicate-insensitive set of module, value marker and names.
+    Count headers and length prefixes preserve boundaries; kind, line and path
+    are ignored. The Python-shaped `from_import_map_digest` misses JS/TS inputs.
 
-    Hashes what admission consumes and nothing else: the set of
-    `(module, is_value_import, names)` triples — order- and
-    duplicate-insensitive (admission is `any(...)` over refs), with
-    `import_kind` / `line` / `file_path` excluded because admission
-    ignores them. The value marker is in the triple because admission
-    reads it (shadowing-guard spec): `import { Q } from "mysql"` and
-    `export { Q } from "mysql"` admit differently and must never share
-    a key. Count headers + length prefixes make boundaries unambiguous
-    (the cache-key framing rule); the empty tuple digests distinctly
-    from any populated set.
-
-    Deliberately MORE sensitive than admission itself: names are hashed
-    even when only `module_presence` rules apply, and the exact specifier
-    spelling is hashed though `_module_matches` collapses subpaths. That
-    over-invalidation costs cache hits (never staleness — the safe
-    direction) and keeps the digest independent of the registry's current
-    rule set, which is pinned separately by `QUERY_REGISTRY_DIGEST`.
+    Exact names and package subpaths deliberately over-invalidate compared with
+    module-presence admission. This costs hits without risking stale findings;
+    `QUERY_REGISTRY_DIGEST` separately pins the rules.
     """
     entries = sorted(
         {(ref.module, ref.is_value_import, tuple(sorted(ref.names))) for ref in import_refs}
     )
-    h = hashlib.sha256()
-    h.update(f"{len(entries)}:".encode())
+    hasher = hashlib.sha256()
+    hasher.update(f"{len(entries)}:".encode())
     for module, is_value_import, names in entries:
         module_bytes = module.encode("utf-8")
-        h.update(f"{len(module_bytes)}:".encode())
-        h.update(module_bytes)
-        h.update(b"1:" if is_value_import else b"0:")
-        h.update(f"{len(names)}:".encode())
+        hasher.update(f"{len(module_bytes)}:".encode())
+        hasher.update(module_bytes)
+        hasher.update(b"1:" if is_value_import else b"0:")
+        hasher.update(f"{len(names)}:".encode())
         for name in names:
             name_bytes = name.encode("utf-8")
-            h.update(f"{len(name_bytes)}:".encode())
-            h.update(name_bytes)
-    return h.hexdigest()
+            hasher.update(f"{len(name_bytes)}:".encode())
+            hasher.update(name_bytes)
+    return hasher.hexdigest()
 
 
 def lexical_bindings_digest(lexical_bindings: tuple[LexicalBinding, ...]) -> str:
-    """SHA-256 over the shadow guard's per-file input — the
-    `import_bindings_digest` sibling for the OTHER admission input the
-    rendered prompt may not carry: a shadowing binding can live in an
-    enclosing-but-not-included scope, so byte-identical prompts with
-    different bindings admit different finding sets.
+    """Pin shadowing bindings that may live outside the rendered scopes.
 
-    Hashes what `_shadowed` consumes and nothing else: the set of
-    `(name, visibility span)` records — order/duplicate-insensitive,
-    `kind` / `line` / `file_path` excluded. Known hit-rate cost: the
-    spans are byte offsets, so ANY earlier-byte edit shifts them and
-    over-invalidates (never staleness — the safe direction).
+    Hash unique names and visibility spans, ignoring kind, line and path.
+    Earlier byte edits can shift spans and cost cache hits without staleness.
     """
     entries = sorted(
-        {(b.name, b.visibility_byte_start, b.visibility_byte_end) for b in lexical_bindings}
+        {
+            (binding.name, binding.visibility_byte_start, binding.visibility_byte_end)
+            for binding in lexical_bindings
+        }
     )
-    h = hashlib.sha256()
-    h.update(f"{len(entries)}:".encode())
+    hasher = hashlib.sha256()
+    hasher.update(f"{len(entries)}:".encode())
     for name, start, end in entries:
         name_bytes = name.encode("utf-8")
-        h.update(f"{len(name_bytes)}:".encode())
-        h.update(name_bytes)
-        h.update(f"{start}:{end}:".encode())
-    return h.hexdigest()
+        hasher.update(f"{len(name_bytes)}:".encode())
+        hasher.update(name_bytes)
+        hasher.update(f"{start}:{end}:".encode())
+    return hasher.hexdigest()
 
 
 def module_admission_digest(
@@ -442,31 +297,32 @@ def module_admission_digest(
     all_scope_units: tuple[ScopeUnit, ...],
     content_bytes: bytes,
 ) -> str:
-    """SHA-256 over the module-scope arm's per-file admission inputs — the
-    third digest sibling (DECISIONS.md#062).
+    """Pin changed ranges, every parsed scope span, and changed module bytes.
 
-    Covers ALL THREE inputs the module ARM's admission depends on, none of
-    which the rendered prompt carries (included clipped hunks are per
-    included scope): the head-side added-line byte ranges and every parsed
-    scope span (the two inputs `_module_level_admits` compares), plus the
-    module-level bytes those ranges cover — which enter admission through
-    match PRODUCTION (they are the bytes the queries fire over), not through
-    the predicate, and must fold explicitly so identical ranges/scope layouts
-    over different module-level content never share a key. Ranges fold in
-    order (they are patch-derived and deterministic); scope spans fold
-    sorted (order/duplicate-insensitive, matching the sibling digests'
-    discipline)."""
-    h = hashlib.sha256()
-    h.update(f"{len(added_line_ranges)}:".encode())
+    Ranges retain patch order; scope spans are sorted and deduplicated.
+    Content matters because identical ranges over different bytes produce
+    different query matches (DECISIONS.md#062).
+    """
+    hasher = hashlib.sha256()
+    hasher.update(f"{len(added_line_ranges)}:".encode())
     for range_start, range_end in added_line_ranges:
         covered = content_bytes[range_start:range_end]
-        h.update(f"{range_start}:{range_end}:{len(covered)}:".encode())
-        h.update(covered)
-    spans = sorted({(su.byte_start, su.byte_end) for su in all_scope_units})
-    h.update(f"{len(spans)}:".encode())
+        hasher.update(f"{range_start}:{range_end}:{len(covered)}:".encode())
+        hasher.update(covered)
+    spans = sorted({(scope.byte_start, scope.byte_end) for scope in all_scope_units})
+    hasher.update(f"{len(spans)}:".encode())
     for span_start, span_end in spans:
-        h.update(f"{span_start}:{span_end}:".encode())
-    return h.hexdigest()
+        hasher.update(f"{span_start}:{span_end}:".encode())
+    return hasher.hexdigest()
+
+
+def _has_clean_module_parse(parse_result: ParseResult) -> bool:
+    """Module proof needs reliable scope boundaries across the entire file."""
+    if parse_result.parser_outcome != "clean":
+        return False
+    if parse_result.error_lines:
+        return False
+    return not any(parse_result.has_error.values())
 
 
 def module_admission_inputs(
@@ -474,33 +330,15 @@ def module_admission_inputs(
     patched_file: PatchedFile | None,
     head_content: str | None,
 ) -> tuple[tuple[ScopeUnit, ...], tuple[tuple[int, int], ...]]:
-    """The module-scope arm's `(all_scope_units, added_line_ranges)` inputs,
-    derived through the ONE gate that owns the arm's proof precondition
-    (DECISIONS.md#062): a FULLY error-free parse — the arm never anchors proof
-    on a tree carrying any error/MISSING node, because disjointness is
-    unprovable when scope recovery is untrustworthy. Returns empty inputs
-    (deny) when the parse is not clean or carries errors, when there is no
-    patch or head content to anchor on, and — containment, never an abort —
-    when the patch and head content are misaligned (`added_line_byte_ranges`
-    raises CoordinateError on a target line beyond the head source, e.g. a
-    force-push between the pinned-head content fetch and the live files-list
-    patch): the file falls back to pre-arm behavior with the module arm inert,
-    logged for observability. The deny is proof-correct (misaligned ranges are
-    an unsound proof anchor — do not admit through this branch), and it is
-    defense-in-depth: the analyze node's per-file misalignment probe (FUP-217)
-    skips misaligned files with `SkipReason.PATCH_HEAD_MISALIGNED` before this
-    helper runs, so the branch is production-unreachable behind it.
-    Production callers derive the arm's inputs ONLY
-    through this helper (or its whole-file sibling); hand-threading kwargs
-    into `run_observed_matches` bypasses the gate and is reserved for tests
-    pinning the mechanism itself."""
-    if (
-        patched_file is None
-        or head_content is None
-        or parse_result.parser_outcome != "clean"
-        or parse_result.error_lines
-        or any(parse_result.has_error.values())
-    ):
+    """Derive changed-file proof inputs for module-level matches (#062).
+
+    A fully error-free parse makes scope disjointness trustworthy. Missing
+    patch/content or misaligned coordinates deny admission; misalignment is
+    logged without aborting. The node normally skips it earlier (FUP-217).
+    Production callers use this gate or its whole-file sibling rather than
+    passing unchecked proof inputs directly to `run_observed_matches`.
+    """
+    if patched_file is None or head_content is None or not _has_clean_module_parse(parse_result):
         return (), ()
     try:
         ranges = added_line_byte_ranges(patched_file, head_content)
@@ -519,15 +357,8 @@ def module_admission_inputs(
 def module_admission_inputs_whole_file(
     parse_result: ParseResult, content_bytes: bytes
 ) -> tuple[tuple[ScopeUnit, ...], tuple[tuple[int, int], ...]]:
-    """Whole-file-changed frame of `module_admission_inputs` (the eval corpus
-    + structural harnesses grade whole files as changed): the SAME error-free
-    proof gate, with the entire file as the single added range."""
-    if (
-        parse_result.parser_outcome != "clean"
-        or parse_result.error_lines
-        or any(parse_result.has_error.values())
-        or not content_bytes
-    ):
+    """Apply the same proof gate with the whole file treated as changed."""
+    if not _has_clean_module_parse(parse_result) or not content_bytes:
         return (), ()
     return tuple(parse_result.scope_units), ((0, len(content_bytes)),)
 
@@ -539,24 +370,21 @@ def _module_level_admits(
     all_scope_ranges: tuple[tuple[int, int], ...],
     added_line_ranges: tuple[tuple[int, int], ...],
 ) -> bool:
-    """Module-scope admission arm (DECISIONS.md#062).
+    """Admit an eligible query only outside every parsed scope and inside a diff.
 
-    A `module_scope_eligible` query's match admits WITHOUT an enclosing scope
-    when its envelope is (a) DISJOINT from every parsed scope — overlap or
-    enclosure of a scope boundary is a straddle and stays denied, and absence
-    from the INCLUDED set alone proves nothing (the match could sit inside a
-    parsed-but-unchanged scope) — and (b) fully inside one head-side
-    added-line byte range, so the diff itself anchors the proof. Deny by
-    default: empty `added_line_ranges` (a caller that doesn't thread the diff)
-    admits nothing. The shadow guard, zero-width skip, and byte->line checks
-    still apply to module-level matches in the caller's chain.
+    Absence from included scopes alone proves nothing: unchanged scopes also
+    exclude module-level proof. Empty changed ranges deny admission (#062).
+    The caller still checks shadowing, binding and source coordinates.
     """
     if not observed.module_scope_eligible or not added_line_ranges:
         return False
     for scope_start, scope_end in all_scope_ranges:
         if not (span.byte_end <= scope_start or scope_end <= span.byte_start):
             return False
-    return any(s <= span.byte_start and span.byte_end <= e for s, e in added_line_ranges)
+    return any(
+        added_start <= span.byte_start and span.byte_end <= added_end
+        for added_start, added_end in added_line_ranges
+    )
 
 
 def run_observed_matches(
@@ -569,62 +397,30 @@ def run_observed_matches(
     all_scope_units: tuple[ScopeUnit, ...] = (),
     added_line_ranges: tuple[tuple[int, int], ...] = (),
 ) -> tuple[ObservedMatch, ...]:
-    """Run every OBSERVED query registered for `file_path`'s catalog language
-    over `head_content` and return the admitted matches as `ObservedMatch`
-    records — the single deterministic query pass every downstream consumer
-    reads. A file whose language has no catalog (or no registered adapter)
-    selects zero queries and returns empty — the producer is inert by
-    registration, so no OBSERVED finding is constructible for it.
+    """Run the file's registered queries and return admitted structural matches.
 
-    A match is admitted only when it is CONTAINED in an included scope unit (the
-    same scope discipline the LLM-citation admission uses) — a deterministic
-    OBSERVED match must anchor fully inside code the review is examining, never
-    straddling a scope boundary or landing in unchanged code outside the diff —
-    AND when its query's `BindingRule` is satisfied against `import_refs` +
-    `lexical_bindings` (`_binding_admits`): a name-anchored match must prove
-    its anchor binds to the dangerous API — an `exec` helper imported from
-    `./jobs` is not a `child_process` sink, and a shadowed anchor or
-    `shadow_guard` global (a local `process` parameter/mock) resolves to the
-    local binding, not the import/global. Test files admit nothing
-    (spec §11.2). Zero-width
-    envelopes and spans that fail the byte->line mapping are dropped.
+    Test files and unregistered languages return nothing. Each match needs a
+    positive span, proof within an included scope or the module-level diff
+    gate, valid global/import bindings, and mappable source coordinates.
+    Module proof inputs must come through `module_admission_inputs` or its
+    whole-file sibling; empty inputs deny that route.
 
-    The MODULE-SCOPE arm (`_module_level_admits`,
-    DECISIONS.md#062) is the one exception to
-    containment: a `module_scope_eligible` query's match admits without an
-    enclosing scope when its envelope is disjoint from every parsed scope
-    (`all_scope_units`) and fully inside a head-side added-line byte range
-    (`added_line_ranges`, from `coordinates.added_line_byte_ranges`). Both
-    default empty = deny: a caller that doesn't thread the module inputs gets
-    exactly the pre-v7 behavior. Shadow-guard and byte->line checks still
-    apply to module-level matches.
-
-    Returns a
-    deterministically ordered tuple (by query id, then the registry's match
-    sort) so any content-derived id downstream stays stable across replays.
+    Preserve catalog order then registry match order for stable replay IDs.
     """
-    # Per-language selection: the registry pairs the query set with the
-    # grammar that parses this file's bytes. Both None/empty for a
-    # catalog-less language — the loop below then never runs.
     language = query_registry.query_language_for_path(file_path)
     grammar = query_registry.grammar_for_path(file_path)
     if language is None or grammar is None:
         return ()
-    # Test code is not a production security finding (spec §11.2). The
-    # language scopes the JS/TS-only name conventions.
     if _is_test_file(file_path, language):
         return ()
     content_bytes = head_content.encode("utf-8")
-    scope_ranges = tuple((su.byte_start, su.byte_end) for su in included_scope_units)
-    all_scope_ranges = tuple((su.byte_start, su.byte_end) for su in all_scope_units)
+    scope_ranges = tuple((scope.byte_start, scope.byte_end) for scope in included_scope_units)
+    all_scope_ranges = tuple((scope.byte_start, scope.byte_end) for scope in all_scope_units)
     matches: list[ObservedMatch] = []
 
     for query_id, observed in query_registry.observed_queries_for(language).items():
-        # module_presence is span-independent — decide it once per query and
-        # skip the tree-sitter run entirely when the file imports none of the
-        # rule's modules (the common case). The per-span `_binding_admits`
-        # below stays the single admission chokepoint; this is a pre-gate,
-        # not a second decision site.
+        # Missing imports can rule out a query before tree-sitter runs.
+        # Reuse the span-admission predicate to keep this prefilter consistent.
         if (
             observed.binding is not None
             and observed.binding.mode == "module_presence"
@@ -632,18 +428,13 @@ def run_observed_matches(
         ):
             continue
         for span in query_registry.match(query_id, content_bytes, grammar=grammar):
-            # A degenerate (zero-width) envelope has no reviewable line range;
-            # skip rather than feed query_span_to_source_lines a span it rejects.
             if span.byte_end <= span.byte_start:
                 continue
-            # Containment: the match must fall fully inside an included scope's
-            # byte range (a call always nests within its enclosing scope).
-            # The ONE exception is the module-scope arm
-            # (`_module_level_admits`): an eligible query's scope-DISJOINT
-            # match fully inside a changed added-line range admits without an
-            # enclosing ScopeUnit. Straddling and unchanged-code matches stay
-            # excluded by design in BOTH arms.
-            contained = any(s <= span.byte_start and span.byte_end <= e for s, e in scope_ranges)
+            # Proof needs an included scope or a disjoint, diff-anchored span.
+            contained = any(
+                scope_start <= span.byte_start and span.byte_end <= scope_end
+                for scope_start, scope_end in scope_ranges
+            )
             if not contained and not _module_level_admits(
                 observed,
                 span,
@@ -651,11 +442,7 @@ def run_observed_matches(
                 added_line_ranges=added_line_ranges,
             ):
                 continue
-            # Shadow guard: a text-constrained global (tls_env's `process`,
-            # eval/Function) must not be locally bound at the match site — a
-            # shadowing binding means the name resolves to a mock/parameter,
-            # not the global. Match-participating: only the guarded names
-            # this match actually captured count.
+            # Captured globals and imported APIs must resolve to their real bindings.
             if _guarded_global_shadowed(
                 observed.shadow_guard,
                 span.captures,
@@ -666,8 +453,6 @@ def run_observed_matches(
                 import_refs,
             ):
                 continue
-            # Import-binding: a name-anchored match must prove its anchor
-            # binds to the dangerous API (the import-binding admission step).
             if not _binding_admits(
                 observed.binding,
                 span.captures,
@@ -701,8 +486,6 @@ def run_observed_matches(
                     evidence=evidence,
                     line_start=line_start,
                     line_end=line_end,
-                    # Past the gate with no containing included scope means the
-                    # module arm admitted it (the only other way through).
                     module_level=not contained,
                 )
             )
@@ -718,24 +501,16 @@ def module_level_observed_matches(
     import_refs: tuple[ImportRef, ...],
     lexical_bindings: tuple[LexicalBinding, ...],
 ) -> tuple[ObservedMatch, ...]:
-    """The module-only routing sweep (DECISIONS.md#062): the matches at
-    least one `module_scope_eligible` query admits at module level on the
-    changed lines. Delegates to `run_observed_matches` with NO included
-    scopes, so the only admissible matches are module-level ones — the exact
-    admission chain (eligibility, disjointness, changed-range containment,
-    shadow guard) the producer runs; one implementation, zero drift, and the
-    RETURNED matches are the module route's final admitted set (the node
-    reuses them instead of running the sweep twice). Short-circuits without
-    executing any query when the file's language has no eligible query
-    (every Python file today) — a language whose catalog cannot admit at
-    module level must not pay the sweep for a structurally-impossible
-    result. The analyze node calls this LAZILY: only when the file would
-    otherwise skip at NO_CHANGED_SCOPE_UNITS, the one branch that consults
-    the routing candidate.
+    """Run only module-level proof, reusing the ordinary admission chain (#062).
+
+    Empty included scopes leave only diff-anchored, scope-disjoint matches.
+    Languages without an eligible query avoid the sweep. Callers can retain
+    these findings when scope routing, budget or triviality would skip a file.
     """
     language = query_registry.query_language_for_path(file_path)
     if language is None or not any(
-        q.module_scope_eligible for q in query_registry.observed_queries_for(language).values()
+        query.module_scope_eligible
+        for query in query_registry.observed_queries_for(language).values()
     ):
         return ()
     return run_observed_matches(
@@ -757,51 +532,48 @@ def produce_observed_findings(
     installation_id: int,
     active_policy_version: str,
 ) -> tuple[ReviewFinding, ...]:
-    """Build deterministic OBSERVED `ReviewFinding`s from the matches of
-    `run_observed_matches`.
+    """Map every admitted match to a policy-owned finding in the same order.
 
-    EVERY OBSERVED match becomes a finding — both `signal_only` and `skip_safe`;
-    the class affects skip ROUTING, not whether a finding is emitted. Findings
-    preserve the matches' deterministic order so the round's content-derived id
-    stays stable across replays.
+    Both signal-only and skip-safe matches emit; query class affects routing.
+    Schema construction validates proof and content hashes.
     """
     findings: list[ReviewFinding] = []
-    for m in matches:
+    for match in matches:
         proposal_hash = compute_proposal_hash(
             source_file_path=file_path,
-            finding_type=m.finding_type.value,
+            finding_type=match.finding_type.value,
             evidence_tier=EvidenceTier.OBSERVED.value,
-            query_match_id=m.query_match_id,
+            query_match_id=match.query_match_id,
             trace_path=None,
-            title=m.title,
-            description=m.description,
-            evidence=m.evidence,
-            line_start=m.line_start,
-            line_end=m.line_end,
+            title=match.title,
+            description=match.description,
+            evidence=match.evidence,
+            line_start=match.line_start,
+            line_end=match.line_end,
         )
         findings.append(
             ReviewFinding(
                 review_id=review_id,
                 installation_id=installation_id,
                 policy_version=active_policy_version,
-                finding_type=m.finding_type,
-                dimension=lookup_dimension(m.finding_type),
-                severity=lookup_severity(m.finding_type),
+                finding_type=match.finding_type,
+                dimension=lookup_dimension(match.finding_type),
+                severity=lookup_severity(match.finding_type),
                 evidence_tier=EvidenceTier.OBSERVED,
                 file_path=file_path,
-                line_start=m.line_start,
-                line_end=m.line_end,
-                title=m.title,
-                description=m.description,
-                evidence=m.evidence,
-                query_match_id=m.query_match_id,
+                line_start=match.line_start,
+                line_end=match.line_end,
+                title=match.title,
+                description=match.description,
+                evidence=match.evidence,
+                query_match_id=match.query_match_id,
                 trace_path=None,
                 proposal_hash=proposal_hash,
                 content_hash=compute_finding_content_hash(
                     file_path=file_path,
-                    line_start=m.line_start,
-                    line_end=m.line_end,
-                    finding_type=m.finding_type,
+                    line_start=match.line_start,
+                    line_end=match.line_end,
+                    finding_type=match.finding_type,
                 ),
             )
         )
@@ -819,27 +591,15 @@ def compute_observed_skip_shadow(
     review_id: UUID,
     is_eval: bool,
 ) -> ObservedSkipShadowEvent | None:
-    """Compute the per-file OBSERVED skip-eligibility decision (Cost Lever 3,
-    `DECISIONS.md#049`) from the shared `run_observed_matches` records, returning
-    it as an `ObservedSkipShadowEvent` — or `None` when there is nothing to
-    evaluate (no included scopes, or no changed regions in them).
+    """Measure skip eligibility without recording or enforcing the decision.
 
-    Default-deny: a file is skip-eligible (`would_skip`) iff EVERY
-    changed region across the included scopes lies within the coverage envelope of
-    at least one `skip_safe` match. `signal_only` matches never count toward
-    coverage. Base/removed regions are un-coverable by head-content matches → they
-    are always blockers. Because the production registry seeds zero `skip_safe`
-    queries, every production-emitted event with changed regions is `not_eligible`.
-    This function only COMPUTES the decision; the caller (`analyze._process_one_file`)
-    records it and, when `analyze_observed_skip_enforced` is set and the outcome is
-    `would_skip`, enforces the pre-LLM skip (Step 3b-mechanism). Under the production
-    defaults (flag off + zero `skip_safe`) the LLM always runs.
+    Every changed line in the included scopes needs skip-safe head coverage;
+    removed lines always block. Module-level matches cannot cover scope edits.
+    Overlapping scopes are deduplicated by side and line. Empty scopes/changes
+    or unusable coordinates produce no optional event.
 
-    The returned event is coherent by construction (it satisfies
-    `ObservedSkipShadowEvent`'s coverage-coherence validator): a `would_skip` has
-    no blockers, so every changed region is a covered head region → non-empty
-    `covering_matches` and no base-side regions. Changed regions and blockers are
-    deduped by (side, line) so overlapping included scopes don't double-count.
+    The caller records the result and may enforce `would_skip`. Production
+    defaults disable enforcement and register no skip-safe queries (#049).
     """
     if not included_scope_units:
         return None
@@ -847,16 +607,12 @@ def compute_observed_skip_shadow(
     def _region(side: Literal["head", "base"], line_no: int) -> ObservedSkipChangedRegion:
         return ObservedSkipChangedRegion(side=side, line_start=line_no, line_end=line_no)
 
-    # Module-arm matches are excluded from #049 skip coverage
-    # (DECISIONS.md#062): a byte-disjoint module-level match can share a
-    # source LINE with an included scope's added line, and coverage here is
-    # line-space — without this filter it would count as coverage the skip
-    # contract forbids. Defense-in-depth: the schema floor also rejects
-    # eligible+SKIP_SAFE queries (ObservedQuery._enforce_module_scope_constraints).
+    # Disjoint byte spans can share a source line. Module-level proof must not
+    # accidentally count as coverage of an included scope (#049, #062).
     skip_safe_envelopes = tuple(
-        (m.line_start, m.line_end)
-        for m in matches
-        if m.query_class == QueryClass.SKIP_SAFE and not m.module_level
+        (match.line_start, match.line_end)
+        for match in matches
+        if match.query_class == QueryClass.SKIP_SAFE and not match.module_level
     )
 
     changed: list[ObservedSkipChangedRegion] = []
@@ -865,52 +621,48 @@ def compute_observed_skip_shadow(
     seen_blocker: set[tuple[str, int]] = set()
     covered_head_lines: set[int] = set()
 
-    for su in included_scope_units:
+    for scope in included_scope_units:
         try:
             spans = changed_line_spans(
-                su, patched_file, head_source=head_source, base_source=base_source
+                scope, patched_file, head_source=head_source, base_source=base_source
             )
         except CoordinateError:
-            # base_source=None with kept-removed lines is unreachable under the V1
-            # intake contract (added files have no removed lines; modified/renamed
-            # carry content_base) — the sibling trivial-scope filter pre-checks it.
-            # But the shadow event is OPTIONAL telemetry, so a coordinate edge must
-            # never abort the review: fail-safe to no event.
+            # Optional coverage telemetry must not abort a review.
             return None
-        for ls in spans.head_added:
-            key = ("head", ls.line_no)
-            covered = any(lo <= ls.line_no <= hi for lo, hi in skip_safe_envelopes)
+        for line_span in spans.head_added:
+            key = ("head", line_span.line_no)
+            covered = any(lo <= line_span.line_no <= hi for lo, hi in skip_safe_envelopes)
             if key not in seen_changed:
                 seen_changed.add(key)
-                changed.append(_region("head", ls.line_no))
+                changed.append(_region("head", line_span.line_no))
             if covered:
-                covered_head_lines.add(ls.line_no)
+                covered_head_lines.add(line_span.line_no)
             elif key not in seen_blocker:
                 seen_blocker.add(key)
-                blockers.append(_region("head", ls.line_no))
-        for ls in spans.base_removed:
-            key = ("base", ls.line_no)
+                blockers.append(_region("head", line_span.line_no))
+        for line_span in spans.base_removed:
+            key = ("base", line_span.line_no)
             if key not in seen_changed:
                 seen_changed.add(key)
-                changed.append(_region("base", ls.line_no))
+                changed.append(_region("base", line_span.line_no))
             # Base/removed lines are un-coverable by head-content OBSERVED matches.
             if key not in seen_blocker:
                 seen_blocker.add(key)
-                blockers.append(_region("base", ls.line_no))
+                blockers.append(_region("base", line_span.line_no))
 
     if not changed:
         return None
 
     covering = tuple(
         ObservedSkipCoveringMatch(
-            query_match_id=m.query_match_id,
+            query_match_id=match.query_match_id,
             side="head",
-            line_start=m.line_start,
-            line_end=m.line_end,
+            line_start=match.line_start,
+            line_end=match.line_end,
         )
-        for m in matches
-        if m.query_class == QueryClass.SKIP_SAFE
-        and any(m.line_start <= n <= m.line_end for n in covered_head_lines)
+        for match in matches
+        if match.query_class == QueryClass.SKIP_SAFE
+        and any(match.line_start <= line_no <= match.line_end for line_no in covered_head_lines)
     )
 
     outcome: Literal["would_skip", "not_eligible"] = (

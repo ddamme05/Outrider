@@ -115,22 +115,3 @@ async def test_insert_with_valid_new_semver_succeeds(migrated_db: str) -> None:
             assert result.scalar_one() == "1.0.1"
     finally:
         await engine.dispose()
-
-
-async def test_existing_1_0_0_row_satisfies_new_check(migrated_db: str) -> None:
-    """The genesis-seeded `version='1.0.0'` row satisfies the new CHECK.
-
-    Sanity check that the ALTER migration applied cleanly on the
-    populated DB (genesis seeded '1.0.0' at af138edd4b57_genesis.py:432).
-    If the CHECK ever tightens, this asserts the seeded row still passes
-    so the migration stays applicable on existing DBs.
-    """
-    engine = create_async_engine(migrated_db)
-    try:
-        async with engine.connect() as conn:
-            result = await conn.execute(
-                text("SELECT version FROM severity_policies WHERE version = '1.0.0'")
-            )
-            assert result.scalar_one() == "1.0.0"
-    finally:
-        await engine.dispose()

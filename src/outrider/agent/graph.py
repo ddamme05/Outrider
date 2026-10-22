@@ -1,149 +1,19 @@
 # StateGraph(ReviewState) factory: seven LOGICAL nodes (DECISIONS.md#064).
-"""`StateGraph(ReviewState)` factory — seven LOGICAL nodes, nine physical vertices.
+"""`StateGraph(ReviewState)` factory.
 
-Graph topology (logical): intake → triage → analyze ⇄ trace → synthesize → hitl → publish.
+Seven LOGICAL nodes — intake, triage, analyze, trace, synthesize, hitl, publish —
+over nine physical vertices: analyze fans out into a planner, per-file `analyze_file`
+Send workers, and an `analyze_aggregate` fold. Audit vocabulary, state identity and
+replay grouping know only the seven (`DECISIONS.md#064`).
 
-V1 ships SEVEN logical nodes: `intake`, `triage`, `analyze`, `trace`,
-`synthesize`, `hitl`, `publish`. The seven are the LOGICAL graph — audit
-vocabulary, state identity, replay grouping; physical LangGraph vertices
-exceed them since the parallel-analyze fan-out: analyze is three physical
-vertices — the `analyze` planner (Command-routing: pass-0 Sends, pass-1
-sequential), the per-file `analyze_file` Send worker, and the
-`analyze_aggregate` fold — all emitting under `node_id="analyze"`
-distinguished by phase_key (see DECISIONS.md#064). Intake enriches
-`pr_context.changed_files` per
-`DECISIONS.md#020`; triage runs a fast LLM pass for tier
-classification; analyze runs one Sonnet call per DEEP/STANDARD-tier
-file and emits findings; trace consumes `state.trace_candidates`,
-ranks via Haiku, resolves via the two-phase fetch (probe + content),
-and emits `TraceDecisionEvent` audit-first — the analyze router loops
-back into analyze when new trace-fetched files arrived; hitl
-partitions findings by severity, optionally interrupts the graph for
-human approval, and emits `HITLRequestEvent` + `HITLDecisionEvent`
-audit-first; publish routes each finding through `coordinates/`,
-applies the V1 eligibility gate (CRITICAL/HIGH withheld unless an
-explicit HITL approval lands), and posts a single GitHub review
-materializing the eligible findings across all three tiers — inline
-comments, a "Related concerns" body section, and an aggregate
-dashboard-only note (DECISIONS.md#050). The factory produces a `CompiledStateGraph`
-that consumers invoke via `await graph.ainvoke(seed_state)`.
+Intake routes with `Command(goto=...)`, which is why this module deliberately has NO
+`add_edge("intake", ...)` and no `add_conditional_edges("intake", ...)`: under LangGraph
+1.1.6 a static edge fires ALONGSIDE the Command's dynamic edge, sending to both.
 
-The adaptive `analyze ⇄ trace` loop is bounded by `MAX_ANALYSIS_ROUNDS`
-(`agent/nodes/trace.py`, depth-2 ceiling). The HITL interrupt is
-implemented via LangGraph's `interrupt(...)` — see
-`specs/2026-05-26-hitl-node.md` for the 13-step node body contract.
-
-## Routing: Command, not static or conditional edges from intake
-
-Per the intake-and-webhook spec (Shape B), intake returns
-`Command(goto=...)` to drive routing. No `add_edge("intake", "triage")`
-and no `add_conditional_edges("intake", ...)` — per LangGraph 1.1.6
-semantics, a static edge would fire ALONGSIDE the Command's dynamic
-edge (sending to both destinations), and a conditional edge would
-require a new state slot which conflicts with the canonical ReviewState
-ownership rule (`pr_context.changed_files` enrichment only, no new
-top-level slots from intake).
-
-  - Success path: intake returns `Command(update={"pr_context": ...},
-    goto="triage")` → routes to triage.
-  - Size-gate skip: intake returns `Command(goto=END)` → routes to END.
-  - Failure: intake re-raises after writing `reviews.status='failed'` —
-    graph terminates via exception, no `Command` returned.
-
-## Dependency injection
-
-Required keyword arguments per `nodes-receive-deps-via-closure`:
-
-  - `provider: LLMProvider` — LLM transport for triage, analyze, and
-    trace (Haiku ranking).
-  - `model_config: ModelConfig` — `triage_model`, `analyze_model`,
-    `standard_analyze_model` (STANDARD-tier analyze routing), `trace_model`,
-    `synthesize_model`, and `patch_model` are captured at callsite (per
-    `model-strings-from-config-not-hardcoded`).
-  - `phase_event_sink: PhaseEventSink` — required for all seven nodes;
-    each emits start/end phase markers.
-  - `file_examination_sink: FileExaminationSink` — required for intake's
-    per-file content-fetch events AND analyze's per-file examination
-    outcome events (one per kept file).
-  - `analyze_event_sink: AnalyzeEventSink` — required for analyze's
-    `FindingEvent` / `FindingProposalRejectedEvent` /
-    `AnalyzeResponseRejectedEvent` / `AnalyzeCompletedEvent` emissions.
-  - `publish_event_sink: PublishEventSink` — required for publish's
-    `PublishRoutingEvent` / `PublishEligibilityEvent` /
-    `PublishAttemptEvent` / `PublishEvent` emissions + the
-    `query_prior_publish_event` idempotency lookup.
-  - `trace_sink: TraceEventSink` — required for trace's
-    `TraceDecisionEvent` audit-first emission per M7.
-  - `hitl_event_sink: HITLEventSink` — required for hitl's
-    `HITLRequestEvent` + `HITLDecisionEvent` audit-first emissions.
-  - `synthesize_event_sink: SynthesizeEventSink` — required for
-    synthesize's `SynthesizeCompletedEvent` per-review aggregate
-    emission.
-  - `anomaly_sink: AnomalySink` — required for the in-graph anomaly
-    emitters: synthesize on cross-round severity divergence
-    (CROSS_ROUND_SEVERITY_DIVERGENCE) and analyze on budget starvation
-    (COST_BUDGET_STARVATION, Stage 2); sweep callers use the same sink
-    with `SWEEP_LOCK_ID` acquired around the call.
-  - `review_status_sink: ReviewStatusSink` — required for hitl's
-    `reviews.status` lifecycle transitions (mark_awaiting_approval +
-    mark_running), publish's terminal-success transition (mark_completed
-    per canonical `docs/spec.md` §3.3 step 10), and the sweep's
-    `mark_awaiting_approval_expired`.
-  - `hitl_config: HITLConfig` — required for hitl's deterministic
-    `expires_at = state.received_at + timedelta(minutes=...)`
-    derivation. Per `nodes-receive-deps-via-closure`, config travels
-    through the dependency-injection seam at `build_graph(...)` —
-    the node body does not read env vars.
-  - `resolve_slack_target: SlackTargetResolver | None` — optional per-install
-    Slack resolver, `async (installation_id) -> SlackNotifyTarget | None`. When
-    set, the hitl + publish nodes resolve the install's channel + token-bound
-    orchestrator at runtime and post a best-effort notification (awaited inline,
-    never gate-breaking); None (the default) disables Slack. Injected here and
-    closed over in the nodes per `nodes-receive-deps-via-closure`. The resolver
-    body (installations read + token decrypt + notifier construction) lives in
-    the lifespan composition root, so `agent/` never imports `cryptography` /
-    `slack_sdk` (FUP-186).
-  - `patch_config: PatchConfig` — required for synthesize's suggested-patch
-    pass (`patches_enabled` + the per-review cap; the patch model is
-    `model_config.patch_model`). Same closure-injection rule — synthesize
-    reads no env (DECISIONS.md#040).
-  - `intake_config: IntakeConfig | None` — optional whole-PR size-gate config
-    (docs/spec.md §6.10: `OUTRIDER_INTAKE_MAX_LINES` / `MAX_FILES`, defaults
-    1000 / 30). None (the default) reads the env / spec defaults once here and
-    injects them; intake never reads env itself.
-  - `checkpointer: BaseCheckpointSaver` — required for HITL durability.
-    `interrupt(...)` writes state to the checkpointer; `Command(resume=...)`
-    reads it back on the next `ainvoke(..., config={"configurable":
-    {"thread_id": str(review_id)}})` call. Production is
-    `AsyncPostgresSaver`; tests use `InMemorySaver`. Per
-    `langgraph-1.1.6/narrative/persistence.md` the checkpointer is
-    load-bearing for any graph that uses `interrupt(...)` — without
-    one, the suspended state is in-memory only and is lost on process
-    restart.
-  - `publisher: GitHubPublisher` — required for publish's GitHub
-    `create_review` call (single-review-per-PR contract).
-  - `import_path_resolver: ImportPathResolver` — required for analyze's
-    `parse_source(...)` dispatch (threaded to whichever `ast_facts/`
-    language adapter the registry selects); resolves same-file import
-    paths for the registry walk.
-  - `db_factory: async_sessionmaker[AsyncSession]` — required for intake's
-    `reviews.status='skipped'` / `'failed'` writes. Per `docs/spec.md
-    §9.3`, `db_factory` is the canonical first parameter.
-  - `github_factory: Callable[[int], Awaitable[GitHub]]` — required for intake to
-    construct a per-installation `GitHub` client on-demand. Per
-    `DECISIONS.md#020`, minting happens at intake call-site, not at
-    webhook receipt.
-
-## Validation gates
-
-None-rejections + structural Protocol checks at construction time
-(BEFORE any `StateGraph` work). PEP 544 caveat applies: member-presence
-only, not signature shape.
-
-## Async invocation
-
-All seven nodes are `async def`. Per LangGraph 1.1.6 docs, async-node
-graphs are invoked via `await graph.ainvoke(state)` / `.astream(...)`.
+Every runtime dependency arrives as a keyword argument and is closed over in
+the node callables rather than stored in ReviewState
+(`nodes-receive-deps-via-closure`). All nodes are async, so the compiled graph is
+driven with `await graph.ainvoke(seed_state)`.
 """
 
 from __future__ import annotations
@@ -218,13 +88,58 @@ class BuildGraphError(ValueError):
     """
 
 
-def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg per node-injected resource
+def _validate_provider_and_host_identity(
     *,
-    db_factory: async_sessionmaker[AsyncSession],
-    github_factory: Callable[[int], Awaitable[InstallationGitHubClient]],
-    installation_authorizer: InstallationAuthorizer,
     provider: LLMProvider,
     model_config: ModelConfig,
+    profile_id: str | None,
+    reasoning_enabled: bool | None,
+    profile_contract_digest: str | None,
+) -> None:
+    if provider is None:
+        raise BuildGraphError("provider must not be None")
+    if model_config is None:
+        raise BuildGraphError("model_config must not be None")
+
+    # The triad is peers: all three present (a qualified host) or all None. Lifespan
+    # supplies them from one resolved profile, so a partial set is a wiring bug
+    # (DECISIONS.md#056).
+    triad = (profile_id, reasoning_enabled, profile_contract_digest)
+    if any(v is not None for v in triad) and not all(v is not None for v in triad):
+        raise BuildGraphError(
+            "host-identity triad must be all-present or all-None; got a partial set "
+            "(profile_id / reasoning_enabled / profile_contract_digest)"
+        )
+
+    from outrider.llm.config import is_anthropic_family_model  # noqa: PLC0415
+    from outrider.llm.host_profiles import ANTHROPIC_PROFILE_ID  # noqa: PLC0415
+
+    # Host is inferred from slug SHAPE, so a future non-anthropic host using a
+    # claude-shaped slug would evade this — see the ADD-A-HOST checklist in
+    # host_profiles.py (FUP-194 / DECISIONS.md#056).
+    host_is_anthropic = profile_id is None or profile_id == ANTHROPIC_PROFILE_ID
+    configured_models = (
+        model_config.triage_model,
+        model_config.analyze_model,
+        model_config.standard_analyze_model,
+        model_config.synthesize_model,
+        model_config.trace_model,
+        model_config.patch_model,
+    )
+    mismatched: set[str] = set()
+    for model in configured_models:
+        if is_anthropic_family_model(model) != host_is_anthropic:
+            mismatched.add(model)
+    mismatched_models = sorted(mismatched)
+    if mismatched_models:
+        raise BuildGraphError(
+            "model_config slugs are incoherent with the host-identity triad "
+            f"(profile_id={profile_id!r}); mismatched model slug(s): {mismatched_models}"
+        )
+
+
+def _validate_required_dependencies(
+    *,
     phase_event_sink: PhaseEventSink,
     file_examination_sink: FileExaminationSink,
     analyze_event_sink: AnalyzeEventSink,
@@ -236,108 +151,38 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     anomaly_sink: AnomalySink,
     hitl_config: HITLConfig,
     patch_config: PatchConfig,
-    intake_config: IntakeConfig | None = None,
     checkpointer: BaseCheckpointSaver[Any],
     publisher: GitHubPublisher,
     import_path_resolver: ImportPathResolver,
-    total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
-    analyze_max_concurrency: int = ANALYZE_MAX_CONCURRENCY,
-    trivial_scope_filter_enabled: bool = False,
-    analyze_observed_skip_enforced: bool = False,
-    analyze_cache_store: AnalyzeCacheStore | None = None,
-    cache_mode: CacheMode = CacheMode.SHADOW,
-    resolve_slack_target: SlackTargetResolver | None = None,
-    dashboard_base_url: str | None = None,
-    # Host-identity triad (DECISIONS.md#056) closed into the per-node completion events (Analyze /
-    # Synthesize), which can emit on zero-LLM-call cache-serve/skip paths and so cannot source it
-    # from a provider response. Lifespan supplies these from the resolved profile; default None =
-    # unqualified (pre-#056 / tests).
-    profile_id: str | None = None,
-    reasoning_enabled: bool | None = None,
-    profile_contract_digest: str | None = None,
-) -> _CompiledTriageGraph:
-    """Build the intake → triage → analyze ⇄ trace → synthesize → hitl → publish graph.
+    db_factory: async_sessionmaker[AsyncSession],
+    github_factory: Callable[[int], Awaitable[InstallationGitHubClient]],
+    installation_authorizer: InstallationAuthorizer,
+) -> None:
+    """Reject None on every required dependency, in declaration order.
 
-    Seven LOGICAL nodes, nine physical vertices — analyze spans three
-    (planner / `analyze_file` workers / `analyze_aggregate`) per
-    `DECISIONS.md#064`; audit vocabulary and replay grouping know only
-    the seven.
-
-    Keyword-only arguments prevent positional-confusion bugs at callsites
-    with multiple deps. Validation order: None checks first (cheaper),
-    then Protocol structural checks. Parameter order mirrors
-    `docs/spec.md §9.3` (`db_factory` first, `github_factory` second).
-
-    Returns a compiled `StateGraph(ReviewState)` ready for
-    `await graph.ainvoke(seed_state)`.
+    Order is behaviour: when several are missing the caller sees the first.
     """
-    # Fail-closed: None on any required dep.
-    if provider is None:
-        raise BuildGraphError("provider must not be None")
-    if model_config is None:
-        raise BuildGraphError("model_config must not be None")
-    # Host-identity triad (DECISIONS.md#056): peers — all three present (a qualified host) or all
-    # None (unqualified). Lifespan supplies them from one resolved profile; a partial set is a
-    # wiring bug, caught here before it reaches the completion events' coherence validator.
-    _triad = (profile_id, reasoning_enabled, profile_contract_digest)
-    if any(v is not None for v in _triad) and not all(v is not None for v in _triad):
-        raise BuildGraphError(
-            "host-identity triad must be all-present or all-None; got a partial set "
-            "(profile_id / reasoning_enabled / profile_contract_digest)"
-        )
-    # Host/triad coherence (FUP-194 / DECISIONS.md#056): the model_config's slug family
-    # MUST match the host the triad names — a slug is claude-family IFF the host is
-    # anthropic (profile_id None/unqualified counts as the native anthropic default). A
-    # mismatch in EITHER direction is a wiring bug whose completion events would mis-stamp
-    # the host — GLM slugs tagged anthropic/None, OR claude slugs tagged a registry host
-    # like "baseten" — so fail loud at build, not fail-late at the persister. Host is
-    # inferred from slug SHAPE, so a future non-anthropic host using a claude-shaped slug
-    # would evade this — see the ADD-A-HOST checklist in host_profiles.py.
-    from outrider.llm.config import is_anthropic_family_model  # noqa: PLC0415
-    from outrider.llm.host_profiles import ANTHROPIC_PROFILE_ID  # noqa: PLC0415
-
-    host_is_anthropic = profile_id is None or profile_id == ANTHROPIC_PROFILE_ID
-    mismatched_models = sorted(
-        {
-            m
-            for m in (
-                model_config.triage_model,
-                model_config.analyze_model,
-                model_config.standard_analyze_model,
-                model_config.synthesize_model,
-                model_config.trace_model,
-                model_config.patch_model,
-            )
-            if is_anthropic_family_model(m) != host_is_anthropic
-        }
+    # Annotated `object` so both loops share one element type; mypy otherwise pins
+    # the variable to the first tuple's union and rejects the second.
+    first_group: tuple[tuple[str, object], ...] = (
+        ("phase_event_sink", phase_event_sink),
+        ("file_examination_sink", file_examination_sink),
+        ("analyze_event_sink", analyze_event_sink),
+        ("publish_event_sink", publish_event_sink),
+        ("trace_sink", trace_sink),
+        ("hitl_event_sink", hitl_event_sink),
+        ("synthesize_event_sink", synthesize_event_sink),
+        ("review_status_sink", review_status_sink),
+        ("anomaly_sink", anomaly_sink),
+        ("hitl_config", hitl_config),
+        ("patch_config", patch_config),
     )
-    if mismatched_models:
-        raise BuildGraphError(
-            "model_config slugs are incoherent with the host-identity triad "
-            f"(profile_id={profile_id!r}); mismatched model slug(s): {mismatched_models}"
-        )
-    if phase_event_sink is None:
-        raise BuildGraphError("phase_event_sink must not be None")
-    if file_examination_sink is None:
-        raise BuildGraphError("file_examination_sink must not be None")
-    if analyze_event_sink is None:
-        raise BuildGraphError("analyze_event_sink must not be None")
-    if publish_event_sink is None:
-        raise BuildGraphError("publish_event_sink must not be None")
-    if trace_sink is None:
-        raise BuildGraphError("trace_sink must not be None")
-    if hitl_event_sink is None:
-        raise BuildGraphError("hitl_event_sink must not be None")
-    if synthesize_event_sink is None:
-        raise BuildGraphError("synthesize_event_sink must not be None")
-    if review_status_sink is None:
-        raise BuildGraphError("review_status_sink must not be None")
-    if anomaly_sink is None:
-        raise BuildGraphError("anomaly_sink must not be None")
-    if hitl_config is None:
-        raise BuildGraphError("hitl_config must not be None")
-    if patch_config is None:
-        raise BuildGraphError("patch_config must not be None")
+    for name, value in first_group:
+        if value is None:
+            raise BuildGraphError(f"{name} must not be None")
+
+    # Explicit, and in position: the message carries the reason, and losing it would
+    # leave a caller guessing why an in-memory graph cannot resume.
     if checkpointer is None:
         raise BuildGraphError(
             "checkpointer must not be None — HITL `interrupt(...)` + "
@@ -345,23 +190,25 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
             "cross-process state rehydration. Use `InMemorySaver` for "
             "tests, `AsyncPostgresSaver` in production."
         )
-    if publisher is None:
-        raise BuildGraphError("publisher must not be None")
-    if import_path_resolver is None:
-        raise BuildGraphError("import_path_resolver must not be None")
-    if db_factory is None:
-        raise BuildGraphError("db_factory must not be None")
-    if github_factory is None:
-        raise BuildGraphError("github_factory must not be None")
-    # Required, not optional-None: the #065 live-auth gate is a security check, so a missing
-    # authorizer must fail the build, never silently fail-open (skip the gate).
-    if installation_authorizer is None:
-        raise BuildGraphError("installation_authorizer must not be None")
 
-    # `total_review_budget_tokens` is a public-input int; validate here so
-    # a misconfigured caller fails before analyze ever runs. `bool` is
-    # rejected explicitly: `isinstance(True, int)` is True in Python, but
-    # a boolean budget is never intended.
+    second_group: tuple[tuple[str, object], ...] = (
+        ("publisher", publisher),
+        ("import_path_resolver", import_path_resolver),
+        ("db_factory", db_factory),
+        ("github_factory", github_factory),
+        # Required, not optional: the #065 live-auth gate is a security check, so a
+        # missing authorizer must fail the build rather than silently fail open.
+        ("installation_authorizer", installation_authorizer),
+    )
+    for name, value in second_group:
+        if value is None:
+            raise BuildGraphError(f"{name} must not be None")
+
+
+def _validate_numeric_settings(
+    *, total_review_budget_tokens: int, analyze_max_concurrency: int
+) -> None:
+    # `bool` is rejected explicitly: `isinstance(True, int)` is True in Python.
     if not isinstance(total_review_budget_tokens, int) or isinstance(
         total_review_budget_tokens, bool
     ):
@@ -369,8 +216,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
             f"total_review_budget_tokens must be int "
             f"(got type: {type(total_review_budget_tokens).__name__})"
         )
-    # Same bool-rejection rationale; additionally require >= 1 — a
-    # zero-permit semaphore would deadlock the first worker forever.
+    # >= 1 as well: a zero-permit semaphore would deadlock the first worker forever.
     if (
         not isinstance(analyze_max_concurrency, int)
         or isinstance(analyze_max_concurrency, bool)
@@ -380,9 +226,15 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
             f"analyze_max_concurrency must be an int >= 1 (got: {analyze_max_concurrency!r})"
         )
 
-    # Non-callable factories would pass the None check but fail at first
-    # intake execution with a confusing TypeError. `callable()` here
-    # surfaces the misconfiguration before any review is dispatched.
+
+def _validate_factories(
+    *,
+    db_factory: async_sessionmaker[AsyncSession],
+    github_factory: Callable[[int], Awaitable[InstallationGitHubClient]],
+    installation_authorizer: InstallationAuthorizer,
+    resolve_slack_target: SlackTargetResolver | None,
+) -> None:
+    """Non-callables pass the None check and fail later with a confusing TypeError."""
     if not callable(db_factory):
         raise BuildGraphError(
             f"db_factory must be callable (got type: {type(db_factory).__name__})"
@@ -396,13 +248,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
             "installation_authorizer must be callable (got type: "
             f"{type(installation_authorizer).__name__})"
         )
-
-    # Slack is optional: a per-install resolver, or None to disable. The resolver
-    # yields a real SlackNotificationOrchestrator per install, so the prior
-    # member-presence + all-or-nothing channel guards are no longer needed (the
-    # channel + notifier-method presence are guaranteed by the target it returns).
-    # A non-callable here is a miswired composition root — fail closed at build time
-    # rather than as a mid-review TypeError on the gate/publish path.
+    # Slack is optional: a per-install resolver, or None to disable.
     if resolve_slack_target is not None and not callable(resolve_slack_target):
         raise BuildGraphError(
             "resolve_slack_target must be an async callable "
@@ -410,13 +256,33 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
             f"{type(resolve_slack_target).__name__})"
         )
 
-    # Fail-closed: structural Protocol-member checks. PEP 544 caveat per
-    # module docstring — these catch missing-member, not wrong-signature.
+
+def _validate_protocols(
+    *,
+    provider: LLMProvider,
+    phase_event_sink: PhaseEventSink,
+    file_examination_sink: FileExaminationSink,
+    analyze_event_sink: AnalyzeEventSink,
+    publish_event_sink: PublishEventSink,
+    trace_sink: TraceEventSink,
+    hitl_event_sink: HITLEventSink,
+    synthesize_event_sink: SynthesizeEventSink,
+    anomaly_sink: AnomalySink,
+    review_status_sink: ReviewStatusSink,
+    hitl_config: HITLConfig,
+    patch_config: PatchConfig,
+    publisher: GitHubPublisher,
+    import_path_resolver: ImportPathResolver,
+) -> None:
+    """Structural Protocol-member checks (PEP 544: presence, not signature shape)."""
     if not isinstance(provider, LLMProvider):
         # Compute the actually-missing member(s) rather than naming one — the
         # Protocol surface is {complete, aclose} (aclose added DECISIONS.md#035, retained #058),
         # so a hardcoded "missing complete" misdiagnoses an aclose-only gap.
-        missing = [m for m in ("complete", "aclose") if not hasattr(provider, m)]
+        missing: list[str] = []
+        for member_name in ("complete", "aclose"):
+            if not hasattr(provider, member_name):
+                missing.append(member_name)
         raise BuildGraphError(
             f"provider does not satisfy LLMProvider Protocol "
             f"(passed type: {type(provider).__name__}; "
@@ -511,6 +377,108 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
             f"see PEP 544 runtime-checkable semantics)"
         )
 
+
+def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg per node-injected resource
+    *,
+    db_factory: async_sessionmaker[AsyncSession],
+    github_factory: Callable[[int], Awaitable[InstallationGitHubClient]],
+    installation_authorizer: InstallationAuthorizer,
+    provider: LLMProvider,
+    model_config: ModelConfig,
+    phase_event_sink: PhaseEventSink,
+    file_examination_sink: FileExaminationSink,
+    analyze_event_sink: AnalyzeEventSink,
+    publish_event_sink: PublishEventSink,
+    trace_sink: TraceEventSink,
+    hitl_event_sink: HITLEventSink,
+    synthesize_event_sink: SynthesizeEventSink,
+    review_status_sink: ReviewStatusSink,
+    anomaly_sink: AnomalySink,
+    hitl_config: HITLConfig,
+    patch_config: PatchConfig,
+    intake_config: IntakeConfig | None = None,
+    checkpointer: BaseCheckpointSaver[Any],
+    publisher: GitHubPublisher,
+    import_path_resolver: ImportPathResolver,
+    total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
+    analyze_max_concurrency: int = ANALYZE_MAX_CONCURRENCY,
+    trivial_scope_filter_enabled: bool = False,
+    analyze_observed_skip_enforced: bool = False,
+    analyze_cache_store: AnalyzeCacheStore | None = None,
+    cache_mode: CacheMode = CacheMode.SHADOW,
+    resolve_slack_target: SlackTargetResolver | None = None,
+    dashboard_base_url: str | None = None,
+    # Closed into the completion events, which can emit on zero-LLM-call cache-serve
+    # paths and so cannot source the host from a provider response (DECISIONS.md#056).
+    profile_id: str | None = None,
+    reasoning_enabled: bool | None = None,
+    profile_contract_digest: str | None = None,
+) -> _CompiledTriageGraph:
+    """Build the intake → triage → analyze ⇄ trace → synthesize → hitl → publish graph.
+
+    Seven LOGICAL nodes, nine physical vertices — analyze spans three
+    (planner / `analyze_file` workers / `analyze_aggregate`) per
+    `DECISIONS.md#064`; audit vocabulary and replay grouping know only
+    the seven.
+
+    Parameter order mirrors `docs/spec.md §9.3` (`db_factory` first).
+
+    Returns a compiled `StateGraph(ReviewState)` ready for
+    `await graph.ainvoke(seed_state)`.
+    """
+    _validate_provider_and_host_identity(
+        provider=provider,
+        model_config=model_config,
+        profile_id=profile_id,
+        reasoning_enabled=reasoning_enabled,
+        profile_contract_digest=profile_contract_digest,
+    )
+    _validate_required_dependencies(
+        phase_event_sink=phase_event_sink,
+        file_examination_sink=file_examination_sink,
+        analyze_event_sink=analyze_event_sink,
+        publish_event_sink=publish_event_sink,
+        trace_sink=trace_sink,
+        hitl_event_sink=hitl_event_sink,
+        synthesize_event_sink=synthesize_event_sink,
+        review_status_sink=review_status_sink,
+        anomaly_sink=anomaly_sink,
+        hitl_config=hitl_config,
+        patch_config=patch_config,
+        checkpointer=checkpointer,
+        publisher=publisher,
+        import_path_resolver=import_path_resolver,
+        db_factory=db_factory,
+        github_factory=github_factory,
+        installation_authorizer=installation_authorizer,
+    )
+    _validate_numeric_settings(
+        total_review_budget_tokens=total_review_budget_tokens,
+        analyze_max_concurrency=analyze_max_concurrency,
+    )
+    _validate_factories(
+        db_factory=db_factory,
+        github_factory=github_factory,
+        installation_authorizer=installation_authorizer,
+        resolve_slack_target=resolve_slack_target,
+    )
+    _validate_protocols(
+        provider=provider,
+        phase_event_sink=phase_event_sink,
+        file_examination_sink=file_examination_sink,
+        analyze_event_sink=analyze_event_sink,
+        publish_event_sink=publish_event_sink,
+        trace_sink=trace_sink,
+        hitl_event_sink=hitl_event_sink,
+        synthesize_event_sink=synthesize_event_sink,
+        anomaly_sink=anomaly_sink,
+        review_status_sink=review_status_sink,
+        hitl_config=hitl_config,
+        patch_config=patch_config,
+        publisher=publisher,
+        import_path_resolver=import_path_resolver,
+    )
+
     # Close over the per-tier model id, not the whole ModelConfig.
     triage_callable = functools.partial(
         triage,
@@ -525,7 +493,6 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         db_factory=db_factory,
         phase_event_sink=phase_event_sink,
         file_examination_sink=file_examination_sink,
-        # Default reads OUTRIDER_INTAKE_* (or the §6.10 spec defaults) once at build time.
         intake_config=intake_config or IntakeConfig(),
     )
     analyze_callable = functools.partial(
@@ -542,37 +509,21 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         anomaly_sink=anomaly_sink,
         import_path_resolver=import_path_resolver,
         total_review_budget_tokens=total_review_budget_tokens,
-        # Inert default (shadow mode): the classifier runs and audits
-        # would-exclude verdicts but excludes nothing. The flip to True
-        # is a later evidence-backed change per the trivial-scope-filter
-        # spec's #041-style lifecycle.
+        # Shadow default: the classifier audits would-exclude verdicts and excludes
+        # nothing.
         trivial_scope_filter_enabled=trivial_scope_filter_enabled,
-        # Step 3b-mechanism: enforced OBSERVED skip. Inert default (False) + the
-        # production registry seeds zero skip_safe queries, so no file is ever
-        # skip-eligible in production — the enforced branch never fires until the
-        # evidence-gated flip (DECISIONS.md#049). Injected at build_graph and closed
-        # over in the analyze node (nodes-receive-deps-via-closure).
+        # Inert by default, and the production registry seeds zero skip_safe queries,
+        # so no file is skip-eligible either way (DECISIONS.md#049).
         analyze_observed_skip_enforced=analyze_observed_skip_enforced,
-        # None disables the analyze cache (the eval driver's default for
-        # scenarios that don't exercise it); production wiring injects a
-        # real AnalyzeCacheStore. Store-or-None IS the enable switch —
-        # nodes-receive-deps-via-closure, no separate flag to drift.
+        # Store-or-None IS the enable switch; there is deliberately no separate flag
+        # that could drift out of step with it.
         analyze_cache_store=analyze_cache_store,
-        # Shadow default: a wired store records would-hit/miss telemetry but
-        # never serves. The flip to CacheMode.SERVE is a later telemetry-gated
-        # config change (analyze-cache-serve-flip spec); cache_mode is orthogonal
-        # to the store-or-None enable switch.
+        # Orthogonal to the enable switch above: a wired store in SHADOW records
+        # would-hit telemetry but never serves.
         cache_mode=cache_mode,
     )
-    # Per-file Send worker (the fan-out cutover). ONE gate per compiled
-    # graph; the gate mints its semaphore PER RUNNING LOOP (a bare
-    # Semaphore binds to the first loop it is contended on and crashes on
-    # any other — a latent footgun for module-scoped graph fixtures or
-    # sequential asyncio.run callers). The in-flight bound is therefore
-    # per-(graph, loop): on the single-loop production server that IS
-    # graph-global across concurrent reviews; simultaneous multi-loop
-    # driving would get an independent cap per loop (accepted — see the
-    # AnalyzeConcurrencyGate contract).
+    # One gate per compiled graph. The bound is per-(graph, running loop) — see the
+    # AnalyzeConcurrencyGate contract for why the semaphore cannot be minted here.
     analyze_file_callable = functools.partial(
         analyze_file,
         provider=provider,
@@ -649,10 +600,8 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     builder.add_node("intake", intake_callable)
     builder.add_node("triage", triage_callable)
     builder.add_node("analyze", analyze_callable)
-    # The two physical fan-out vertices (specs/2026-07-05-parallel-analyze.md).
-    # LOGICAL node count stays seven (DECISIONS.md#064): both emit under
-    # node_id="analyze", the internal edges emit no AgentTransitionEvents,
-    # and every audit node vocabulary stays a closed seven-name Literal.
+    # The two physical fan-out vertices. Both emit under node_id="analyze", so the
+    # logical node count stays seven (DECISIONS.md#064).
     builder.add_node("analyze_file", analyze_file_callable)
     builder.add_node("analyze_aggregate", analyze_aggregate_callable)
     builder.add_node("trace", trace_callable)
@@ -660,36 +609,20 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     builder.add_node("hitl", hitl_callable)
     builder.add_node("publish", publish_callable)
     builder.add_edge(START, "intake")
-    # NO `builder.add_edge("intake", "triage")` here, and NO
-    # `builder.add_conditional_edges("intake", ...)`. Intake routes via
-    # `Command(goto=...)` per LangGraph 1.1.6 semantics — a static edge
-    # would fire alongside the Command and send to BOTH destinations.
-    # See module docstring "Routing" section for the full rationale.
+    # NO `add_edge("intake", "triage")` and NO `add_conditional_edges("intake", ...)`:
+    # intake routes via `Command(goto=...)`, and under LangGraph 1.1.6 a static edge
+    # fires alongside the Command and sends to BOTH destinations.
     builder.add_edge("triage", "analyze")
-    # NO edges out of "analyze" either — same Command rule as intake: the
-    # planner returns Command(goto=[Send("analyze_file", ...), ...]) on
-    # pass 0 (or "analyze_aggregate" on the zero-worker route), and
-    # Command(goto="synthesize") after the sequential pass 1.
-    # Every worker feeds the single aggregate superstep (map-reduce shape
-    # per langgraph-1.1.6/narrative/use-graph-api.md "Send API").
+    # NO edges out of "analyze" either, same Command rule: the planner returns
+    # Send(...) fan-out on pass 0 and goto="synthesize" after pass 1.
     builder.add_edge("analyze_file", "analyze_aggregate")
-    # Adaptive analyze ⇄ trace loop per `specs/2026-05-23-trace-node.md`,
-    # moved from "analyze" to the aggregate (the pass-0 round now merges
-    # when the AGGREGATE returns): route to trace iff round 1 produced
-    # trace candidates. After trace: route back to analyze iff trace's
-    # content fetches produced new files AND we're below the depth-2
-    # round limit. Otherwise → synthesize.
+    # The adaptive loop hangs off the AGGREGATE, not the planner, because that is
+    # where a pass-0 round merges.
     builder.add_conditional_edges("analyze_aggregate", _analyze_router)
     builder.add_conditional_edges("trace", _trace_router)
-    # synthesize is the canonical 7th node: after analyze ⇄ trace
-    # terminates, synthesize aggregates findings into a ReviewReport
-    # before hitl partitions and publish emits. Static edge — synthesize
-    # has no router (no fan-out, no branching).
     builder.add_edge("synthesize", "hitl")
-    # hitl always proceeds to publish. The node body's `interrupt(...)`
-    # is what pauses the graph for human approval; the static edge fires
-    # only when the body completes (either pass-through on empty gated
-    # set or post-resume after `Command(resume=...)`).
+    # A static edge is correct here: the node body's `interrupt(...)` is what pauses
+    # the graph, so this fires only once the body completes or resumes.
     builder.add_edge("hitl", "publish")
     builder.add_edge("publish", END)
     return builder.compile(checkpointer=checkpointer)

@@ -1,73 +1,22 @@
 # PRContext + ChangedFile cross-boundary models per docs/spec.md §7.2
 # See DECISIONS.md#020 — Webhook receiver constructs seed PRContext; intake enriches
-"""PRContext + ChangedFile: structured carriers of GitHub PR data.
+"""PR metadata and enriched changed files shared by the review pipeline.
 
-PRContext is the typed envelope that crosses every subsystem boundary in the
-review pipeline. The webhook receiver constructs it from raw GitHub payload
-data (separate spec); intake fetches/populates ChangedFile content using a
-short-lived API token minted from `installation_id`; triage classifies its
-files into ReviewTiers; analyze consumes the file content; publish references
-the original PR coordinates. The structured-field shape is the implementation
-of `docs/trust-boundaries.md` #5 sub-rule 2 — webhook payload strings reach
-prompts only as data values carried in PRContext fields and rendered through
-fixed templates. They are never template-control (no payload string ever
-becomes a format string). Of the carried fields, triage sends the PR
-title and per-file path/patch/metadata; analyze later derives and sends
-selected scope bodies from `content_head` (or `content_base` when head is
-absent), and patch generation may send one target source line from
-`content_head`; `pr_body` and `author` are carried but not sent (#013
-Amended 2026-07-16); branch names and commit messages are not carried at
-all.
+The webhook seeds PRContext; intake replaces it with fetched ChangedFile
+content; triage classifies files; analyze reads source; publish uses PR
+coordinates. Fixed templates render these fields as data, never as format
+strings (docs/trust-boundaries.md #5 sub-rule 2). Triage sends title and
+file metadata/patches; analyze sends selected source. pr_body and author
+are retained but not prompted (#013 Amended 2026-07-16).
 
-The `installation_id` field was added 2026-05-08 to close a canonical-vs-impl
-drift: spec §15.2 build_graph snippet calls `state.pr_context.installation_id`
-(line 1440) but the canonical §7.2 PRContext shape did not include the field.
-Resolved by canonical amendment + implementation in this commit.
+installation_id permits synthetic eval IDs; webhook validation owns live
+GitHub ID semantics. Frozen models and tuple changed_files prevent
+in-place mutation across checkpoints.
 
-`installation_id` is plain `int` (no `Field(ge=1)`) per the eval-isolation
-convention in `docs/schema.md` — eval factories use synthetic non-colliding
-IDs that may include negative values. Production webhook validation enforces
-real GitHub installation-ID semantics at the input boundary (webhook-receiver
-spec); this shared schema supports both production and eval contexts.
-
-Both models use frozen=True: PRContext round-trips through LangGraph state
-JSON on every checkpoint; immutability prevents mid-graph mutation by any
-node and guarantees the value at HITL-resume matches the value at intake.
-ChangedFile follows the same rationale — its patch and content fields are
-the audit-trail anchor for every finding's coordinate translation, and an
-in-place mutation would break replay equivalence.
-
-ChangedFile.status uses Literal["added", "modified", "removed", "renamed"]
-per spec §7.2 verbatim. content_base / content_head are Optional because the
-side-that-doesn't-exist is structurally None for `added` (no base) and
-`removed` (no head). `patch` is Optional because GitHub's
-`/pulls/{number}/files` API omits the `patch` property for binary diffs
-and for diffs too large for the API to include — applies to any status.
-Downstream code that consumes `patch` must treat `None` as "no textual
-diff available from GitHub" (not as an empty unified diff).
-
-The wire format when present is GitHub's hunks-only shape — the value
-begins with one or more ``@@ ...`` hunk headers and contains NO leading
-``--- a/...`` / ``+++ b/...`` file headers and NO ``diff --git`` line.
-Consumers that pass this value to a unified-diff parser (e.g. `unidiff`'s
-`PatchSet`) must synthesize file headers first; see
-`coordinates.diff_parser._wrap_github_hunks_with_headers` for the
-canonical wrap used by `file_in_patch` and `lookup_patched_file`. The carrier's
-Optional typing alone admits malformed shapes (e.g., `added` with both
-content sides set, `modified` with both None); the post-intake
-`enforce_status_invariants` model_validator rejects all
-GitHub-API-impossible shapes. Four invariant classes are enforced:
-
-- Status↔content : the side-that-doesn't-exist is None;
-  the side-that-does-exist is non-None.
-- Status↔count : `added` requires deletions=0; `removed`
-  requires additions=0 (GitHub-impossible otherwise).
-- Rename path-shape : `status="renamed"` requires
-  `previous_path` set AND `previous_path != path` (a same-path
-  rename is GitHub-impossible).
-- Cross-status (Rounds 14, 16): non-`renamed` statuses must NOT
-  carry `previous_path`.
-"""
+A missing patch means GitHub supplied no textual diff, not an empty diff.
+Present GitHub patches are hunks-only; coordinates.diff_parser adds the
+headers needed by unidiff. ChangedFile validates post-intake content sides,
+counts, and rename paths per `DECISIONS.md#020`."""
 
 from typing import Literal, Self
 
@@ -75,42 +24,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ChangedFile(BaseModel):
-    """One file in a PR's changed-files list.
+    """One post-intake file, with status-specific source and rename fields.
 
-    Frozen: see module docstring. status is a Literal-typed string, not an
-    enum, per spec §7.2 verbatim — GitHub's API uses the string values
-    directly and Literal tracks the API contract more transparently than
-    a parallel enum would.
-
-    Per `DECISIONS.md#020`, `ChangedFile` instances are constructed by
-    intake AFTER fetching base/head content. `enforce_status_invariants`
-    rejects every GitHub-API-impossible shape so a buggy intake or
-    fixture can't silently produce a malformed instance:
-
-    Status↔content :
-    - `added`     → `content_head` set, `content_base` None
-    - `removed`   → `content_base` set, `content_head` None
-    - `modified`  → both `content_base` and `content_head` set
-    - `renamed`   → both set, plus `previous_path` set to the old path
-
-    Status↔count :
-    - `added`     → `deletions == 0` (added file has no pre-existing
-                    content to delete from)
-    - `removed`   → `additions == 0` (removed file has nothing being
-                    added)
-
-    Rename path-shape :
-    - `renamed`   → `previous_path != path` (a same-path rename is
-                    GitHub-impossible — that would be modified or
-                    no change)
-
-    Cross-status (Rounds 14, 16):
-    - non-`renamed` → must NOT carry `previous_path`
-
-    `previous_path` is None for non-rename statuses; for `renamed`,
-    intake reads the value from GitHub's `/pulls/{number}/files`
-    response field `previous_filename`.
-    """
+    Per `DECISIONS.md#020`, added has head only and no deletions; removed
+    has base only and no additions; modified/renamed have both sources.
+    Only renamed carries previous_path, and it must differ from path.
+    intake reads that path from GitHub's previous_filename. The validator
+    checks these rules for every construction path."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -126,15 +46,9 @@ class ChangedFile(BaseModel):
 
     @model_validator(mode="after")
     def enforce_status_invariants(self) -> Self:
-        """Status-conditional invariants per `DECISIONS.md#020` post-intake
-        contract — covers content-side completeness (R14), count-side
-        impossibility (R15), and rename path-shape (R16). GitHub's API
-        cannot produce any of the rejected shapes; admitting them at the
-        schema level would let a buggy fixture or upstream silently slip
-        a malformed instance past the post-intake contract.
+        """Validate source sides, counts, and rename paths after intake.
 
-        Renamed from `enforce_status_content` (R18) to reflect the wider
-        scope after R15/R16 added count and rename-path-shape checks."""
+        These are the `DECISIONS.md#020` status-conditional contract."""
         if self.status == "added":
             if self.content_head is None:
                 raise ValueError("status='added' requires content_head to be non-None")
@@ -186,16 +100,9 @@ class ChangedFile(BaseModel):
 
 
 class PRContext(BaseModel):
-    """Everything the agent needs to review a PR.
+    """Immutable metadata and changed-file tuple for one PR review.
 
-    Frozen: see module docstring. `changed_files` is `tuple[ChangedFile, ...]`
-    not `list[ChangedFile]` because `frozen=True` is faux-immutable over
-    `.append()` / `.clear()` on a list field — same convention as
-    HITLDecision.decisions (spec §7.4 line 290 + hitl.py module docstring) and
-    ReviewFinding.trace_path (review_finding.py module docstring). Tuple
-    delivers what frozen=True is meant to deliver. Spec.md §7.2 was amended
-    same-day (2026-05-08) to match this commitment.
-    """
+    Tuple containers prevent mutation that frozen=True alone cannot block."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

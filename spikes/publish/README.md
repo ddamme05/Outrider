@@ -5,13 +5,11 @@ Direct-invoke smoke harness for the V1 publish node
 
 ## Why this exists
 
-The 1963-test unit suite uses a stub publisher; it proves the publish
-node body wires together correctly under mock GitHub + mock Postgres,
-but it cannot tell you whether githubkit actually accepts our request
-shape, whether the body marker round-trips through the GitHub review
-list API, or whether the intra-Outrider idempotency check fires on a
-real re-invoke. That gap is the difference between "publish is shipped"
-and "publish actually works against GitHub." This harness closes it.
+The 1963-test unit suite uses a stub publisher to check the publish
+node with mock GitHub + mock Postgres. It cannot tell you whether githubkit
+accepts our request shape, whether the body marker round-trips through the
+GitHub review list API, or whether the intra-Outrider idempotency check fires
+on a real re-invoke. Live mode checks those behaviors against GitHub.
 
 ## Two modes
 
@@ -122,7 +120,7 @@ option — that's per `audit-events-append-only` invariant.
 ## Trust-boundary notes
 
 - The harness lives under `spikes/`, outside the `check-trust-boundaries`
-  skill's globbed scope. All invariants still apply — the skill simply
+  skill's globbed scope. All invariants still apply — the skill
   doesn't catch violations here at write-time, so the harness's design
   documents them explicitly:
   - `vendor-sdks-only-in-wrappers`: harness consumes `GitHubKitPublisher`

@@ -16,9 +16,7 @@ const authMiddleware: Middleware = {
     return request;
   },
   onResponse({ response }) {
-    // A 401 means the stored key is missing/stale — drop it so the token-gate
-    // (which subscribes to the token store) re-prompts. The 401 still
-    // propagates as the query's error.
+    // Clearing a stale key reopens the token gate; the query still receives the 401.
     if (response.status === 401) {
       clearToken();
     }
@@ -26,11 +24,7 @@ const authMiddleware: Middleware = {
   },
 };
 
-// Resolve `fetch` lazily at call time rather than letting openapi-fetch capture
-// globalThis.fetch at construction. The client is built at module import; a
-// captured reference would bind whatever fetch existed then — which breaks test
-// interceptors (MSW) that patch globalThis.fetch after import, and any future
-// runtime fetch swap. Calling through globalThis on each request is free.
+// Resolve fetch per request so interceptors installed after import still work.
 const fetchClient = createFetchClient<paths>({
   baseUrl,
   fetch: (...args) => globalThis.fetch(...args),

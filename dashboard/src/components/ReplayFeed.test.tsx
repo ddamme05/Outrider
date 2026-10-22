@@ -150,10 +150,8 @@ test("equivalent verdict renders phase cards + the per-operation rows", () => {
 });
 
 test("flat-feed body prettifies the model slug (GLM-5.2, never the raw Fireworks slug)", () => {
-  // The flat `.ae` feed's flatBody rendered e.model RAW — Fireworks showed as
-  // "accounts/fireworks/models/glm-5p2". This must exercise flatBody SPECIFICALLY (summarizeEvent
-  // is a separate, already-prettified path), so render with `flat` and assert INSIDE `.ae-body`.
-  // Revert flatBody's prettyModel and this fails — the raw slug reappears in `.ae-body`.
+  // Exercise flatEventBody inside .ae-body; grouped rows use summarizeEvent.
+  // Both rendering paths must humanize provider model names.
   const ev = { ...llmEvent("e1", "analyze", 0.02), model: "accounts/fireworks/models/glm-5p2" };
   render(<ReplayFeed data={data({ events: [ev], phases: [phaseWith([ev])] })} flat />);
   const body = document.querySelector(".ae-body");
@@ -213,9 +211,9 @@ test("diagnostic events are hidden by default; the toggle reveals them with a co
   expect(screen.queryByText("cache_lookup")).toBeNull();
 });
 
-test("a cache would_hit stays visible (causal in serve mode) — phase-card AND flat views", () => {
-  // A "would_hit" means the model was skipped and a cache_serve follows: causal review
-  // behavior, NOT shadow noise. Only "miss" is hidden. Pinned in both feed renders.
+test("a cache would_hit stays visible in phase-card and flat views", () => {
+  // Keep would_hit visible in both views. Shadow lookups can still call the model;
+  // only misses are hidden by this classification.
   const hit = cacheLookupEvent("e-hit", "would_hit");
   const miss = cacheLookupEvent("e-miss", "miss");
 

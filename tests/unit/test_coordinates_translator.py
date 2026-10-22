@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 from outrider.coordinates import CoordinateError, GitHubCommentLocation, tree_sitter_to_github
+from outrider.coordinates.errors import CoordinateErrorKind
 
 # ----------------------------------------------------------------------------
 # Fixtures: minimal unified diffs for common shapes
@@ -92,7 +93,7 @@ def test_span_in_context_line_returns_correct_line() -> None:
 
 
 def test_span_on_first_line_of_hunk() -> None:
-    """byte_start on the first reviewable line of the hunk → that line."""
+    """Byte zero on the first reviewable hunk line maps to line 1."""
     loc = tree_sitter_to_github(
         file_path=SIMPLE_FILE_PATH,
         byte_start=0,
@@ -360,7 +361,7 @@ def test_malformed_hunk_raises_coordinate_error_via_unidiff_parse_error() -> Non
         "@@ -1,5 +1,5 @@\n"
         " only_one_line_provided_but_five_declared\n"
     )
-    with pytest.raises(CoordinateError, match="malformed patch input"):
+    with pytest.raises(CoordinateError, match="malformed patch input") as exc_info:
         tree_sitter_to_github(
             file_path="x.py",
             byte_start=0,
@@ -368,6 +369,7 @@ def test_malformed_hunk_raises_coordinate_error_via_unidiff_parse_error() -> Non
             head_content="only_one_line_provided_but_five_declared\n",
             patch=malformed_patch,
         )
+    assert exc_info.value.kind is CoordinateErrorKind.MALFORMED_PATCH
 
 
 def test_empty_patch_raises_coordinate_error() -> None:
@@ -403,18 +405,6 @@ def test_zero_width_span_in_hunk_succeeds() -> None:
         patch=SIMPLE_PATCH,
     )
     assert loc.line == 2
-
-
-def test_byte_start_zero_in_hunk_succeeds() -> None:
-    """byte_start == 0 (file start) → line 1 if line 1 is in a hunk."""
-    loc = tree_sitter_to_github(
-        file_path=SIMPLE_FILE_PATH,
-        byte_start=0,
-        byte_end=4,
-        head_content=SIMPLE_HEAD,
-        patch=SIMPLE_PATCH,
-    )
-    assert loc.line == 1
 
 
 def test_byte_end_at_head_byte_length_in_hunk_succeeds() -> None:
@@ -835,7 +825,7 @@ def test_duplicate_patched_file_entries_rejected() -> None:
         "+y\n"
     )
     head = "a\nb\nc\nd\ne\nf\ng\nh\ni\nx\ny\n"
-    with pytest.raises(CoordinateError, match="duplicate entries"):
+    with pytest.raises(CoordinateError, match="duplicate entries") as exc_info:
         tree_sitter_to_github(
             file_path="foo.py",
             byte_start=0,
@@ -843,6 +833,7 @@ def test_duplicate_patched_file_entries_rejected() -> None:
             head_content=head,
             patch=patch_with_dups,
         )
+    assert exc_info.value.kind is CoordinateErrorKind.DUPLICATE_FILE_ENTRY
 
 
 # ----------------------------------------------------------------------------

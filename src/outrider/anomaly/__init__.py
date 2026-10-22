@@ -1,48 +1,16 @@
-"""Anomaly subsystem — typed rule-name registry, Protocol seam, durable
-persister.
+"""Operator anomalies: rule names, sink contract, and durable persistence.
 
-The `anomalies` table records cross-system invariant violations the
-sweep job (or future background detectors) surface for operator
-triage. Per `docs/schema.md`, the column is `rule_name: Text` (not an
-enum at the DB layer); the Python-side `AnomalyRuleName` StrEnum
-gives type safety + a grep target without forcing a DB migration when
-new rules land.
+The four rules cover HITL timeouts, cross-round severity/policy divergence,
+cost-budget starvation, and gated findings over the soft cap. Sweeps record
+timeouts before changing review status; graph nodes report the other rules.
+`AnomalyPersister` deduplicates each `(review_id, rule_name)` through a
+per-rule partial unique index. Sweep callers also hold `SWEEP_LOCK_ID` for
+their surrounding status changes; graph callers need no sweep lock.
+This is `sweep-jobs-use-advisory-locks`. Severity divergence protects
+`severity-set-by-policy` and `severity-policy-versioned-for-replay`.
 
-Four rules ship:
-
-- `hitl_timeout` (severity=medium per `docs/spec.md` §16) — sweep-
-  emitted from `sweep/hitl_expiry.py` under the anomaly-first ordering
-  contract (emit anomaly BEFORE flipping `reviews.status` so a
-  partial-failure scenario is recoverable). Sweep callers acquire
-  `SWEEP_LOCK_ID` per the `sweep-jobs-use-advisory-locks` invariant.
-
-- `cross_round_severity_divergence` (severity=high) — graph-emitted
-  from `agent/nodes/synthesize.py::_detect_and_report_divergence`
-  when same-`content_hash` findings carry divergent severity OR
-  divergent policy_version across analysis rounds (corruption per
-  `severity-set-by-policy` + `severity-policy-versioned-for-replay`
-  + `compute_finding_content_hash` recipe +
-  `ReviewFinding._verify_baseline_severity`). Either axis triggers
-  the same anomaly rule because the recovery action is identical
-  (stop, investigate upstream policy-resolution layer). Graph
-  callers do NOT acquire any advisory lock — anomaly emission has no
-  non-idempotent external side effect, and the per-rule partial
-  unique index + `on_conflict_do_nothing` provides DB-layer
-  idempotency regardless of ordering. See `AnomalySink` Protocol
-  docstring for the two-caller-class contract.
-
-- `cost_budget_starvation` (severity=medium) — graph-emitted from
-  `agent/nodes/analyze.py` when a pass skips at least
-  `COST_BUDGET_STARVATION_THRESHOLD` files with
-  `skip_reason=COST_BUDGET_EXHAUSTED` (FUP-044 ext 3 / analyze-cost-
-  fairness Stage 2). Best-effort (an emit failure is logged, not raised
-  — observability must not fail a review); same DB-layer idempotency as
-  the divergence rule.
-
-- `gated_findings_over_cap` (severity=high) — graph-emitted from
-  `agent/nodes/analyze.py` (per round) + `agent/nodes/synthesize.py`
-  (per report) when HITL-gated (CRITICAL/HIGH) findings alone exceed the
-  soft finding cap (FUP-180). Best-effort; same DB-layer idempotency.
+Rule/severity columns are text, with Python enums at the producer boundary.
+Every new rule still needs its matching partial-index migration.
 """
 
 from outrider.anomaly.persister import (

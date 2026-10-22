@@ -1,6 +1,4 @@
-// Nullable-cost rendering (openai-native-host spec): an unpriceable completed
-// call carries cost_usd=null + a typed reason — summaries render the FACT,
-// never a fabricated $0.00 and never a crash.
+// Preserve a missing price as unpriced rather than displaying a free call.
 import { expect, test } from "vitest";
 
 import type { AuditEvent } from "./auditEvent";

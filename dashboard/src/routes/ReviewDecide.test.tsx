@@ -82,10 +82,7 @@ function mount(opts: {
     http.get(`${BASE}/findings`, () =>
       HttpResponse.json({ review_id: "r1", findings: opts.findings ?? [finding()] }),
     ),
-    // ReviewDetail reads the replay verdict + audit feed + pipeline off /replay-timeline (PR 1
-    // retired the standalone /replay endpoint). Mocking the old /replay left the timeline query
-    // erroring, so the verdict badge / feed / pipeline rendered in an error state across every
-    // decide test — a minimal equivalent timeline restores that coverage.
+    // Supply the equivalent timeline used by the verdict, audit feed, and pipeline.
     http.get(`${BASE}/replay-timeline`, () =>
       HttpResponse.json({
         review_id: "r1",

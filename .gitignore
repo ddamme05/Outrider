@@ -22,8 +22,10 @@ COMMIT_LOG.md
 ITERATION_LOG.md
 SESSION_RETRO.md
 AUDIT_LOG.md
+AUDIT_LOG.archive.md
 SKILLS_TRIAL.md
 FOLLOWUPS.md
+REFACTORING_REPO.md
 NEW_SESSION_HANDOFF.md
 specs/
 specs_arch/
@@ -154,3 +156,6 @@ meeting_stuff.md
 # names / App ids / tunnel URLs), but it still assumes an ngrok-shaped tunnel and has not been
 # validated against a real onboarding run. Ignored so a stray `git add -A` can't publish it early.
 FRICTIONLESS_RUNBOOK.md
+
+# Refactor-campaign tooling (local tier, same as REFACTORING_REPO.md)
+.refactor/

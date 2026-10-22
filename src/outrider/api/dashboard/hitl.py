@@ -1,51 +1,17 @@
-"""POST /reviews/{review_id}/decide — the HITL approval endpoint.
+"""Accept human approval and resume a paused review in a background task.
 
-The endpoint reads the canonical HITLRequest snapshot from
-`reviews.hitl_request` JSONB (written atomically by the HITL node
-body's `mark_awaiting_approval` BEFORE `interrupt()` per the
-single-transaction contract). It does NOT call `graph.aget_state(...)`
-— the state delta `{"hitl_request": ..., "hitl_decision": ...}` only
-returns AFTER resume completes, so at interrupt time the
-state-snapshot view of `hitl_request` is empty.
+Read the approval request from `reviews.hitl_request`, saved atomically by
+the HITL node before it pauses. The node returns its state delta only after
+resume, so the pending request is not yet in the graph's `hitl_request` field.
 
-M12 step-order is load-bearing: auth -> state -> mismatch. Auth fires
-FIRST so an unauthenticated caller cannot enumerate review state by
-observing 409/422 response patterns. State fires BEFORE mismatch so a
-caller hitting a non-HITL review can't probe the gated finding set.
+Validation order is auth -> review state -> finding decisions. It prevents
+unauthenticated callers from probing review state, and callers whose review
+is not awaiting approval from probing the gated finding set.
 
-The failure wrapper `_run_resume_under_failure_wrapper` is the
-async-task boundary that bounds the FastAPI BackgroundTasks dispatch.
-Two catch arms:
-
-1. `AuditPersisterHITLDecisionNaturalKeyConflict` — divergent-content
-   conflict. Two sub-cases:
-   (a) DIVERGENT CONCURRENT race — two reviewers submitted with
-       different content; one task wins the natural-key insert, this
-       is the loser. Lifecycle advances via the winning task.
-   (b) WINDOW-(f) DIVERGENT RETRY — a first task crashed between
-       `emit_hitl_decision` and `mark_running`, leaving an audit row +
-       NULL `reviews.hitl_decision`. A later retry with different
-       content admits past the JSONB-cache preflight but hits the
-       audit-row natural-key check. Lifecycle is STUCK in
-       `awaiting_approval` pending Group 8's
-       `reclaim_stuck_hitl_states` sweep recovery.
-   The wrapper cannot reliably distinguish (a) from (b) without
-   consulting the LangGraph checkpointer (pending-interrupt presence
-   is what tells them apart). It logs at WARNING level with a
-   diagnostic note so operators see (b) in alerting; the sweep is
-   the canonical recovery. Identical-content races and crash-replays
-   of the SAME submission are absorbed by the idempotent cascade
-   INSIDE the node body (status-predicate discrimination on
-   mark_awaiting_approval + natural-key no-ops on both events +
-   publish-side `query_prior_publish_event`) and never reach this
-   branch.
-
-2. `Exception` — log + re-raise, NO status flip. Marking
-   `reviews.status='failed'` would orphan a persisted
-   `HITLDecisionEvent` from the lifecycle state, blocking
-   operator-driven retry at the endpoint's state-gate predicate. The
-   sweep's `reclaim_stuck_hitl_states` sub-job is the canonical
-   cleanup for genuinely-stuck rows after a grace period.
+The resume wrapper logs conflicting submissions; it logs and re-raises other
+failures. It leaves status changes to the node's sinks so a saved decision
+can still be retried. The `reclaim_stuck_hitl_states` sweep owns recovery of
+stuck approvals; the wrapper does not consult the graph checkpointer.
 """
 
 from __future__ import annotations
@@ -71,7 +37,12 @@ from outrider.schemas.hitl import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from langgraph.graph.state import CompiledStateGraph
+
+    from outrider.db.sinks import ReviewDecidePreflight, ReviewStatusReader
+    from outrider.schemas.hitl import HITLRequest
 
 
 _LOGGER = logging.getLogger("outrider.api.dashboard.hitl")
@@ -103,24 +74,10 @@ class PerFindingDecisionPayload(BaseModel):
 
     @model_validator(mode="after")
     def _enforce_payload_invariants(self) -> PerFindingDecisionPayload:
-        """Mirror `PerFindingDecision.enforce_override_fields` at the
-        payload boundary so invalid combinations surface as 422 from
-        FastAPI's request-parsing path, NOT as a 500 from the
-        downstream `_build_domain_decisions` raising `ValueError` mid-
-        handler. `original_severity` is NOT a payload field (server-
-        derived); the corresponding pairs from `PerFindingDecision`
-        that DO map here are:
+        """Reject invalid outcome/field combinations during request parsing.
 
-          - SEVERITY_OVERRIDE outcome requires non-None `override_severity`.
-          - Non-SEVERITY_OVERRIDE outcome requires `override_severity is None`.
-          - Non-APPROVE outcome requires a non-blank `reason`.
-
-        Without this validator, a reviewer payload like
-        `outcome=severity_override, override_severity=None` would pass
-        Pydantic field validation, hit `_build_domain_decisions`,
-        construct `PerFindingDecision` with the missing field, and
-        raise the domain-layer `ValueError` — surfacing as a 500
-        Internal Server Error instead of a controlled 422.
+        Mirror the domain model's rules here so bad input returns 422 rather
+        than raising a domain `ValueError` (500) inside the handler.
         """
         if self.outcome == PerFindingOutcome.SEVERITY_OVERRIDE and self.override_severity is None:
             msg = "severity_override outcome requires override_severity"
@@ -164,35 +121,27 @@ def _build_domain_decisions(
     payload: HITLDecisionPayload,
     gated_finding_severities: dict[UUID, FindingSeverity] | Any,
 ) -> tuple[PerFindingDecision, ...]:
-    """Map reviewer-submitted payload to typed `PerFindingDecision`s,
-    populating `original_severity` server-side from the preflight map.
+    """Build domain decisions using each finding's saved severity baseline.
 
-    The preflight map carries the persisted-at-admit-time severity
-    from `FindingEvent.severity` (with its policy version), so a
-    SEVERITY_OVERRIDE decision's `original_severity` ALWAYS reflects
-    the policy baseline at the time the finding was admitted — even
-    if the live `SEVERITY_POLICY` mapping has since changed.
+    `original_severity` comes from the persisted FindingEvent, so a later
+    policy change cannot alter the baseline of the reviewer's override.
     """
-    out: list[PerFindingDecision] = []
-    for d in payload.decisions:
+    decisions: list[PerFindingDecision] = []
+    for submitted_decision in payload.decisions:
         original_severity: FindingSeverity | None = None
-        if d.outcome == PerFindingOutcome.SEVERITY_OVERRIDE:
-            # Lookup from the preflight map; missing key indicates
-            # state-corruption (the gated set on `hitl_request`
-            # diverged from the FindingEvent rows in audit_events) —
-            # surfaces here as KeyError, the endpoint translates to
-            # 500 via FastAPI's default error path.
-            original_severity = gated_finding_severities[d.finding_id]
-        out.append(
+        if submitted_decision.outcome == PerFindingOutcome.SEVERITY_OVERRIDE:
+            # The endpoint checks for missing persisted baselines before this call.
+            original_severity = gated_finding_severities[submitted_decision.finding_id]
+        decisions.append(
             PerFindingDecision(
-                finding_id=d.finding_id,
-                outcome=d.outcome,
-                reason=d.reason,
-                override_severity=d.override_severity,
+                finding_id=submitted_decision.finding_id,
+                outcome=submitted_decision.outcome,
+                reason=submitted_decision.reason,
+                override_severity=submitted_decision.override_severity,
                 original_severity=original_severity,
             )
         )
-    return tuple(out)
+    return tuple(decisions)
 
 
 async def _run_resume_under_failure_wrapper(
@@ -201,47 +150,17 @@ async def _run_resume_under_failure_wrapper(
     hitl_decision: HITLDecision,
     graph: CompiledStateGraph[Any, Any, Any, Any],
 ) -> None:
-    """Background-task entry point. Resumes the suspended graph with
-    the reviewer's decision under explicit failure semantics.
-
-    Catch arms documented in the module docstring. Status transitions
-    are owned by deterministic sink methods (`mark_awaiting_approval`,
-    `mark_running`, `mark_awaiting_approval_expired`); this wrapper
-    never mutates `reviews.status`.
-    """
+    """Resume the graph; leave status transitions and recovery to their owners."""
     try:
         await graph.ainvoke(
             Command(resume=hitl_decision.model_dump(mode="json")),
             config={"configurable": {"thread_id": str(review_id)}},
         )
     except AuditPersisterHITLDecisionNaturalKeyConflict:
-        # Two distinct cases land here, both characterized by "an
-        # existing HITLDecisionEvent's `decisions_content_hash` differs
-        # from the incoming submission's":
-        #
-        #   (a) DIVERGENT CONCURRENT race — two reviewers submitted
-        #       near-simultaneously with different content. One task
-        #       won the natural-key insert; this is the loser. The
-        #       lifecycle WILL advance via the winning task's
-        #       `mark_running`. The right outcome: silent absorb.
-        #
-        #   (b) WINDOW-(f) DIVERGENT RETRY — a first task crashed
-        #       after `emit_hitl_decision` but before `mark_running`,
-        #       leaving an audit row + NULL `reviews.hitl_decision`.
-        #       A later retry with different content (e.g., the
-        #       reviewer edited the annotation) admits past the
-        #       endpoint's preflight (which only checks the JSONB
-        #       cache) and reaches this catch. The audit row is
-        #       canonical; the lifecycle is STUCK at
-        #       `awaiting_approval` and won't advance without
-        #       operator intervention.
-        #
-        # The wrapper cannot reliably distinguish (a) from (b) without
-        # consulting the LangGraph checkpointer (pending interrupt
-        # presence) — which is owned by Group 8's
-        # `reclaim_stuck_hitl_states` sub-job. The wrapper logs at
-        # WARNING level (not INFO) so the case surfaces in operator
-        # alerts; the sweep job is the canonical recovery path.
+        # A different submission either lost a concurrent race, or retried after
+        # a crash between decision audit and status write. The winner advances
+        # the first case; the sweep recovers the second. Log both as a warning
+        # because distinguishing them requires the checkpointer, owned by recovery.
         _LOGGER.warning(
             "hitl_resume_natural_key_conflict",
             extra={
@@ -256,11 +175,8 @@ async def _run_resume_under_failure_wrapper(
         )
         return
     except Exception:
-        # Log + re-raise. Status is NOT flipped to `failed` — the row
-        # stays in `awaiting_approval` / `awaiting_approval_expired`
-        # so the operator can re-issue the resume. The sweep's
-        # `reclaim_stuck_hitl_states` is the canonical cleanup for
-        # genuinely-stuck rows.
+        # Marking the review failed here would block retry of a saved decision.
+        # Leave recovery of stuck rows to the sweep.
         _LOGGER.exception(
             "hitl_resume_failed",
             extra={"review_id": str(review_id)},
@@ -268,44 +184,20 @@ async def _run_resume_under_failure_wrapper(
         raise
 
 
-@router.post(
-    "/{review_id}/decide",
-    response_model=_DecideResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_admin_api_key)],
-)
-async def decide(
+async def _decidable_review(
+    *,
+    reader: ReviewStatusReader,
     review_id: UUID,
-    payload: HITLDecisionPayload,
-    request: Request,
-    background_tasks: BackgroundTasks,
-) -> _DecideResponse:
-    """Accept a HITL approval submission for `review_id`.
+) -> tuple[ReviewDecidePreflight, HITLRequest]:
+    """Return the review's preflight snapshot and its gate, or raise.
 
-    Flow (M12 step-order is load-bearing):
-      1. Auth (via `require_admin_api_key` Depends). 401 on failure.
-      2. State preflight via `ReviewStatusReader.fetch_for_decide`.
-         409 if: hitl_request is None / status not in the HITL set /
-         hitl_decision already landed.
-      3. Mismatch check: payload `finding_id` set must equal the
-         gated set on `hitl_request.findings_requiring_approval`.
-         422 with `{"missing": [...], "extras": [...]}` on mismatch.
-      4. Construct typed `HITLDecision` server-side (server-set
-         `reviewer_id`, server-derived `original_severity` from the
-         preflight map for SEVERITY_OVERRIDE outcomes, server-set
-         `decided_at=datetime.now(UTC)`).
-      5. Enqueue `_run_resume_under_failure_wrapper` via FastAPI
-         `BackgroundTasks`; return 202 immediately.
+    Raises 409 unless the review is still awaiting a decision, and 500 when
+    the persister reports that the gated set diverged from the FindingEvent
+    rows. Returning the `HITLRequest` separately is what narrows it from the
+    snapshot's optional field for the caller.
     """
-    reader = request.app.state.review_status_reader
-    # `fetch_for_decide` raises `ValueError` from
-    # `ReviewStatusPersister._load_gated_severities` when the gated
-    # finding_ids on `reviews.hitl_request` diverge from the
-    # `audit_events` FindingEvent rows (state-corruption signal).
-    # Translate to the same structured 500 shape as the
-    # endpoint-side completeness check below so production (durable
-    # persister, raises) and tests (stubbed reader, returns incomplete
-    # map) produce the same operator-visible response.
+    # A mismatch between the saved request and FindingEvent rows is corruption.
+    # Match the structured 500 returned by the endpoint's completeness check.
     try:
         preflight = await reader.fetch_for_decide(review_id=review_id)
     except ValueError as exc:
@@ -327,7 +219,6 @@ async def decide(
             },
         ) from exc
 
-    # State gate.
     if preflight is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="conflict")
     if preflight.hitl_request is None:
@@ -337,19 +228,25 @@ async def decide(
     if preflight.hitl_decision is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="conflict")
 
-    # Mismatch gate (auth -> state -> mismatch; this is "mismatch").
-    #
-    # Duplicate-finding-id check FIRST: a payload like
-    # `[{fid_a}, {fid_a}, {fid_b}]` against gate `{fid_a, fid_b}`
-    # would satisfy set-equality (`{fid_a, fid_b} == {fid_a, fid_b}`)
-    # but carries two decisions for fid_a. Without this check, the
-    # endpoint admits the duplicate and downstream HITLDecision
-    # construction raises mid-handler — the caller sees 500 instead
-    # of a controlled 422.
+    return preflight, preflight.hitl_request
+
+
+def _assert_decisions_match_gate(
+    *,
+    payload: HITLDecisionPayload,
+    expected_ids: set[UUID],
+) -> None:
+    """Raise 422 unless the submitted finding_ids are exactly the gated set.
+
+    Duplicates need their own check because set-equality does not catch them:
+    `[fid_a, fid_a, fid_b]` against gate `{fid_a, fid_b}` compares equal while
+    carrying two decisions for fid_a. Admitting it makes `HITLDecision`
+    construction raise mid-handler, so the caller sees 500 instead of a
+    controlled 422.
+    """
     submitted_id_list = [d.finding_id for d in payload.decisions]
     submitted_ids = set(submitted_id_list)
     if len(submitted_id_list) != len(submitted_ids):
-        # Identify the duplicates for the operator response.
         seen: set[UUID] = set()
         duplicates: list[str] = []
         for fid in submitted_id_list:
@@ -361,7 +258,6 @@ async def decide(
             detail={"duplicate_finding_ids": sorted(duplicates)},
         )
 
-    expected_ids = set(preflight.hitl_request.findings_requiring_approval)
     if submitted_ids != expected_ids:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -371,19 +267,23 @@ async def decide(
             },
         )
 
-    # Construct typed HITLDecision with server-derived original_severity.
-    # Pre-flight completeness check: every SEVERITY_OVERRIDE finding_id
-    # MUST have an entry in `preflight.gated_finding_severities`. The
-    # persister (`_load_gated_severities`) raises if the underlying
-    # FindingEvent rows are incomplete, but defense-in-depth here
-    # surfaces missing keys as a controlled 500 with a clear diagnostic
-    # instead of letting `_build_domain_decisions` raise `KeyError`
-    # mid-handler (opaque 500 + stack-trace-only signal).
+
+def _assert_override_baselines_known(
+    *,
+    payload: HITLDecisionPayload,
+    gated_finding_severities: Mapping[UUID, FindingSeverity],
+) -> None:
+    """Raise 500 if any SEVERITY_OVERRIDE finding lacks a persisted baseline.
+
+    The persister raises on incomplete FindingEvent rows; this is
+    defense-in-depth so a missing key surfaces as a labelled 500 instead of a
+    `KeyError` inside `_build_domain_decisions` (opaque 500, stack-trace-only).
+    """
     override_ids = {
         d.finding_id for d in payload.decisions if d.outcome == PerFindingOutcome.SEVERITY_OVERRIDE
     }
     missing_severities = sorted(
-        str(fid) for fid in override_ids if fid not in preflight.gated_finding_severities
+        str(fid) for fid in override_ids if fid not in gated_finding_severities
     )
     if missing_severities:
         raise HTTPException(
@@ -399,27 +299,24 @@ async def decide(
             },
         )
 
-    # No-op override defense: reject SEVERITY_OVERRIDE outcomes where
-    # `override_severity` equals the persisted baseline. Without this
-    # pre-check the payload passes endpoint validation, the audit
-    # `HITLDecisionEvent` lands (append-only — can't undo), the body
-    # flips `reviews.status` to `running`, and the publish-time
-    # `PublishEligibilityEvent._enforce_override_legitimacy` rejects —
-    # wedging the review at `status='running'` past `/decide` retry
-    # (preflight sees `hitl_decision != NULL` → 409). The sweep's
-    # `reclaim_stuck_hitl_states` window-(g) scan admits status=running
-    # candidates, but the graph-driven `Command(resume=)` recovery
-    # cannot break the publish-eligibility rejection loop — every
-    # replay hits the same validator. Schema-layer defense lives in
-    # `PerFindingDecision.enforce_override_fields`; this endpoint-side
-    # check produces the controlled 422 (the schema raise would become
-    # 500 if it reached `_build_domain_decisions`).
+
+def _assert_overrides_change_severity(
+    *,
+    payload: HITLDecisionPayload,
+    gated_finding_severities: Mapping[UUID, FindingSeverity],
+) -> None:
+    """Raise 422 for a SEVERITY_OVERRIDE equal to the persisted baseline.
+
+    `PerFindingDecision.enforce_override_fields` rejects the same no-op during
+    domain-model construction, but that validation failure would surface as 500.
+    This endpoint gate returns a client-facing 422 before construction.
+    """
     no_op_overrides = sorted(
         str(d.finding_id)
         for d in payload.decisions
         if d.outcome == PerFindingOutcome.SEVERITY_OVERRIDE
-        and d.finding_id in preflight.gated_finding_severities
-        and d.override_severity == preflight.gated_finding_severities[d.finding_id]
+        and d.finding_id in gated_finding_severities
+        and d.override_severity == gated_finding_severities[d.finding_id]
     )
     if no_op_overrides:
         raise HTTPException(
@@ -435,6 +332,53 @@ async def decide(
                 ),
             },
         )
+
+
+@router.post(
+    "/{review_id}/decide",
+    response_model=_DecideResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_admin_api_key)],
+)
+async def decide(
+    review_id: UUID,
+    payload: HITLDecisionPayload,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> _DecideResponse:
+    """Accept a HITL approval submission for `review_id`.
+
+    Auth runs first as a `require_admin_api_key` dependency (401), then the
+    state preflight (409 unless the review is still awaiting a decision), then
+    the payload gates: the submitted `finding_id` set must equal the gated set
+    and carry no duplicates (422), and a `severity_override` must actually
+    change the severity (422). That order is load-bearing — it keeps an
+    unauthenticated caller, or one whose review is not awaiting a decision,
+    from probing the gated finding set.
+
+    On success the typed `HITLDecision` is constructed server-side —
+    `reviewer_id`, `original_severity` from the preflight map, `decided_at` —
+    and the resume is enqueued via FastAPI `BackgroundTasks`, returning 202
+    without waiting for it.
+    """
+    preflight, hitl_request = await _decidable_review(
+        reader=request.app.state.review_status_reader,
+        review_id=review_id,
+    )
+
+    _assert_decisions_match_gate(
+        payload=payload,
+        expected_ids=set(hitl_request.findings_requiring_approval),
+    )
+    _assert_override_baselines_known(
+        payload=payload,
+        gated_finding_severities=preflight.gated_finding_severities,
+    )
+    _assert_overrides_change_severity(
+        payload=payload,
+        gated_finding_severities=preflight.gated_finding_severities,
+    )
+
     decisions = _build_domain_decisions(
         payload=payload,
         gated_finding_severities=preflight.gated_finding_severities,
@@ -446,7 +390,6 @@ async def decide(
         decided_at=datetime.now(UTC),
     )
 
-    # Enqueue resume.
     background_tasks.add_task(
         _run_resume_under_failure_wrapper,
         review_id=review_id,

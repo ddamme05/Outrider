@@ -126,15 +126,10 @@ SEVERITY_POLICY: Final[Mapping[FindingType, FindingSeverity]] = MappingProxyType
 # zeros are disallowed (semver §2 forbids `01.0.0`) so future numeric
 # ordering doesn't desync from string-eq lookups.
 BARE_SEMVER_PATTERN: Final[str] = r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
-"""Strict bare-semver regex string.
+"""Shared bare-semver pattern for runtime and Pydantic policy-version guards.
 
-Single source of truth. Used by the runtime `_SEMVER_RE` check below
-AND by every Pydantic `Field(pattern=...)` that gates a
-`policy_version` (audit events, ReviewFinding, etc.). Defining the
-pattern once stops the catalog-self-drift between `policy/severity.py`,
-`audit/events.py`, and the DB CHECK constraint in
-`db/migrations/versions/3d03bca7f2be_severity_policies_protections.py`
-from re-emerging the way it did pre-PR-review-
+The DB CHECK constraint in migration 3d03bca7f2be uses the same shape;
+keep it aligned when changing policy-version validation.
 """
 
 _SEMVER_RE: Final[re.Pattern[str]] = re.compile(BARE_SEMVER_PATTERN, re.ASCII)
@@ -154,18 +149,9 @@ _DEFAULT_SEVERITY: Final[FindingSeverity] = FindingSeverity.MEDIUM
 
 
 def lookup_severity(finding_type: FindingType) -> FindingSeverity:
-    """Return the policy-assigned severity for a finding type.
+    """Return the policy severity, with MEDIUM as the spec §7.4 fallback.
 
-    Returns FindingSeverity.MEDIUM as the documented fallback for an
-    unmapped FindingType per spec §7.4. The fallback is a defense-in-depth
-    safety net for the case where a future FindingType value is added
-    without a corresponding SEVERITY_POLICY entry — a developer bug.
-    The unit tests catch that condition (test_severity_policy_dict
-    asserts no FindingType is missing); this fallback is the runtime
-    behavior if the unit test is ever bypassed.
-
-    Per spec §7.4: "Unknown finding types default to MEDIUM — not
-    CRITICAL like an incident response system would, because a code
-    review false positive is annoying, not dangerous."
-    """
+    Normal startup requires a total severity/dimension mapping through
+    policy.dimensions.verify_lockstep. The fallback remains for direct callers
+    with an unmapped value; it does not replace that startup guard."""
     return SEVERITY_POLICY.get(finding_type, _DEFAULT_SEVERITY)

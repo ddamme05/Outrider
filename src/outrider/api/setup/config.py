@@ -27,11 +27,11 @@ __all__ = ["SetupSettings", "validate_setup_config"]
 
 
 class SetupSettings(BaseSettings):
-    """Onboarding config, env-backed. `frozen` + `extra="forbid"` per the `GitHubAppSettings`
-    precedent (construction-time-only config; a typo'd env var fails loud at app start). The narrow
-    `OUTRIDER_PUBLIC_` prefix maps only `OUTRIDER_PUBLIC_BASE_URL → base_url` (no broad-prefix
-    collision); the state secret is read directly by `state_token` (fresh per call, for test
-    monkeypatch + restart-free rotation)."""
+    """Immutable OUTRIDER_PUBLIC_BASE_URL setting for onboarding.
+
+    The signed-state secret is validated separately by state_token.py. Unknown
+    explicit fields are rejected; unrelated environment variables are ignored.
+    """
 
     model_config = SettingsConfigDict(
         env_prefix="OUTRIDER_PUBLIC_",

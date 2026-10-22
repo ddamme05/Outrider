@@ -198,7 +198,7 @@ def test_constructor_with_default_model_config_succeeds() -> None:
 
 
 def test_constructor_accepts_dated_model_pin_via_pricing_normalization() -> None:
-    """Round-27 fold (Copilot): dated SDK-catalog pins (e.g.,
+    """Dated exact model-version IDs (e.g.,
     `claude-haiku-4-5-20251001`) accepted by ModelConfig must normalize
     to their undated alias for pricing-coverage validation. Without
     normalization, every dated env pin would fail this check despite
@@ -369,10 +369,10 @@ def test_zdr_warning_fires_only_once_per_distinct_raw_value(
     caplog: pytest.LogCaptureFixture,
     _reset_zdr_warned_set: None,
 ) -> None:
-    """Round-17 audit fold (M2): under V1.5 parallel-analyze, N providers
-    per review constructed with the same misconfigured env would spam
-    thousands of WARNINGs/day. Once-per-distinct-raw-value guard caps
-    the spam while preserving the diagnostic signal."""
+    """The once-per-distinct-raw-value guard caps warning volume while
+    preserving the diagnostic signal. This test constructs several providers
+    directly; in the app the lifespan builds one, and the guard's real value
+    is that repeated resolution of the same misconfigured env warns once."""
     saved = os.environ.pop("ANTHROPIC_ZDR_ENABLED", None)
     try:
         os.environ["ANTHROPIC_ZDR_ENABLED"] = "garbage"
@@ -783,10 +783,10 @@ async def test_cache_silently_disabled_warns_only_once_per_model_and_prompt(
     caplog: pytest.LogCaptureFixture,
     _reset_noncacheable_warned_set: None,
 ) -> None:
-    """Mirror of round-17's ZDR warn-once pattern: under V1.5 parallel-
-    analyze, N providers calling with the same too-short prompt would
-    spam thousands of WARNINGs/day. The (model, system_prompt_hash)
-    key bounds spam while preserving the diagnostic signal."""
+    """The (model, system_prompt_hash) key bounds warning volume while
+    preserving the diagnostic signal: one shared provider serves many
+    concurrent parallel-analyze calls, so an unguarded warning would fire
+    once per call rather than once per misconfiguration."""
     persister = _RecordingPersister()
     provider = AnthropicProvider(
         api_key=_api_key(),
@@ -2056,3 +2056,114 @@ async def test_cache_silently_disabled_suppressed_for_unknown_floor_model(
         and "min-cacheable threshold" in r.getMessage()
     ]
     assert warning_records == [], "unknown-floor (None) model must suppress the cache diagnostic"
+
+
+# ---------------------------------------------------------------------------
+# Interactions between the refusal, cache-diagnostic, pricing and persist steps
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_refusal_with_zero_cache_tokens_emits_no_cache_warning(
+    caplog: pytest.LogCaptureFixture,
+    _reset_noncacheable_warned_set: None,
+) -> None:
+    """When a refusal carries 0/0 cache counters, they do not establish a below-floor
+    prompt, so the diagnostic must stay silent. Warning here would accuse the operator
+    of a misconfiguration the counters are no evidence of."""
+    from outrider.llm.base import LLMRefusalError
+
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(), model_config=_model_config(), persister=persister
+    )
+    caplog.set_level(logging.WARNING, logger="outrider.llm.anthropic_provider")
+    refused = _sdk_message(
+        stop_reason="refusal",
+        content_blocks=[],
+        input_tokens=0,
+        output_tokens=0,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
+    with _patched_create(return_value=refused), pytest.raises(LLMRefusalError):
+        await provider.complete(_request(cache_control=True, model="claude-sonnet-4-6"))
+    cache_warnings = [
+        r
+        for r in caplog.records
+        if r.name == "outrider.llm.anthropic_provider"
+        and "min-cacheable threshold" in r.getMessage()
+    ]
+    assert cache_warnings == [], "a refusal's 0/0 cache tokens must not read as below-floor"
+
+
+@pytest.mark.asyncio
+async def test_persister_failure_supersedes_a_captured_refusal() -> None:
+    """When the exchange was refused AND the persist fails, the caller sees
+    `LLMPersisterError`, not `LLMRefusalError`.
+
+    Persistence is still attempted — the refused call was billed and must be audited —
+    and the refusal is lost from the surfaced error. Both are terminal, so no caller
+    distinguishes them today. This pins the current surfaced-error precedence. Any
+    future retry-on-persister policy must revisit this case because `LLMPersisterError`
+    no longer carries the captured refusal.
+    """
+    persister = _RecordingPersister(raise_with=RuntimeError("DB blip"))
+    provider = AnthropicProvider(
+        api_key=_api_key(), model_config=_model_config(), persister=persister
+    )
+    refused = _sdk_message(
+        stop_reason="refusal", content_blocks=[], input_tokens=0, output_tokens=0
+    )
+    with (
+        _patched_create(return_value=refused),
+        pytest.raises(LLMPersisterError) as exc_info,
+    ):
+        await provider.complete(_request(model="claude-sonnet-4-6"))
+    assert "Persister failed after successful SDK call" in str(exc_info.value)
+    # Persistence was attempted with the refused exchange, not skipped.
+    assert len(persister.calls) == 1
+    event, _req, _resp = persister.calls[0]
+    assert event.finish_reason == "refusal"
+
+
+@pytest.mark.asyncio
+async def test_cache_warning_is_emitted_before_the_pricing_error(
+    caplog: pytest.LogCaptureFixture,
+    _reset_noncacheable_warned_set: None,
+) -> None:
+    """The cache diagnostic runs before cost computation, so an unpriced substituted
+    model still produces the warning on its way to `LLMPricingMissingError`.
+
+    Both behaviors are covered separately elsewhere; this pins their ORDER. Computing
+    cost first would swallow the diagnostic for exactly the operator who most needs it
+    — one whose model was substituted AND whose caching silently did nothing.
+    """
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(), model_config=_model_config(), persister=persister
+    )
+    caplog.set_level(logging.WARNING, logger="outrider.llm.anthropic_provider")
+    # Substituted to a dated model whose normalized key is absent from RATE_TABLE.
+    unpriced = _sdk_message(
+        model="claude-fake-99-99-20251020",
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
+    # Twice: the pricing error must raise on both calls, and the diagnostic must
+    # fire on the first only — dedup survives the raise that follows it.
+    for _ in range(2):
+        with (
+            _patched_create(return_value=unpriced),
+            pytest.raises(LLMPricingMissingError),
+        ):
+            await provider.complete(_request(cache_control=True, model="claude-sonnet-4-6"))
+    cache_warnings = [
+        r
+        for r in caplog.records
+        if r.name == "outrider.llm.anthropic_provider"
+        and "min-cacheable threshold" in r.getMessage()
+    ]
+    assert len(cache_warnings) == 1, (
+        "the cache diagnostic must fire before the pricing lookup raises, and only once"
+    )

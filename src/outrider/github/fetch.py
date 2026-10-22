@@ -1,22 +1,11 @@
 # Per-file content fetch helper for intake — vendor wrapper.
-"""GitHub API fetches required by the intake node.
+"""Fetch PR metadata, then individual file contents for intake.
 
-Two functions:
-  - `list_pr_files` — wraps `gh.rest.pulls.async_list_files` for the
-    phase-1 sequential call that returns the file list + `patch` data
-    + status + counts. The intake node's pre-flight size gate runs
-    AFTER this returns (between phase 1 and phase 2).
-  - `fetch_file_content_at` — wraps `gh.rest.repos.async_get_content`
-    for the phase-2 parallel per-file content fan-out. Caller is intake;
-    paths are validated through `coordinates.validate_diff_path` here
-    BEFORE the githubkit call (security-critical per
-    `paths-validated-before-use`).
-
-Both functions take a `GitHub` client minted by the per-installation
-callable returned from `outrider.github.auth.make_installation_client_factory`.
-The github/fetch.py module is one of three files in `src/outrider/github/`
-allowed to `import githubkit` per `vendor-sdks-only-in-wrappers`.
-Intake itself does NOT import githubkit.
+list_pr_files returns one page sized for intake's preflight limit. Once that gate
+passes, intake fetches file content in parallel. fetch_file_content_at validates
+paths before the SDK call (paths-validated-before-use) and bounds encoded and
+decoded content allocations. Vendor access stays here, outside the agent nodes
+(vendor-sdks-only-in-wrappers).
 """
 
 from __future__ import annotations
@@ -89,28 +78,11 @@ async def fetch_file_content_at(
     path: str,
     ref: str,
 ) -> bytes | None:
-    """Phase-2 of intake: fetch one file's content at the given ref.
+    """Return validated inline-base64 file bytes at ref, or None when unusable.
 
-    Path validation is performed HERE before any githubkit call (per
-    `paths-validated-before-use`): `coordinates.validate_diff_path`
-    rejects `..` traversal, shell metacharacters, absolute paths, and
-    backslash separators. A `CoordinateError` from the validator
-    propagates out — the caller (intake) catches and treats it as a
-    skip, recording the failure as audit if appropriate.
-
-    Returns:
-      - The decoded file bytes when the API returns inline-base64 content
-        and the decoded size is under `_PER_FILE_CONTENT_CAP_BYTES`.
-      - `None` when the API returns the no-content / blob-redirect shape
-        (file too large for inline-base64; usually >1 MB). Caller treats
-        this as a skip with `SkipReason.OVERSIZED`.
-      - `None` when the response shape is non-file (directory listing,
-        symlink, submodule). Caller treats these as out-of-scope.
-
-    Raises:
-      - `CoordinateError` from path validation.
-      - Any `githubkit` HTTP exception (404, 403, etc.) — the caller
-        decides whether to skip or fail-loud.
+    Validate the path before requesting content. Directories, non-base64 responses,
+    malformed base64, and oversized payloads return None. CoordinateError and SDK
+    request failures propagate; intake owns their skip or failure handling.
     """
     # Path validation is the security-critical pre-call gate. The
     # validator returns the normalized path; we use the normalized form

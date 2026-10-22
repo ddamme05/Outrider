@@ -6,14 +6,12 @@ the aggregate step folds these into ONE `AnalysisRound` per pass plus the
 `AnalyzeCompletedEvent` accounting (per `DECISIONS.md#063`, workers never
 emit rounds — round count is the trace depth counter).
 
-Design rule, learned across five review rounds: the outcome carries
-**facts and identities, never re-derived judgments.** Early drafts made
-workers report derived counters (emitted/observed/served) and validators
-re-inferred branch semantics from them — every such inference was a guess
-about the node, and several proved subtly wrong (evidence tier is NOT
-producer origin; response rejection does NOT preclude producer
-augmentation). The shipped shape instead records what only the worker
-knows, as explicit identity:
+Design rule: the outcome carries **facts and identities, never re-derived
+judgments.** A worker reporting derived counters would force validators to
+re-infer branch semantics from them, and those inferences do not hold —
+evidence tier is NOT producer origin, and a response rejection does NOT
+preclude producer augmentation. The outcome instead records what only the
+worker knows, as explicit identity:
 
 - `source` — the sequential branch, discriminated (parser / cache_serve /
   observed_coverage / observed_skip / plain_skip), never inferred.
@@ -160,219 +158,235 @@ class AnalyzeWorkerOutcome(BaseModel):
 
     @model_validator(mode="after")
     def _enforce_fact_coherence(self) -> Self:
-        """The fact-anchored rules only — each verified against the node,
-        none inferred from counters:
+        """Run the fact-anchored checks in order; each is verified against the
+        node, none inferred from counters.
 
-        - `skip_reason` non-None iff skipped (the #018 iff contract), and
-          skipped iff a skip source.
-        - Parser tallies and provider spend require a parser. Trace
-          candidates and #055 subsumption records exist on parser AND
-          cache_serve (a serve RESTORES candidates and RECONSTRUCTS
-          subsumption records from the cached payload); skip sources
-          carry neither. `n_responses_rejected > 0` additionally forces
-          `n_proposals_seen == 0` — the parser's verified rejected-response
-          contract — but does NOT preclude producer-OBSERVED augmentation.
-        - Identity lists are canonical (hex, sorted, unique), subsets of
-          the admitted set, and per-source: producer hashes cover EXACTLY
-          the admitted set on `observed_coverage` (non-empty — coverage
-          requires matches) and on `observed_skip`, served hashes EXACTLY
-          the admitted set on `cache_serve`, both empty on `plain_skip`;
-          served is cache_serve-exclusive; every producer-listed finding
-          is OBSERVED-tier (the producer makes nothing else).
-        - Cross-file attribution is unrepresentable (the sequential
-          per-file loop cannot express it).
+        Order is behaviour: when an outcome violates more than one rule, the
+        caller sees the first, and the groups run cheapest-and-most-fundamental
+        first.
         """
-        skipped = self.parse_status == "skipped"
-        if skipped != (self.skip_reason is not None):
-            raise ValueError(
-                "AnalyzeWorkerOutcome: skip_reason must be non-None iff "
-                f"parse_status='skipped'; got parse_status={self.parse_status!r}, "
-                f"skip_reason={self.skip_reason!r}"
-            )
-        if skipped != (self.source in ("observed_skip", "plain_skip")):  # coverage is EXAMINED
-            raise ValueError(
-                f"AnalyzeWorkerOutcome: parse_status={self.parse_status!r} does "
-                f"not match source={self.source!r}"
-            )
-
-        if self.source != "parser":
-            if (
-                self.n_proposals_seen
-                or self.n_proposals_rejected
-                or self.n_responses_rejected
-                or self.n_proposals_superseded_by_observed
-                or self.n_trace_candidates_dropped_malformed
-            ):
-                raise ValueError("AnalyzeWorkerOutcome: parser tallies require source='parser'")
-            if (
-                self.input_tokens
-                or self.output_tokens
-                or self.cache_read_tokens
-                or self.cache_write_tokens
-                or self.cost
-            ):
-                raise ValueError("AnalyzeWorkerOutcome: provider spend requires source='parser'")
-            # #055 records exist on BOTH non-skip paths: the parser merge
-            # assembles them, and a cache serve RECONSTRUCTS them from the
-            # cached payload (proof retention must survive the serve).
-            # Only skip sources have nothing to retain.
-            if self.subsumed_matches and self.source != "cache_serve":
-                raise ValueError(
-                    "AnalyzeWorkerOutcome: subsumption records exist only on "
-                    "parser and cache_serve sources (#055 proof retention)"
-                )
-            # Cache hits RESTORE prior-pass candidates into state (the
-            # sequential serve branch extends state without counting them
-            # as newly emitted — the aggregate derives this-pass emission
-            # from parser-source outcomes only); skips carry none.
-            if self.trace_candidates and self.source != "cache_serve":
-                raise ValueError(
-                    "AnalyzeWorkerOutcome: trace candidates exist only on "
-                    "parser and cache_serve sources"
-                )
-        # One worker = one LLM call, so the rejected-response shape is
-        # binary and total: 0/1, and a rejection produced NOTHING from the
-        # response — no proposals, no trace candidates (well-formed or
-        # malformed), no subsumption records (a subsumer is a response
-        # proposal). Producer-OBSERVED augmentation is unaffected; the
-        # identity equation below covers the proposal terms.
-        if self.n_responses_rejected > 1:
-            raise ValueError(
-                "AnalyzeWorkerOutcome: one worker makes one LLM call; "
-                "n_responses_rejected is 0 or 1"
-            )
-        if self.n_responses_rejected and (
-            self.n_proposals_seen
-            or self.trace_candidates
-            or self.n_trace_candidates_dropped_malformed
-            or self.subsumed_matches
-        ):
-            raise ValueError(
-                "AnalyzeWorkerOutcome: a rejected response yields zero proposals, "
-                "trace candidates, and subsumption records (parser contract); "
-                "producer-OBSERVED augmentation is unaffected"
-            )
-        # Candidates are processed only inside the parser's proposal loop
-        # (well-formed AND malformed alike; #025's rejected-parent
-        # candidates are still candidates of SEEN proposals) — so any
-        # trace-candidate evidence implies at least one proposal was seen.
-        if (
-            self.source == "parser"
-            and (self.trace_candidates or self.n_trace_candidates_dropped_malformed)
-            and not self.n_proposals_seen
-        ):
-            raise ValueError(
-                "AnalyzeWorkerOutcome: trace candidates (or malformed drops) "
-                "imply n_proposals_seen > 0 — candidates exist only inside "
-                "the proposal loop"
-            )
-
-        _canonical_hash_tuple("producer_observed_hashes", self.producer_observed_hashes)
-        _canonical_hash_tuple("served_content_hashes", self.served_content_hashes)
-        admitted = {f.content_hash for f in self.admitted_findings}
-        producer = set(self.producer_observed_hashes)
-        served = set(self.served_content_hashes)
-        if not producer <= admitted:
-            raise ValueError(
-                "AnalyzeWorkerOutcome: producer_observed_hashes must be a subset "
-                "of the admitted findings' hashes"
-            )
-        if not served <= admitted:
-            raise ValueError(
-                "AnalyzeWorkerOutcome: served_content_hashes must be a subset of "
-                "the admitted findings' hashes"
-            )
-        if served and self.source != "cache_serve":
-            raise ValueError(
-                "AnalyzeWorkerOutcome: served findings exist only on "
-                "source='cache_serve' (sequential branch union)"
-            )
-        if self.source == "cache_serve":
-            if self.parse_status != "clean":
-                raise ValueError("AnalyzeWorkerOutcome: cache_serve requires parse_status='clean'")
-            if served != admitted or producer:
-                raise ValueError(
-                    "AnalyzeWorkerOutcome: cache_serve admits exactly the served "
-                    "set (nothing was produced this pass)"
-                )
-        if self.source == "observed_coverage":
-            # #049 enforced coverage: clean status, producer-only findings,
-            # no LLM, no candidates, no #054/#055 merge (the LLM never ran).
-            if self.parse_status != "clean":
-                raise ValueError(
-                    "AnalyzeWorkerOutcome: observed_coverage requires "
-                    "parse_status='clean' (the file is examined, not skipped)"
-                )
-            if not self.admitted_findings or producer != admitted:
-                raise ValueError(
-                    "AnalyzeWorkerOutcome: observed_coverage findings are all "
-                    "producer-origin (an empty coverage skip is impossible — "
-                    "coverage requires matches)"
-                )
-            if self.trace_candidates or self.subsumed_matches or served:
-                raise ValueError(
-                    "AnalyzeWorkerOutcome: observed_coverage carries no "
-                    "candidates, subsumption records, or served findings "
-                    "(the LLM never ran; no merge happened)"
-                )
-        if self.source == "observed_skip":
-            if not self.admitted_findings:
-                raise ValueError(
-                    "AnalyzeWorkerOutcome: observed_skip carries the producer's "
-                    "findings; an empty skip is plain_skip"
-                )
-            if producer != admitted:
-                raise ValueError(
-                    "AnalyzeWorkerOutcome: observed_skip findings are all "
-                    "producer-origin (producer_observed_hashes covers the "
-                    "admitted set)"
-                )
-        if self.source == "plain_skip" and (
-            self.admitted_findings or self.producer_observed_hashes
-        ):
-            raise ValueError("AnalyzeWorkerOutcome: plain_skip carries nothing")
-
-        for finding in self.admitted_findings:
-            if (
-                finding.content_hash in producer
-                and finding.evidence_tier is not EvidenceTier.OBSERVED
-            ):
-                raise ValueError(
-                    "AnalyzeWorkerOutcome: producer-listed findings are "
-                    "OBSERVED-tier (the deterministic producer makes nothing else)"
-                )
-            if finding.file_path != self.path:
-                raise ValueError(
-                    f"AnalyzeWorkerOutcome: finding names {finding.file_path!r} "
-                    f"but the worker's file is {self.path!r}"
-                )
-        for match in self.subsumed_matches:
-            if match.file_path != self.path:
-                raise ValueError(
-                    f"AnalyzeWorkerOutcome: subsumed match names "
-                    f"{match.file_path!r} but the worker's file is {self.path!r}"
-                )
-        if self.source == "parser":
-            # The exact per-worker proposal equation, every term an identity
-            # count (no derived counters to trust): worker-locally, emitted
-            # is the admitted set, observed is the producer list, served is
-            # zero — so seen == (admitted - producer) + rejected +
-            # superseded. Aggregate-only accounting would let invalid
-            # tallies cancel across files; this pins each worker.
-            lhs = self.n_proposals_seen
-            rhs = (
-                len(self.admitted_findings)
-                - len(self.producer_observed_hashes)
-                + self.n_proposals_rejected
-                + self.n_proposals_superseded_by_observed
-            )
-            if lhs != rhs:
-                raise ValueError(
-                    f"AnalyzeWorkerOutcome: proposal accounting violated: "
-                    f"n_proposals_seen={lhs} != (admitted - producer) + "
-                    f"rejected + superseded = {rhs}"
-                )
+        _check_skip_coherence(self)
+        _check_source_capabilities(self)
+        _check_identity_lists(self)
+        _check_proposal_equation(self)
         return self
+
+
+def _check_skip_coherence(outcome: AnalyzeWorkerOutcome) -> None:
+    """`skip_reason` is non-None iff skipped (#018), and skipped iff a skip source."""
+    skipped = outcome.parse_status == "skipped"
+    if skipped != (outcome.skip_reason is not None):
+        raise ValueError(
+            "AnalyzeWorkerOutcome: skip_reason must be non-None iff "
+            f"parse_status='skipped'; got parse_status={outcome.parse_status!r}, "
+            f"skip_reason={outcome.skip_reason!r}"
+        )
+    if skipped != (outcome.source in ("observed_skip", "plain_skip")):  # coverage is EXAMINED
+        raise ValueError(
+            f"AnalyzeWorkerOutcome: parse_status={outcome.parse_status!r} does "
+            f"not match source={outcome.source!r}"
+        )
+
+
+def _check_source_capabilities(outcome: AnalyzeWorkerOutcome) -> None:
+    """What each `source` is allowed to carry.
+
+    Parser tallies and provider spend require a parser. Trace candidates and #055
+    subsumption records exist on parser AND `cache_serve` — a serve restores
+    candidates and reconstructs subsumption records from the cached payload — and
+    on neither skip source. One worker makes one LLM call, so a rejected response
+    is 0 or 1 and yields nothing from that response; producer-OBSERVED
+    augmentation is unaffected.
+    """
+    if outcome.source != "parser":
+        if (
+            outcome.n_proposals_seen
+            or outcome.n_proposals_rejected
+            or outcome.n_responses_rejected
+            or outcome.n_proposals_superseded_by_observed
+            or outcome.n_trace_candidates_dropped_malformed
+        ):
+            raise ValueError("AnalyzeWorkerOutcome: parser tallies require source='parser'")
+        if (
+            outcome.input_tokens
+            or outcome.output_tokens
+            or outcome.cache_read_tokens
+            or outcome.cache_write_tokens
+            or outcome.cost
+        ):
+            raise ValueError("AnalyzeWorkerOutcome: provider spend requires source='parser'")
+        # #055 records exist on BOTH non-skip paths: the parser merge
+        # assembles them, and a cache serve RECONSTRUCTS them from the
+        # cached payload (proof retention must survive the serve).
+        # Only skip sources have nothing to retain.
+        if outcome.subsumed_matches and outcome.source != "cache_serve":
+            raise ValueError(
+                "AnalyzeWorkerOutcome: subsumption records exist only on "
+                "parser and cache_serve sources (#055 proof retention)"
+            )
+        # Cache hits RESTORE prior-pass candidates into state (the
+        # sequential serve branch extends state without counting them
+        # as newly emitted — the aggregate derives this-pass emission
+        # from parser-source outcomes only); skips carry none.
+        if outcome.trace_candidates and outcome.source != "cache_serve":
+            raise ValueError(
+                "AnalyzeWorkerOutcome: trace candidates exist only on "
+                "parser and cache_serve sources"
+            )
+    # One worker = one LLM call, so the rejected-response shape is
+    # binary and total: 0/1, and a rejection produced NOTHING from the
+    # response — no proposals, no trace candidates (well-formed or
+    # malformed), no subsumption records (a subsumer is a response
+    # proposal). Producer-OBSERVED augmentation is unaffected; the
+    # identity equation below covers the proposal terms.
+    if outcome.n_responses_rejected > 1:
+        raise ValueError(
+            "AnalyzeWorkerOutcome: one worker makes one LLM call; n_responses_rejected is 0 or 1"
+        )
+    if outcome.n_responses_rejected and (
+        outcome.n_proposals_seen
+        or outcome.trace_candidates
+        or outcome.n_trace_candidates_dropped_malformed
+        or outcome.subsumed_matches
+    ):
+        raise ValueError(
+            "AnalyzeWorkerOutcome: a rejected response yields zero proposals, "
+            "trace candidates, and subsumption records (parser contract); "
+            "producer-OBSERVED augmentation is unaffected"
+        )
+    # Candidates are processed only inside the parser's proposal loop
+    # (well-formed AND malformed alike; #025's rejected-parent
+    # candidates are still candidates of SEEN proposals) — so any
+    # trace-candidate evidence implies at least one proposal was seen.
+    if (
+        outcome.source == "parser"
+        and (outcome.trace_candidates or outcome.n_trace_candidates_dropped_malformed)
+        and not outcome.n_proposals_seen
+    ):
+        raise ValueError(
+            "AnalyzeWorkerOutcome: trace candidates (or malformed drops) "
+            "imply n_proposals_seen > 0 — candidates exist only inside "
+            "the proposal loop"
+        )
+
+
+def _check_identity_lists(outcome: AnalyzeWorkerOutcome) -> None:
+    """Hash lists are canonical, are subsets of the admitted set, and match their
+    source.
+
+    Producer hashes cover exactly the admitted set on `observed_coverage` (never
+    empty — coverage requires matches) and on `observed_skip`; served hashes cover
+    exactly it on `cache_serve` and are exclusive to that source; both are empty on
+    `plain_skip`. Every producer-listed finding is OBSERVED-tier, and no finding or
+    subsumed match may name a file other than this worker's — cross-file
+    attribution is unrepresentable in the per-file loop.
+    """
+    _canonical_hash_tuple("producer_observed_hashes", outcome.producer_observed_hashes)
+    _canonical_hash_tuple("served_content_hashes", outcome.served_content_hashes)
+    admitted = {f.content_hash for f in outcome.admitted_findings}
+    producer = set(outcome.producer_observed_hashes)
+    served = set(outcome.served_content_hashes)
+    if not producer <= admitted:
+        raise ValueError(
+            "AnalyzeWorkerOutcome: producer_observed_hashes must be a subset "
+            "of the admitted findings' hashes"
+        )
+    if not served <= admitted:
+        raise ValueError(
+            "AnalyzeWorkerOutcome: served_content_hashes must be a subset of "
+            "the admitted findings' hashes"
+        )
+    if served and outcome.source != "cache_serve":
+        raise ValueError(
+            "AnalyzeWorkerOutcome: served findings exist only on "
+            "source='cache_serve' (sequential branch union)"
+        )
+    if outcome.source == "cache_serve":
+        if outcome.parse_status != "clean":
+            raise ValueError("AnalyzeWorkerOutcome: cache_serve requires parse_status='clean'")
+        if served != admitted or producer:
+            raise ValueError(
+                "AnalyzeWorkerOutcome: cache_serve admits exactly the served "
+                "set (nothing was produced this pass)"
+            )
+    if outcome.source == "observed_coverage":
+        # #049 enforced coverage: clean status, producer-only findings,
+        # no LLM, no candidates, no #054/#055 merge (the LLM never ran).
+        if outcome.parse_status != "clean":
+            raise ValueError(
+                "AnalyzeWorkerOutcome: observed_coverage requires "
+                "parse_status='clean' (the file is examined, not skipped)"
+            )
+        if not outcome.admitted_findings or producer != admitted:
+            raise ValueError(
+                "AnalyzeWorkerOutcome: observed_coverage findings are all "
+                "producer-origin (an empty coverage skip is impossible — "
+                "coverage requires matches)"
+            )
+        if outcome.trace_candidates or outcome.subsumed_matches or served:
+            raise ValueError(
+                "AnalyzeWorkerOutcome: observed_coverage carries no "
+                "candidates, subsumption records, or served findings "
+                "(the LLM never ran; no merge happened)"
+            )
+    if outcome.source == "observed_skip":
+        if not outcome.admitted_findings:
+            raise ValueError(
+                "AnalyzeWorkerOutcome: observed_skip carries the producer's "
+                "findings; an empty skip is plain_skip"
+            )
+        if producer != admitted:
+            raise ValueError(
+                "AnalyzeWorkerOutcome: observed_skip findings are all "
+                "producer-origin (producer_observed_hashes covers the "
+                "admitted set)"
+            )
+    if outcome.source == "plain_skip" and (
+        outcome.admitted_findings or outcome.producer_observed_hashes
+    ):
+        raise ValueError("AnalyzeWorkerOutcome: plain_skip carries nothing")
+
+    for finding in outcome.admitted_findings:
+        if finding.content_hash in producer and finding.evidence_tier is not EvidenceTier.OBSERVED:
+            raise ValueError(
+                "AnalyzeWorkerOutcome: producer-listed findings are "
+                "OBSERVED-tier (the deterministic producer makes nothing else)"
+            )
+        if finding.file_path != outcome.path:
+            raise ValueError(
+                f"AnalyzeWorkerOutcome: finding names {finding.file_path!r} "
+                f"but the worker's file is {outcome.path!r}"
+            )
+    for match in outcome.subsumed_matches:
+        if match.file_path != outcome.path:
+            raise ValueError(
+                f"AnalyzeWorkerOutcome: subsumed match names "
+                f"{match.file_path!r} but the worker's file is {outcome.path!r}"
+            )
+
+
+def _check_proposal_equation(outcome: AnalyzeWorkerOutcome) -> None:
+    """The per-worker proposal equation, every term an identity count.
+
+    Worker-locally emitted is the admitted set, observed is the producer list and
+    served is zero, so seen == (admitted - producer) + rejected + superseded.
+    Aggregate-only accounting would let invalid tallies cancel across files; this
+    pins each worker. Parser source only.
+    """
+    if outcome.source == "parser":
+        lhs = outcome.n_proposals_seen
+        rhs = (
+            len(outcome.admitted_findings)
+            - len(outcome.producer_observed_hashes)
+            + outcome.n_proposals_rejected
+            + outcome.n_proposals_superseded_by_observed
+        )
+        if lhs != rhs:
+            raise ValueError(
+                f"AnalyzeWorkerOutcome: proposal accounting violated: "
+                f"n_proposals_seen={lhs} != (admitted - producer) + "
+                f"rejected + superseded = {rhs}"
+            )
 
 
 def worker_outcome_slot(outcome: AnalyzeWorkerOutcome) -> tuple[str, int]:

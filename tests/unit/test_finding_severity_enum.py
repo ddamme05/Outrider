@@ -14,8 +14,3 @@ def test_finding_severity_has_exact_5_values() -> None:
     """No extras, no missing — the FindingSeverity enum matches spec §7.4."""
     actual = {s.value for s in FindingSeverity}
     assert actual == EXPECTED_SEVERITY_VALUES
-
-
-def test_finding_severity_count_is_5() -> None:
-    """Per spec §7.4: exactly 5 tiers."""
-    assert len(list(FindingSeverity)) == 5

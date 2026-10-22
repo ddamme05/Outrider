@@ -1,36 +1,16 @@
 # Ephemeral postgres-test lifecycle shared by run_review + the test conftests + smoke runner.
 # See specs/2026-06-01-eval-graph-driver.md (resolution A) for why this is `src`-resident.
-"""Ephemeral database lifecycle + fail-closed isolation guards.
+"""Create, migrate and drop ephemeral test databases.
 
-The single shared create / migrate / drop / guard implementation. `run_review`
-(the eval graph driver), `scripts/smoke_e2e.py`, `tests/integration/conftest.py`,
-and `tests/eval/conftest.py` all import it from here rather than each keeping a
-copy.
+Drivers, test fixtures and the smoke runner share this lifecycle. Each exported
+create/drop primitive checks test URL markers (port 5433 and "test" in the
+database name) and validates the SQL identifier. Eval-only entry points call
+require_eval_mode separately; integration fixtures also use these primitives.
+URL errors redact passwords.
 
-**Fail-closed by construction.** Two guards gate every destructive path:
-
-- `require_eval_mode()` raises `EvalModeNotEnabledError` unless
-  `OUTRIDER_IS_EVAL=1` is set. `run_review` calls it first thing, because
-  `run_review` is reachable from production `src/` and could otherwise be
-  invoked outside a test session.
-- `assert_test_url_is_isolated()` raises `EvalDBIsolationError` unless the
-  URL targets the ephemeral `postgres-test` container (port 5433, "test"
-  in the database name). It is parsed structurally with SQLAlchemy
-  `make_url` — substring matching could false-match a "test"-like or
-  port-like sequence embedded in a password or host. Every error message
-  redacts the password so a misconfigured dev/prod URL cannot leak
-  credentials into a terminal or log.
-
-`CREATE DATABASE` / `DROP DATABASE` cannot run inside a transaction, so the
-admin engines here use `isolation_level="AUTOCOMMIT"`. The `DROP` path first
-terminates other backends connected to the target DB (an idle pool
-connection would otherwise make `DROP DATABASE` fail).
-
-Alembic is invoked programmatically (`alembic.command.upgrade`) wrapped in
-`asyncio.to_thread`, mirroring the conftests: `env.py` reads `DATABASE_URL`
-from `os.environ` and runs its own `asyncio.run`, so the call must happen
-off the running event loop with the URL injected via the environment.
-"""
+CREATE/DROP use AUTOCOMMIT, and drop terminates target connections first.
+Alembic runs in a worker thread with DATABASE_URL temporarily set, because its
+env.py starts its own event loop. See docs/testing.md "Two-container model"."""
 
 from __future__ import annotations
 
@@ -76,11 +56,7 @@ _VALID_DB_NAME = re.compile(r"[a-z0-9_]+")
 
 
 class EvalDBIsolationError(RuntimeError):
-    """A database URL did not target the isolated `postgres-test` container.
-
-    Raised before any DDL so a misconfigured `TEST_DATABASE_URL` pointing at
-    the dev/prod database is caught loudly, not acted on.
-    """
+    """A URL failed the test port/name checks before database DDL."""
 
 
 class EvalModeNotEnabledError(RuntimeError):
@@ -109,13 +85,10 @@ def require_eval_mode() -> None:
 
 
 def assert_test_url_is_isolated(url: str) -> None:
-    """Raise `EvalDBIsolationError` unless `url` targets the test container.
+    """Require port 5433 and "test" in the database name.
 
-    Structural check (port == 5433, "test" in the database name) parsed via
-    `make_url`. A non-numeric port makes `make_url` raise a bare `ValueError`
-    (not an `ArgumentError` subclass), so both are caught and re-raised as the
-    typed isolation error. Error messages redact the password.
-    """
+    Parse with make_url so password/host substrings cannot satisfy those checks.
+    Malformed URLs raise EvalDBIsolationError with password-redacted detail."""
     safe_url = redact_url_password(url)
     try:
         parsed = make_url(url)

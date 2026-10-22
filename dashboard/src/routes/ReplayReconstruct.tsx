@@ -10,17 +10,14 @@ const PLAY_STEP_MS = 450;
 const SPEEDS = [1, 2, 4, 8] as const;
 type Speed = (typeof SPEEDS)[number];
 
-// The dedicated real-time reconstruction page (ROADMAP feature 6, "replay-equivalence is something a
-// buyer can watch"). Reached from the review's "Replay · reconstruct" button. Events replay in
-// execution order from the verified /replay-timeline snapshot — append-only, read-only; nothing is
-// edited or fabricated. NOT polled: the operator replays a fixed reconstruction, not a moving target.
+// Playback uses the loaded reconstruction; these queries do not poll periodically.
 export function ReplayReconstruct() {
   const { reviewId } = useParams<{ reviewId: string }>();
   const enabled = typeof reviewId === "string" && reviewId.length > 0;
   const pathParams = { params: { path: { review_id: reviewId ?? "" } } };
 
-  const detail = $api.useQuery("get", "/api/reviews/{review_id}", pathParams, { enabled });
-  const timeline = $api.useQuery("get", "/api/reviews/{review_id}/replay-timeline", pathParams, {
+  const detailQuery = $api.useQuery("get", "/api/reviews/{review_id}", pathParams, { enabled });
+  const timelineQuery = $api.useQuery("get", "/api/reviews/{review_id}/replay-timeline", pathParams, {
     enabled,
   });
 
@@ -28,107 +25,95 @@ export function ReplayReconstruct() {
     typeof window !== "undefined" &&
     Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
 
-  const data = timeline.data;
-  const d = detail.data;
-  const total = useMemo(() => (data ? renderedEvents(data).length : 0), [data]);
-  // Count finding EVENTS off the permanent stream, not data.findings — the content array is
-  // suppressed to empty on a non-equivalent verdict (gated in reviews.py), so reading its length
-  // would fabricate "0 findings" for a divergent review that actually produced findings. The
-  // FindingEvents ride data.events in both cases (reviews.py builds events regardless of equivalence).
+  const timelineData = timelineQuery.data;
+  const review = detailQuery.data;
+  const eventCount = useMemo(() => (timelineData ? renderedEvents(timelineData).length : 0), [timelineData]);
+  // Finding events remain available when a divergent replay suppresses finding content.
   const findingCount = useMemo(
-    () => (data ? data.events.filter((e) => e.event_type === "finding").length : 0),
-    [data],
+    () => (timelineData ? timelineData.events.filter((event) => event.event_type === "finding").length : 0),
+    [timelineData],
   );
-  const equivalent = Boolean(data?.replay_equivalent && data.phases !== null);
+  const equivalent = Boolean(timelineData?.replay_equivalent && timelineData.phases !== null);
 
-  const [shown, setShown] = useState(0);
+  const [revealedCount, setRevealedCount] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<Speed>(1);
   const [showPolicy, setShowPolicy] = useState(false);
-  // Auto-follow: while playing, scroll the just-revealed ("current") row into view so the feed
-  // tracks the playhead. The operator can stop following — via the Follow toggle, or just by
-  // scrolling away (wheel/touch) — and read freely while playback keeps running.
   const [follow, setFollow] = useState(true);
   const feedRef = useRef<HTMLDivElement>(null);
 
-  // Auto-play once the snapshot loads — or render instantly under reduced motion / a non-equivalent
-  // verdict (where the flat fallback shows everything and there's nothing to step through).
+  // Reduced motion and divergent reconstructions display the whole stream immediately.
   useEffect(() => {
-    if (!data) return;
-    if (reducedMotion || !equivalent || total === 0) {
-      setShown(total);
+    if (!timelineData) return;
+    if (reducedMotion || !equivalent || eventCount === 0) {
+      setRevealedCount(eventCount);
       setPlaying(false);
     } else {
-      setShown(0);
+      setRevealedCount(0);
       setPlaying(true);
     }
-  }, [data?.review_id, total, equivalent, reducedMotion]);
+  }, [timelineData?.review_id, eventCount, equivalent, reducedMotion]);
 
-  // The play timer: reveal one more row every PLAY_STEP_MS / speed. Re-armed when speed changes.
+  // Re-arm the one-event timer when playback state or speed changes.
   useEffect(() => {
     if (!playing) return;
-    if (shown >= total) {
+    if (revealedCount >= eventCount) {
       setPlaying(false);
       return;
     }
-    const handle = window.setTimeout(
-      () => setShown((s) => Math.min(s + 1, total)),
+    const playbackTimer = window.setTimeout(
+      () => setRevealedCount((currentCount) => Math.min(currentCount + 1, eventCount)),
       PLAY_STEP_MS / speed,
     );
-    return () => window.clearTimeout(handle);
-  }, [playing, shown, total, speed]);
+    return () => window.clearTimeout(playbackTimer);
+  }, [playing, revealedCount, eventCount, speed]);
 
-  // Follow the playhead: while following + playing, keep the just-revealed row in view.
-  // `block: "nearest"` only scrolls when the row is off-screen — no jolt when it's already shown.
-  // ReplayFeed drops the `.current` class on the FINAL tick (shown >= total), so once there's no
-  // current row AND we're at the end, fall back to the last row — otherwise the closing event
-  // never scrolls into view. The end-guard avoids jumping to the bottom at shown=0 (also no current).
+  // The final tick drops .current, so follow the last row only after reaching the end.
   useEffect(() => {
     if (!follow || !playing) return;
-    const feed = feedRef.current;
-    if (!feed) return;
-    let target: HTMLElement | null = feed.querySelector(".tl-evrow.current");
-    if (!target && shown >= total && total > 0) {
-      const rows = feed.querySelectorAll<HTMLElement>(".tl-evrow");
-      target = rows[rows.length - 1] ?? null;
+    const feedElement = feedRef.current;
+    if (!feedElement) return;
+    let playheadRow: HTMLElement | null = feedElement.querySelector(".tl-evrow.current");
+    if (!playheadRow && revealedCount >= eventCount && eventCount > 0) {
+      const eventRows = feedElement.querySelectorAll<HTMLElement>(".tl-evrow");
+      playheadRow = eventRows[eventRows.length - 1] ?? null;
     }
-    target?.scrollIntoView({ block: "nearest" });
-  }, [shown, follow, playing, total]);
+    playheadRow?.scrollIntoView({ block: "nearest" });
+  }, [revealedCount, follow, playing, eventCount]);
 
-  // A user scroll gesture (wheel/touch) stops following — they've taken over the viewport, so
-  // playback keeps running but the screen no longer chases the events. Re-enable via the toggle.
+  // Manual scrolling stops following without interrupting playback.
   useEffect(() => {
-    const stop = () => setFollow(false);
-    window.addEventListener("wheel", stop, { passive: true });
-    window.addEventListener("touchmove", stop, { passive: true });
+    const stopFollowing = () => setFollow(false);
+    window.addEventListener("wheel", stopFollowing, { passive: true });
+    window.addEventListener("touchmove", stopFollowing, { passive: true });
     return () => {
-      window.removeEventListener("wheel", stop);
-      window.removeEventListener("touchmove", stop);
+      window.removeEventListener("wheel", stopFollowing);
+      window.removeEventListener("touchmove", stopFollowing);
     };
   }, []);
 
   const play = () => {
     if (reducedMotion) {
-      setShown(total);
+      setRevealedCount(eventCount);
       return;
     }
-    if (shown >= total) setShown(0); // restart from the top if already at the end
+    if (revealedCount >= eventCount) setRevealedCount(0); // restart from the top if already at the end
     setFollow(true);
     setPlaying(true);
   };
   const pause = () => setPlaying(false);
   const restart = () => {
     if (reducedMotion) {
-      setShown(total);
+      setRevealedCount(eventCount);
       return;
     }
     setFollow(true);
-    setShown(0);
+    setRevealedCount(0);
     setPlaying(true);
   };
 
-  const atRest = shown >= total && total > 0;
-  const pct = total > 0 ? Math.round((Math.min(shown, total) / total) * 100) : 0;
+  const playbackComplete = revealedCount >= eventCount && eventCount > 0;
+  const progressPercent = eventCount > 0 ? Math.round((Math.min(revealedCount, eventCount) / eventCount) * 100) : 0;
 
   return (
     <section>
@@ -136,23 +121,22 @@ export function ReplayReconstruct() {
         ← back to review
       </Link>
 
-      {/* header */}
       <div className="panel">
         <div className="panel-b">
           <div className="rd-head">
             <div className="rd-title-block">
               <h1 className="rd-title">
                 Replay · reconstruct{" "}
-                {d ? (
+                {review ? (
                   <>
-                    repo {d.repo_id} <span className="prnum">#{d.pr_number}</span>
+                    repo {review.repo_id} <span className="prnum">#{review.pr_number}</span>
                   </>
                 ) : (
                   reviewId
                 )}
               </h1>
               <div className="rd-meta">
-                {d?.policy_version ? (
+                {review?.policy_version ? (
                   <button
                     type="button"
                     className="chip policy mono"
@@ -160,7 +144,7 @@ export function ReplayReconstruct() {
                     aria-expanded={showPolicy}
                     onClick={() => setShowPolicy(true)}
                   >
-                    policy {d.policy_version}
+                    policy {review.policy_version}
                   </button>
                 ) : null}
                 <span className="pill">🔒 append-only · read-only reconstruction</span>
@@ -170,7 +154,6 @@ export function ReplayReconstruct() {
         </div>
       </div>
 
-      {/* transport + progress */}
       <div className="panel">
         <div className="panel-h">
           <h2>Real-time reconstruction</h2>
@@ -179,10 +162,10 @@ export function ReplayReconstruct() {
           </div>
           <div className="right rp-transport">
             <span className="rp-phase-now" aria-live="polite">
-              {data ? `phase ${phaseNowLabel(data, shown)}` : "—"}
+              {timelineData ? `phase ${phaseNowLabel(timelineData, revealedCount)}` : "—"}
             </span>
             <span className="rp-counter" aria-live="polite">
-              event <b>{Math.min(shown, total)}</b> / <b>{total}</b>
+              event <b>{Math.min(revealedCount, eventCount)}</b> / <b>{eventCount}</b>
             </span>
             <button type="button" className="btn" onClick={play} disabled={playing} aria-label="Play reconstruction">
               ▶ Play
@@ -197,21 +180,21 @@ export function ReplayReconstruct() {
               type="button"
               className={`btn${follow ? " active" : ""}`}
               aria-pressed={follow}
-              onClick={() => setFollow((f) => !f)}
+              onClick={() => setFollow((following) => !following)}
               aria-label={follow ? "Stop following the playhead" : "Follow the playhead"}
             >
               {follow ? "⤓ Following" : "⤓ Follow"}
             </button>
             <span className="rp-speed" role="group" aria-label="Playback speed">
-              {SPEEDS.map((s) => (
+              {SPEEDS.map((speedOption) => (
                 <button
-                  key={s}
+                  key={speedOption}
                   type="button"
-                  className={`rp-speed-btn ${speed === s ? "active" : ""}`}
-                  aria-pressed={speed === s}
-                  onClick={() => setSpeed(s)}
+                  className={`rp-speed-btn ${speed === speedOption ? "active" : ""}`}
+                  aria-pressed={speed === speedOption}
+                  onClick={() => setSpeed(speedOption)}
                 >
-                  {s}×
+                  {speedOption}×
                 </button>
               ))}
             </span>
@@ -224,11 +207,11 @@ export function ReplayReconstruct() {
             aria-label="Reconstruction progress"
             aria-valuemin={0}
             aria-valuemax={100}
-            aria-valuenow={pct}
+            aria-valuenow={progressPercent}
           >
-            <div className="rp-progress-fill" style={{ width: `${pct}%` }} />
+            <div className="rp-progress-fill" style={{ width: `${progressPercent}%` }} />
           </div>
-          {atRest && data ? (
+          {playbackComplete && timelineData ? (
             <>
               <div className="rp-verdict show" aria-live="polite">
                 <span className="vmark" aria-hidden="true">
@@ -237,8 +220,8 @@ export function ReplayReconstruct() {
                 <span>
                   <b>{equivalent ? "replay-equivalent" : "not replay-equivalent"}</b> ·{" "}
                   <span className="vmeta">
-                    {total} events · {findingCount} findings
-                    {data.mode ? ` · ${data.mode}` : ""}
+                    {eventCount} events · {findingCount} findings
+                    {timelineData.mode ? ` · ${timelineData.mode}` : ""}
                   </span>
                 </span>
               </div>
@@ -254,27 +237,26 @@ export function ReplayReconstruct() {
         </div>
       </div>
 
-      {/* reconstructed feed */}
       <div className="panel" ref={feedRef}>
         <div className="panel-h">
           <h2>Reconstructed audit feed</h2>
-          <div className="sub">phase-grouped · {total} events</div>
+          <div className="sub">phase-grouped · {eventCount} events</div>
         </div>
-        {timeline.isLoading ? (
+        {timelineQuery.isLoading ? (
           <div className="panel-b">
             <p>Loading reconstruction…</p>
           </div>
-        ) : timeline.error ? (
+        ) : timelineQuery.error ? (
           <div className="panel-b">
             <p className="error">Failed to load the reconstruction.</p>
           </div>
-        ) : data ? (
-          <ReplayFeed data={data} shown={shown} />
+        ) : timelineData ? (
+          <ReplayFeed data={timelineData} shown={revealedCount} />
         ) : null}
       </div>
 
-      {showPolicy && d?.policy_version ? (
-        <PolicyModal version={d.policy_version} onClose={() => setShowPolicy(false)} />
+      {showPolicy && review?.policy_version ? (
+        <PolicyModal version={review.policy_version} onClose={() => setShowPolicy(false)} />
       ) : null}
     </section>
   );

@@ -1,0 +1,405 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "aiohttp-1327",
+      "fixture": "aiohttp-1327.json",
+      "sha256": "2ad96834c369863a675f869b881077ecd24ceb43085aad44b0c27b9b91f1bf4e",
+      "source_url": "https://github.com/aio-libs/aiohttp/pull/1327",
+      "evidence_urls": [
+        "https://github.com/aio-libs/aiohttp/security/advisories/GHSA-5h86-8mv2-jq9f",
+        "https://github.com/aio-libs/aiohttp/pull/8079/files"
+      ],
+      "rationale": "Authentic introducing PR: follow_symlinks=True skips containment for request-derived paths, permitting plain traversal beyond the static root. The upstream advisory dates this defect to introduction of the option. The expected span is the newly conditional containment check.",
+      "expected": [
+        {
+          "file_path": "aiohttp/web_urldispatcher.py",
+          "line_start": 401,
+          "line_end": 402,
+          "finding_type": "path_traversal",
+          "severity": "high"
+        }
+      ],
+      "clean_scopes": [],
+      "context_paths": [],
+      "provenance": {
+        "repository_url": "https://github.com/aio-libs/aiohttp",
+        "pr_api_url": "https://api.github.com/repos/aio-libs/aiohttp/pulls/1327",
+        "files_api_url": "https://api.github.com/repos/aio-libs/aiohttp/pulls/1327/files",
+        "target_base_sha": "42940674f704edd5e4376006632e5ade6ded4242",
+        "diff_merge_base_sha": "42940674f704edd5e4376006632e5ade6ded4242",
+        "head_sha": "f0ce5fa31d47f7a5815d79ea0f327d04ec47c475",
+        "merge_commit_sha": "1ae3ae665ba20d1bfb0d0a5b7179e1104b0931d8",
+        "selection": "Full original PR: all changed files, original GitHub hunks, complete unmodified base/head UTF-8 text.",
+        "context_selection": "No beyond-diff files selected.",
+        "installation_id": "Eval-only synthetic installation identity; PR metadata and file inputs are upstream.",
+        "license_file": "aiohttp-1327-LICENSE.txt",
+        "license_url": "https://raw.githubusercontent.com/aio-libs/aiohttp/f0ce5fa31d47f7a5815d79ea0f327d04ec47c475/LICENSE.txt",
+        "license_sha256": "f9c6c292bb4680dca5ac452349e91886cc21269ea68cc0aef6a3d99e161dfd03",
+        "source_files": [
+          {
+            "path": "CHANGES.rst",
+            "commit": "42940674f704edd5e4376006632e5ade6ded4242",
+            "sha256": "6c79335407041acb1ec5aa06651ebef984b598a99d0136dad5effd534d8d0927",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/42940674f704edd5e4376006632e5ade6ded4242/CHANGES.rst"
+          },
+          {
+            "path": "CHANGES.rst",
+            "commit": "f0ce5fa31d47f7a5815d79ea0f327d04ec47c475",
+            "sha256": "602dcb69ecab2199d1ed15d87a3addd4c7c052a12b7533ddbf76cf07bf05ef18",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/f0ce5fa31d47f7a5815d79ea0f327d04ec47c475/CHANGES.rst"
+          },
+          {
+            "path": "aiohttp/web_urldispatcher.py",
+            "commit": "42940674f704edd5e4376006632e5ade6ded4242",
+            "sha256": "29345085a7e3091ec46f6f4060d9c2db5f2c57f8921a5aba289da39078587ff7",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/42940674f704edd5e4376006632e5ade6ded4242/aiohttp/web_urldispatcher.py"
+          },
+          {
+            "path": "aiohttp/web_urldispatcher.py",
+            "commit": "f0ce5fa31d47f7a5815d79ea0f327d04ec47c475",
+            "sha256": "677f222b2528d0b707234a9fb8fd2a7e0b892fd70193d99d45b887d46148e12a",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/f0ce5fa31d47f7a5815d79ea0f327d04ec47c475/aiohttp/web_urldispatcher.py"
+          },
+          {
+            "path": "docs/spelling_wordlist.txt",
+            "commit": "42940674f704edd5e4376006632e5ade6ded4242",
+            "sha256": "598c0343346e08152ac2493f14e439c44cc55ea122e306a3713e523d0058b86d",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/42940674f704edd5e4376006632e5ade6ded4242/docs/spelling_wordlist.txt"
+          },
+          {
+            "path": "docs/spelling_wordlist.txt",
+            "commit": "f0ce5fa31d47f7a5815d79ea0f327d04ec47c475",
+            "sha256": "72f430a05ab9ab6ed211f25988655d6098f17b390f346e65f429425a3d0304ba",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/f0ce5fa31d47f7a5815d79ea0f327d04ec47c475/docs/spelling_wordlist.txt"
+          },
+          {
+            "path": "docs/web.rst",
+            "commit": "42940674f704edd5e4376006632e5ade6ded4242",
+            "sha256": "63438b647adb63124f5322b3686d493b53022ccfcdf3d8d8c46982015ee61d15",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/42940674f704edd5e4376006632e5ade6ded4242/docs/web.rst"
+          },
+          {
+            "path": "docs/web.rst",
+            "commit": "f0ce5fa31d47f7a5815d79ea0f327d04ec47c475",
+            "sha256": "ea3b5df7dc65521c9d651fbedf61ee2e699f9b393fad3af20e18ed38761dc758",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/f0ce5fa31d47f7a5815d79ea0f327d04ec47c475/docs/web.rst"
+          },
+          {
+            "path": "docs/web_reference.rst",
+            "commit": "42940674f704edd5e4376006632e5ade6ded4242",
+            "sha256": "8f3b4e212f2c9aa3663246a5fb471dd62907ff848dcaf74e89848bc62debaed8",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/42940674f704edd5e4376006632e5ade6ded4242/docs/web_reference.rst"
+          },
+          {
+            "path": "docs/web_reference.rst",
+            "commit": "f0ce5fa31d47f7a5815d79ea0f327d04ec47c475",
+            "sha256": "99afe35731a5f21259681b3cc48d058bc13a1805c2247c5677cf1ce2a3175929",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/f0ce5fa31d47f7a5815d79ea0f327d04ec47c475/docs/web_reference.rst"
+          },
+          {
+            "path": "tests/test_web_urldispatcher.py",
+            "commit": "42940674f704edd5e4376006632e5ade6ded4242",
+            "sha256": "cbd6c99434257bf87cd381763235589ea133789f5e2f6accdfc9640e9304de15",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/42940674f704edd5e4376006632e5ade6ded4242/tests/test_web_urldispatcher.py"
+          },
+          {
+            "path": "tests/test_web_urldispatcher.py",
+            "commit": "f0ce5fa31d47f7a5815d79ea0f327d04ec47c475",
+            "sha256": "036257401db50408e5d13e4042fd5b3ae54d9aac0f8c53f5881be0001d4d279d",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/f0ce5fa31d47f7a5815d79ea0f327d04ec47c475/tests/test_web_urldispatcher.py"
+          }
+        ],
+        "license": "Apache-2.0; upstream notices copied verbatim. The 1327 license file includes the full license text.",
+        "annotation_scope": "Selected known defect or fixed containment regions only; other findings require human review. This is a three-PR pilot from one Python project."
+      }
+    },
+    {
+      "id": "aiohttp-8079",
+      "fixture": "aiohttp-8079.json",
+      "sha256": "970c594557ca71fdc5bd3f768a77da10d4d6b47d5b0fdfb6e530b6518b381953",
+      "source_url": "https://github.com/aio-libs/aiohttp/pull/8079",
+      "evidence_urls": [
+        "https://github.com/aio-libs/aiohttp/security/advisories/GHSA-5h86-8mv2-jq9f",
+        "https://github.com/aio-libs/aiohttp/pull/8079/files"
+      ],
+      "rationale": "Authentic forward security fix: path normalization and containment checks block the documented traversal while preserving intentional symlink behavior. Clean labels cover these corrected branches, not the entire PR or repository.",
+      "expected": [],
+      "clean_scopes": [
+        {
+          "file_path": "aiohttp/web_urldispatcher.py",
+          "line_start": 576,
+          "line_end": 584,
+          "finding_types": [
+            "path_traversal"
+          ],
+          "rationale": "url_for checks normalized lexical containment before resolving allowed symlinks; the other branch checks the resolved path."
+        },
+        {
+          "file_path": "aiohttp/web_urldispatcher.py",
+          "line_start": 648,
+          "line_end": 655,
+          "finding_types": [
+            "path_traversal"
+          ],
+          "rationale": "StaticResource._handle now enforces the same containment rules; added upstream tests cover plain and symlink-relative traversal."
+        }
+      ],
+      "context_paths": [],
+      "provenance": {
+        "repository_url": "https://github.com/aio-libs/aiohttp",
+        "pr_api_url": "https://api.github.com/repos/aio-libs/aiohttp/pulls/8079",
+        "files_api_url": "https://api.github.com/repos/aio-libs/aiohttp/pulls/8079/files",
+        "target_base_sha": "33ccdfb0a12690af5bb49bda2319ec0907fa7827",
+        "diff_merge_base_sha": "6529c77551e2a61d6d9df72653df92180d1fed7c",
+        "head_sha": "64208f77cb9bd8e9cfde1538741eae992e96bb0a",
+        "merge_commit_sha": "1c335944d6a8b1298baf179b7c0b3069f10c514b",
+        "selection": "Full original PR: all changed files, original GitHub hunks, complete unmodified base/head UTF-8 text.",
+        "context_selection": "No beyond-diff files selected.",
+        "installation_id": "Eval-only synthetic installation identity; PR metadata and file inputs are upstream.",
+        "license_file": "aiohttp-8079-LICENSE.txt",
+        "license_url": "https://raw.githubusercontent.com/aio-libs/aiohttp/64208f77cb9bd8e9cfde1538741eae992e96bb0a/LICENSE.txt",
+        "license_sha256": "9f80d0db7d755a941db4572172c270ecbd8f082ba215ddd095985942ed94a9eb",
+        "source_files": [
+          {
+            "path": "CHANGES/8079.bugfix.rst",
+            "commit": "64208f77cb9bd8e9cfde1538741eae992e96bb0a",
+            "sha256": "aa6f25664e8d131092b6ac4f9a6bb6107dd13d6286b651ada5ef22e1f1b2f582",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/64208f77cb9bd8e9cfde1538741eae992e96bb0a/CHANGES/8079.bugfix.rst"
+          },
+          {
+            "path": "aiohttp/web_urldispatcher.py",
+            "commit": "6529c77551e2a61d6d9df72653df92180d1fed7c",
+            "sha256": "aaa86823d42cc61c66b6ebf56ea81b2a1a3224c7dba6db2a7b230596a59e29c4",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/6529c77551e2a61d6d9df72653df92180d1fed7c/aiohttp/web_urldispatcher.py"
+          },
+          {
+            "path": "aiohttp/web_urldispatcher.py",
+            "commit": "64208f77cb9bd8e9cfde1538741eae992e96bb0a",
+            "sha256": "9a5a8c41100704344814efa1c97e351b93f62d17fae54c02c62aaa4c40dfc439",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/64208f77cb9bd8e9cfde1538741eae992e96bb0a/aiohttp/web_urldispatcher.py"
+          },
+          {
+            "path": "docs/web_advanced.rst",
+            "commit": "6529c77551e2a61d6d9df72653df92180d1fed7c",
+            "sha256": "a89db9484b7ba57e444bfd02d03a1687d40900eda679f9bc6e12d8c2f9e6c1b7",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/6529c77551e2a61d6d9df72653df92180d1fed7c/docs/web_advanced.rst"
+          },
+          {
+            "path": "docs/web_advanced.rst",
+            "commit": "64208f77cb9bd8e9cfde1538741eae992e96bb0a",
+            "sha256": "fa8ea1c75e27ed36e390d602732bf9643257c61684a7d3c09558dd7244d2bbf6",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/64208f77cb9bd8e9cfde1538741eae992e96bb0a/docs/web_advanced.rst"
+          },
+          {
+            "path": "docs/web_reference.rst",
+            "commit": "6529c77551e2a61d6d9df72653df92180d1fed7c",
+            "sha256": "c792f0409ef1f54cce5139c3be2f922f181f9821cc3e444dc4caa279c9ae31b5",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/6529c77551e2a61d6d9df72653df92180d1fed7c/docs/web_reference.rst"
+          },
+          {
+            "path": "docs/web_reference.rst",
+            "commit": "64208f77cb9bd8e9cfde1538741eae992e96bb0a",
+            "sha256": "49a50e32f7b8cc7a5411478539fedb2c3376544a3d14fc1f27ac0c9c1db31472",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/64208f77cb9bd8e9cfde1538741eae992e96bb0a/docs/web_reference.rst"
+          },
+          {
+            "path": "tests/test_web_urldispatcher.py",
+            "commit": "6529c77551e2a61d6d9df72653df92180d1fed7c",
+            "sha256": "aeb49a2043516482dea231035d1ab464b8c6287183441b2c6838cd52b1ecc1f5",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/6529c77551e2a61d6d9df72653df92180d1fed7c/tests/test_web_urldispatcher.py"
+          },
+          {
+            "path": "tests/test_web_urldispatcher.py",
+            "commit": "64208f77cb9bd8e9cfde1538741eae992e96bb0a",
+            "sha256": "c61b0a8e36a5dfe17c7441ed3607fbb5b34bbfaeeb37e92a922dc1ed917b7e00",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/64208f77cb9bd8e9cfde1538741eae992e96bb0a/tests/test_web_urldispatcher.py"
+          }
+        ],
+        "license": "Apache-2.0; upstream notices copied verbatim. The 1327 license file includes the full license text.",
+        "annotation_scope": "Selected known defect or fixed containment regions only; other findings require human review. This is a three-PR pilot from one Python project."
+      }
+    },
+    {
+      "id": "aiohttp-8063",
+      "fixture": "aiohttp-8063.json",
+      "sha256": "6626414557c2f8aa859191d50b15d19659cc596cf90912f6b72343a51e88df18",
+      "source_url": "https://github.com/aio-libs/aiohttp/pull/8063",
+      "evidence_urls": [
+        "https://github.com/aio-libs/aiohttp/security/advisories/GHSA-jwhx-xcg6-8xhj",
+        "https://github.com/aio-libs/aiohttp/pull/8652/files",
+        "https://github.com/aio-libs/aiohttp/blob/b451966c4142f05e02cde3288ff349e34331099c/aiohttp/web_urldispatcher.py#L639-L678"
+      ],
+      "rationale": "Authentic feature PR extending compressed-variant selection to Brotli. FileResponse follows a compressed-path symlink after unchanged StaticResource validates only the original path. The upstream advisory documents this cross-file containment gap; unchanged routing and direct local dependencies are supplied as head context.",
+      "expected": [
+        {
+          "file_path": "aiohttp/web_fileresponse.py",
+          "line_start": 151,
+          "line_end": 153,
+          "finding_type": "path_traversal",
+          "severity": "high"
+        }
+      ],
+      "clean_scopes": [],
+      "context_paths": [
+        "aiohttp/abc.py",
+        "aiohttp/hdrs.py",
+        "aiohttp/helpers.py",
+        "aiohttp/http.py",
+        "aiohttp/typedefs.py",
+        "aiohttp/web_app.py",
+        "aiohttp/web_exceptions.py",
+        "aiohttp/web_request.py",
+        "aiohttp/web_routedef.py",
+        "aiohttp/web_urldispatcher.py"
+      ],
+      "provenance": {
+        "repository_url": "https://github.com/aio-libs/aiohttp",
+        "pr_api_url": "https://api.github.com/repos/aio-libs/aiohttp/pulls/8063",
+        "files_api_url": "https://api.github.com/repos/aio-libs/aiohttp/pulls/8063/files",
+        "target_base_sha": "026e8d9872ab4511c38578a8c784cd2e740f0448",
+        "diff_merge_base_sha": "026e8d9872ab4511c38578a8c784cd2e740f0448",
+        "head_sha": "b451966c4142f05e02cde3288ff349e34331099c",
+        "merge_commit_sha": "dfc92967d10eb83a8d726c02c3de90da15f8335f",
+        "selection": "Full original PR: all changed files, original GitHub hunks, complete unmodified base/head UTF-8 text.",
+        "context_selection": "Direct repository-local dependencies of changed FileResponse and unchanged StaticResource, plus StaticResource itself.",
+        "installation_id": "Eval-only synthetic installation identity; PR metadata and file inputs are upstream.",
+        "license_file": "aiohttp-8063-LICENSE.txt",
+        "license_url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/LICENSE.txt",
+        "license_sha256": "9f80d0db7d755a941db4572172c270ecbd8f082ba215ddd095985942ed94a9eb",
+        "source_files": [
+          {
+            "path": "CHANGES/8062.feature.rst",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "11048913bf00951bff2384661be084847f8d9b1002f77d9f43d8ea2ba41f49ba",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/CHANGES/8062.feature.rst"
+          },
+          {
+            "path": "aiohttp/web_fileresponse.py",
+            "commit": "026e8d9872ab4511c38578a8c784cd2e740f0448",
+            "sha256": "00a459cc0eaab9e3d007882681d9bc07ffaa1a46677c2735ad20e940cb434f78",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/026e8d9872ab4511c38578a8c784cd2e740f0448/aiohttp/web_fileresponse.py"
+          },
+          {
+            "path": "aiohttp/web_fileresponse.py",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "6c34666854335fd14059953b99293899a22a65f9166ca02a547993bf69f5c0fe",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/aiohttp/web_fileresponse.py"
+          },
+          {
+            "path": "aiohttp/web_response.py",
+            "commit": "026e8d9872ab4511c38578a8c784cd2e740f0448",
+            "sha256": "e9311a5cd1e55f048642b5378893afb19ca59c0c2954bf5a3c936b6d1d1975dc",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/026e8d9872ab4511c38578a8c784cd2e740f0448/aiohttp/web_response.py"
+          },
+          {
+            "path": "aiohttp/web_response.py",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "aef1806ba61897f2362415aca857d6c47d992c8b4e38c11652cbc981fc0d0dc1",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/aiohttp/web_response.py"
+          },
+          {
+            "path": "docs/web_reference.rst",
+            "commit": "026e8d9872ab4511c38578a8c784cd2e740f0448",
+            "sha256": "49a50e32f7b8cc7a5411478539fedb2c3376544a3d14fc1f27ac0c9c1db31472",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/026e8d9872ab4511c38578a8c784cd2e740f0448/docs/web_reference.rst"
+          },
+          {
+            "path": "docs/web_reference.rst",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "4db0f9c3f4ce3bc1ef03d93dd1cb06e93e365ac6f15b31ad9a382d4524df9b3b",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/docs/web_reference.rst"
+          },
+          {
+            "path": "tests/test_web_sendfile.py",
+            "commit": "026e8d9872ab4511c38578a8c784cd2e740f0448",
+            "sha256": "49a79d5d9d628272d6c04c6bc45111ee2a947a3a86379cde8f70edb73cdee860",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/026e8d9872ab4511c38578a8c784cd2e740f0448/tests/test_web_sendfile.py"
+          },
+          {
+            "path": "tests/test_web_sendfile.py",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "3d654c10ee8e365a27c3da04154c232b87aeacafed1fb1498df0b972dbe1792a",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/tests/test_web_sendfile.py"
+          },
+          {
+            "path": "tests/test_web_sendfile_functional.py",
+            "commit": "026e8d9872ab4511c38578a8c784cd2e740f0448",
+            "sha256": "0ef94d85c3933c72ffd995bc4c420ff5f17b5823df2f5917502f312294e2825b",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/026e8d9872ab4511c38578a8c784cd2e740f0448/tests/test_web_sendfile_functional.py"
+          },
+          {
+            "path": "tests/test_web_sendfile_functional.py",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "93da2d05e4156ae86ccccecd192eeb50d76492bd908e54993fa37ab5a1f44c35",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/tests/test_web_sendfile_functional.py"
+          },
+          {
+            "path": "aiohttp/web_urldispatcher.py",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "9a5a8c41100704344814efa1c97e351b93f62d17fae54c02c62aaa4c40dfc439",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/aiohttp/web_urldispatcher.py"
+          },
+          {
+            "path": "aiohttp/abc.py",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "857f00c7fc5acde9324da8960f6ca48120ce8529f945ffc49f0f7bef77dbb270",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/aiohttp/abc.py"
+          },
+          {
+            "path": "aiohttp/hdrs.py",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "bb39f96a09ff8d789dda1fa4cba63464043c06b3de4c62c31abfb07a231cb6ca",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/aiohttp/hdrs.py"
+          },
+          {
+            "path": "aiohttp/helpers.py",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "295b741f3bd594349247c44d993e68935bc1805c50be17b865754df5dd5b14b4",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/aiohttp/helpers.py"
+          },
+          {
+            "path": "aiohttp/http.py",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "a7a64a89d56df1495645519c66911794ef157c73723a3e2146788fcd4a6671ee",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/aiohttp/http.py"
+          },
+          {
+            "path": "aiohttp/typedefs.py",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "7fe13304181003134b89352d92380c00be4b42df351e5a184deb319e134cd375",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/aiohttp/typedefs.py"
+          },
+          {
+            "path": "aiohttp/web_app.py",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "81f445700d4c10bddf0f4003a234a68563f1cf26ced4f44b787da5bb13084c40",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/aiohttp/web_app.py"
+          },
+          {
+            "path": "aiohttp/web_exceptions.py",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "f5bb48dae42f185dcc3ee600fcc027e29bcbdff0f8464a4aff446acd679126a5",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/aiohttp/web_exceptions.py"
+          },
+          {
+            "path": "aiohttp/web_request.py",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "0894863a727e985246437f511fb1bc651877c94e974abd2e10c088170fbed18b",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/aiohttp/web_request.py"
+          },
+          {
+            "path": "aiohttp/web_routedef.py",
+            "commit": "b451966c4142f05e02cde3288ff349e34331099c",
+            "sha256": "7d4624e4afd20141b3ea88ab0f3d9d53c11a75cb3abed887e8e72639d4faabe4",
+            "url": "https://raw.githubusercontent.com/aio-libs/aiohttp/b451966c4142f05e02cde3288ff349e34331099c/aiohttp/web_routedef.py"
+          }
+        ],
+        "license": "Apache-2.0; upstream notices copied verbatim. The 1327 license file includes the full license text.",
+        "annotation_scope": "Selected known defect or fixed containment regions only; other findings require human review. This is a three-PR pilot from one Python project.",
+        "issue_scope": "This PR introduces the unsafe Brotli branch while the prior gzip branch already had analogous behavior; it is not claimed to originate every compressed-variant weakness.",
+        "location_scope": "The expected anchor is compressed-path selection/stat. A finding anchored only at prepare/open on line 305 is an unmatched finding for human review under this narrow label."
+      }
+    }
+  ]
+}

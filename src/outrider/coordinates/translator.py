@@ -10,14 +10,11 @@ by exhaustive boundary tests on this file's surface, not by spike work.
 
 from __future__ import annotations
 
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from unidiff import PatchSet
-from unidiff.errors import UnidiffParseError
 
-from outrider.coordinates.diff_parser import _wrap_github_hunks_with_headers, validate_diff_path
+from outrider.coordinates.diff_parser import _parse_and_match, validate_diff_path
 from outrider.coordinates.errors import CoordinateError, CoordinateErrorKind
 
 if TYPE_CHECKING:
@@ -287,22 +284,9 @@ def source_line_to_github(
             f"line_end {line_end} must be >= line_start {line_start}",
             kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
         )
-    # Validate `line_end` is REACHABLE AND has content in head_content
-    # BEFORE the half-open byte_end lookup. The two-step check
-    # distinguishes:
-    #   (a) line_end IS the last content line → byte_end = end-of-buffer
-    #   (b) line_end is PAST the last content line → raise
-    #       BYTE_OFFSET_INVALID. An over-broad `except CoordinateError`
-    #       here would silently truncate past-EOF findings to EOF and
-    #       let them publish, so the explicit bounds check is required.
-    #
-    # The `byte_at_line_end >= len(head_bytes)` check additionally
-    # rejects the "trailing empty line" case: a file ending with `\n`
-    # has a structurally-reachable line N+1 at position end-of-buffer
-    # with zero content, which is not legitimately commentable. The
-    # naive `_line_to_byte_offset(line_end)` check alone would admit
-    # this case because the position IS computable (= EOB); the
-    # content-presence check rejects.
+    # Prove line_end exists and contains text before treating the next-line
+    # lookup's EOF as legitimate. Otherwise a past-EOF range could be clamped
+    # into a comment. A reachable trailing empty line is also not commentable.
     byte_at_line_end = _line_to_byte_offset(head_bytes, line_end)
     if byte_at_line_end >= len(head_bytes):
         raise CoordinateError(
@@ -332,46 +316,18 @@ def source_line_to_github(
 
 
 def _find_patched_file(patch: str, file_path: str) -> PatchedFile:
-    """Parse `patch` and find the `PatchedFile` matching `file_path`.
+    """Return the `PatchedFile` matching `file_path`, or raise if absent.
 
-    Comparison uses `unidiff.PatchedFile.path` — the operation-dependent
-    canonical path with `a/`/`b/` prefix stripped: additions,
-    modifications, and renames return the **target** (head-side) path;
-    deletions return the **source** path because the target is `/dev/null`.
-    Normalized via `PurePosixPath(...).as_posix()` so surface forms like
-    `./foo.py` and `foo.py` match — `validate_diff_path` applies the same
-    normalization on its side, and the two halves must agree. Raises
-    `CoordinateError` for malformed patches (any underlying `unidiff`
-    exception is wrapped), for patches that don't contain `file_path`,
-    and for patches that contain duplicate file entries with the same
-    normalized path (webhook-attacker input per trust boundary #5;
-    deterministic systems reject ambiguous routing input).
-
-    Hunks-only normalization (per `vendor-payloads-normalized-at-boundary`):
-    the raw `patch` string is run through `_wrap_github_hunks_with_headers`
-    before `PatchSet` so GitHub's `/pulls/{n}/files` shape (hunks-only,
-    no `--- a/...` headers) parses cleanly. Publish is `tree_sitter_to_github`'s
-    first consumer; without this wrap, every call against the wire shape
-    GitHub actually returns would raise `MALFORMED_PATCH`.
+    `_parse_and_match` owns the hunks-only normalization, the parse, the path
+    match and the malformed / duplicate-entry rejections. This function adds
+    only the `FILE_NOT_IN_PATCH` policy: unlike the membership queries, which
+    answer with `False` or `None`, a translation request for a file the patch
+    does not carry is an error.
     """
-    wrapped = _wrap_github_hunks_with_headers(patch, file_path)
-    try:
-        patchset = PatchSet(wrapped)
-    except UnidiffParseError as e:
-        raise CoordinateError(
-            f"malformed patch input: {e}",
-            kind=CoordinateErrorKind.MALFORMED_PATCH,
-        ) from e
-
-    matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == file_path]
-    if len(matches) > 1:
-        raise CoordinateError(
-            f"patch contains {len(matches)} duplicate entries for {file_path!r}",
-            kind=CoordinateErrorKind.DUPLICATE_FILE_ENTRY,
-        )
-    if not matches:
+    patchset, matched_file = _parse_and_match(patch, file_path)
+    if matched_file is None:
         raise CoordinateError(
             f"file_path {file_path!r} is not present in the patch ({len(patchset)} files in patch)",
             kind=CoordinateErrorKind.FILE_NOT_IN_PATCH,
         )
-    return matches[0]
+    return matched_file

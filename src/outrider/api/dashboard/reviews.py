@@ -1,44 +1,22 @@
-"""Dashboard read-API — the reviews queue + detail endpoints.
+# See specs/2026-05-31-dashboard-v1.md.
+"""Read review queues, findings, and replay data under `/api/reviews`.
 
-Per `specs/2026-05-31-dashboard-v1.md` (increment 1). Read-only over the
-existing tables and the audit stream; this module NEVER issues an
-`UPDATE`/`DELETE` (audit-append-only boundary, `docs/trust-boundaries.md` §7).
-The only dashboard write path stays the existing `POST /reviews/{id}/decide`
-HITL endpoint (`api/dashboard/hitl.py`) — not touched here.
+Routes use `require_admin_api_key` and do not mutate review or audit data.
+Dashboard aggregate, finding, and raw-event queries match both review ID and
+the review's own `is_eval` value, even on mixed eval/production pages. This
+read-side defense filters divergent rows an emit path may have admitted
+(FUP-130). Replay reconstruction instead verifies eval coherence and rejects drift.
 
-Mounted at prefix `/api/reviews` (per `docs/architecture.md`'s `/api/*`
-dashboard namespace; the legacy HITL write stays at `/reviews/{id}/decide`).
-Every route is gated by the existing bearer-auth dependency
-`require_admin_api_key` (reused, not re-implemented — `hmac.compare_digest`).
-
-**Metric contract (the load-bearing part).** Review metrics are computed
-read-through from the audit stream. There is no `reviews.*` aggregate-column
-copy — the seeded-zero columns were dropped per DECISIONS.md#037 (FUP-127);
-the audit stream is the source of truth. Per metric:
-
-  - `llm_calls_made` / `total_input_tokens` / `total_output_tokens` /
-    `total_cost_usd` are summed from `LLMCallEvent` rows
-    (`event_type='llm_call'`) on `review_id`. These are the only metrics
-    summed from raw rows, and the only ones available for a review that has
-    not yet reached synthesize. `SynthesizeCompletedEvent`'s LLM-aggregate
-    fields are populated from this same SUM going forward (FUP-093) but are
-    `None` for historical rows — so the dashboard sums `LLMCallEvent` directly
-    (the single source) rather than reading them.
-  - `files_examined` / `files_traced_beyond_diff` / `wall_clock_seconds`
-    are read from the per-review `SynthesizeCompletedEvent`
-    (`event_type='synthesize_completed'`) payload — the persisted
-    `ReviewMetrics` mirror. A review with no such event (synthesize never
-    emitted: still `running`, or `failed` per `intake.py`) has these as
-    `None` — the UI renders pending, NOT zero.
-
-Severity filtering is intentionally NOT here (increment 2): `reviews` has no
-severity field (severity is per-finding, policy-set), so it needs the
-findings join.
+Metrics come from the audit stream (DECISIONS.md#037, FUP-127). LLM totals use
+`aggregate_review_llm_metrics`, shared with synthesis (FUP-093). File counts and
+duration come from the latest `SynthesizeCompletedEvent`; absent completion
+means pending (`None`), not zero. Severity tallies use permanent finding
+events so they survive content retention (DECISIONS.md#014).
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict
 from uuid import UUID  # noqa: TC003  (runtime: Pydantic/route field type)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -72,12 +50,9 @@ if TYPE_CHECKING:
 
     from outrider.audit.replay import ReconstructedReview
 
-# The sentinel `purge_audit.installation_id` the time-based retention sweep
-# writes (`sweep/purge_expired.py::_GLOBAL_SWEEP_INSTALLATION_ID` = 0; the sweep
-# isn't scoped to one install). The reachable "review survives, findings purged"
-# case IS the TTL sweep, so a redacted finding's sweep row carries this sentinel,
-# NOT the review's installation_id (the installation-purge path uses the real id
-# but also deletes the review, so this endpoint 404s). The lookup matches both.
+# Retention's global TTL sweep uses installation ID 0. Installation-specific
+# purge deletes the review too; a surviving review's redacted content normally
+# comes from the global sweep. Sweep lookups accept both IDs.
 _GLOBAL_SWEEP_INSTALLATION_ID = 0
 
 # The `reviews.status` PG ENUM values (`db/models/_base.py::review_status_enum`).
@@ -437,6 +412,15 @@ class ReviewEventsResponse(BaseModel):
     total: int
 
 
+class _FindingLifecycleFields(TypedDict):
+    """Audit-derived fields shared by full and retention-redacted findings."""
+
+    publish_destination: str | None
+    eligibility: str | None
+    eligibility_reason: str | None
+    hitl_decision: HITLDecisionView | None
+
+
 router = APIRouter(
     prefix="/api/reviews",
     tags=["dashboard"],
@@ -447,34 +431,17 @@ router = APIRouter(
 async def _aggregate_metrics(
     session: AsyncSession, review_id: UUID, review_is_eval: bool
 ) -> ReviewMetricsView:
-    """Compute one review's metrics read-through from the audit stream.
+    """Combine LLM aggregates with the latest synthesis metrics for one review.
 
-    Every event read is scoped by BOTH `review_id` AND `is_eval == review_is_eval`
-    (FUP-130 read-side defense). A review's `is_eval` is a single value
-    (`ReviewState.is_eval`) every emit-site copies onto its events, so the stream
-    is is_eval-homogeneous under producer discipline — but the persister only
-    enforces that at the two content-bearing sites it resolves the reviews row
-    for (`persist()` / `emit_finding()`), and `SynthesizeCompletedEvent` reaches
-    the row through a non-resolving emit path. So the `is_eval` predicate here is
-    what actually prevents a divergent eval `synthesize_completed` (or `llm_call`)
-    event from surfacing on a production review's metrics, mirroring replay's
-    read-time `_verify_is_eval_consistent`. Caller passes `reviews.is_eval`.
+    The caller supplies `reviews.is_eval` for the read-side isolation rule
+    in the module docstring.
     """
-    # LLM aggregates — read-through SUM over llm_call rows, single-sourced through
-    # `aggregate_review_llm_metrics`: the synthesize node populates the audit row from
-    # this SAME helper (FUP-093), so the badge and the persisted audit row share one
-    # aggregation path (no divergence). Scoped by is_eval (FUP-130). The V1-naive-SUM /
-    # V2-dedup contract lives in that helper.
+    # Share LLM aggregation with synthesis; deduplication belongs to that helper.
     agg = await aggregate_review_llm_metrics(session, review_id=review_id, is_eval=review_is_eval)
 
-    # File / wall-clock — read from the persisted SynthesizeCompletedEvent
-    # (NOT recomputed from raw FileExaminationEvent/TraceDecisionEvent rows).
-    # Absent => synthesize never emitted => None (pending, not zero).
-    # Duplicate completion rows CAN exist: SynthesizeCompletedEvent is
-    # event_id-PK (no V1 natural-key dedup), so a crash-recovery re-emit mints
-    # a fresh UUID and lands a second row (per its docstring). Order by
-    # `sequence_number` (monotonic on insert) and take the latest — the
-    # resumed/successful completion wins, never an arbitrary stale row.
+    # Synthesis completion emits do not enforce review/eval coherence; filter here.
+    # Recovery can emit another completion row. Take the latest by sequence;
+    # no completion leaves file counts and duration pending.
     synth_stmt = (
         select(AuditEvent.payload)
         .where(
@@ -510,28 +477,11 @@ async def _aggregate_metrics(
 async def _aggregate_severity_counts(
     session: AsyncSession, review_id: UUID, review_is_eval: bool
 ) -> SeverityCounts | None:
-    """Report-equivalent per-severity tally for one review, or `None` when the
-    review has not reached synthesize (no `SynthesizeCompletedEvent`) — before
-    synthesize there is no deduplicated report set to count.
+    """Count distinct finding hashes per baseline severity after synthesis.
 
-    Computed from the PERMANENT `FindingEvent` audit rows (`event_type=
-    'finding'`), NOT the purgeable `findings` content table: per
-    `DECISIONS.md#014` a `FindingEvent` survives after its `findings` row is
-    purged at retention, so a `findings`-table aggregate would silently zero
-    out a still-extant review's tally post-purge. This mirrors the module's
-    audit-stream-source metric contract (`_aggregate_metrics` reads `llm_call`
-    / `synthesize_completed`, never `reviews.*`). `severity` and
-    `finding_content_hash` both live on the permanent event payload.
-
-    `COUNT(DISTINCT finding_content_hash)` per severity reproduces synthesize's
-    in-memory `content_hash` dedup (analyze emits one `FindingEvent` per
-    admitted finding), so distinct-hash count is the final reported set;
-    severity is constant within a hash because it is policy-set from
-    `finding_type`. `is_eval` is matched to the review's OWN value (FUP-130
-    per-row defense), never a global predicate — so a mixed `include_eval=true`
-    page never leaks an eval review's findings into a production tally. Severity
-    is the policy-set baseline (`severity-set-by-policy`); a HITL override is a
-    review-detail concern, not the list tally.
+    Use permanent FindingEvents so content purge cannot erase the tally
+    (DECISIONS.md#014). Severity is policy-set; HITL overrides belong to
+    review detail. Return None until a synthesis completion exists.
     """
     reached_synthesize = (
         await session.execute(
@@ -625,28 +575,29 @@ async def list_reviews(
             )
         ).all()
 
-        # Per-review metric + severity aggregation. N+1 over a page bounded by
-        # `limit` is an accepted V1 simplification (read-through-at-query-time
-        # per the spec); batch later if a page's latency warrants it.
-        items = [
-            ReviewListItem(
-                id=r.id,
-                installation_id=r.installation_id,
-                repo_id=r.repo_id,
-                repo_full_name=repo_full_name,
-                pr_number=r.pr_number,
-                pr_title=r.pr_title,
-                head_sha=r.head_sha,
-                status=r.status,
-                is_eval=r.is_eval,
-                created_at=r.created_at,
-                updated_at=r.updated_at,
-                completed_at=r.completed_at,
-                metrics=await _aggregate_metrics(session, r.id, r.is_eval),
-                severity_counts=await _aggregate_severity_counts(session, r.id, r.is_eval),
+        # Aggregate each row sequentially; the page limit bounds these queries.
+        items: list[ReviewListItem] = []
+        for review, repo_full_name in rows:
+            items.append(
+                ReviewListItem(
+                    id=review.id,
+                    installation_id=review.installation_id,
+                    repo_id=review.repo_id,
+                    repo_full_name=repo_full_name,
+                    pr_number=review.pr_number,
+                    pr_title=review.pr_title,
+                    head_sha=review.head_sha,
+                    status=review.status,
+                    is_eval=review.is_eval,
+                    created_at=review.created_at,
+                    updated_at=review.updated_at,
+                    completed_at=review.completed_at,
+                    metrics=await _aggregate_metrics(session, review.id, review.is_eval),
+                    severity_counts=await _aggregate_severity_counts(
+                        session, review.id, review.is_eval
+                    ),
+                )
             )
-            for (r, repo_full_name) in rows
-        ]
 
     return ReviewListResponse(
         reviews=items,
@@ -683,13 +634,9 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="review not found")
         review, repo_full_name = detail_row
         metrics = await _aggregate_metrics(session, review.id, review.is_eval)
-        # The per-review policy-version snapshot lives on the review's audit
-        # events, not the `reviews` row. Take the earliest event carrying one
-        # (they share the snapshot per DECISIONS.md#028); None pre-analyze.
-        # Scoped by `is_eval` (FUP-130 read-side defense) — several
-        # policy_version-bearing event types reach the row through unguarded
-        # emit paths, so without this a divergent eval event could set a
-        # production review's displayed policy_version.
+        # The earliest event carrying the review's policy snapshot supplies its
+        # version (DECISIONS.md#028); None before analysis. Policy-version events
+        # can use unguarded emit paths, so filter by the review's eval flag.
         policy_version = (
             await session.execute(
                 select(AuditEvent.payload["policy_version"].astext)
@@ -733,12 +680,7 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
 async def _latest_publish_routing(
     session: AsyncSession, review_id: UUID, review_is_eval: bool
 ) -> dict[str, str | None]:
-    """`{finding_id: destination}` from `PublishRoutingEvent`, latest per
-    finding (sequence_number ASC -> last write wins; re-route lands a new row).
-    Scoped by `is_eval` (FUP-130 read-side defense): publish events reach the
-    row through an unguarded emit path, so the predicate is what isolates a
-    production review's lifecycle from a divergent eval event.
-    """
+    """Map findings to their latest routing destination, in sequence order."""
     rows = (
         await session.execute(
             select(
@@ -759,10 +701,9 @@ async def _latest_publish_routing(
 async def _latest_publish_eligibility(
     session: AsyncSession, review_id: UUID, review_is_eval: bool
 ) -> dict[str, tuple[str | None, str | None]]:
-    """`{finding_id: (eligibility, reason)}` from `PublishEligibilityEvent`,
-    latest per finding. Separate from routing per DECISIONS.md#023: a routed
-    finding can still be withheld (e.g. `withheld`/`hitl_required_node_absent`).
-    Scoped by `is_eval` (FUP-130 read-side defense, same rationale as routing).
+    """Map findings to their latest (eligibility, reason) decision.
+
+    Routing does not imply eligibility (DECISIONS.md#023).
     """
     rows = (
         await session.execute(
@@ -785,19 +726,11 @@ async def _latest_publish_eligibility(
 async def _hitl_decisions(
     session: AsyncSession, review_id: UUID, review_is_eval: bool
 ) -> dict[str, HITLDecisionView]:
-    """`{finding_id: HITLDecisionView}` projected from the review's single
-    `HITLDecisionEvent`.
+    """Project per-finding decisions from the review's HITLDecisionEvent.
 
-    Canonical source of override provenance per DECISIONS.md#034: the audit
-    stream, never the (V1-null) `findings` override columns. At most one
-    `HITLDecisionEvent` exists per review — DB-guaranteed by
-    `uq_audit_events_hitl_decision_natural_key` — so unlike the publish helpers
-    there is no per-finding last-write-wins; `desc()` + `LIMIT 1` is defensive
-    determinism, not a real multiplicity. Empty dict if the review never gated
-    (no crit/high finding) or hasn't reached HITL yet. The per-finding
-    `reviewer_id` is the event-level reviewer (a string, `"admin"` in V1)
-    denormalized onto each decision for the view. Scoped by `is_eval` (FUP-130
-    read-side defense, same rationale as the publish helpers).
+    The audit stream owns override provenance (DECISIONS.md#034). A database
+    natural key allows at most one decision event; no event returns an empty
+    dict. Copy the event's reviewer ID onto each decision view.
     """
     payload = (
         await session.execute(
@@ -887,18 +820,15 @@ async def _timeline_content(
     session: AsyncSession,
     reconstructed: ReconstructedReview,
 ) -> tuple[tuple[TimelineFindingContentView, ...], tuple[TimelineLLMExchangeView, ...]]:
-    """Serialize the reconstructed finding + LLM content for the timeline (ROADMAP §6, PR 2).
+    """Build timeline content from the replay's single verified snapshot.
 
-    Content is already hydrated on `reconstructed` (the verified single snapshot); `content
-    is None` / `prompt is None` ⇒ retention-redacted (DECISIONS.md#014/#016). Override provenance
-    is the stream-canonical `HITLDecisionEvent` (DECISIONS.md#034), projected from `reconstruct()`'s
-    VERIFIED events (NOT a fresh query — single-snapshot consistency; NOT the V1-null `findings`
-    projection columns). The only direct read is the forensic `purge_audit` sweep date, queried once
-    per content type when a stub exists.
+    Missing finding content or LLM prompts means retention redaction (#014/#016).
+    Approval provenance comes from this snapshot's decision events (#034), never
+    a fresh query. Only sweep dates need separate reads, once per redacted content type.
     """
-    hitl_by_fid = _hitl_decisions_from_events(reconstructed.events)
-    findings_redacted = any(f.content is None for f in reconstructed.findings)
-    llm_redacted = any(x.prompt is None for x in reconstructed.llm_exchanges)
+    decisions_by_finding = _hitl_decisions_from_events(reconstructed.events)
+    findings_redacted = any(finding.content is None for finding in reconstructed.findings)
+    llm_redacted = any(exchange.prompt is None for exchange in reconstructed.llm_exchanges)
     # Review row survives → scope the sweep lookup to its installation + the global TTL
     # sentinel; purged (METADATA_ONLY) → only the global TTL sweep is reachable.
     installation_ids = (
@@ -906,10 +836,10 @@ async def _timeline_content(
         if reconstructed.review is not None
         else (_GLOBAL_SWEEP_INSTALLATION_ID,)
     )
-    findings_sweep = (
+    findings_sweep_at = (
         await _latest_sweep_at(session, "findings", installation_ids) if findings_redacted else None
     )
-    llm_sweep = (
+    llm_sweep_at = (
         await _latest_sweep_at(session, "llm_call_content", installation_ids)
         if llm_redacted
         else None
@@ -917,28 +847,28 @@ async def _timeline_content(
 
     finding_views = tuple(
         TimelineFindingContentView(
-            finding_id=f.event.finding_id,
-            content_redacted=f.content is None,
-            title=f.content.title if f.content is not None else None,
-            description=f.content.description if f.content is not None else None,
-            evidence=f.content.evidence if f.content is not None else None,
-            suggested_fix=f.content.suggested_fix if f.content is not None else None,
-            hitl_decision=hitl_by_fid.get(str(f.event.finding_id)),
-            redaction_sweep_at=findings_sweep if f.content is None else None,
+            finding_id=finding.event.finding_id,
+            content_redacted=finding.content is None,
+            title=finding.content.title if finding.content is not None else None,
+            description=finding.content.description if finding.content is not None else None,
+            evidence=finding.content.evidence if finding.content is not None else None,
+            suggested_fix=finding.content.suggested_fix if finding.content is not None else None,
+            hitl_decision=decisions_by_finding.get(str(finding.event.finding_id)),
+            redaction_sweep_at=findings_sweep_at if finding.content is None else None,
         )
-        for f in reconstructed.findings
+        for finding in reconstructed.findings
     )
-    llm_views = tuple(
+    exchange_views = tuple(
         TimelineLLMExchangeView(
-            event_id=x.event.event_id,
-            content_redacted=x.prompt is None,
-            prompt=x.prompt,
-            completion=x.completion,
-            redaction_sweep_at=llm_sweep if x.prompt is None else None,
+            event_id=exchange.event.event_id,
+            content_redacted=exchange.prompt is None,
+            prompt=exchange.prompt,
+            completion=exchange.completion,
+            redaction_sweep_at=llm_sweep_at if exchange.prompt is None else None,
         )
-        for x in reconstructed.llm_exchanges
+        for exchange in reconstructed.llm_exchanges
     )
-    return finding_views, llm_views
+    return finding_views, exchange_views
 
 
 async def _assemble_finding_views(
@@ -958,24 +888,22 @@ async def _assemble_finding_views(
     (`publish_destination` / `eligibility` / `eligibility_reason`, DECISIONS.md#023)
     and HITL override-provenance (`hitl_decision`, DECISIONS.md#034) are joined from
     the audit stream, never the (V1-null) `findings` columns, so they survive
-    content redaction. EVERY read is `is_eval`-scoped (FUP-130 read-side defense).
+    content redaction. Apply the module's per-review eval isolation rule to each read.
     """
-    dest_by_fid = await _latest_publish_routing(session, review_id, review_is_eval)
-    elig_by_fid = await _latest_publish_eligibility(session, review_id, review_is_eval)
-    hitl_by_fid = await _hitl_decisions(session, review_id, review_is_eval)
+    destinations_by_finding = await _latest_publish_routing(session, review_id, review_is_eval)
+    eligibility_by_finding = await _latest_publish_eligibility(session, review_id, review_is_eval)
+    decisions_by_finding = await _hitl_decisions(session, review_id, review_is_eval)
 
-    def _lifecycle(fid: str) -> dict[str, Any]:
-        eligibility, reason = elig_by_fid.get(fid, (None, None))
+    def lifecycle_for_finding(finding_id: str) -> _FindingLifecycleFields:
+        eligibility, reason = eligibility_by_finding.get(finding_id, (None, None))
         return {
-            "publish_destination": dest_by_fid.get(fid),
+            "publish_destination": destinations_by_finding.get(finding_id),
             "eligibility": eligibility,
             "eligibility_reason": reason,
-            "hitl_decision": hitl_by_fid.get(fid),
+            "hitl_decision": decisions_by_finding.get(finding_id),
         }
 
-    # Surviving content rows -> full findings. Scoped by `is_eval` (FUP-130):
-    # leaking a finding's CONTENT across eval/production isolation is the worst
-    # case, so the read filters even though `emit_finding` enforces it write-side.
+    # Read surviving content under the review's eval flag, even with write-side checks.
     content_rows = (
         (
             await session.execute(
@@ -988,29 +916,30 @@ async def _assemble_finding_views(
         .scalars()
         .all()
     )
-    content_fids = {str(f.finding_id) for f in content_rows}
-    views = [
-        FindingView(
-            finding_id=f.finding_id,
-            finding_type=f.finding_type,
-            dimension=f.dimension,
-            severity=f.severity,
-            evidence_tier=f.evidence_tier,
-            file_path=f.file_path,
-            line_start=f.line_start,
-            line_end=f.line_end,
-            content_redacted=False,
-            title=f.title,
-            description=f.description,
-            evidence=f.evidence,
-            suggested_fix=f.suggested_fix,
-            query_match_id=f.query_match_id,
-            trace_path=f.trace_path,
-            redaction_sweep_at=None,
-            **_lifecycle(str(f.finding_id)),
+    content_finding_ids = {str(finding.finding_id) for finding in content_rows}
+    views: list[FindingView] = []
+    for content_finding in content_rows:
+        views.append(
+            FindingView(
+                finding_id=content_finding.finding_id,
+                finding_type=content_finding.finding_type,
+                dimension=content_finding.dimension,
+                severity=content_finding.severity,
+                evidence_tier=content_finding.evidence_tier,
+                file_path=content_finding.file_path,
+                line_start=content_finding.line_start,
+                line_end=content_finding.line_end,
+                content_redacted=False,
+                title=content_finding.title,
+                description=content_finding.description,
+                evidence=content_finding.evidence,
+                suggested_fix=content_finding.suggested_fix,
+                query_match_id=content_finding.query_match_id,
+                trace_path=content_finding.trace_path,
+                redaction_sweep_at=None,
+                **lifecycle_for_finding(str(content_finding.finding_id)),
+            )
         )
-        for f in content_rows
-    ]
 
     # Dangling FindingEvents (content row purged, event survives) ->
     # retention-redacted stubs. Dedup by finding_id, keep latest.
@@ -1029,44 +958,41 @@ async def _assemble_finding_views(
         .scalars()
         .all()
     )
-    redacted_by_fid: dict[str, dict[str, Any]] = {
+    redacted_by_finding: dict[str, dict[str, Any]] = {
         payload["finding_id"]: payload
         for payload in event_payloads
-        if payload["finding_id"] not in content_fids
+        if payload["finding_id"] not in content_finding_ids
     }
-    # Findings-retention-SWEEP date — the latest `target_table='findings'`
-    # purge_audit row matching EITHER the global TTL-sweep sentinel (the
-    # reachable "review survives" case) OR this review's installation. Best
-    # purge_audit can offer (per-table-per-sweep, not per-finding; FUP-129);
-    # shared by every redacted stub. None if no findings-purge sweep is recorded.
+    # All redacted stubs share the latest recorded sweep date. It describes the
+    # table's sweep, not a proven per-finding deletion time (FUP-129).
     redaction_sweep_at = None
-    if redacted_by_fid:
+    if redacted_by_finding:
         redaction_sweep_at = await _latest_sweep_at(
             session, "findings", (installation_id, _GLOBAL_SWEEP_INSTALLATION_ID)
         )
     views.extend(
         FindingView(
-            finding_id=UUID(fid),
-            finding_type=meta["finding_type"],
-            dimension=meta["dimension"],
-            severity=meta["severity"],
-            evidence_tier=meta["evidence_tier"],
-            file_path=meta["file_path"],
-            line_start=meta["line_start"],
-            line_end=meta["line_end"],
+            finding_id=UUID(finding_id),
+            finding_type=metadata["finding_type"],
+            dimension=metadata["dimension"],
+            severity=metadata["severity"],
+            evidence_tier=metadata["evidence_tier"],
+            file_path=metadata["file_path"],
+            line_start=metadata["line_start"],
+            line_end=metadata["line_end"],
             content_redacted=True,
             title=None,
             description=None,
             evidence=None,
             suggested_fix=None,
-            query_match_id=meta.get("query_match_id"),
-            trace_path=meta.get("trace_path"),
+            query_match_id=metadata.get("query_match_id"),
+            trace_path=metadata.get("trace_path"),
             redaction_sweep_at=redaction_sweep_at,
-            **_lifecycle(fid),
+            **lifecycle_for_finding(finding_id),
         )
-        for fid, meta in redacted_by_fid.items()
+        for finding_id, metadata in redacted_by_finding.items()
     )
-    views.sort(key=lambda v: (v.file_path, v.line_start, str(v.finding_id)))
+    views.sort(key=lambda view: (view.file_path, view.line_start, str(view.finding_id)))
     return views
 
 
@@ -1243,19 +1169,20 @@ async def get_review_events(request: Request, review_id: UUID) -> ReviewEventsRe
     # is genuine corruption, surfaced loudly as a structured 500, never a silent
     # mismatched event.
     try:
-        events = [
-            reconstruct_event_from_row(
-                payload=row.payload,
-                sequence_number=row.sequence_number,
-                event_id=row.event_id,
-                review_id=row.review_id,
-                event_type=row.event_type,
-                timestamp=row.timestamp,
-                is_eval=row.is_eval,
-                phase_key=row.phase_key,
+        events: list[AuditEventUnion] = []
+        for event_row in rows:
+            events.append(
+                reconstruct_event_from_row(
+                    payload=event_row.payload,
+                    sequence_number=event_row.sequence_number,
+                    event_id=event_row.event_id,
+                    review_id=event_row.review_id,
+                    event_type=event_row.event_type,
+                    timestamp=event_row.timestamp,
+                    is_eval=event_row.is_eval,
+                    phase_key=event_row.phase_key,
+                )
             )
-            for row in rows
-        ]
     except ReplayEquivalenceError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

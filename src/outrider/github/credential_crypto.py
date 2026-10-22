@@ -86,7 +86,10 @@ def _multifernet() -> MultiFernet:
                 "cryptography.fernet.Fernet.generate_key()."
             )
     try:
-        keys = [Fernet(p.encode("utf-8")) for p in parts if p]
+        keys: list[Fernet] = []
+        for key_part in parts:
+            if key_part:
+                keys.append(Fernet(key_part.encode("utf-8")))
     except (ValueError, TypeError) as exc:
         raise CredentialCryptoError(
             f"{CREDENTIAL_ENC_KEY_ENV} is not a valid Fernet key set"

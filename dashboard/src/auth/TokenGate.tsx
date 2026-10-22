@@ -2,12 +2,11 @@ import { type FormEvent, type ReactNode, useState } from "react";
 
 import { useTokenStore } from "./token";
 
-/** Renders `children` once an admin key is present; otherwise a paste-key gate.
- * Re-prompts automatically when the key is cleared (e.g. on a 401). */
+/** Show the key form until a token is present; clearing it reopens the gate. */
 export function TokenGate({ children }: { children: ReactNode }) {
-  const token = useTokenStore((s) => s.token);
-  const setToken = useTokenStore((s) => s.setToken);
-  const [value, setValue] = useState("");
+  const token = useTokenStore((state) => state.token);
+  const setToken = useTokenStore((state) => state.setToken);
+  const [tokenInput, setTokenInput] = useState("");
 
   if (token) {
     return <>{children}</>;
@@ -15,9 +14,9 @@ export function TokenGate({ children }: { children: ReactNode }) {
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
-    const trimmed = value.trim();
-    if (trimmed) {
-      setToken(trimmed);
+    const enteredToken = tokenInput.trim();
+    if (enteredToken) {
+      setToken(enteredToken);
     }
   };
 
@@ -28,13 +27,13 @@ export function TokenGate({ children }: { children: ReactNode }) {
         <p className="token-gate__hint">Enter the operator admin API key.</p>
         <input
           type="password"
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
+          value={tokenInput}
+          onChange={(event) => setTokenInput(event.target.value)}
           placeholder="admin API key"
           aria-label="admin API key"
           autoFocus
         />
-        <button type="submit" disabled={!value.trim()}>
+        <button type="submit" disabled={!tokenInput.trim()}>
           Enter
         </button>
       </form>

@@ -1,47 +1,14 @@
 # Synthesize-node prompt template + render helper per specs/2026-05-28-synthesize-node.md
-"""Synthesize prompt template, version, knobs, and render helper.
+"""Render admitted findings and metrics for the review summary.
 
-The synthesize node uses one LLM pass (config-routed; Haiku by default
-per `DECISIONS.md#043`) to generate a free-form prose summary of the
-review's deduplicated findings. The prompt asks for a concise,
-reviewer-facing summary of overall risk + dominant themes + suggested
-next steps. The model does NOT classify severity (the
-`severity-set-by-policy` invariant pins that upstream); the prompt is
-prose-only.
+The configured model writes prose about findings, risk and remediation themes.
+It does not assign severity (`severity-set-by-policy`) or describe pipeline
+actions. Summary policy follows DECISIONS.md#043; the node separately enforces
+the ReviewReport summary-length cap.
 
-Surfaces (per the synthesize-node spec's Reference Reconciliation):
-
-- `SYSTEM_PROMPT: Final[str]` — fully static instructions. Goes into
-  `LLMRequest.system_prompt`. NB: prompt caching has a per-model
-  minimum-tokens floor (`llm/pricing.py::MIN_CACHEABLE_TOKENS` —
-  4096 for Haiku 4.5, the `DECISIONS.md#043` default); this prompt
-  (~700 tokens) is far below any floor, so cache_control attempts
-  fall through with a per-(model, hash) wrapper warning. That is
-  ACCEPTED per #043 (closing FUP-163): synthesize fires ONCE per
-  review, so a same-review cache hit is structurally impossible and
-  growing the prompt solely to clear a floor would buy nothing —
-  per-call latency is completion-dominated, not prompt hydration.
-- `USER_TEMPLATE: Final[str]` — per-review `str.format` template with
-  structural placeholders (`{overall_risk}`, `{findings_summary}`,
-  `{metrics_summary}`). Values are filled at `render()` time; the
-  placeholder names are template STRUCTURE — model-derived content
-  (finding titles/evidence/descriptions) gets fence-wrapped via
-  `safe_code_fence` per `webhook-strings-are-data-not-format-strings`.
-- `TEMPLATE` — alias for USER_TEMPLATE.
-- `VERSION: Final[str] = "synthesize-v3"` — flows to
-  `LLMRequest.prompt_template_version`.
-- `MAX_TOKENS: Final[int] = 1024` — bounds the summary output to the
-  `Field(max_length=2000)` codepoint cap on `ReviewReport.summary`
-  with headroom for the token-to-codepoint ratio.
-- `TEMPERATURE: Final[float] = 0.3` — slightly higher than triage's
-  0.0 because summary prose benefits from non-deterministic phrasing,
-  but bounded enough that replay produces semantically-equivalent
-  output (the content_hash check at the schema layer pins logical
-  identity).
-- `SynthesizePromptParts` — frozen dataclass result of `render()`.
-- `render(overall_risk, findings, metrics) -> SynthesizePromptParts`
-  — pure function.
-"""
+Static instructions stay separate from per-review data. Finding text is fenced
+(`webhook-strings-are-data-not-format-strings`); absent historical metrics render
+as "unknown". Prompt/version constants below remain the replay contract."""
 
 from __future__ import annotations
 
@@ -150,16 +117,16 @@ def render(
         findings_summary = "(no findings — clean review)"
     else:
         lines: list[str] = []
-        for f in findings:
+        for finding in findings:
             # Each finding is fence-wrapped because title/description
             # paraphrase PR content. The fence width is dynamic per
             # safe_code_fence so a finding text containing N+1
             # backticks can't break out.
             lines.append(
-                f"- [{f.severity.value} / {f.dimension.value}] "
-                f"{safe_code_fence(f.title, lang='')} @ "
-                f"{f.file_path}:{f.line_start}-{f.line_end}\n"
-                f"  {safe_code_fence(f.description, lang='')}"
+                f"- [{finding.severity.value} / {finding.dimension.value}] "
+                f"{safe_code_fence(finding.title, lang='')} @ "
+                f"{finding.file_path}:{finding.line_start}-{finding.line_end}\n"
+                f"  {safe_code_fence(finding.description, lang='')}"
             )
         findings_summary = "\n".join(lines)
 
@@ -188,22 +155,10 @@ def render(
 
 
 def _render_metric_value(value: int | None) -> str:
-    """Render an Optional[int] metric for prose output.
-
-    LLM-aggregate metrics are populated from the audit stream (FUP-093) but
-    stay Optional (None for historical rows / nullable per #030); render
-    "unknown" so the prompt remains valid prose when the value is absent.
-    None values formatted via `:d` or
-    `:.4f` raise TypeError — this helper is the safety adapter at
-    the prompt-render boundary.
-    """
+    """Render an integer metric, or "unknown" for historical NULL values (FUP-093, #030)."""
     return "unknown" if value is None else str(value)
 
 
 def _render_cost_value(value: float | None) -> str:
-    """Render an Optional[float] cost metric for prose output.
-
-    Same None-safety rationale as `_render_metric_value` but with a
-    `$N.NNNN` shape when the value is present.
-    """
+    """Render a known cost to four decimal places, or "unknown" for NULL."""
     return "unknown" if value is None else f"${value:.4f}"

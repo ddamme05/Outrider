@@ -12,8 +12,8 @@ Throwaway code — no production paths depend on this directory.
 
 **Method.** Docs-first pass (`aegis-docs::tree-sitter/python-source-analysis.md`
 and `tree-sitter/using-parsers/queries/1-syntax.md`); demos only for questions
-the docs don't resolve cleanly. Each demo asserts and exits nonzero on failure
-so `run_all.py` is mechanical verification, not eyeball inspection.
+the docs don't resolve cleanly. Each demo asserts and exits nonzero on failure,
+so `run_all.py` verifies the results automatically.
 
 **Status.** `python run_all.py` → **6/6 demos pass**.
 
@@ -220,7 +220,7 @@ without `[0]` raises `AttributeError: 'list' object has no attribute
 
 These are informed starting points, not locked-in decisions. The real build
 can deviate with a `DECISIONS.md` entry if experience shows a better choice;
-this table captures what the spike actually observed and what it suggests
+this table captures what the spike observed and what it suggests
 trying first.
 
 | Question | Recommended default |

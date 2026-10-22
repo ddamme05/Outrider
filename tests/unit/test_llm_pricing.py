@@ -382,7 +382,7 @@ def test_compute_cost_usd_insulated_from_ambient_low_precision() -> None:
 
 
 def test_normalize_to_pricing_key_strips_dated_suffix() -> None:
-    """Dated SDK-catalog pins (e.g., `claude-haiku-4-5-20251001`) must
+    """Dated exact model-version IDs (e.g., `claude-haiku-4-5-20251001`) must
     resolve to their undated alias for pricing lookup. The undated alias
     is what `RATE_TABLE` keys on; the dated form is just a precise pin."""
     from outrider.llm.pricing import normalize_to_pricing_key

@@ -1,10 +1,10 @@
 # See DECISIONS.md#070 — App-Manifest onboarding (setup state machine + signed state + config).
-"""App-Manifest onboarding (`DECISIONS.md#070`).
+"""App-Manifest onboarding primitives (DECISIONS.md#070).
 
-The `database`-mode self-service setup surface: the durable singleton **state machine**
-(`state_machine`), the HMAC-signed single-use **state** carrier (`state_token`) + its **nonce**
-(`nonce`), and the onboarding **config** (`config`). The HTTP router + manifest builder + conversion
-call land in a later slice and compose these; this package is the boot-safe engine + primitives.
+router.py composes the manifest, conversion wrapper, and durable state machine.
+state_token.py signs callback state; nonce.py supplies the hashed, single-use
+nonce consumed by the machine. config.py validates database-mode setup settings.
+mount.py wires the router before startup dependencies and the SPA catch-all.
 """
 
 from __future__ import annotations

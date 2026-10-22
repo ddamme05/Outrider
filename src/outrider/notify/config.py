@@ -1,23 +1,12 @@
-"""Slack config: `SlackSettings` (dev bootstrap) + `SlackOAuthSettings` (per-install OAuth).
+"""Slack credentials for local transport tests and installation OAuth.
 
-`SlackSettings` — DEV/LOCAL env bootstrap for the Slack notifier.
+SlackSettings reads a dev bot token and channel. Production posting uses encrypted
+per-installation configuration loaded by resolver.py, populated by the OAuth flow
+(specs/2026-06-15-slack-dashboard-in-slack.md).
 
-**Not the production V1 config authority.** The spec pins V1 Slack config to
-**per-installation** storage (the `installations` table, populated by the OAuth
-`oauth.v2.access` exchange) — see specs/2026-06-15-slack-dashboard-in-slack.md.
-This single-workspace env config exists only to wire + test the notifier locally
-before that OAuth/per-install path lands; the composition root must prefer
-per-install config and never let this env path become the production posting
-authority.
-
-Mirrors `GitHubAppSettings`: `bot_token` routed through `pydantic.SecretStr`,
-`.get_secret_value()` called only at the wrapper call site (`notify/slack.py`),
-never at log/audit construction.
-
-Env vars (prefix `OUTRIDER_SLACK_`):
-  - `OUTRIDER_SLACK_BOT_TOKEN` (SecretStr) — the bot token (`xoxb-…`, `chat:write`).
-  - `OUTRIDER_SLACK_CHANNEL_ID` (str) — the channel the bot posts to (e.g. `C0…`);
-    the bot must be a member of it (the install precondition).
+SlackOAuthSettings reads OUTRIDER_SLACK_CLIENT_ID, CLIENT_SECRET, and REDIRECT_URI
+under the OUTRIDER_SLACK_ prefix. SecretStr credentials are unwrapped at SDK call
+sites, never in log or audit construction.
 """
 
 from urllib.parse import urlparse
@@ -44,9 +33,7 @@ _PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
 
 
 class SlackSettings(BaseSettings):
-    """Slack bot identity, env-backed. `frozen` + `extra="forbid"` per the
-    `GitHubAppSettings` precedent (construction-time-only config; typo'd env var
-    fails loudly at app start)."""
+    """Immutable env credentials for local notifier use."""
 
     model_config = SettingsConfigDict(
         env_prefix="OUTRIDER_SLACK_",
@@ -83,24 +70,11 @@ class SlackSettings(BaseSettings):
 
 
 class SlackOAuthSettings(BaseSettings):
-    """Slack App OAuth credentials for the per-install connect flow (commit 6.3c).
+    """Immutable App credentials for exchanging codes for per-install bot tokens.
 
-    DISTINCT from `SlackSettings` (the dev single-workspace bootstrap): these are the
-    App-level client credentials the server uses to exchange the OAuth `code` for a
-    per-install bot token (`oauth.v2.access`), then encrypt + persist it
-    (DECISIONS.md#051). `frozen` + `extra="forbid"` per the `GitHubAppSettings`
-    precedent (construction-time-only config; a missing required var fails loud at
-    app start). All three vars share the `OUTRIDER_SLACK_` prefix; pydantic-settings
-    ignores prefix-matching vars that map to no field, so this coexists with
-    `SlackSettings` even under `extra="forbid"`.
-
-    Env vars (prefix `OUTRIDER_SLACK_`):
-      - `OUTRIDER_SLACK_CLIENT_ID` (str) — the Slack App client id (e.g. `123.456`).
-      - `OUTRIDER_SLACK_CLIENT_SECRET` (SecretStr) — the App client secret; routed
-        through `SecretStr`, `.get_secret_value()` only at the `oauth.v2.access`
-        call site (`notify/slack_oauth.py`), never at log/audit construction.
-      - `OUTRIDER_SLACK_REDIRECT_URI` (str) — the OAuth callback URL; must match the
-        redirect URL registered in the Slack App config exactly.
+    The callback encrypts tokens before persistence (DECISIONS.md#051). Required
+    settings are validated when OAuth is enabled; prefix-matching variables with no
+    field are ignored, so local SlackSettings variables can coexist.
     """
 
     model_config = SettingsConfigDict(

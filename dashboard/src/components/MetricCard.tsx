@@ -1,7 +1,5 @@
-// A KPI card for the Signal Overview (mockup .stat-card with analytics chrome):
-// mono number + caption + a period-over-period delta + an inline sparkline. The
-// delta's class/glyph/label come pre-computed from lib/metrics.deltaInfo (the
-// frontend owns the %, per DECISIONS#039); this component only renders.
+// Render a metric, its period delta, and a trend sparkline. Callers supply the
+// values (DECISIONS#039); this component owns presentation.
 import type { ReactNode } from "react";
 
 import type { DeltaInfo } from "../lib/metrics";

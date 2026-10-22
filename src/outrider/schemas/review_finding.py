@@ -11,8 +11,8 @@ INFERRED=0.75, JUDGED=0.5 per spec §7.3).
 
 ReviewFinding is **NOT frozen** because it has a multi-stage lifecycle:
 the analyze node constructs it with later-set fields at None;
-`coordinates.tree_sitter_to_github` (separate spec) sets `publish_destination`
-after computing the GitHub-comment-location translation; the HITL flow
+publish assigns `publish_destination` after coordinates computes the
+GitHub-comment location; the HITL flow
 may later set the override fields when a reviewer issues a SEVERITY_OVERRIDE
 decision. Mutability lets each stage write its fields directly without
 requiring `model_copy(update=...)` boilerplate. The audit-replay guarantee
@@ -54,12 +54,10 @@ class ReviewDimension(StrEnum):
 
 
 class PublishDestination(StrEnum):
-    """Where a finding lands when published, per spec §4.1.7.
+    """Publish destination selected from coordinate translation, per spec §4.1.7.
 
-    Set by `coordinates.tree_sitter_to_github` after computing the
-    GitHub-comment-location translation; the analyze node leaves the
-    field None at construction time. Backs `publish-routes-through-coordinates`.
-    """
+    Publish assigns the field after coordinates resolves the location;
+    analyze leaves it None. Backs publish-routes-through-coordinates."""
 
     INLINE_COMMENT = "inline_comment"
     REVIEW_BODY = "review_body"
@@ -162,8 +160,8 @@ class ReviewFinding(BaseModel):
     # replacement text GitHub applies, not prose, not ```suggestion markdown);
     # publish renders it as a GitHub suggestion block. See DECISIONS.md#040.
     suggested_fix: Annotated[str | None, Field(max_length=2000)] = None
-    # Query-registry-id cap. Today's query ids are short paths (`security/sql_injection`);
-    # 200 chars is well above the realistic max and well below pathological.
+    # Query IDs use language.claim names, such as python.sql_injection_string_concat.
+    # Bound the stored reference independently of model prose.
     query_match_id: Annotated[str | None, Field(max_length=200)] = None
     # tuple, not list: post-construction `.append()` / `.clear()` on a list
     # would bypass validate_assignment (which only fires on attribute
@@ -212,7 +210,7 @@ class ReviewFinding(BaseModel):
     def _enforce_canonical_file_path(cls, path: str) -> str:
         """Re-run `validate_diff_path` so the schema layer enforces the
         repo-relative-POSIX invariant. Same shape as
-        `AnalysisRound._enforce_canonical_files_examined` — propagates
+        `AnalysisRound._enforce_canonical_paths` — propagates
         the canonical-record discipline to every cross-boundary model
         that carries a diff-side path. (TraceCandidate uses
         `_enforce_canonical_import_string` for its import-string field
@@ -280,23 +278,11 @@ class ReviewFinding(BaseModel):
 
     @model_validator(mode="after")
     def _enforce_dimension_lockstep(self) -> Self:
-        """`dimension` must equal `FINDING_TYPE_TO_DIMENSION[finding_type]`.
+        """Require the stored dimension to match FINDING_TYPE_TO_DIMENSION.
 
-        dimension is a stored
-        field (not computed), so a stale serialized payload could survive
-        replay under an old mapping. The module-load lockstep guard in
-        `outrider.policy.dimensions` fires only at import — it cannot
-        detect a finding ALREADY in `audit_events.payload` carrying a
-        drifted dimension. This validator closes that hole by asserting
-        the stored dimension matches the current mapping at construction
-        AND replay time (Pydantic re-runs `model_validator(mode='after')`
-        on `model_validate`).
-
-        Imported locally to avoid a circular import:
-        `policy.dimensions` imports `ReviewDimension` from this module
-        for its mapping values. The dependency goes one way at module
-        load and the other way at call time, which is fine.
-        """
+        The import-time taxonomy guard cannot inspect stored findings. This check
+        also runs on replay reconstruction. Import locally because the dimension
+        mapping imports ReviewDimension from this module."""
         # Local import: `policy.dimensions` imports from this module at
         # load time, so a top-level import would cycle.
         from outrider.policy.dimensions import (  # noqa: PLC0415
@@ -320,44 +306,16 @@ class ReviewFinding(BaseModel):
 
     @model_validator(mode="after")
     def _enforce_severity_matches_policy(self) -> Self:
-        """Baseline severity must equal `SEVERITY_POLICY[finding_type]`
-        under the live policy version. Backs `severity-set-by-policy`.
+        """Verify baseline severity under the active policy (severity-set-by-policy).
 
-        Baseline = `original_severity` if a HITL override is in effect
-        (then `severity` carries the reviewer's override), else
-        `severity` directly. Either way, the policy-computed value is
-        what we check.
+        With an override, original_severity is the baseline and severity is the
+        applied value. Historical versions skip this synchronous live-table check;
+        audit/replay loads their versioned policies separately.
 
-        Replay-aware scoping. `model_validate` is the SAME path
-        `TypeAdapter(AuditEvent).validate_python(...)` and equivalent
-        ReviewFinding reconstructors use to rehydrate historical
-        records. A historical finding under an older `policy_version`
-        MUST validate cleanly — the severity it carries was correct
-        AT WRITE TIME under its frozen policy, and there's no
-        synchronous loader for the historical mapping here
-        (`policy/versions.py::load_policy_for_version` is async; it's
-        the persister/replay layer's job, not the schema's).
-
-        Scope: the live-policy match check below fires ONLY when
-        `policy_version == ACTIVE_POLICY_VERSION`. Older versions
-        skip and trust the historical row. The "fresh-write smuggle"
-        concern (a producer setting `policy_version="0.9.0"` to dodge
-        the live check) is NOT defended here — it's a producer-side
-        discipline enforced by the emitter and, when the replay/
-        persister spec lands, by the persister's write-time check
-        that incoming records carry the active version. The schema
-        layer cannot distinguish fresh writes from replay
-        reconstruction inside `model_validate`.
-
-        Without the SEVERITY_POLICY match check below, a fresh row
-        like (SQL_INJECTION, LOW) admits cleanly even though
-        SEVERITY_POLICY[SQL_INJECTION] == CRITICAL — the schema-layer
-        defense against caller-supplied severity drift.
-        """
-        # Local imports to avoid a circular import: `policy.severity`
-        # transitively imports nothing from schemas, but `policy/__init__`
-        # re-exports from review_finding for the proof-boundary helper,
-        # so top-level imports route through the deep paths.
+        This schema cannot distinguish a fresh write from reconstruction. Live
+        producers pin policy_version, and synthesize checks the triage snapshot
+        before reporting. A historical version must remain valid for replay."""
+        # Resolve the live policy at validation time through its owning module.
         from outrider.policy.severity import (  # noqa: PLC0415
             ACTIVE_POLICY_VERSION,
             SEVERITY_POLICY,

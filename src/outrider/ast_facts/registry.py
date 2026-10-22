@@ -106,16 +106,10 @@ _LANGUAGE_ADAPTERS: Final[dict[str, Callable[[ImportPathResolver], LanguageAdapt
 def get_adapter_factory(
     extension: str,
 ) -> Callable[[ImportPathResolver], LanguageAdapter] | None:
-    """Return the adapter factory for a given file extension, or None
-    if no adapter is registered. Caller constructs with their resolver.
+    """Return a factory for the case-insensitive extension, or None.
 
-    Extension matching is case-insensitive: `.py`, `.PY`, `.Py` all
-    resolve to the same adapter. Without normalization, a caller passing
-    `Path(file).suffix` for a file named `Foo.PY` (legal on
-    case-insensitive filesystems and across some ingest paths) would
-    silently get `None` and skip analyzing the file. Empty string or
-    extensions without a leading dot return `None` (consistent with the
-    "unsupported language" semantics).
+    Callers construct it with their resolver. Empty strings and extensions
+    without a leading dot have no registration.
     """
     if not extension:
         return None

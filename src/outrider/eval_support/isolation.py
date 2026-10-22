@@ -1,24 +1,11 @@
 # is_eval integrity gate shared by run_review + the eval_db conftest fixture.
 # See specs/2026-06-01-eval-graph-driver.md (resolution A) + docs/testing.md "Eval isolation".
-"""Loud-failure integrity gate for eval-database isolation.
+"""Reject eval database rows whose is_eval flag is not True.
 
-Every row in an `is_eval`-bearing table (`reviews`, `audit_events`,
-`findings`, `llm_call_content`, `anomalies` per `docs/schema.md` "Eval
-isolation", plus `analyze_file_cache` per
-specs/2026-06-11-file-hash-analyze-cache.md) produced during an eval run
-MUST carry `is_eval=True`. Factories
-own setting the flag; this gate is the after-the-fact check that catches a
-factory — or a direct insert — that forgot it.
-
-The predicate is `IS DISTINCT FROM TRUE` so it flags `FALSE` and `NULL`
-alike (robust against a future nullable `is_eval` column). It does NOT
-auto-coerce — auto-coercion would mask exactly the bug class the gate exists
-to catch.
-
-Shared so `run_review` (the eval graph driver) and `tests/eval/conftest.py`'s
-`eval_db` fixture run the identical query. Adding a new `is_eval`-bearing table
-requires extending the UNION here.
-"""
+Writers set the flag; this post-run check catches missing assignments without
+coercing them. IS DISTINCT FROM TRUE catches False and NULL. Drivers and eval
+fixtures share the query, which must include each is_eval-bearing table
+(docs/schema.md "Eval isolation" and specs/2026-06-11-file-hash-analyze-cache.md)."""
 
 from __future__ import annotations
 
@@ -31,11 +18,9 @@ if TYPE_CHECKING:
 
 
 class EvalIsolationViolationError(AssertionError):
-    """An `is_eval`-bearing table held a row with `is_eval` not TRUE.
+    """An eval table contained an is_eval flag other than True.
 
-    Subclass of `AssertionError` so existing `pytest.raises(AssertionError)`
-    contracts in the eval-harness tests continue to hold after migration.
-    """
+    AssertionError preserves the eval harness's failure contract."""
 
 
 _IS_EVAL_VIOLATIONS_QUERY = text(

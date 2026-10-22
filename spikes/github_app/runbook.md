@@ -5,7 +5,7 @@ tunnel setup) against a real GitHub App. The offline `run_all.py` proves
 the primitives work; this runbook proves the end-to-end round trip works
 on your account and captures the two findings that can only be observed
 live: your installation_id, and any diff between the recorded
-octokit-sample payloads in `fixtures/` and what GitHub actually delivers.
+octokit-sample payloads in `fixtures/` and what GitHub delivers.
 
 Budget: ~15 minutes from cold start. Credentials live in your shell env —
 nothing created here gets committed.
@@ -171,7 +171,7 @@ The script:
 
 Expected output is a single line beginning with `q2_verified
 installation_id=...`. This is Q2's evidence: the SDK auth chain works
-end-to-end against real GitHub, and the installation token actually
+end-to-end against real GitHub, and the installation token
 authenticates the call.
 
 If the script errors on `401`, the most common cause is clock skew on
@@ -260,7 +260,7 @@ confuse with a real one. Real App keys belong in your secrets manager.
 
 ## What this runbook does NOT cover
 
-- Actually posting a review comment back on the PR — that's outbound
+- Posting a review comment back on the PR — that's outbound
   publishing, a different concern from inbound webhook ingestion.
 - Idempotency across duplicate deliveries — GitHub will retry failed
   webhooks, and the receiver does not dedupe. Acceptable for spike use.

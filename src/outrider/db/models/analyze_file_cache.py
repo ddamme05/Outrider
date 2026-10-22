@@ -1,43 +1,15 @@
 # See specs/2026-06-11-file-hash-analyze-cache.md + DECISIONS.md#014 (retention regime).
-"""ANALYZE_FILE_CACHE.
+"""Retained per-file analysis results, keyed by cache/key.py's composed digest.
 
-One row per cached per-file analyze outcome (cost lever #8). A CACHE,
-not audit: rows delete legally (TTL, retention sweep, installation
-purge) — the append-only discipline lives on the companion audit events,
-never here.
+These rows contain user-code-derived findings and trace candidates. They may be
+deleted; companion audit events remain append-only. The source-review CASCADE,
+retention_expires_at, and lookup-time expiry check prevent serving purged content.
+Expiry is bounded by cache TTL and source-review retention (DECISIONS.md#014).
 
-Retention regime (the `findings` / `llm_call_content` sibling): the
-payload is user-code-derived content (admitted finding content pre-HITL
-+ full trace candidates including their LLM-derived `reason`), so the
-table carries `retention_expires_at` (write-time
-`min(now + cache TTL, source review retention)`), participates in the
-installation-deleted purge, and follows the no-resurrection rule three
-ways — `source_review_id` FK CASCADE (review purge takes its cache rows
-with it), the row's own `retention_expires_at`, and the store's
-lookup-time expiry check (an expired row is a MISS).
-
-Two foreign keys, mirroring `findings`:
-
-  - `source_review_id → reviews.id` ON DELETE CASCADE — content-tier
-    coupling: purging the source review must purge cache rows derived
-    from it, or a later hit would re-mint legally deleted content.
-  - `installation_id → installations.installation_id` ON DELETE
-    RESTRICT — the sweep purges cache rows (with `purge_audit`) before
-    an installation hard-deletes; RESTRICT prevents a silent CASCADE
-    that would skip the purge-audit row.
-
-`cache_key` (the composed digest — the recipe version + prompt digest +
-the explicit components, the last three the host-identity triad per
-DECISIONS.md#056 — from `cache/key.py::compute_analyze_cache_key`, the
-single authority on the component set) is the
-primary key — the write path's conflict arbiter for concurrent same-key
-reviews (`ON CONFLICT DO UPDATE ... WHERE` the existing row is expired:
-live rows keep first-writer-wins; an expired-but-unswept row is
-refreshed in place). The key-component columns are denormalized for
-observability (stale-rate by version + host, Stage-B telemetry queries) —
-incl. the host `profile_id` + `reasoning_enabled` (DECISIONS.md#056 / FUP-194),
-but NOT the opaque `profile_contract_digest`; the key itself remains the only
-lookup identity.
+Installation RESTRICT requires explicit, audited content purge before hard-delete.
+Live keys keep the first writer; expired rows can be refreshed by the store's
+conditional upsert. Denormalized recipe and host columns are telemetry only;
+the digest is the lookup identity (DECISIONS.md#056, FUP-194).
 """
 
 from datetime import datetime

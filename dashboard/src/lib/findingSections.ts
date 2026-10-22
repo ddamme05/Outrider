@@ -1,19 +1,8 @@
-// Humanized finding labels for the dashboard — the TypeScript mirror of the Python source
-// `src/outrider/presentation/finding_sections.py`. Keys are the LOWERCASE StrEnum wire values the
-// API serializes (`sql_injection`, `observed`, `inline_comment`, …); values are the display labels.
-//
-// The five SHARED maps (SEVERITY_LABEL, TYPE_LABEL, TIER_PHRASE, DEST_LABEL, DIMENSION_LABEL) must
-// match the Python maps byte-for-byte — `tests/unit/test_finding_sections_ts_parity.py` fails CI if
-// a label drifts or a new enum member ships without a label here (the same fail-closed totality the
-// Python module asserts at import). ELIGIBILITY_PHRASE / ELIGIBILITY_REASON_PHRASE / HITL_OUTCOME_LABEL
-// are dashboard-only (no Python counterpart; the CLI/GitHub/Slack channels never render them); the
-// parity test still totality-checks them against PublishEligibility / PublishEligibilityReason /
-// PerFindingOutcome so a new backend enum member can't render as a raw slug unnoticed.
-//
-// Runtime lookups go through the *Label()/*Phrase() helpers, which fall back to the raw wire value
-// for an unknown key — the SPA degrades gracefully against a newer backend rather than rendering
-// `undefined`. The parity test guarantees the shipped maps are total against the CURRENT enums, so
-// that fallback only ever fires on a genuinely-ahead backend.
+// Dashboard labels use the API's lowercase enum values. Shared finding labels
+// and LANGUAGE_BY_EXT mirror src/outrider/presentation/finding_sections.py.
+// tests/unit/test_finding_sections_ts_parity.py checks shared-map equality and
+// coverage of the publish/HITL enums in the dashboard-only maps.
+// Label helpers fall back to the received value when a label is missing.
 
 export const SEVERITY_LABEL: Record<string, string> = {
   critical: "Critical",
@@ -68,15 +57,15 @@ export const DIMENSION_LABEL: Record<string, string> = {
   best_practices: "Best practices",
 };
 
-// --- Dashboard-only (no Python counterpart) -------------------------------------------------
+// Dashboard-only labels.
 
-// PublishEligibility → phrase. Whether a routed finding actually materialized on GitHub.
+// Whether policy permits a finding to be posted; this is not a GitHub receipt.
 export const ELIGIBILITY_PHRASE: Record<string, string> = {
   eligible: "Eligible to post",
   withheld: "Withheld",
 };
 
-// PublishEligibilityReason → phrase. Why a finding was withheld (or forensically tagged).
+// Why the publish gate withheld a finding.
 export const ELIGIBILITY_REASON_PHRASE: Record<string, string> = {
   hitl_required_node_absent: "HITL gate not reached",
   unexpected_override_fields_present: "Malformed override fields",
@@ -86,7 +75,7 @@ export const ELIGIBILITY_REASON_PHRASE: Record<string, string> = {
   hitl_suppressed: "Suppressed by reviewer",
 };
 
-// PerFindingOutcome → past-tense label for the HITL provenance chip.
+// Recorded reviewer outcome for the HITL provenance chip.
 export const HITL_OUTCOME_LABEL: Record<string, string> = {
   approve: "Approved",
   reject: "Rejected",
@@ -94,8 +83,7 @@ export const HITL_OUTCOME_LABEL: Record<string, string> = {
   severity_override: "Severity overridden",
 };
 
-// Fence info-string per file extension — mirror of Python `_LANGUAGE_BY_EXT`. Drives the language
-// chip on the evidence code block. "" (unknown) → no chip. Extension → highlight token only.
+// Evidence language tokens mirror Python's _LANGUAGE_BY_EXT; unknown suffixes hide the chip.
 export const LANGUAGE_BY_EXT: Record<string, string> = {
   ".py": "python",
   ".pyi": "python",
@@ -133,22 +121,19 @@ export const LANGUAGE_BY_EXT: Record<string, string> = {
   ".md": "markdown",
 };
 
-// --- Helpers (fallback to the raw wire value; never render `undefined`) ----------------------
+export const severityLabel = (wireValue: string): string => SEVERITY_LABEL[wireValue] ?? wireValue;
+export const typeLabel = (wireValue: string): string => TYPE_LABEL[wireValue] ?? wireValue;
+export const tierPhrase = (wireValue: string): string => TIER_PHRASE[wireValue] ?? wireValue;
+export const destLabel = (wireValue: string): string => DEST_LABEL[wireValue] ?? wireValue;
+export const dimensionLabel = (wireValue: string): string => DIMENSION_LABEL[wireValue] ?? wireValue;
+export const eligibilityPhrase = (wireValue: string): string => ELIGIBILITY_PHRASE[wireValue] ?? wireValue;
+export const eligibilityReasonPhrase = (wireValue: string): string => ELIGIBILITY_REASON_PHRASE[wireValue] ?? wireValue;
+export const hitlOutcomeLabel = (wireValue: string): string => HITL_OUTCOME_LABEL[wireValue] ?? wireValue;
 
-export const severityLabel = (v: string): string => SEVERITY_LABEL[v] ?? v;
-export const typeLabel = (v: string): string => TYPE_LABEL[v] ?? v;
-export const tierPhrase = (v: string): string => TIER_PHRASE[v] ?? v;
-export const destLabel = (v: string): string => DEST_LABEL[v] ?? v;
-export const dimensionLabel = (v: string): string => DIMENSION_LABEL[v] ?? v;
-export const eligibilityPhrase = (v: string): string => ELIGIBILITY_PHRASE[v] ?? v;
-export const eligibilityReasonPhrase = (v: string): string => ELIGIBILITY_REASON_PHRASE[v] ?? v;
-export const hitlOutcomeLabel = (v: string): string => HITL_OUTCOME_LABEL[v] ?? v;
-
-/** Highlight token for a file path's fenced snippet, or "" when unknown. Pure suffix lookup —
- * mirror of Python `language_for_path`. No path math beyond the final `.ext`. */
+// Inspect only the final filename suffix; no filesystem access is needed.
 export function languageForPath(filePath: string): string {
-  const base = filePath.slice(filePath.lastIndexOf("/") + 1);
-  const dot = base.lastIndexOf(".");
-  if (dot <= 0) return ""; // no extension, or a dotfile with no suffix
-  return LANGUAGE_BY_EXT[base.slice(dot).toLowerCase()] ?? "";
+  const basename = filePath.slice(filePath.lastIndexOf("/") + 1);
+  const extensionStart = basename.lastIndexOf(".");
+  if (extensionStart <= 0) return ""; // no extension, or a dotfile with no suffix
+  return LANGUAGE_BY_EXT[basename.slice(extensionStart).toLowerCase()] ?? "";
 }

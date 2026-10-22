@@ -63,8 +63,8 @@ from outrider.schemas.pr_context import PRContext
 from outrider.schemas.trace_candidate import TraceCandidate
 
 from .model_comparison import _NoOpImportPathResolver
+from .probe_capture import _PROBE_MANIFEST, verified_capture_fixture
 from .test_model_comparison import _ScriptedProvider
-from .test_openai_scorecard import _PROBE_MANIFEST, verified_capture_fixture
 
 if TYPE_CHECKING:
     from outrider.audit.events import ReviewPhaseEvent, TraceDecisionEvent

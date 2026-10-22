@@ -92,42 +92,24 @@ def diff_line_to_scope(
     diff_line: int,
     scope_units: list[ScopeUnit],
 ) -> ScopeUnit | None:
-    """Find the scope unit containing a given diff line.
+    """Find the smallest same-file scope containing a 1-indexed source line.
 
-    Returns None for top-level changes (module-level code outside any function),
-    for `diff_line` outside any scope's line range, and for scopes belonging to
-    a different file. Innermost-scope rule: when nested scopes contain the same
-    line, return the deepest match (smallest line span wins).
-
-    Per docs/spec.md §5.6. The six edge cases enumerated in the Month 0 spike
-    `spikes/tree_sitter/demos/demo_q6_diff_line_to_scope.py` form the unit-test
-    surface; see DECISIONS.md#006-two-month-0-spikes-not-five for the
-    "exhaustive unit tests" discipline this implementation honors.
-
-    Raises `CoordinateError` for `diff_line < 1`. Source lines are 1-indexed
-    per git-diff convention; a 0 or negative value signals caller
-    kind-confusion (e.g., a tree-sitter `Node.start_point[0]` row, which is
-    0-indexed, accidentally passed instead of being converted). Surfacing
-    the error explicitly keeps the silent-`None` failure mode reserved for
-    the legitimate "no enclosing scope" case.
-
-    Multi-file safety: `scope_units` may contain scopes for multiple files;
-    only scopes where `ScopeUnit.file_path == file_path` are eligible. A
-    `diff_line` that would otherwise map to a scope in a different file
-    returns None. Both `file_path` and each `ScopeUnit.file_path` are
-    expected in canonical POSIX form (the form `validate_diff_path` returns);
-    divergent surface forms compare unequal and silently miss matches.
-    """
+    Return None outside every scope; raise CoordinateError for diff_line < 1.
+    Both file_path and scope paths must already be canonical POSIX strings.
+    Per docs/spec.md §5.6 and DECISIONS.md#006-two-month-0-spikes-not-five;
+    the Month 0 demo's nested-scope cases are covered by unit tests."""
     if diff_line < 1:
         raise CoordinateError(
             f"diff_line {diff_line} is not a valid 1-indexed source line",
             kind=CoordinateErrorKind.INVALID_DIFF_LINE,
         )
-    candidates = [
-        unit
-        for unit in scope_units
-        if unit.file_path == file_path and unit.line_start <= diff_line <= unit.line_end
-    ]
+    candidates: list[ScopeUnit] = []
+    for scope_unit in scope_units:
+        if (
+            scope_unit.file_path == file_path
+            and scope_unit.line_start <= diff_line <= scope_unit.line_end
+        ):
+            candidates.append(scope_unit)
     if not candidates:
         return None
     # Innermost = smallest enclosing line span. Matches ast_facts'
@@ -137,34 +119,13 @@ def diff_line_to_scope(
 
 
 def is_valid_import_string(value: str) -> str:
-    """Validate and NFC-normalize a dotted Python import string.
+    """Validate a dotted Python import and return its NFC-normalized form.
 
-    Raises ValueError on invalid input; returns the NFC-normalized value on
-    valid input. Single source of truth shared by `TraceCandidate.import_string`
-    field validator (raises directly) AND `resolve_candidate_paths` (catches +
-    returns []) per `DECISIONS.md#024` point 1 and `specs/2026-05-23-trace-node.md` M3.
-
-    NFC normalization runs first so the schema-time validator + the resolver
-    + the audit-event per-element `_enforce_canonical_proposed_import_strings`
-    on `TraceDecisionEvent` / `TraceDecision` all see the same canonical
-    form. Homoglyph identifiers (e.g., Cyrillic `а` U+0430 vs Latin `a`
-    U+0061) pass through unchanged — NFC is composition normalization, not
-    transliteration — but they pass through CONSISTENTLY, preventing hash
-    divergence between the raw input fed to `compute_candidate_id` and the
-    NFC'd value that lands in the audit log via the audit-event per-element
-    validator. (`validate_diff_path` is the parallel surface for the
-    path-shaped `target_file` / `resolved_candidate_paths` audit fields —
-    different validator for path vs import-string shape.)
-
-    Rejection cases (each raises ValueError with a discriminating message):
-
-    - empty input
-    - any backslash or forward-slash (Python imports use `.` as separator)
-    - any shell metacharacter from the existing `_SHELL_METACHARS_RE` set
-    - leading dot, trailing dot, or empty interior part (e.g., `foo..bar`)
-    - any part that is not a valid Python identifier (e.g., `123abc`)
-    - any part that is a reserved Python keyword (e.g., `class`, `for`)
-    """
+    Shared by trace schemas and resolve_candidate_paths per `DECISIONS.md#024`
+    point 1 and `specs/2026-05-23-trace-node.md` M3. Raise ValueError for empty
+    input, slashes/backslashes, shell or Trojan-Source characters, empty dotted
+    parts, non-identifiers, or Python keywords. NFC preserves script distinctions;
+    it does not transliterate lookalike identifiers."""
     if not value:
         raise ValueError("import_string must not be empty")
     normalized = unicodedata.normalize("NFC", value)
@@ -172,26 +133,9 @@ def is_valid_import_string(value: str) -> str:
         raise ValueError("import_string must not contain path separators (use `.`)")
     if _SHELL_METACHARS_RE.search(normalized):
         raise ValueError("import_string contains shell metacharacters")
-    # CVE-2021-42574 ("Trojan Source") — `_TROJAN_SOURCE_CHARS_RE`
-    # rejects bidi-override + invisible-format characters EXCEPT
-    # U+200C (ZWNJ) and U+200D (ZWJ), which are deliberately admitted
-    # (see the regex's documented rationale: legitimate use in
-    # Persian/Arabic word-joining + Hindi/Devanagari conjuncts + emoji
-    # ZWJ sequences; `tests/unit/test_coordinates_paths_protocol.py::
-    # test_zwj_and_zwnj_deliberately_admitted` pins both). This gate
-    # blocks the broader Trojan-Source family — the exact set is the
-    # regex above: U+200B (ZWSP), U+200E/U+200F (LRM/RLM),
-    # U+202A–U+202E (LRE/RLE/PDF/LRO/RLO), U+2066–U+2069 (LRI/RLI/FSI/PDI),
-    # and U+FEFF (ZWNBSP/BOM). It mirrors `validate_diff_path`'s
-    # parallel rejection on the path surface. The two are sibling
-    # defenses for the two audit-side surfaces: `proposed_import_strings`
-    # runs THIS validator; `resolved_candidate_paths` / `target_file`
-    # runs `validate_diff_path`. The narrow ZWJ/ZWNJ admission is a
-    # documented trade-off: rejecting them would block legitimate
-    # non-Latin-script identifier contributions, which the project
-    # accepts instead of the marginal homoglyph-attack risk. The
-    # hangul-filler family (U+3164, U+FFA0) is OUT of scope here —
-    # extend the regex if a future homoglyph audit pulls them in.
+    # The shared CVE-2021-42574 reject set deliberately admits ZWJ/ZWNJ
+    # for real-script identifiers; see its declaration and
+    # test_coordinates_paths_protocol.py::test_zwj_and_zwnj_deliberately_admitted.
     if _TROJAN_SOURCE_CHARS_RE.search(normalized):
         raise ValueError(
             "import_string contains bidi-override or invisible-format characters "
@@ -203,7 +147,10 @@ def is_valid_import_string(value: str) -> str:
             "import_string has empty leading/trailing/interior part "
             "(e.g., '.foo', 'foo.', 'foo..bar')"
         )
-    bad_parts = [p for p in parts if not p.isidentifier() or keyword.iskeyword(p)]
+    bad_parts: list[str] = []
+    for import_part in parts:
+        if not import_part.isidentifier() or keyword.iskeyword(import_part):
+            bad_parts.append(import_part)
     if bad_parts:
         raise ValueError(
             f"import_string parts not valid Python identifiers "
@@ -216,52 +163,17 @@ def resolve_candidate_paths(
     import_string: str,
     import_root: Path,
 ) -> list[Path]:
-    """ImportPathResolver Protocol implementation per `src/outrider/ast_facts/base.py`.
+    """Return safe module-file and package-init candidates below import_root.
 
-    The **root-aware** surface of the two-surface path-validation rule in
-    `docs/spec.md` §10.1 / `docs/trust-boundaries.md` §5.3 (the other being
-    `validate_diff_path` for the GitHub API path).
+    Implements ast_facts/base.py's root-aware ImportPathResolver contract
+    (docs/spec.md §10.1, docs/trust-boundaries.md §5.3). Validate the dotted
+    import, then check both paths for containment and symlinks, including the
+    root and all ancestors. Omit candidates whose safety walk fails; invalid
+    imports return an empty list.
 
-    Translates a dotted Python import string (e.g., `"foo.bar"`) into the
-    two repo-relative candidate paths Python's import machinery would
-    consider: the module file (`foo/bar.py`) and the package init
-    (`foo/bar/__init__.py`). Each candidate is validated against the full
-    Protocol contract before being returned:
-
-    - relative-only, no `..` traversal in any component
-    - no shell metacharacters or backslashes / forward-slashes in the
-      import string itself
-    - prefix-validated against `import_root` (after resolving symlinks,
-      the candidate must still lie under `import_root`)
-    - no path component is a symlink — final, any ancestor, AND
-      `import_root` itself. Per the Protocol's "any ancestor up to
-      `import_root`" rule (read as inclusive), a symlinked root is
-      rejected up-front because `python_adapter.resolve_simple_direct_import`
-      calls `is_file(follow_symlinks=False)` which only guards the FINAL
-      component — ancestor symlinks (including root) would otherwise be
-      followed at stat time.
-
-    Candidates that cannot be guaranteed symlink-free, fail prefix-validation,
-    or hit any filesystem error during the safety walk are omitted from the
-    returned list per the ast_facts spec contract — `ast_facts/` treats
-    omitted paths as "did not exist." Returns an empty list for malformed
-    import strings (empty, leading/trailing dot, empty interior part, any
-    rejected character, or any part that is not a valid Python identifier —
-    e.g., numeric prefix `123abc`, a Python keyword like `class`).
-
-    Input-string validation delegates to `is_valid_import_string` (shared with
-    `TraceCandidate.import_string` field validator); validation failures map
-    to the empty-list return per this function's existing "treats as does-
-    not-exist" contract.
-
-    V1.5 swap caution (FUP-209): this surface is module-form only. The
-    V1 trace resolver (`agent/nodes/trace.py::_resolve_via_probes`)
-    additionally resolves symbol-form candidates (`svc.queries.run_query`,
-    `app.views.UserView.get`) via a suffix-strip ladder with symbol
-    verification. Replacing the probe resolver with this function
-    without reproducing that ladder regresses symbol-form resolution
-    to `unresolved`.
-    """
+    This surface resolves module forms only. V1 trace's API-probe resolver
+    also strips symbol suffixes and verifies symbols (FUP-209); replacing it
+    with this function requires preserving that ladder."""
     try:
         normalized = is_valid_import_string(import_string)
     except ValueError:
@@ -614,49 +526,24 @@ def resolve_specifier_candidate_paths(
 
 
 def validate_diff_path(file_path: str) -> str:
-    """Diff-side path validation surface — publisher-facing.
+    """Return an NFC-normalized repo-relative POSIX path for GitHub API use.
 
-    The **string-level** surface of the two-surface path-validation rule
-    in docs/spec.md §10.1 / docs/trust-boundaries.md §5.3 (the other being
-    `resolve_candidate_paths` for filesystem use). Backs the
-    `paths-validated-before-use` invariant (security-critical).
+    The string-level gate in docs/spec.md §10.1 / docs/trust-boundaries.md §5.3
+    backs paths-validated-before-use (security-critical). Reject empty or long
+    paths, absolute/drive-prefixed paths, traversal, backslashes, shell and
+    Trojan-Source characters, and a first .git component. PurePosixPath
+    normalizes redundant separators and dot components.
 
-    Rejects, with `CoordinateError`:
-    - empty strings
-    - absolute paths (`is_absolute()` on a `PurePosixPath`)
-    - Windows drive-letter prefixes (`C:/`, `C:\\`, `C:foo`) — `PurePosixPath`
-      treats these as relative, so they need a separate rejection
-    - `..` traversal in any path component
-    - backslash characters (Windows separators; GitHub paths are POSIX)
-    - shell metacharacters (`;`, `&`, `|`, `` ` ``, `$`, `(`, `)`, `<`, `>`,
-      `\\n`, `\\r`, NUL, `*`, `?`, `~`, `[`, `]`, `{`, `}`, `'`, `"`)
-
-    Returns the validated path in repo-relative POSIX form, normalized
-    to Unicode NFC. The NFC normalization is the load-bearing step for
-    identity-hash stability per spec §1: two filesystems / two clients
-    that submit the same logical path under different normalization
-    forms (NFC `café` vs NFD `cafe + combining-acute`) would otherwise
-    produce different byte sequences and different content-derived
-    hashes (round_id, candidate_id), defeating the dedup-by-key
-    reducer's idempotency promise on replay.
-
-    No `.resolve()` and no prefix-validation here — those apply to the
-    root-aware surface (`resolve_candidate_paths`), per the amended
-    canonical's two-surface split. The GitHub comment API consumes string
-    paths, and there is no host filesystem to resolve against in this
-    surface.
-    """
+    NFC keeps path-bearing hashes stable across equivalent Unicode spellings.
+    There is no filesystem resolution here; containment and symlink checks
+    belong to the root-aware resolve_candidate_paths surface."""
     if not file_path:
         raise CoordinateError(
             "file_path is empty",
             kind=CoordinateErrorKind.PATH_VALIDATION_FAILED,
         )
-    # NFC normalization FIRST, before any other check, so all downstream
-    # validators (Trojan-Source, metachars, traversal) see the same byte
-    # sequence the hash recipes will see. spec §1 promised NFC; implementation initially
-    # omitted it. Pure-ASCII paths are NFC-idempotent so the change
-    # affects only multibyte paths — which is exactly the surface where
-    # the hash drift would manifest.
+    # Normalize before character/path guards so validation and identity hashes
+    # see the same NFC value (spec §1).
     file_path = unicodedata.normalize("NFC", file_path)
     if len(file_path) > _MAX_DIFF_PATH_LENGTH:
         raise CoordinateError(
@@ -713,46 +600,14 @@ def validate_diff_path(file_path: str) -> str:
 
 
 def _wrap_github_hunks_with_headers(patch: str, file_path: str) -> str:
-    """Synthesize ``--- a/X`` / ``+++ b/X`` file headers around a hunks-only
-    patch so `unidiff.PatchSet` can parse it.
+    """Add file headers only when the first non-blank line starts with @@.
 
-    Wire-format reality: GitHub's ``/pulls/{number}/files`` API returns
-    each file's ``patch`` field as hunks only — no preceding ``--- a/...``
-    / ``+++ b/...`` headers, no ``diff --git`` line. `unidiff` requires
-    those headers to attach hunks to a file; without them, the first
-    ``@@`` line raises ``UnidiffParseError("Unexpected hunk found")``.
-    This helper detects the hunks-only shape and synthesizes a minimal
-    header pair using ``file_path`` for both source and target sides.
-
-    **Detector policy.** Strictly narrow: the input is treated as
-    hunks-only ONLY when its first non-blank line begins with ``@@``.
-    Anything else (``---`` / ``+++`` already present, ``diff --git ...``
-    prefix, ``Index: ...`` extended header, leading metadata lines) is
-    passed through unchanged — `unidiff` knows how to parse those.
-    A too-narrow detector (e.g. only checking ``startswith("--- ")``)
-    can wrap an already-unified diff and create a malformed hybrid.
-
-    **What the wrap loses.** Using the same ``file_path`` on both header
-    lines is enough for the three current consumers (membership query in
-    ``file_in_patch``, path-keyed lookup in ``lookup_patched_file``, and
-    publisher-facing translation in ``_find_patched_file`` — the
-    wire-format normalization extension that lets ``tree_sitter_to_github``
-    accept GitHub's ``/pulls/{n}/files`` hunks-only shape) but deliberately
-    discards:
-
-    - The rename source path. ``PatchedFile.is_rename`` will report
-      ``False`` even for actually-renamed files.
-    - The ``is_added_file`` / ``is_removed_file`` semantics derived
-      from ``/dev/null`` source/target sides.
-
-    The three callers here don't consult those flags. If a future caller
-    needs rename-aware parsing, this helper must NOT be used — that
-    caller should accept ``(patch, current_path, previous_path)`` and
-    construct the headers accordingly, OR the producer side (intake +
-    ``ChangedFile`` schema) should normalize to full unified-diff form.
-    Both options are deferred to the rules-layer pass; for now this
-    helper stays module-private to discourage misuse.
-    """
+    GitHub file patches contain hunks without the headers unidiff requires.
+    Existing full patches and other prefixes pass through unchanged. The
+    same supplied path is used on both sides: rename source and /dev/null
+    added/removed flags are lost. Current membership, lookup, and translation
+    callers need the hunks, not those flags. A caller needing status or rename
+    semantics must supply a full patch instead."""
     # First non-blank line: strip leading whitespace/newlines AND the
     # UTF-8 BOM (U+FEFF) — `str.lstrip()` does not strip BOM, so a
     # patch beginning `﻿@@ ...` would otherwise survive the
@@ -771,40 +626,53 @@ def _wrap_github_hunks_with_headers(patch: str, file_path: str) -> str:
     return patch
 
 
-def file_in_patch(file_path: str, patch: str) -> bool:
-    """True if `file_path` matches any normalized `unidiff.PatchedFile.path` in `patch`.
+def _parse_and_match(patch: str, normalized_path: str) -> tuple[PatchSet, PatchedFile | None]:
+    """Parse `patch` and return it with the entry matching `normalized_path`.
 
-    `PatchedFile.path` is the operation-dependent canonical path:
-    additions, modifications, and renames return the **target** (head-side)
-    path; deletions return the **source** path because the target is
-    `/dev/null`. Both sides of the comparison are normalized: `file_path`
-    runs through `validate_diff_path` (canonicalizing `./foo.py` → `foo.py`,
-    `a//b.py` → `a/b.py`), and `unidiff.PatchedFile.path` runs through
-    `PurePosixPath(...).as_posix()`. The rename commitment ("match
-    `to_file` only, not `from_file`") follows from the same rule because
-    `PatchedFile.path` returns `to_file` for renames.
+    The three patch-membership surfaces — `file_in_patch`,
+    `lookup_patched_file` and `translator._find_patched_file` — share this
+    parse-and-match step, so they cannot drift on the GitHub hunks-only wrap,
+    on `UnidiffParseError` translation, or on the duplicate-entry rule.
 
-    Boolean-helper policy: returns `False` for empty patches (`patch == ""`),
-    for paths absent from the diff, AND for paths that fail
-    `validate_diff_path` (caller passed `..`, an absolute path, shell
-    metachars, etc.). The publisher's "in-patch vs not-in-patch" distinction
-    routes a malformed caller path the same way it routes an absent file —
-    to the `non_diffed_file` / `DASHBOARD_ONLY` tier — without coupling
-    `file_in_patch` to a security gate it isn't responsible for.
-    `tree_sitter_to_github` is the path-shape-validation gate (raises);
-    `file_in_patch` is the membership query (returns bool).
+    `normalized_path` is already `validate_diff_path`-normalized. Validation
+    stays with the callers because they disagree about it deliberately: a
+    membership query answers False/None for a malformed caller path, while
+    `tree_sitter_to_github` raises.
 
-    Raises `CoordinateError` on malformed patch input (any underlying
-    `unidiff` parse exception is wrapped, never leaked) and on patches
-    containing duplicate file entries (webhook-attacker input per trust
-    boundary #5; a duplicate is ambiguous routing input that deterministic
-    systems reject).
-
-    Backs the `publish-routes-through-coordinates` invariant: the
-    publisher uses this to distinguish `unchanged_region` (in-patch) from
-    `non_diffed_file` (absent) routing reasons WITHOUT inlining patch-
-    membership math, which would violate trust boundary #3.
+    Returns at most one match: more than one is the duplicate-entry rejection
+    above, so no caller re-derives that guarantee. The `PatchSet` comes back
+    too — translator's file-not-present error reports `len(patchset)`.
     """
+    try:
+        patchset = PatchSet(_wrap_github_hunks_with_headers(patch, normalized_path))
+    except UnidiffParseError as e:
+        raise CoordinateError(
+            f"malformed patch input: {e}",
+            kind=CoordinateErrorKind.MALFORMED_PATCH,
+        ) from e
+    matches: list[PatchedFile] = []
+    for patched_file in patchset:
+        if PurePosixPath(patched_file.path).as_posix() == normalized_path:
+            matches.append(patched_file)
+    if len(matches) > 1:
+        raise CoordinateError(
+            f"patch contains {len(matches)} duplicate entries for {normalized_path!r}",
+            kind=CoordinateErrorKind.DUPLICATE_FILE_ENTRY,
+        )
+    return patchset, (matches[0] if matches else None)
+
+
+def file_in_patch(file_path: str, patch: str) -> bool:
+    """Test membership by normalized PatchedFile.path.
+
+    For renames, this is the target/head path; deletions use the source path.
+    Return False for empty patches, invalid caller paths, or absent files.
+    Malformed patches and duplicate file entries raise CoordinateError.
+
+    tree_sitter_to_github owns the raising path-shape gate; this helper owns
+    the membership query. Publish uses it for unchanged_region/non_diffed_file
+    routing under publish-routes-through-coordinates, without consumer-side
+    coordinate math."""
     if not patch:
         return False
     try:
@@ -814,40 +682,16 @@ def file_in_patch(file_path: str, patch: str) -> bool:
         # `tree_sitter_to_github` is the surface that raises on bad shape;
         # routing-membership queries return False.
         return False
-    try:
-        patchset = PatchSet(_wrap_github_hunks_with_headers(patch, normalized_file_path))
-    except UnidiffParseError as e:
-        raise CoordinateError(
-            f"malformed patch input: {e}",
-            kind=CoordinateErrorKind.MALFORMED_PATCH,
-        ) from e
-
-    matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == normalized_file_path]
-    if len(matches) > 1:
-        raise CoordinateError(
-            f"patch contains {len(matches)} duplicate entries for {normalized_file_path!r}",
-            kind=CoordinateErrorKind.DUPLICATE_FILE_ENTRY,
-        )
-    return bool(matches)
+    _patchset, matched_file = _parse_and_match(patch, normalized_file_path)
+    return matched_file is not None
 
 
 class _CoordinatesImportPathResolver:
-    """`ImportPathResolver` Protocol implementation wrapping the
-    module-level `resolve_candidate_paths` function.
+    """Stateless Protocol bridge to the module's two resolution surfaces.
 
-    The standalone function is the actual implementation (and the
-    public surface readers reach for); this class is the
-    Protocol-satisfying bridge so `build_graph`'s `isinstance(...)`
-    gate accepts a stateless singleton resolver. Stateless by design —
-    one instance per process is sufficient; constructed at module
-    import time as `COORDINATES_IMPORT_PATH_RESOLVER`.
-
-    Per `docs/trust-boundaries.md §5.3`: `ast_facts/` consumes
-    already-validated paths via this Protocol; the validation
-    (relative-only, no `..` traversal, prefix-validation, no symlinks)
-    lives in the function this class wraps. Two-surface path-validation
-    rule preserved.
-    """
+    COORDINATES_IMPORT_PATH_RESOLVER is constructed once at import. The wrapped
+    functions own root containment and symlink validation; ast_facts receives
+    validated paths through this bridge per docs/trust-boundaries.md §5.3."""
 
     def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:
         return resolve_candidate_paths(import_string, import_root)
@@ -866,45 +710,17 @@ across concurrent reviews."""
 
 
 def lookup_patched_file(patch: str | None, file_path: str) -> PatchedFile | None:
-    """Return the `PatchedFile` matching `file_path` in `patch`, or None if absent.
+    """Return the matching PatchedFile, or None for empty/invalid/absent input.
 
-    Mirrors `file_in_patch`'s defensive shape but returns the matched
-    `PatchedFile` (or None) rather than a bool. None covers three
-    semantically distinct cases the caller may want to distinguish from
-    "in-patch": empty/None patch input, path that fails
-    `validate_diff_path`, and file absent from a well-formed patch.
-    The boolean-helper policy mirrors `file_in_patch` so a malformed
-    caller path doesn't surface as a routing exception — the consumer
-    interprets None as "no addable-text view of this file."
-
-    Distinguished from `_find_patched_file` (translator.py), which
-    raises `CoordinateError` on missing. Used by the analyze node body
-    for changed-region intersection, where the absent case is a
-    legitimate `skipped+NO_CHANGED_SCOPE_UNITS` outcome rather than an
-    error.
-
-    Raises `CoordinateError` only on malformed patch input (any
-    underlying `unidiff` parse exception is wrapped) and on patches
-    containing duplicate entries for the same normalized path — same
-    discipline as `file_in_patch`.
-    """
+    Share file_in_patch's parse and duplicate-entry checks. Malformed patches
+    and duplicate paths raise CoordinateError; an absent file does not.
+    The translator's _find_patched_file uses a different missing-file policy
+    and raises instead. Analyze uses this optional view for diff intersections."""
     if not patch:
         return None
     try:
         normalized_file_path = validate_diff_path(file_path)
     except CoordinateError:
         return None
-    try:
-        patchset = PatchSet(_wrap_github_hunks_with_headers(patch, normalized_file_path))
-    except UnidiffParseError as e:
-        raise CoordinateError(
-            f"malformed patch input: {e}",
-            kind=CoordinateErrorKind.MALFORMED_PATCH,
-        ) from e
-    matches = [pf for pf in patchset if PurePosixPath(pf.path).as_posix() == normalized_file_path]
-    if len(matches) > 1:
-        raise CoordinateError(
-            f"patch contains {len(matches)} duplicate entries for {normalized_file_path!r}",
-            kind=CoordinateErrorKind.DUPLICATE_FILE_ENTRY,
-        )
-    return matches[0] if matches else None
+    _patchset, matched_file = _parse_and_match(patch, normalized_file_path)
+    return matched_file

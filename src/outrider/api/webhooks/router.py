@@ -1,50 +1,15 @@
 # FastAPI router for the GitHub webhook endpoint per intake-and-webhook spec.
-"""`POST /webhooks/github` — webhook receiver.
+"""Receive GitHub events and start reviews at `POST /webhooks/github`.
 
-Sequence:
+Verify the signature on size-bounded raw bytes before interpreting the payload.
+Installation events update the local cache. Eligible non-draft PR events pass
+the local authorization check, reuse an existing review for the same commit or
+commit a review row and initial audit event, then enqueue graph execution.
 
-  1. `received_at = datetime.now(UTC)` — capture as early as possible,
-     BEFORE any input-validation work. Held in a local; only attached
-     to the seed ReviewState once signature/membership/idempotency clear.
-  2. Read `X-Hub-Signature-256`; missing → 401 WITHOUT reading the
-     request body (defends against unauthenticated multi-GB POST
-     buffering pressure).
-  2b. Content-Length precheck against `_MAX_WEBHOOK_BODY_BYTES` (1 MiB).
-     `Content-Length` exceeding cap → 413 BEFORE `await request.body()`.
-     Malformed (non-integer) Content-Length → 400. Post-read length
-     guard at step 3 is defense-in-depth for chunked / missing-header
-     deliveries. Streaming-HMAC bound remains FUP-034 part 1.
-  3. `body = await request.body()` — raw bytes captured BEFORE any
-     model binding; rejected with 413 if `len(body)` exceeds the cap
-     (catches chunked / lying-Content-Length cases). FastAPI's default
-     `Request.body()` caches internally (Starlette `_body`); a second
-     call returns the same bytes.
-  4. `verify_signature(secret, body, signature_header)` via the
-     route-facing module that delegates to `github/webhooks.py`. Returns
-     False → 401. Unexpected raises propagate as 5xx (verifier
-     programming errors are operator-visible, not auth-failure-shaped).
-  5. Parse JSON payload via `PullRequestEventPayload`.
-  6. Event/action allowlist (opened/synchronize/reopened) — others 2xx no-op.
-  7. Active-membership SELECT — `installations.tombstoned_at IS NULL`
-     AND `installation_repositories.removed_at IS NULL` for
-     `(installation_id, repo_id)`. Absent/inactive → 4xx.
-  8. Idempotency fast-path SELECT on `(repo_id, pr_number, head_sha)`;
-     if found → 200 with existing `review_id`.
-  9. Single transaction: INSERT review + INSERT AgentTransitionEvent
-     (direct SQL, the documented exception to the persister-only rule).
-     Commit. On IntegrityError with `uq_review_natural_key` → duplicate;
-     return existing review. On other IntegrityError → fall back to
-     natural-key SELECT (user-approved defensive pattern; deviates from
-     spec's narrow-introspection-only rule), then re-raise only if no
-     natural-key row exists.
- 10. Construct seed `ReviewState(review_id, pr_context, received_at,
-     is_eval=False)`; call `await dispatcher.dispatch(state)`. Dispatch
-     failure → mark review failed via a shielded cleanup task (drained
-     under `except BaseException` so the original failure isn't masked),
-     then re-raise.
- 11. Return 202 Accepted with `review_id`.
-
-`X-GitHub-Delivery` is logged for traceability; never persisted.
+New work returns 202 with its review_id; duplicate deliveries return 200 with
+the existing id. Dispatch failures attempt to mark the new review failed, then propagate.
+`_PULL_REQUEST_ACTION_ALLOWLIST` defines triggers. `X-GitHub-Delivery` is logged,
+not persisted. Full streaming protection remains FUP-034.
 """
 
 from __future__ import annotations
@@ -80,6 +45,9 @@ from outrider.db.models.reviews import Review
 from outrider.github.credentials import GitHubUnconfiguredError
 
 if TYPE_CHECKING:
+    from sqlalchemy import Select
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from outrider.dispatcher import ReviewDispatcher
     from outrider.github.credentials import GitHubCredentialProvider
 
@@ -93,32 +61,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# Arc B2 autorun: `ready_for_review` fires when a draft PR becomes ready — the
-# trigger to review a PR that opened as a draft. Draft PRs themselves are skipped
-# by the draft-check below (a draft `opened`/`synchronize` is a 2xx no-op).
+# Draft events are ignored; ready_for_review starts work when the PR becomes ready.
 _PULL_REQUEST_ACTION_ALLOWLIST: frozenset[str] = frozenset(
     {"opened", "synchronize", "reopened", "ready_for_review"}
 )
 
-# Hard cap on webhook body size at the FastAPI/ASGI boundary. GitHub's
-# real `pull_request` payloads are well under 1 MiB (the heaviest cases
-# are big PRs with long descriptions; the payload itself does not include
-# file content — intake pulls content via the contents API). 1 MiB is
-# 5-10x typical worst-case, comfortable headroom without admitting
-# attacker-controlled multi-MB / multi-GB bodies into RAM.
+# Webhook body-size cap at the FastAPI/ASGI boundary.
 #
-# Two-layer enforcement:
-#   1. Content-Length precheck — reject before `await request.body()`
-#      buffers anything. Most well-formed deliveries carry this header.
-#   2. Post-read length guard — defense-in-depth for chunked /
-#      no-content-length / lying-content-length deliveries. The
-#      precheck-only path would still buffer the full body before the
-#      schema/signature layer caught oversize.
-#
-# Full streaming-HMAC bound (no buffering even chunked) is FUP-034 part 1
-# remaining work; this commit lands the Content-Length precheck + post-
-# read guard, closing the unsigned/signed-but-attacker DoS path with
-# Content-Length set.
+# Requests with malformed, negative, or declared over-cap lengths are rejected
+# before buffering. Any over-cap body that reaches the read is rejected after
+# buffering. Full streaming protection remains FUP-034.
 _MAX_WEBHOOK_BODY_BYTES: int = 1_048_576  # 1 MiB
 
 
@@ -138,130 +90,13 @@ async def receive_pull_request_webhook(
     # Step 1: receipt timestamp, held until validation clears.
     received_at = datetime.now(UTC)
 
-    # Log delivery id for traceability; never persisted. Logged BEFORE
-    # body-read so missing-signature 401s still carry the correlation id
-    # for operators tracing the GitHub-side delivery.
-    logger.info(
-        "webhook received",
-        extra={
-            "x_github_delivery": x_github_delivery,
-            "x_github_event": x_github_event,
-            "received_at": received_at.isoformat(),
-        },
+    body = await _verified_webhook_body(
+        request,
+        x_hub_signature_256=x_hub_signature_256,
+        x_github_delivery=x_github_delivery,
+        x_github_event=x_github_event,
+        received_at=received_at,
     )
-
-    # Step 2: signature header presence — BEFORE body-read.
-    #
-    # Body-read-after-header-check defends against an unsigned multi-GB
-    # POST consuming RAM before failing. Streaming-HMAC cap (full
-    # chunked-transfer defense) tracked at FUP-034.
-    if x_hub_signature_256 is None:
-        logger.warning(
-            "webhook rejected: missing X-Hub-Signature-256",
-            extra={"x_github_delivery": x_github_delivery},
-        )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing signature")
-
-    # Step 2b: Content-Length precheck BEFORE buffering. A signed but
-    # attacker-controlled delivery that sets `Content-Length: 10000000000`
-    # would otherwise force `await request.body()` to allocate. The
-    # precheck rejects at HTTP-413 before any read; the post-read guard
-    # below catches the missing-header / lying-header chunked cases.
-    content_length_header = request.headers.get("content-length")
-    if content_length_header is not None:
-        try:
-            content_length = int(content_length_header)
-        except ValueError:
-            logger.warning(
-                "webhook rejected: malformed Content-Length",
-                extra={
-                    "x_github_delivery": x_github_delivery,
-                    "content_length_raw": content_length_header[:64],
-                },
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="malformed Content-Length",
-            ) from None
-        # Negative Content-Length is HTTP-malformed but `int()` accepts
-        # "-1" cleanly, and `-1 > cap` is False — without an explicit
-        # check, a negative header bypasses both the malformed-400 path
-        # AND the 413 cap, deferring rejection until after body buffer.
-        if content_length < 0:
-            logger.warning(
-                "webhook rejected: negative Content-Length",
-                extra={
-                    "x_github_delivery": x_github_delivery,
-                    "content_length_raw": content_length_header[:64],
-                },
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="malformed Content-Length",
-            )
-        if content_length > _MAX_WEBHOOK_BODY_BYTES:
-            logger.warning(
-                "webhook rejected: Content-Length exceeds cap",
-                extra={
-                    "x_github_delivery": x_github_delivery,
-                    "content_length": content_length,
-                    "cap": _MAX_WEBHOOK_BODY_BYTES,
-                },
-            )
-            raise HTTPException(
-                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                detail="payload too large",
-            )
-
-    # Step 3: capture raw body bytes BEFORE any JSON parsing. Signature
-    # verification (next step) requires the raw bytes the sender HMAC'd.
-    body = await request.body()
-    if len(body) > _MAX_WEBHOOK_BODY_BYTES:
-        # Defense-in-depth for chunked / missing / lying Content-Length.
-        # Reached after buffering — strictly worse than the precheck,
-        # which is why FUP-034 part 1 remains open for streaming-HMAC.
-        logger.warning(
-            "webhook rejected: body size exceeds cap post-read",
-            extra={
-                "x_github_delivery": x_github_delivery,
-                "body_bytes": len(body),
-                "cap": _MAX_WEBHOOK_BODY_BYTES,
-            },
-        )
-        raise HTTPException(
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail="payload too large",
-        )
-
-    # Step 4: signature verification BEFORE event-type filtering.
-    #
-    # `verify_signature` (delegating to `githubkit.webhooks.verify`)
-    # returns False for any signature mismatch — malformed digest,
-    # wrong-length header, base64 garbage, mismatched HMAC — never
-    # raises in those cases. We do NOT wrap this call in
-    # `except Exception` → 401: an unexpected verifier exception
-    # (programming bug, dependency regression) is a server-side fault
-    # that should surface as 5xx, not collapse into a "401 invalid
-    # signature" response that hides the actual failure class.
-    credential_provider: GitHubCredentialProvider = request.app.state.credential_provider
-    try:
-        creds = await credential_provider.current()
-    except GitHubUnconfiguredError:
-        # `database` mode, not yet CONFIGURED → fail closed with 503 (the delivery shows as
-        # failed on GitHub; the operator redelivers after setup — GitHub does not auto-retry).
-        # The setup-only route gating also returns 503 here; this is the defense-in-depth read
-        # at the secret source.
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="setup incomplete"
-        ) from None
-    secret = creds.webhook_secret.get_secret_value()
-    signature_ok = verify_signature(secret, body, x_hub_signature_256)
-    if not signature_ok:
-        logger.warning(
-            "webhook rejected: signature mismatch",
-            extra={"x_github_delivery": x_github_delivery},
-        )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid signature")
 
     # Step 5: dispatch by event type. Install-lifecycle events (`installation`,
     # `installation_repositories`) maintain the local install CACHE via idempotent upserts
@@ -314,54 +149,21 @@ async def receive_pull_request_webhook(
     repo_id = payload.repository.id
 
     async with session_factory() as session:
-        # Active install: exists, not tombstoned (#012), not suspended (Arc B2).
-        install = (
-            await session.execute(
-                select(Installation).where(
-                    Installation.installation_id == installation_id,
-                    Installation.tombstoned_at.is_(None),
-                    Installation.suspended_at.is_(None),
-                )
-            )
-        ).scalar_one_or_none()
-        # Arc B2 repository_selection gate: `all` installs authorize at the install
-        # level (no per-repo row); `selected` installs require the active per-repo
-        # membership row. Absent/tombstoned/suspended install → not authorized.
-        # (Per DECISIONS.md#065 the cache is the EARLY-OUT here; the authoritative
-        # live GitHub auth check is the intake node's first step — tracked B2 work.)
-        authorized = install is not None and (
-            install.repository_selection == "all"
-            or (
-                await session.execute(
-                    select(InstallationRepository.id).where(
-                        active_repo_membership(installation_id, repo_id)
-                    )
-                )
-            ).first()
-            is not None
+        await _assert_installation_authorized(
+            session,
+            installation_id=installation_id,
+            repo_id=repo_id,
+            x_github_delivery=x_github_delivery,
         )
-        if not authorized:
-            logger.warning(
-                "webhook rejected: unknown or inactive installation+repo membership",
-                extra={
-                    "installation_id": installation_id,
-                    "repo_id": repo_id,
-                    "x_github_delivery": x_github_delivery,
-                },
-            )
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="installation or repository not active",
-            )
 
         head_sha = payload.pull_request.head.sha
 
         # Step 8: idempotency fast-path SELECT.
         existing_row = await session.execute(
-            select(Review).where(
-                Review.repo_id == repo_id,
-                Review.pr_number == payload.pull_request.number,
-                Review.head_sha == head_sha,
+            _review_by_natural_key(
+                repo_id=repo_id,
+                pr_number=payload.pull_request.number,
+                head_sha=head_sha,
             )
         )
         existing = existing_row.scalar_one_or_none()
@@ -431,14 +233,14 @@ async def receive_pull_request_webhook(
         # driver without diag) re-raises so the delivery is marked
         # failed on GitHub (redeliverable; GitHub does not auto-retry).
         if _is_reviews_natural_key_conflict(exc):
-            # The duplicate row exists. Re-read it (separate session
-            # because the failing transaction was rolled back).
+            # Re-read the conflicting natural-key row in a separate session
+            # because the failed transaction was rolled back.
             async with session_factory() as session:
                 existing_row = await session.execute(
-                    select(Review).where(
-                        Review.repo_id == repo_id,
-                        Review.pr_number == payload.pull_request.number,
-                        Review.head_sha == head_sha,
+                    _review_by_natural_key(
+                        repo_id=repo_id,
+                        pr_number=payload.pull_request.number,
+                        head_sha=head_sha,
                     )
                 )
                 existing = existing_row.scalar_one()
@@ -449,33 +251,16 @@ async def receive_pull_request_webhook(
                 "review_id": str(existing.id),
             }
 
-        # Defensive fallback. **NOTE: this deviates from the canonical
-        # spec's narrow-introspection-only rule** (which mandates
-        # re-raise when `_is_reviews_natural_key_conflict` returns
-        # False). The deviation is user-approved and documented in the
-        # spec's Actual Outcome section.
-        #
-        # The rationale: primary introspection returned False could
-        # mean (a) genuine audit-side conflict / FK violation that must
-        # re-raise, OR (b) psycopg / driver shape change made
-        # `exc.orig.diag.constraint_name` unreadable. (b) is a
-        # silent-misclassification risk: every duplicate delivery
-        # surfaces as 5xx → shows failed on GitHub and invites manual
-        # redelivery → loss of idempotency under a dependency upgrade.
-        #
-        # Cheap defense: SELECT the natural-key row. If it exists, the
-        # failed INSERT was a duplicate delivery; return 200. If not,
-        # the failure was on the audit-side / FK / unrelated constraint
-        # and re-raise is correct. The corner case of a concurrent
-        # committer also masking a TRUE audit collision is acceptable —
-        # the audit-side error surfaces in monitoring; GitHub-side
-        # duplicate detection is preserved.
+        # Driver changes can make constraint-name inspection fail. Check the
+        # natural key before treating this as an unrelated insert error.
+        # This approved fallback may also mask a concurrent audit conflict;
+        # see the intake-and-webhook spec's Actual Outcome.
         async with session_factory() as session:
             fallback_row = await session.execute(
-                select(Review).where(
-                    Review.repo_id == repo_id,
-                    Review.pr_number == payload.pull_request.number,
-                    Review.head_sha == head_sha,
+                _review_by_natural_key(
+                    repo_id=repo_id,
+                    pr_number=payload.pull_request.number,
+                    head_sha=head_sha,
                 )
             )
             fallback_existing = fallback_row.scalar_one_or_none()
@@ -495,8 +280,7 @@ async def receive_pull_request_webhook(
                 "status": fallback_existing.status,
                 "review_id": str(fallback_existing.id),
             }
-        # No natural-key row exists — genuine audit-side conflict, FK
-        # violation, or other. Re-raise so GitHub retries.
+        # No matching review exists; preserve the original insert error.
         raise
 
     # Step 10: construct seed ReviewState and dispatch.
@@ -513,58 +297,18 @@ async def receive_pull_request_webhook(
     try:
         await dispatcher.dispatch(seed_state)
     except BaseException:
-        # `BaseException` (not `Exception`) so `asyncio.CancelledError`
-        # — which inherits from BaseException in Python 3.8+ — doesn't
-        # bypass the cleanup. Lifespan shutdown / client disconnect /
-        # supervisor abort during dispatch would otherwise strand the
-        # review at 'running' with no failure signal.
-        #
-        # The review row + initial AgentTransitionEvent committed; if
-        # dispatch fails (event-loop shutdown, JSON-serialize crash,
-        # broker unreachable in V2), the row would sit at 'running'
-        # forever and a GitHub retry would short-circuit through the
-        # natural-key fast path returning the stranded review. Mark
-        # `status='failed'` so the row reflects reality, then re-raise
-        # so the handler returns 5xx and operators see the error.
-        #
-        # Trade-off (acknowledged in spec): GitHub's retry will then
-        # see the existing 'failed' row via the natural-key fast path
-        # and return 200 — the failed delivery does not auto-retry the
-        # graph. The user must push a new commit (new head_sha →
-        # different natural key) to get a fresh review. The full
-        # durable-recovery story (dispatched_at column with conditional
-        # re-dispatch) is FUP-eligible per the spec's idempotency bullet.
-        #
-        # The failed-status write is wrapped in its own try/except so a
-        # DB error during cleanup doesn't mask the original dispatch
-        # failure. Bare `raise` re-raises the original exception
-        # (including CancelledError); the cleanup-failure log line is
-        # distinct from the dispatch-failure log so operators can tell
-        # which path went wrong.
-        #
-        # The cleanup is spawned as a task and awaited via
-        # `asyncio.shield` so a SECOND cancellation arriving while the
-        # status write is in flight doesn't interrupt the write and
-        # strand the review at 'running'. `await asyncio.shield(coro)`
-        # alone is insufficient — the outer task still observes the
-        # CancelledError; we explicitly catch it and `await cleanup_task`
-        # to drain the shielded write before re-raising the original
-        # dispatch failure.
+        # The review already committed. Cancellation also needs failed-status
+        # cleanup, hence BaseException. Cleanup errors must not mask dispatch's
+        # original failure. Redelivery reuses this row; it does not restart work.
+        # Shield and drain cleanup so a second cancellation cannot abandon it.
         async def _mark_failed() -> None:
             try:
                 async with session_factory() as failure_session, failure_session.begin():
                     from sqlalchemy import and_ as _and  # noqa: PLC0415
                     from sqlalchemy import update as _update  # noqa: PLC0415
 
-                    # WHERE-on-status guards against stomping a row that
-                    # already advanced past `running` (V2 Celery dispatch
-                    # may enqueue successfully then raise on the return
-                    # path; an opportunistic worker that picks up the job
-                    # AND moves the row to `awaiting_approval` BEFORE
-                    # this cleanup task runs would otherwise see its
-                    # state overwritten to `failed`). rowcount=0 path
-                    # logs explicitly so the dispatch-failure-vs-row-
-                    # advancement ambiguity is observable.
+                    # A dispatcher may enqueue work before raising. Do not
+                    # overwrite a review that already advanced beyond running.
                     result = await failure_session.execute(
                         _update(Review)
                         .where(_and(Review.id == review_id, Review.status == "running"))
@@ -624,6 +368,198 @@ async def receive_pull_request_webhook(
         raise
 
     return {"status": "running", "review_id": str(review_id)}
+
+
+async def _assert_installation_authorized(
+    session: AsyncSession,
+    *,
+    installation_id: int,
+    repo_id: int,
+    x_github_delivery: str | None,
+) -> None:
+    """Raise 404 unless the local install cache shows this repo as active.
+
+    Per `DECISIONS.md#065` the cache is an EARLY-OUT, never the authority — the
+    authoritative live GitHub check runs at intake. An `all`-selection install
+    authorizes at the install level; a `selected` install additionally requires the
+    per-repo membership row.
+    """
+    # Active install: exists, not tombstoned (#012), not suspended (Arc B2).
+    install = (
+        await session.execute(
+            select(Installation).where(
+                Installation.installation_id == installation_id,
+                Installation.tombstoned_at.is_(None),
+                Installation.suspended_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    # Arc B2 repository_selection gate: `all` installs authorize at the install
+    # level (no per-repo row); `selected` installs require the active per-repo
+    # membership row. Absent/tombstoned/suspended install → not authorized.
+    # (Per DECISIONS.md#065 the cache is the EARLY-OUT here; the authoritative
+    # live GitHub auth check is the intake node's first step — tracked B2 work.)
+    authorized = install is not None and (
+        install.repository_selection == "all"
+        or (
+            await session.execute(
+                select(InstallationRepository.id).where(
+                    active_repo_membership(installation_id, repo_id)
+                )
+            )
+        ).first()
+        is not None
+    )
+    if not authorized:
+        logger.warning(
+            "webhook rejected: unknown or inactive installation+repo membership",
+            extra={
+                "installation_id": installation_id,
+                "repo_id": repo_id,
+                "x_github_delivery": x_github_delivery,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="installation or repository not active",
+        )
+
+
+async def _verified_webhook_body(
+    request: Request,
+    *,
+    x_hub_signature_256: str | None,
+    x_github_delivery: str | None,
+    x_github_event: str | None,
+    received_at: datetime,
+) -> bytes:
+    """Return the request body after size checks and signature verification.
+
+    Rejections raise HTTPException. A missing signature header or declared over-cap
+    Content-Length is rejected before buffering. If an over-cap body is chunked or
+    its length is missing or understated, rejection occurs only after buffering;
+    streaming protection remains FUP-034.
+    """
+    # Log delivery id for traceability; never persisted. Logged BEFORE
+    # body-read so missing-signature 401s still carry the correlation id
+    # for operators tracing the GitHub-side delivery.
+    logger.info(
+        "webhook received",
+        extra={
+            "x_github_delivery": x_github_delivery,
+            "x_github_event": x_github_event,
+            "received_at": received_at.isoformat(),
+        },
+    )
+
+    # Reject requests that omit the signature header before reading the body.
+    # Header presence alone does not prevent buffering; streaming protection remains FUP-034.
+    if x_hub_signature_256 is None:
+        logger.warning(
+            "webhook rejected: missing X-Hub-Signature-256",
+            extra={"x_github_delivery": x_github_delivery},
+        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing signature")
+
+    # Step 2b: reject a declared Content-Length above the cap before buffering.
+    # If an over-cap body is chunked or its length is missing or understated, the
+    # post-read guard rejects it only after `request.body()` has buffered it.
+    content_length_header = request.headers.get("content-length")
+    if content_length_header is not None:
+        try:
+            content_length = int(content_length_header)
+        except ValueError:
+            logger.warning(
+                "webhook rejected: malformed Content-Length",
+                extra={
+                    "x_github_delivery": x_github_delivery,
+                    "content_length_raw": content_length_header[:64],
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="malformed Content-Length",
+            ) from None
+        # Negative Content-Length is HTTP-malformed but `int()` accepts
+        # "-1" cleanly, and `-1 > cap` is False — without an explicit
+        # check, a negative header bypasses both the malformed-400 path
+        # AND the 413 cap, deferring rejection until after body buffer.
+        if content_length < 0:
+            logger.warning(
+                "webhook rejected: negative Content-Length",
+                extra={
+                    "x_github_delivery": x_github_delivery,
+                    "content_length_raw": content_length_header[:64],
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="malformed Content-Length",
+            )
+        if content_length > _MAX_WEBHOOK_BODY_BYTES:
+            logger.warning(
+                "webhook rejected: Content-Length exceeds cap",
+                extra={
+                    "x_github_delivery": x_github_delivery,
+                    "content_length": content_length,
+                    "cap": _MAX_WEBHOOK_BODY_BYTES,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="payload too large",
+            )
+
+    # Step 3: capture raw body bytes BEFORE any JSON parsing. Signature
+    # verification (next step) requires the raw bytes the sender HMAC'd.
+    body = await request.body()
+    if len(body) > _MAX_WEBHOOK_BODY_BYTES:
+        # Reject any over-cap body that reached buffering. Streaming protection
+        # remains FUP-034.
+        logger.warning(
+            "webhook rejected: body size exceeds cap post-read",
+            extra={
+                "x_github_delivery": x_github_delivery,
+                "body_bytes": len(body),
+                "cap": _MAX_WEBHOOK_BODY_BYTES,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="payload too large",
+        )
+
+    # Step 4: signature verification BEFORE event-type filtering.
+    #
+    # `verify_signature` (delegating to `githubkit.webhooks.verify`)
+    # returns False for any signature mismatch — malformed digest,
+    # wrong-length header, base64 garbage, mismatched HMAC — never
+    # raises in those cases. We do NOT wrap this call in
+    # `except Exception` → 401: an unexpected verifier exception
+    # (programming bug, dependency regression) is a server-side fault
+    # that should surface as 5xx, not collapse into a "401 invalid
+    # signature" response that hides the actual failure class.
+    credential_provider: GitHubCredentialProvider = request.app.state.credential_provider
+    try:
+        creds = await credential_provider.current()
+    except GitHubUnconfiguredError:
+        # `database` mode, not yet CONFIGURED → fail closed with 503 (the delivery shows as
+        # failed on GitHub; the operator redelivers after setup — GitHub does not auto-retry).
+        # The setup-only route gating also returns 503 here; this is the defense-in-depth read
+        # at the secret source.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="setup incomplete"
+        ) from None
+    secret = creds.webhook_secret.get_secret_value()
+    signature_ok = verify_signature(secret, body, x_hub_signature_256)
+    if not signature_ok:
+        logger.warning(
+            "webhook rejected: signature mismatch",
+            extra={"x_github_delivery": x_github_delivery},
+        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid signature")
+
+    return body
 
 
 def _parse_webhook_or_reject[PayloadT: BaseModel](
@@ -759,6 +695,15 @@ def _serialize_webhook_agent_transition(
         latency_ms=0,
     )
     return _serialize_event_payload(event)
+
+
+def _review_by_natural_key(*, repo_id: int, pr_number: int, head_sha: str) -> Select[tuple[Review]]:
+    """Build the database-enforced review natural-key lookup without choosing result strictness."""
+    return select(Review).where(
+        Review.repo_id == repo_id,
+        Review.pr_number == pr_number,
+        Review.head_sha == head_sha,
+    )
 
 
 def _is_reviews_natural_key_conflict(exc: SQLAlchemyIntegrityError) -> bool:

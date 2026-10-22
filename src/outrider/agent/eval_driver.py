@@ -2,35 +2,20 @@
 # See specs/2026-06-01-eval-graph-driver.md (resolution A). LLM-provider boundary #8 +
 # input boundary #5: the adapters implement the LLMProvider / GitHub / GitHubPublisher
 # Protocols WITHOUT importing anthropic/githubkit — they replay fixture data only.
-"""The eval graph driver — drive the real 7-logical-node graph from a JSON fixture.
+"""Drive the real review graph from JSON fixtures with persisted audit data.
 
-`run_review(fixture_path)` is the shim every non-structural eval scenario
-imports (`from outrider.agent import run_review`). It generalizes the
-CI-gated wiring in `tests/integration/test_e2e_smoke.py`: it builds the real
-compiled graph with real audit persisters against an ephemeral
-`postgres-test` database, fakes only the two network boundaries (a scripted
-`LLMProvider` and a fake GitHub read client + capturing publisher), runs the
-graph to completion, and returns an `EvalRunResult`.
+run_review owns an ephemeral test database and stops at completion or a HITL
+interrupt. run_review_persisting retains a caller-owned database;
+run_review_with_resume rebuilds the graph/checkpointer and supplies an explicit
+approval. Eval entry points require OUTRIDER_IS_EVAL=1 and isolated test URLs.
 
-**Why this lives in `src/`** (resolution A): the scenarios call
-`run_review("…json")` with only a path — its dependencies are
-self-constructed by default (the optional `probe=` cost probe and
-`model_config=` per-node-model seams aside) — and the import contract
-(`outrider.agent.run_review`) forces it to be `src`-reachable. The three
-adapters it constructs (`_FixtureScriptedProvider`, `_FixtureGitHubClient`,
-`_CapturingPublisher`) are therefore `src`-local, but they are a
-*data-driven replay engine*, not hand-coded mock scaffolding: each reads its
-responses straight from the fixture and imports no vendor SDK. Bespoke
-assertion-oriented doubles stay under `tests/`.
+Fixture adapters replay model and GitHub data without vendor SDKs. An optional
+provider_factory supplies a real/captured provider whose cleanup the driver
+owns; GitHub reads and publication still stay fixture-local. Scripted responses
+prove pipeline handling, not a real model's output quality.
 
-**Fail-closed.** `run_review` calls `require_eval_mode()` first (OUTRIDER_IS_EVAL=1)
-and the ephemeral-DB helper runs the port-5433/"test" URL guard before any
-DDL — this shim is `src`-reachable and must refuse to touch a non-test DB.
-
-**Scripted-vs-real caveat** (see the spec's Non-goals): a scripted LLM proves
-*pipeline handling of a given response*, NOT that the real model returns
-in-scope coordinates. That is a separate live-eval feature.
-"""
+This code lives in src because the eval entry points cannot import tests;
+see specs/2026-06-01-eval-graph-driver.md (resolution A)."""
 
 from __future__ import annotations
 
@@ -96,9 +81,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from outrider.ast_facts.base import ImportPathResolver
     from outrider.cache import AnalyzeCacheStore
     from outrider.github import InstallationGitHubClient
-    from outrider.llm.base import LLMExchangePersister, LLMRequest, LLMResponse
+    from outrider.llm.base import LLMExchangePersister, LLMProvider, LLMRequest, LLMResponse
     from outrider.schemas.analysis_round import AnalysisRound
     from outrider.schemas.publish import InlineComment
     from outrider.schemas.review_finding import ReviewFinding
@@ -307,21 +293,11 @@ class EvalRunResult:
 
 @dataclass(frozen=True)
 class ResumedRunResult:
-    """The terminal product of a RESUMED review — distinct from `EvalRunResult`.
+    """Result collected after explicitly approving a saved HITL request.
 
-    `EvalRunResult` means "single pass, may stop at the HITL gate."
-    `ResumedRunResult` means "the gate was approved and the resume ran to publish."
-    Keeping the two contracts separate keeps `.published_comments` /
-    `.analysis_rounds` crisp: here `.published_comments` is non-empty (publish ran
-    AFTER the explicit decision) and `.review_status` is `"completed"`.
-
-    `run_review_with_resume` reconstructs a FRESH graph + checkpointer on the same
-    Postgres DB (same `thread_id`) before resuming, so a populated
-    `.analysis_rounds` of the expected count is proof the resume continued the
-    ORIGINAL interrupted run (idempotent under the dedup-keyed reducer) rather than
-    starting a new one. `.hitl_decision` is the scripted approve-all decision that
-    was fed through `Command(resume=...)`, the eval stand-in for human input.
-    """
+    The resume driver rebuilds graph and checkpointer on the same database/thread.
+    analysis_rounds records the rehydrated state; hitl_decision records the scripted
+    approval. Publication may have no inline comments, so review_status is separate."""
 
     review_id: UUID
     analysis_rounds: tuple[AnalysisRound, ...]
@@ -822,17 +798,15 @@ class _CapturingPublisher:
 
 
 # ---------------------------------------------------------------------------
-# Adapter 4 — no-op import-path resolver (trace does not run in V1 scenarios)
+# Adapter 4 — default resolver for analyze's local import context
 # ---------------------------------------------------------------------------
 
 
 class _NoOpImportPathResolver:
-    """Satisfies build_graph's `ImportPathResolver` Protocol gate.
+    """Default resolver that supplies no local-filesystem candidate paths.
 
-    Trace does not run in the V1 driven scenarios (their analyze responses
-    carry no trace_candidates), so this is never actually called. A
-    trace-exercising scenario (deferred) needs a real resolver.
-    """
+    Trace resolves through GitHub probes independently. Callers may inject a real
+    resolver for analyze's scope/import context."""
 
     def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:
         return []
@@ -858,32 +832,35 @@ async def _eval_always_authorized(installation_id: int, repo_id: int) -> LiveAut
 
 def _github_factory_for(fixture: EvalFixture) -> Any:
     """Build a `github_factory(installation_id)` serving the fixture's PR."""
-    metas = [
-        _FixtureFileMeta(
-            filename=f.path,
-            status=f.status,
-            additions=f.additions,
-            deletions=f.deletions,
-            patch=f.patch,
-            previous_filename=f.previous_path,
+    metas: list[_FixtureFileMeta] = []
+    for metadata_file in fixture.files:
+        metas.append(
+            _FixtureFileMeta(
+                filename=metadata_file.path,
+                status=metadata_file.status,
+                additions=metadata_file.additions,
+                deletions=metadata_file.deletions,
+                patch=metadata_file.patch,
+                previous_filename=metadata_file.previous_path,
+            )
         )
-        for f in fixture.files
-    ]
     content: dict[tuple[str, str], str] = {}
-    for f in fixture.files:
+    for fixture_file in fixture.files:
         # Key by the CANONICAL path intake/trace fetch (`validate_diff_path`), so a
         # non-canonical fixture spelling still resolves. Paths are already
         # validated at `EvalFixture` construction, so this won't raise.
         # `previous_path` is the base-side path for renames; base content is read
         # there, head content at the new path (per intake's rename handling).
-        head_path = validate_diff_path(f.path)
+        head_path = validate_diff_path(fixture_file.path)
         base_path = validate_diff_path(
-            f.previous_path if (f.status == "renamed" and f.previous_path) else f.path
+            fixture_file.previous_path
+            if (fixture_file.status == "renamed" and fixture_file.previous_path)
+            else fixture_file.path
         )
-        if f.content_base is not None:
-            content[(base_path, fixture.base_sha)] = f.content_base
-        if f.content_head is not None:
-            content[(head_path, fixture.head_sha)] = f.content_head
+        if fixture_file.content_base is not None:
+            content[(base_path, fixture.base_sha)] = fixture_file.content_base
+        if fixture_file.content_head is not None:
+            content[(head_path, fixture.head_sha)] = fixture_file.content_head
     # Beyond-diff repository content (trace's two-phase probe), served at head_sha
     # through the same content map as PR files, keyed by the canonical path.
     for path, repo_content in fixture.repository_contents_head.items():
@@ -975,7 +952,7 @@ def _build_eval_graph(
     fixture: EvalFixture,
     session_factory: async_sessionmaker[AsyncSession],
     persister: AuditPersister,
-    provider: _FixtureScriptedProvider,
+    provider: LLMProvider,
     publisher: _CapturingPublisher,
     checkpointer: Any,
     trivial_scope_filter_enabled: bool = False,
@@ -985,12 +962,13 @@ def _build_eval_graph(
     model_config: ModelConfig | None = None,
     host: str | None = None,
     analyze_max_concurrency: int = 1,
+    import_path_resolver: ImportPathResolver | None = None,
 ) -> Any:
-    """Build the seven-logical-node graph wired with the eval doubles.
+    """Build the seven-logical-node graph with eval sinks and the supplied provider.
 
     The single build-graph-deps bundle shared by the single-pass `_drive` and the
-    resume driver, so they cannot drift on which sinks/deps are injected. Only the
-    `checkpointer` differs across callers (`InMemorySaver` for single-pass;
+    resume driver, so their default sinks/deps cannot drift. Their default
+    `checkpointer` differs (`InMemorySaver` for single-pass;
     `AsyncPostgresSaver` for resume — durability is what makes resume possible).
 
     `model_config` lets a caller (the eval scorecard runner) vary per-node models
@@ -1047,7 +1025,9 @@ def _build_eval_graph(
         patch_config=PatchConfig(patches_enabled=False),
         checkpointer=checkpointer,
         publisher=publisher,
-        import_path_resolver=_NoOpImportPathResolver(),
+        import_path_resolver=(
+            import_path_resolver if import_path_resolver is not None else _NoOpImportPathResolver()
+        ),
         # Default 1: index-keyed `llm_responses["analyze"]` scripting depends
         # on deterministic call order. A concurrency scenario opts in with
         # `analyze_max_concurrency > 1` + the fixture's
@@ -1088,6 +1068,8 @@ async def _drive(
     model_config: ModelConfig | None = None,
     host: str | None = None,
     analyze_max_concurrency: int = 1,
+    provider_factory: Callable[[LLMExchangePersister], LLMProvider] | None = None,
+    import_path_resolver: ImportPathResolver | None = None,
 ) -> EvalRunResult:
     """Run the graph once against `db_url` (already migrated) and collect results.
 
@@ -1098,6 +1080,8 @@ async def _drive(
     best-effort (suppressed) so it never masks the root-cause exception.
     """
     engine = create_async_engine(db_url, poolclass=NullPool)
+    owned_provider: LLMProvider | None = None
+    run_failed = True
     try:
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         await _seed_installation(engine, fixture)
@@ -1108,13 +1092,18 @@ async def _drive(
             session_factory=session_factory, retention_settings=RetentionSettings()
         )
         publisher = _CapturingPublisher()
-        provider = _FixtureScriptedProvider(
-            fixture.llm_responses,
-            persister=persister,
-            probe=probe,
-            host=host,
-            analyze_responses_by_path=fixture.analyze_responses_by_path,
-        )
+        provider: LLMProvider
+        if provider_factory is None:
+            provider = _FixtureScriptedProvider(
+                fixture.llm_responses,
+                persister=persister,
+                probe=probe,
+                host=host,
+                analyze_responses_by_path=fixture.analyze_responses_by_path,
+            )
+        else:
+            owned_provider = provider_factory(persister)
+            provider = owned_provider
         graph = _build_eval_graph(
             fixture=fixture,
             host=host,
@@ -1128,6 +1117,7 @@ async def _drive(
             cache_mode=cache_mode,
             analyze_observed_skip_enforced=analyze_observed_skip_enforced,
             model_config=model_config,
+            import_path_resolver=import_path_resolver,
         )
 
         result = await graph.ainvoke(
@@ -1161,6 +1151,7 @@ async def _drive(
 
         # is_eval integrity gate (success path): a violation fails the run.
         await _run_is_eval_gate(engine)
+        run_failed = False
         return eval_result
     except Exception:
         # Failed run: still verify is_eval discipline before the DB is dropped,
@@ -1169,7 +1160,16 @@ async def _drive(
             await _run_is_eval_gate(engine)
         raise
     finally:
-        await engine.dispose()
+        try:
+            if owned_provider is not None:
+                if run_failed:
+                    # Preserve the review failure if provider cleanup also fails.
+                    with contextlib.suppress(Exception):
+                        await owned_provider.aclose()
+                else:
+                    await owned_provider.aclose()
+        finally:
+            await engine.dispose()
 
 
 async def _arun_review(
@@ -1180,6 +1180,8 @@ async def _arun_review(
     model_config: ModelConfig | None = None,
     host: str | None = None,
     analyze_max_concurrency: int = 1,
+    provider_factory: Callable[[LLMExchangePersister], LLMProvider] | None = None,
+    import_path_resolver: ImportPathResolver | None = None,
 ) -> EvalRunResult:
     async with ephemeral_database(base_url=base_url) as db_url:
         await run_alembic_upgrade_head(db_url)
@@ -1190,6 +1192,8 @@ async def _arun_review(
             model_config=model_config,
             host=host,
             analyze_max_concurrency=analyze_max_concurrency,
+            provider_factory=provider_factory,
+            import_path_resolver=import_path_resolver,
         )
 
 
@@ -1228,6 +1232,8 @@ def run_review(
     model_config: ModelConfig | None = None,
     host: str | None = None,
     analyze_max_concurrency: int = 1,
+    provider_factory: Callable[[LLMExchangePersister], LLMProvider] | None = None,
+    import_path_resolver: ImportPathResolver | None = None,
 ) -> EvalRunResult:
     """Drive the real 7-logical-node graph against a JSON PR fixture; return the result.
 
@@ -1248,8 +1254,14 @@ def run_review(
     selects its models, and pricing keys on `(host, model)`. (Single pass — a critical
     finding still gates at hitl; see `run_review_with_resume` to reach publish.) Default
     `None` -> anthropic (byte-identical to before).
+
+    `provider_factory` opts into a real or captured provider bound to this run's
+    persister. The driver closes it before dropping the database. With no factory,
+    responses remain scripted. `import_path_resolver` overrides the no-op resolver.
     """
     require_eval_mode()
+    if provider_factory is not None and probe is not None:
+        raise EvalDriverError("CostProbe requires scripted responses; it cannot price a real run")
     try:
         base_url = os.environ[_TEST_DB_URL_ENV_VAR]
     except KeyError as exc:
@@ -1262,7 +1274,8 @@ def run_review(
     with open(fixture_path, encoding="utf-8") as fh:
         fixture = EvalFixture.model_validate(json.load(fh))
 
-    _require_concurrency_safe_scripting(fixture, analyze_max_concurrency)
+    if provider_factory is None:
+        _require_concurrency_safe_scripting(fixture, analyze_max_concurrency)
     if probe is not None and probe.model_cache and analyze_max_concurrency > 1:
         # Narrow to the CACHE-MODELED probe only: the in-flight-aware model
         # prices a concurrent first wave CORRECTLY, but HOW MANY workers land
@@ -1286,6 +1299,8 @@ def run_review(
             model_config=model_config,
             host=host,
             analyze_max_concurrency=analyze_max_concurrency,
+            provider_factory=provider_factory,
+            import_path_resolver=import_path_resolver,
         )
     )
 
@@ -1350,16 +1365,10 @@ async def _read_review_status(engine: AsyncEngine, review_id: UUID) -> str:
 
 
 def _validate_eval_db_url(db_url: str) -> None:
-    """Fail-closed guard on a caller-supplied eval DB URL.
+    """Require the test port and per-run EVAL_DB_NAME_PREFIX before database work.
 
-    Refuses anything but a per-test ephemeral eval DB: it must be on the
-    postgres-test container (port 5433, never prod's 5432) AND carry the
-    `EVAL_DB_NAME_PREFIX` name that `ephemeral_database` / the eval_db fixture mint.
-    The port alone would accept the shared base `outrider_test` (also 5433); the
-    prefix is what proves "a fixture-owned per-test DB" — a caller-supplied-db_url
-    driver (resume or serve) creates checkpoint/cache tables + seeds rows and must
-    never touch the shared base.
-    """
+    The prefix excludes the shared base database. These are structural URL checks,
+    not proof of a database's ownership; callers supply the already-migrated DB."""
     try:
         parsed = make_url(db_url)
     except (ArgumentError, ValueError) as exc:
@@ -1383,35 +1392,17 @@ async def run_review_with_resume(
     host: str | None = None,
     analyze_max_concurrency: int = 1,
 ) -> ResumedRunResult:
-    """Drive the graph through the HITL interrupt, restart, resume, and publish.
+    """Drive to HITL, rebuild the graph/checkpointer, then explicitly approve and resume.
 
-    Unlike the sync, self-contained `run_review`, this is **async** (the resume
-    scenario's replay assertion is async, so its test is `async def` — and
-    `asyncio.run` cannot run inside a live event loop) and it does **not** own the
-    DB lifecycle: it runs against the caller-supplied, already-migrated `db_url`
-    (the `eval_db` fixture owns create/migrate/drop + the is_eval gate), because the
-    audit stream must persist for the scenario's `AuditReplayer` to read AFTER this
-    returns.
+    The caller owns the already-migrated database so audit data survives for replay.
+    Two sequential Postgres savers use the same review/thread ID; the second graph
+    restores the checkpoint. This simulates graph/checkpointer reconstruction in one
+    process, while fixture provider/publisher objects stay shared between both legs.
+    Approval enters through Command(resume=...) (boundary #6).
 
-    Two sequential `AsyncPostgresSaver`s on the SAME DB make the restart faithful:
-    saver A drives to the interrupt and is closed; a FRESH saver B resumes from the
-    Postgres checkpoint — proving the suspended state lives in Postgres, not a
-    Python object. `review_id` is generated ONCE and used as the `thread_id` in both
-    `ainvoke` configs, so saver B resumes the ORIGINAL interrupted run (the
-    resume-identity invariant). The base `run_review` never approves; here the
-    approval is supplied explicitly through `Command(resume=...)`, and publish runs
-    only after it (boundary #6 preserved).
-
-    `host` (default anthropic) selects the identity the graph is built with: the scripted
-    provider stamps that host's triad on every LLM call, and analyze/synthesize stamp it on
-    their completion events (DECISIONS.md#056). A non-anthropic host is how the publish +
-    resume nodes — which `run_review`'s single pass cannot reach, because it stops at the
-    HITL gate — get exercised on a non-anthropic-built graph (publish makes no LLM call, so
-    this is reachability, not triad-bearing proof).
-
-    Fail-closed: `require_eval_mode()` + `_validate_eval_db_url` (a per-test eval
-    DB, not the shared base) run before any DB or checkpointer work.
-    """
+    host selects the graph/provider identity (DECISIONS.md#056); publication itself
+    makes no model call. Eval mode and the per-run database URL gate run before
+    database or checkpointer work."""
     require_eval_mode()
     _validate_eval_db_url(db_url)
 
@@ -1445,7 +1436,7 @@ async def run_review_with_resume(
             analyze_responses_by_path=fixture.analyze_responses_by_path,
         )
 
-        # Phase A (process 1): drive to the interrupt on saver A, then CLOSE it.
+        # First graph/checkpointer: drive to the interrupt, then close the saver.
         async with AsyncPostgresSaver.from_conn_string(
             checkpoint_url, serde=build_checkpoint_serde()
         ) as saver_a:
@@ -1473,9 +1464,8 @@ async def run_review_with_resume(
         await _assert_checkpoint_persisted(engine, review_id)
         decision = _build_approve_all_decision(hitl_request)
 
-        # Phase B (process 2): a FRESH saver on the SAME DB + SAME thread_id resumes
-        # the suspended run from Postgres (nothing in-memory carries over) and runs
-        # hitl -> publish -> end.
+        # Rebuild graph/checkpointer on the same DB/thread to restore saved state.
+        # The scripted provider and publisher remain shared between both legs.
         async with AsyncPostgresSaver.from_conn_string(
             checkpoint_url, serde=build_checkpoint_serde()
         ) as saver_b:

@@ -1,9 +1,5 @@
-// Findings distribution by EVIDENCE TIER — three horizontal magnitude tracks
-// (mockup .tier-rows) + the proof-boundary footnote. Tier is read off the deduped
-// representative finding (display only; the endpoint computes the representative,
-// per DECISIONS#039). Fill width = share of total findings (count/total), matching
-// the severity total so the two distributions reconcile. The footnote renders the
-// proof mapping verbatim — it's the proof-boundary contract, not decoration.
+// Display evidence-tier counts and their proof artifacts. The API chooses
+// representative findings (DECISIONS#039); each track shows its share of that total.
 import { TIER_ORDER } from "../lib/metrics";
 
 const TIER_PROOF: Record<string, string> = {
@@ -13,36 +9,36 @@ const TIER_PROOF: Record<string, string> = {
 };
 
 export function TierRows({ distribution }: { distribution: Record<string, number> }) {
-  const rows = TIER_ORDER.map((tier) => ({ tier, count: distribution[tier] ?? 0 }));
-  const total = rows.reduce((s, r) => s + r.count, 0);
+  const tierRows = TIER_ORDER.map((tier) => ({ tier, count: distribution[tier] ?? 0 }));
+  const total = tierRows.reduce((count, tierRow) => count + tierRow.count, 0);
 
   return (
     <div className="tier-block">
       <div className="tier-rows">
-        {rows.map((r) => {
-          const pct = total > 0 ? (r.count / total) * 100 : 0;
+        {tierRows.map((tierRow) => {
+          const sharePercent = total > 0 ? (tierRow.count / total) * 100 : 0;
           return (
-            <div className="tier-row" key={r.tier}>
+            <div className="tier-row" key={tierRow.tier}>
               <span className="tier-name">
-                <span className="sw" style={{ background: `var(--tier-${r.tier})` }} aria-hidden="true" />
-                {r.tier}
+                <span className="sw" style={{ background: `var(--tier-${tierRow.tier})` }} aria-hidden="true" />
+                {tierRow.tier}
               </span>
               <span className="tier-track">
                 <span
                   className="tier-fill"
-                  style={{ width: `${pct}%`, background: `var(--tier-${r.tier})` }}
+                  style={{ width: `${sharePercent}%`, background: `var(--tier-${tierRow.tier})` }}
                 />
               </span>
-              <span className="tier-val">{r.count}</span>
+              <span className="tier-val">{tierRow.count}</span>
             </div>
           );
         })}
       </div>
       <div className="pipe-note tier-note">
-        {TIER_ORDER.map((tier, i) => (
+        {TIER_ORDER.map((tier, index) => (
           <span key={tier}>
             {tier} → <code style={{ color: `var(--tier-${tier})` }}>{TIER_PROOF[tier]}</code>
-            {i < TIER_ORDER.length - 1 ? " · " : ""}
+            {index < TIER_ORDER.length - 1 ? " · " : ""}
           </span>
         ))}
       </div>

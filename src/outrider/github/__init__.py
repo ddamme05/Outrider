@@ -1,28 +1,10 @@
 # GitHub vendor SDK wrapper folder.
-"""GitHub-related wrappers around `githubkit`.
+"""GitHub authentication, authorization, fetch, webhook, and publishing wrappers.
 
-Re-exports the type alias `InstallationGitHubClient` for consumers outside
-the wrapper folder that need to type-annotate parameters but must not
-import `githubkit` directly per `vendor-sdks-only-in-wrappers`.
-
-
-This folder is the ONLY place in the codebase allowed to `import githubkit`
-per `docs/conventions.md` "Imports" and `CLAUDE.md` rule 3 (the
-`vendor-sdks-only-in-wrappers` invariant). Consumers in `api/`, `agent/`,
-and elsewhere reach githubkit only through the thin helpers exported
-here:
-
-  - `outrider.github.auth.make_installation_client_factory(provider)` —
-    binds a `GitHubCredentialProvider` at lifespan startup (`#070`); returns
-    an ASYNC `Callable[[int], Awaitable[GitHub]]` that resolves credentials
-    per call and mints per-installation clients wrapping
-    `githubkit.AppInstallationAuthStrategy`.
-  - `outrider.github.webhooks.verify_webhook_signature` — wraps
-    `githubkit.webhooks.verify`.
-  - `outrider.github.fetch` (later spec) — per-file content fetch helpers.
-
-The credential source + provider live in `outrider.github.credentials`; the
-`env`-mode settings triad lives in `outrider.github.config.GitHubAppSettings`.
+Vendor SDK imports stay inside this folder (vendor-sdks-only-in-wrappers;
+docs/conventions.md "Imports"). Consumers use the exported client types and
+protocols. Credentials come from github/credentials.py's env or database provider
+(DECISIONS.md#070); auth.py owns the SDK authentication strategies.
 """
 
 # Re-export the type alias from auth.py. The alias's definition

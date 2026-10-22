@@ -1,38 +1,17 @@
 # See DECISIONS.md#012-data-retention-ttls-configurable-purge-on-installationdeleted
 # See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
-"""Retention sweep — purge content past its TTL.
+"""Delete retained content in audited child-before-parent order.
 
-Per DECISIONS.md#012/#014: retention purge applies to the four content
-tables (reviews, findings, llm_call_content, and — per
-specs/2026-06-11-file-hash-analyze-cache.md — analyze_file_cache) only.
-audit_events is append-only forever (its trigger blocks DELETE
-entirely), and purge_audit is the forensic trail of the purges
-themselves.
+Time-based purge covers analyze cache, LLM content, findings, and reviews
+(`DECISIONS.md#012/#014`). Active/resumable reviews are protected, while
+their content follows its own TTL. Installation hard deletion removes
+all installation content after confirmed liveness and the grace window.
 
-Two operations:
-
-  - ``purge_expired(conn)`` — time-based sweep: deletes rows whose
-    ``retention_expires_at`` has passed. Used by APScheduler /
-    sweep/runner.py (when written) every few minutes.
-  - ``purge_installation(conn, installation_id)`` — installation
-    lifecycle hard-delete after the grace window. Deletes all content
-    for the installation, then deletes the installation row itself
-    (INSTALLATION_REPOSITORIES cascades via the FK action declared in
-    migration 0001).
-
-Both functions take an existing AsyncConnection and DO NOT manage their
-own transaction. The caller wraps them in ``async with engine.begin()``
-or similar — that boundary is what makes the advisory lock useful and
-what makes multi-table purge atomic. If the caller doesn't hold a
-transaction, the lock is process-scoped and the multi-table failure
-mode is exposed.
-
-Strict deletion order is load-bearing: ``analyze_file_cache`` →
-``llm_call_content`` → ``findings`` → ``reviews``. Reversing the order
-risks a child-of-reviews CASCADE (``findings`` or ``analyze_file_cache``)
-silently dropping rows without writing the per-table purge_audit row.
-``test_retention_sweep`` asserts the per-table purge_audit count, which
-catches order-reversal bugs.
+Callers supply an open transaction on `AsyncConnection`; the transaction
+holds `SWEEP_LOCK_ID` and commits deletions with their `purge_audit` rows.
+Delete cache/LLM/finding children before reviews, so review cascades cannot
+erase rows without per-table counts. `audit_events` remains append-only.
+`purge_expired_installations` locks due tombstones before deleting them.
 """
 
 import logging
@@ -276,18 +255,12 @@ async def purge_installation(
 
 
 async def _select_due_installation_ids_for_update(conn: AsyncConnection) -> list[int]:
-    """Select installations past their #012 grace window, row-locking each `FOR UPDATE`.
+    """Lock expired tombstones until the caller's purge transaction commits.
 
-    The lock is held until the CALLER's transaction commits, which closes a TOCTOU window
-    the advisory lock does NOT cover: the advisory lock serializes sweep-vs-sweep, but a
-    NON-sweep writer (a future reinstall webhook clearing `tombstoned_at`) never holds
-    `SWEEP_LOCK_ID`. Without the row lock, such a writer could commit a tombstone-clear
-    between selection and the per-install content DELETE, so live data of a just-reinstalled
-    install would be purged. With it, that writer either commits BEFORE this SELECT (excluded
-    by `tombstoned_at IS NOT NULL`) or blocks until the purge commits and then no-ops (row
-    gone). Belt-and-suspenders today (no such writer exists yet); required before the reinstall
-    handler lands. Extracted so the lock is regression-testable in isolation
-    (`test_sweep_advisory_lock.py`).
+    The sweep advisory lock serializes sweeps, but reconcile uses another lock
+    and can clear a tombstone. `FOR UPDATE` closes the selection/deletion race:
+    an earlier restore excludes the row; a later restore waits until purge ends.
+    See `test_sweep_advisory_lock.py`.
     """
     due = await conn.execute(
         text(

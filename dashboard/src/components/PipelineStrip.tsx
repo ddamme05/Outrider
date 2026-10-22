@@ -3,24 +3,12 @@ import { formatDurationMs, unionDurationMs } from "../lib/format";
 import { prettyModel } from "../lib/modelLabel";
 
 type TimelineData = components["schemas"]["ReplayTimelineResponse"];
-// One reconstructed phase from the server's replay-VERIFIED grouping. A node can own MANY
-// phases: analyze fans out per file (a plan phase + one worker phase per concurrent file +
-// an aggregate phase, keyed by phase_key) and repeats across analyze⇄trace rounds. Per-node
-// stats aggregate across all of a node's phases — cost sums; duration takes the interval
-// union (concurrent worker spans overlap, so summing would multi-count wall-time).
+// A node can own several phases across parallel workers and analyze/trace rounds.
 type Phase = NonNullable<TimelineData["phases"]>[number];
 type AuditEvent = components["schemas"]["ReviewEventsResponse"]["events"][number];
 type LLMCall = Extract<AuditEvent, { event_type: "llm_call" }>;
 type TraceDec = Extract<AuditEvent, { event_type: "trace_decision" }>;
 
-// The 7-node graph as the mockup's per-node cards. Per-node model/cost/timing/files/
-// resolved come from the server's replay-VERIFIED reconstruction (`reconstruct().phases`,
-// exposed by /replay-timeline only when the verdict is replay-equivalent — the FUP-125
-// gate). The frontend does NOT re-group raw `review_phase` events: there is exactly one
-// reconstruction surface (the server), rendered two ways (this strip + the timeline tab).
-// NOTHING is fabricated: when `phases` is null (non-equivalent verdict or the timeline
-// hasn't loaded), per-node stats fail closed to "—" — node states still derive from review
-// status (a backed coarse inference), but no timing/cost/passed/posted is claimed.
 const NODES = ["intake", "triage", "analyze", "trace", "synthesize", "hitl", "publish"] as const;
 type NodeName = (typeof NODES)[number];
 type NodeState = "done" | "paused" | "skipped" | "pending" | "";
@@ -31,7 +19,6 @@ const STATIC_MODEL: Partial<Record<NodeName, string>> = {
   publish: "no LLM",
 };
 
-
 export function PipelineStrip({
   status,
   phases,
@@ -39,70 +26,51 @@ export function PipelineStrip({
   policyVersion,
 }: {
   status: string;
-  // The server's replay-verified phase grouping, or null when it isn't trustworthy:
-  // a non-equivalent verdict (the FUP-125 gate suppresses it) or the timeline query
-  // hasn't loaded. Null → per-node stats fail closed to "—"; node states stay
-  // status-backed. This is the single reconstruction surface (no client re-grouping).
+  // Only replay-verified phases support node metrics. Null leaves metrics unknown.
   phases: Phase[] | null;
-  // Authoritative gated count from the review's findings_requiring_approval snapshot.
-  // null = no snapshot (gate set unknown) — distinct from 0; never rendered as "0".
+  // The approval snapshot supplies this count; null means unknown, not zero.
   gatedCount: number | null;
   policyVersion?: string | null;
 }) {
   const phasesLoaded = phases !== null;
   const awaiting = status.startsWith("awaiting_approval");
 
-  // All of a node's phases (analyze owns many: plan + per-file workers + aggregate, ×rounds).
   const phasesFor = (node: NodeName): Phase[] =>
-    (phases ?? []).filter((p) => p.node_id === node);
-  // The per-operation events recorded inside a node's phases, by type.
-  const eventsIn = (node: NodeName): AuditEvent[] => phasesFor(node).flatMap((p) => p.events);
+    (phases ?? []).filter((phase) => phase.node_id === node);
+  const eventsIn = (node: NodeName): AuditEvent[] => phasesFor(node).flatMap((phase) => phase.events);
 
-  const ended = (node: NodeName): boolean => phasesFor(node).some((p) => p.end != null);
+  const ended = (node: NodeName): boolean => phasesFor(node).some((phase) => phase.end != null);
 
-  // Total wall-time the node held across its phases — the UNION of phase intervals, not the
-  // sum. Parallel analyze overlaps concurrent worker phases (summing multi-counts), and its
-  // phases straddle multiple analyze⇄trace passes (a single earliest→latest span would swallow
-  // the trace gap between them). unionDurationMs handles both — see its docstring in format.ts.
+  // Union phase intervals: parallel workers overlap and trace gaps must stay excluded.
   const durationMs = (node: NodeName): number | null =>
     unionDurationMs(
-      phasesFor(node).map((p) => ({ start: p.start?.timestamp, end: p.end?.timestamp })),
+      phasesFor(node).map((phase) => ({ start: phase.start?.timestamp, end: phase.end?.timestamp })),
     );
 
   const llmFor = (node: NodeName): { model: string; cost: number; costComplete: boolean } | null => {
-    const calls = eventsIn(node).filter((e): e is LLMCall => e.event_type === "llm_call");
+    const calls = eventsIn(node).filter((event): event is LLMCall => event.event_type === "llm_call");
     if (calls.length === 0) return null;
-    // A node can call MORE than one model in a single review: analyze routes DEEP-tier files
-    // to Sonnet and STANDARD-tier files to Haiku (tiered routing, DECISIONS.md#041), so a
-    // mixed-tier review legitimately uses both. Show every DISTINCT model, sorted for a stable
-    // label — fan-out completion order is nondeterministic, so keying off the last (or first)
-    // call would flip the label run to run. Cost still sums across all calls.
-    const models = [...new Set(calls.map((c) => prettyModel(c.model)))].sort();
-    // Nullable cost (openai-native-host arc): JS would coerce null to 0 in a plain
-    // reduce — the false-free bug client-side. Sum the PRICED subset and mark the
-    // rollup incomplete so the label renders a lower bound, never an exact fake.
-    const priced = calls.map((c) => c.cost_usd).filter((c): c is number => c != null);
+    // Mixed-model workers finish in any order; sorted distinct names keep the label stable.
+    const models = [...new Set(calls.map((call) => prettyModel(call.model)))].sort();
+    // Unpriced calls make the sum a lower bound; null must not become a free call.
+    const pricedCosts = calls
+      .map((call) => call.cost_usd)
+      .filter((cost): cost is number => cost != null);
     return {
       model: models.join(" + "),
-      cost: priced.reduce((s, c) => s + c, 0),
-      costComplete: priced.length === calls.length,
+      cost: pricedCosts.reduce((totalCost, cost) => totalCost + cost, 0),
+      costComplete: pricedCosts.length === calls.length,
     };
   };
 
   const stateOf = (node: NodeName): NodeState => {
-    if (node === "hitl") {
-      if (awaiting) return "paused";
+    if (node === "hitl" || node === "publish") {
+      if (node === "hitl" && awaiting) return "paused";
       if (ended(node) || status === "completed") return "done";
       if (status === "failed") return "skipped";
       return "pending";
     }
-    if (node === "publish") {
-      if (ended(node) || status === "completed") return "done";
-      if (status === "failed") return "skipped";
-      return "pending";
-    }
-    // pre-hitl nodes: done if observed-ended, or status implies it (completed; or
-    // awaiting → the graph already passed these to reach the gate). Status-backed.
+    // Reaching the approval gate implies the earlier nodes finished.
     if (ended(node) || status === "completed" || awaiting) return "done";
     return "";
   };
@@ -110,41 +78,42 @@ export function PipelineStrip({
   const modelOf = (node: NodeName, state: NodeState): string => {
     if (node in STATIC_MODEL) return STATIC_MODEL[node]!;
     // LLM model needs the verified reconstruction; without it we don't claim one.
-    const m = phasesLoaded ? llmFor(node)?.model : undefined;
-    if (m) return m;
+    const modelLabel = phasesLoaded ? llmFor(node)?.model : undefined;
+    if (modelLabel) return modelLabel;
     return state === "done" ? "—" : "";
   };
 
   const statOf = (node: NodeName, state: NodeState): string => {
-    // The gate count is backed by the review's gated set, not the reconstruction;
-    // null snapshot → just "paused", never a fabricated "0 findings".
     if (node === "hitl" && state === "paused") {
       return gatedCount === null ? "paused" : `paused · ${gatedCount} findings`;
     }
     if (state === "skipped") return "skipped";
     if (state === "pending") return "pending";
-    // Per-node timing/cost/files/resolved require the verified reconstruction. Without
-    // it we show "—" — never an unbacked "passed"/"posted"/timing/cost.
+    // Review status alone cannot establish timing, cost, or event counts.
     if (!phasesLoaded) return "—";
-    const dur = durationMs(node);
-    const durStr = dur === null ? null : formatDurationMs(dur);
-    if (node === "hitl" || node === "publish") return durStr ?? "—";
+    const duration = durationMs(node);
+    const durationLabel = duration === null ? null : formatDurationMs(duration);
+    if (node === "hitl" || node === "publish") return durationLabel ?? "—";
     if (state !== "done") return "—";
     const parts: string[] = [];
-    if (durStr) parts.push(durStr);
+    if (durationLabel) parts.push(durationLabel);
     if (node === "intake") {
-      const n = eventsIn("intake").filter((e) => e.event_type === "file_examination").length;
-      if (n > 0) parts.push(`${n} files`);
+      const fileCount = eventsIn("intake").filter(
+        (event) => event.event_type === "file_examination",
+      ).length;
+      if (fileCount > 0) parts.push(`${fileCount} files`);
     } else {
-      const llm = llmFor(node);
-      if (llm) parts.push(`${llm.costComplete ? "" : "\u2265"}$${llm.cost.toFixed(2)}`);
+      const llmSummary = llmFor(node);
+      if (llmSummary) parts.push(`${llmSummary.costComplete ? "" : "\u2265"}$${llmSummary.cost.toFixed(2)}`);
       if (node === "trace") {
-        const traces = eventsIn("trace").filter(
-          (e): e is TraceDec => e.event_type === "trace_decision",
+        const traceDecisions = eventsIn("trace").filter(
+          (event): event is TraceDec => event.event_type === "trace_decision",
         );
-        if (traces.length > 0) {
-          const resolved = traces.filter((t) => t.resolution_status === "resolved").length;
-          parts.push(`${resolved}/${traces.length} resolved`);
+        if (traceDecisions.length > 0) {
+          const resolvedCount = traceDecisions.filter(
+            (traceDecision) => traceDecision.resolution_status === "resolved",
+          ).length;
+          parts.push(`${resolvedCount}/${traceDecisions.length} resolved`);
         }
       }
     }
@@ -160,21 +129,21 @@ export function PipelineStrip({
       <div className="panel-b">
         <div className="pipe" role="img" aria-label={`Pipeline state for a ${status} review`}>
           {NODES.map((node) => {
-            const state = stateOf(node);
+            const nodeState = stateOf(node);
             return (
-              <div className={`pnode ${state}`} key={node}>
+              <div className={`pnode ${nodeState}`} key={node}>
                 <span className="pn-name">
-                  {state === "done" ? (
+                  {nodeState === "done" ? (
                     <span className="pn-check" aria-hidden="true">
                       ✓
                     </span>
-                  ) : state === "paused" ? (
+                  ) : nodeState === "paused" ? (
                     <span aria-hidden="true">⏸</span>
                   ) : null}
                   {node}
                 </span>
-                <span className="pn-model">{modelOf(node, state)}</span>
-                <span className="pn-stat">{statOf(node, state)}</span>
+                <span className="pn-model">{modelOf(node, nodeState)}</span>
+                <span className="pn-stat">{statOf(node, nodeState)}</span>
               </div>
             );
           })}

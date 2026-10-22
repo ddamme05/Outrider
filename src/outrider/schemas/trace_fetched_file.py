@@ -1,48 +1,15 @@
 # See specs/2026-05-23-trace-node.md (Q3 resolution).
-"""`TraceFetchedFile` — head-side file content fetched by the trace node.
+"""Head-side content fetched after a trace candidate resolves.
 
-After the trace node resolves a candidate's import_string via M8's V1
-two-phase fetch (Phase 1 probes through `_resolve_via_probes` + Phase 2
-content fetch through `_phase_two_content_fetch` — the filesystem-aware
-`coordinates.resolve_candidate_paths` is the FUTURE V1.5+ shape per
-(`DECISIONS.md#024` point 4 Amended 2026-05-24), it emits a
-`TraceFetchedFile` when the resolved path is NOT already in
-`pr_context.changed_files` so analyze's post-trace pass can examine
-the content.
+Trace emits this when the target is outside pr_context.changed_files so
+post-trace analysis can examine it. V1 uses API probes then a content fetch;
+filesystem-aware resolution remains a separate future path per
+`DECISIONS.md#024` point 4.
 
-Reducer key on `ReviewState.trace_fetched_files` is `path` alone (per
-Q3 resolution + M2 audit-fold). First-write-wins on key collision —
-when two findings resolve to the same target file, only the first
-emission's TraceFetchedFile lands. Per M2: this is intentional, not
-a bug. `TraceDecisionEvent` rows preserve full multi-cause provenance
-(one event per source finding regardless of resolved-path collision);
-recovering "which findings caused this fetch" is
-`query state.trace_decisions where target_file == self.path`.
-
-V1 field set per spec Q3 (no source_import_string /
-source_proposal_hash fields — see "Why not …" below):
-
-- `path: str` — post-`validate_diff_path` repo-relative POSIX.
-- `content_head: str` — head-side content from
-  `github.fetch.fetch_file_content_at(repo, path, head_sha)`.
-  Content is invariant per review's head_sha so stable across retries.
-- `source_finding_id: UUID` — first finding whose trace decision produced
-  this fetch (first-write-wins under the reducer's dedup-by-path).
-  For the complete provenance set across all findings citing this path,
-  query `state.trace_decisions` by `target_file`.
-
-Why not reuse `ChangedFile`: ChangedFile is intake's post-PR-file shape
-(status, additions/deletions, patch, base/head, rename fields). A trace-
-fetched file is not necessarily a changed PR file and has no patch
-semantics. Reusing ChangedFile would lie to analyze about the file's nature.
-
-No `source_import_string` / `source_proposal_hash` fields: those
-values vary across retries (LLM proposes different rankings; multiple
-candidates may map to the same target_file via different import
-strings) and would cause state-vs-audit divergence. Provenance
-recovery via `state.trace_decisions` cross-reference avoids the
-divergence and keeps the schema minimal.
-"""
+The state reducer deduplicates by path, keeping the first source_finding_id.
+TraceDecisionEvent and state.trace_decisions retain every cause; query them
+by target_file for complete provenance. This carrier has no changed-file
+status or diff because the fetched target may be unchanged."""
 
 from __future__ import annotations
 

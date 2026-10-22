@@ -991,8 +991,10 @@ async def _run_paid() -> int:
         "     locally at admission.\n"
         "The gate re-verifies everything against fixture bytes (response IDs, window\n"
         "vs created, billed classes vs wire counts under the adjudicated equation) and\n"
-        "recomputes count support: contrary counts refuse admission outright. If the\n"
-        "verdict is minus_writes, read_usage() must change BEFORE any scorecard run."
+        "recomputes count support: contrary counts refuse admission outright. The\n"
+        "shipped read_usage() subtracts cached reads and writes from prompt tokens.\n"
+        "If billed evidence contradicts that equation, resolve the accounting\n"
+        "disagreement before running a scorecard."
     )
     return 0
 

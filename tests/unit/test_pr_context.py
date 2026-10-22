@@ -507,7 +507,7 @@ def test_pr_context_seed_shape_with_nonzero_totals_admits() -> None:
 def test_pr_context_changed_files_is_tuple_not_list() -> None:
     """frozen=True is faux-immutable over .append() on a list field; spec §7.2
     was amended 2026-05-08 to use tuple[ChangedFile, ...] for true immutability.
-    Same precedent as HITLDecision.decisions (spec §7.4 line 290)."""
+    Same precedent as HITLDecision.decisions (spec §7.4)."""
     ctx = _minimal_pr_context()
     assert isinstance(ctx.changed_files, tuple)
 

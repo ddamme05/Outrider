@@ -97,8 +97,7 @@ function timeline(overrides: Record<string, unknown> = {}) {
   };
 }
 
-// jsdom doesn't implement matchMedia (it's undefined); capture that so afterEach can restore it
-// and the reduced-motion stub doesn't leak into later tests in the shared jsdom worker.
+// Restore the prior media matcher so reduced-motion stubs do not leak between tests.
 const originalMatchMedia = window.matchMedia;
 
 function setReducedMotion(reduced: boolean) {
@@ -190,11 +189,8 @@ test("auto-follow scrolls the FINAL event into view on the last tick", async () 
   const rows = Array.from(document.querySelectorAll(".tl-evrow"));
   expect(rows.length).toBeGreaterThan(0);
   expect(targets.length).toBeGreaterThan(0);
-  // Compare by stable identity, NOT reference (Object.is): React can swap the last row's DOM node
-  // for an identical one between the final follow-scroll (which captured the old reference) and
-  // this assertion — same content, new node ("serializes to the same string"). That reference
-  // churn flaked only under full-suite timing. Assert the last scroll landed on a `.tl-evrow`
-  // whose rendered text is the final row's — which is what "scrolled the final event in" means.
+  // React can replace the final row after scrolling. Compare its row class and text
+  // to verify the scroll target without depending on DOM object identity.
   const lastTarget = targets.at(-1);
   expect(lastTarget?.className).toContain("tl-evrow");
   expect(lastTarget?.textContent).toBe(rows.at(-1)?.textContent);

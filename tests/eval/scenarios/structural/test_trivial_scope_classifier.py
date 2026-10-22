@@ -396,15 +396,9 @@ def test_pep723_decoy_interior_closer_does_not_strand_dependency_lines() -> None
     evil = verdict_for(6)
     assert not evil.trivial
     assert evil.reason == TrivialityReason.DIRECTIVE_COMMENT
-    # The line AFTER the real closer is outside the block — but it's in
-    # the last-5 modeline window of this 9-line file, so use the reason
-    # only as a not-pep723 proof: it must still be examined as ordinary
-    # text by later rules, not auto-protected.
     after = verdict_for(9)
-    assert after.reason in (
-        TrivialityReason.ALL_LINES_ORDINARY_COMMENT,
-        TrivialityReason.DIRECTIVE_COMMENT,
-    )
+    assert after.trivial
+    assert after.reason == TrivialityReason.ALL_LINES_ORDINARY_COMMENT
 
 
 def test_pep723_unclosed_fence_protects_to_eof() -> None:

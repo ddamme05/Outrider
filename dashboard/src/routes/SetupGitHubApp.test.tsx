@@ -176,12 +176,8 @@ test("expired AWAITING_CALLBACK → Retry is repaired by the backend and proceed
   await waitFor(() => expect(submitSpy).toHaveBeenCalledTimes(1));
 });
 
-// ── Non-API responses (FUP-230) ──────────────────────────────────────────────────────────────────
-// The /setup* routes mount only in `database` mode and are deliberately NOT proxied by the Vite dev
-// server, so the onboarding flow runs ONLY under FastAPI-serves-the-built-SPA. Every way that
-// contract can be violated must fail LOUDLY and must not offer Start (which would fail identically).
-// Regression origin: the dev server answered GET /setup/status with its own index.html; the client
-// took `resp.ok` → `resp.json()` → SyntaxError → a bare `catch {}` → "you can still try below".
+// Non-API responses (FUP-230): Vite does not proxy /setup, so its HTML fallback
+// must produce a protocol error and hide Start.
 
 test("HTML instead of JSON (wrong topology) reports topology, not a backend error", async () => {
   server.use(
@@ -215,11 +211,8 @@ test("200 with unparseable JSON reports topology rather than crashing", async ()
 });
 
 test("200 with valid JSON of the WRONG SHAPE is rejected (the `as` cast cannot catch this)", async () => {
-  // `return (await resp.json()) as SetupStatus` is erased at compile time, so without a runtime
-  // guard this payload reaches the UI and renders `undefined` state. NOTE: no Start-button
-  // assertion here — an undefined status already hides Start, so that assertion would survive
-  // reverting the guard and prove nothing. The rejection itself is pinned at the API boundary in
-  // `api/setup.test.ts`; this test's job is only that the operator sees the protocol-error copy.
+  // Check the protocol-error message; an undefined status would also hide Start.
+  // api/setup.test.ts checks payload rejection at the API boundary.
   server.use(http.get(STATUS, () => HttpResponse.json({ unexpected: "payload" })));
 
   render(<SetupGitHubApp />);
@@ -227,25 +220,14 @@ test("200 with valid JSON of the WRONG SHAPE is rejected (the `as` cast cannot c
   expect(await screen.findByText(/isn.t reaching the Outrider API/i)).toBeInTheDocument();
 });
 
-test("an unreachable backend KEEPS Start — it can recover; a non-API peer cannot", async () => {
-  // The deliberate asymmetry with `topology`: an absent backend may come up between the status
-  // fetch and the click, so retrying is a real action worth offering. Pinned so a future tidy-up
-  // doesn't "consistently" hide Start here too.
+test("an unreachable backend keeps Start available and reports a transport error", async () => {
+  // A transport failure keeps Start available because the backend may recover before the click.
   server.use(http.get(STATUS, () => HttpResponse.error()));
 
   render(<SetupGitHubApp />);
 
   expect(await screen.findByText(/couldn.t reach the Outrider API/i)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /set up github app/i })).toBeInTheDocument();
-});
-
-test("transport failure reports a backend error, distinct from the topology error", async () => {
-  server.use(http.get(STATUS, () => HttpResponse.error()));
-
-  render(<SetupGitHubApp />);
-
-  // Unreachable is NOT a topology fault — the peer never answered, so the copy must differ.
-  expect(await screen.findByText(/couldn.t reach the Outrider API/i)).toBeInTheDocument();
   expect(screen.queryByText(/isn.t reaching the Outrider API/i)).toBeNull();
 });
 
@@ -360,17 +342,8 @@ test("no post-install hint → a single status read, no polling", async () => {
 
 
 test("SMOKE (not a regression guard): post-install polling works under StrictMode", async () => {
-  // NOT a guard against the render-purity bug, despite the wrapper. StrictMode's
-  // double-render is DEV-ONLY, and Vitest runs React's test build: a probe rendering a
-  // component with lazy ref-init under StrictMode counted ONE invocation, so the
-  // discarded-first-pass behavior never occurs here and this test passes against the
-  // broken implementation too.
-  //
-  // The real guard is structural: `consumeInstallHint` runs in the effect, so render
-  // performs no side effect and the mechanism has nothing to act on. If that ever moves
-  // back into render, THIS TEST WILL NOT CATCH IT — review the effect placement instead.
-  // Kept because the app mounts under StrictMode in `main.tsx`, so exercising the same
-  // wrapper is cheap, and it would start biting if React's test build ever double-renders.
+  // Exercise polling with the same StrictMode wrapper used by main.tsx.
+  // Keep the URL scrub in the effect; these assertions check polling and URL cleanup.
   let installed = false;
   server.use(
     http.get(STATUS, () =>

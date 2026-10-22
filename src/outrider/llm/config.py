@@ -1,29 +1,16 @@
 # Per-node LLM model selection, env-backed.
 # See specs/2026-05-05-llm-provider-wrapper.md and docs/spec.md §4.2.
 # Host-aware selection via `ModelConfig.for_host` (DECISIONS.md#056); the lifespan
-# OUTRIDER_LLM_HOST read that drives it lands with the provider-factory wiring.
-"""ModelConfig — env-backed per-node LLM model selection.
+# OUTRIDER_LLM_HOST read that drives it happens in the provider-factory wiring.
+"""Frozen per-node model selection with environment overrides.
 
-Backs the `model-strings-from-config-not-hardcoded` invariant: every LLM
-call site reads its model from this config, not a hardcoded string.
-Defaults match canonical spec §4.2 as amended: Sonnet for DEEP-tier
-analyze only; Haiku for triage/trace/patch, STANDARD-tier analyze
-(DECISIONS.md#041), and synthesize (DECISIONS.md#043). Each field is overridable via
-`OUTRIDER_MODEL_<FIELD>` env var (e.g., `OUTRIDER_MODEL_TRIAGE_MODEL`)
-so eval runs can swap models per-tier without code changes.
+`ModelConfig()` uses Anthropic defaults: Sonnet for DEEP analyze and Haiku
+for the other calls (`DECISIONS.md#041/#043`). Anthropic names must match
+the family pattern and avoid the SDK's deprecated-model registry.
 
-Validators:
-  - regex: model strings must match the V1 Anthropic family pattern
-    `^claude-(haiku|sonnet|opus)-\\d+(-\\d+)?(-\\d{8})?$`. Catches typos
-    at construction (e.g., `OUTRIDER_MODEL_ANALYZE_MODEL=gpt-4`). The
-    optional 8-digit `YYYYMMDD` suffix accepts dated SDK-catalog pins;
-    dated forms normalize to their undated alias for pricing lookup
-    (see `outrider.llm.pricing.normalize_to_pricing_key`).
-  - deprecation: rejects any model string in
-    `anthropic.resources.messages.DEPRECATED_MODELS` (a `dict[str, str]`
-    of model id → deprecation date). The SDK would otherwise emit a
-    `DeprecationWarning` at first call; we surface it eagerly at
-    construction.
+`for_host` merges `OUTRIDER_MODEL_*` overrides over `HOST_DEFAULT_MODELS`
+(`DECISIONS.md#056`). Non-Anthropic slugs are validated by their host
+profile downstream. Call sites read these fields, rather than model literals.
 """
 
 import re
@@ -38,16 +25,17 @@ from outrider.llm.host_profiles import HOST_DEFAULT_MODELS
 __all__ = ["ModelConfig", "is_anthropic_family_model", "model_uses_adaptive_thinking"]
 
 # V1 Anthropic family pattern.
-# Three accepted shapes per Anthropic SDK 0.100 model catalog:
+# Three accepted Anthropic model-ID shapes:
 #   - `claude-{haiku,sonnet,opus}-{major}` (forward-compat with future
 #     major-only releases)
 #   - `claude-{haiku,sonnet,opus}-{major}-{minor}` (the canonical alias
 #     form, e.g., `claude-haiku-4-5`, `claude-sonnet-4-6`, `claude-opus-4-7`)
 #   - `claude-{haiku,sonnet,opus}-{major}-{minor}-{YYYYMMDD}` (the dated
 #     "exact pin" form, e.g., `claude-haiku-4-5-20251001`)
-# previous regex rejected the dated form
-# even though the SDK catalog publishes it as the precise model id.
+# The dated form accepts exact model-version IDs such as `claude-haiku-4-5-20251001`.
 _VALID_MODEL_PATTERN: Final = re.compile(r"^claude-(haiku|sonnet|opus)-\d+(-\d+)?(-\d{8})?$")
+# A dated slug suffix is YYYYMMDD, so exactly this many digits.
+_DATED_SUFFIX_LEN: Final[int] = 8
 
 
 def is_anthropic_family_model(slug: str) -> bool:
@@ -79,16 +67,16 @@ def model_uses_adaptive_thinking(slug: str) -> bool:
     (`model-strings-from-config-not-hardcoded`)."""
     if not is_anthropic_family_model(slug):
         return False
-    # claude-{family}-{major}[-{minor}][-{YYYYMMDD}] — split and read major/minor.
-    parts = slug.split("-")
-    family = parts[1]
-    major = int(parts[2])
-    # parts[3], when present, is the minor OR an 8-digit dated suffix with no
-    # minor (e.g. claude-sonnet-5-20260615) — the greedy `(-\d+)?` group in
-    # `_VALID_MODEL_PATTERN` captures a bare date into this slot. A date is
-    # exactly 8 digits, so anything shorter is the minor (a 3-digit minor must
-    # not be misread as a date). Only opus reads minor; sonnet keys on major.
-    minor = int(parts[3]) if len(parts) > 3 and len(parts[3]) < 8 else 0
+    # claude-{family}-{major}[-{minor}][-{YYYYMMDD}]
+    _, family, major_text, *rest = slug.split("-")
+    major = int(major_text)
+    # The first trailing segment is either the minor OR a bare dated suffix with no
+    # minor (`claude-sonnet-5-20260615`) — the greedy `(-\d+)?` group in
+    # `_VALID_MODEL_PATTERN` captures a date into the minor slot when no minor is
+    # given. A date is exactly `_DATED_SUFFIX_LEN` digits, so a shorter run is the
+    # minor, which keeps a three-digit minor from reading as a date. Only opus reads
+    # minor; sonnet keys on major alone.
+    minor = int(rest[0]) if rest and len(rest[0]) < _DATED_SUFFIX_LEN else 0
     if family == "sonnet":
         return major >= 5
     if family == "opus":
@@ -131,15 +119,14 @@ class ModelConfig(BaseSettings):
         frozen=True,
     )
 
-    # Model strings match the current Anthropic SDK catalog. DEEP-tier analyze
-    # runs Sonnet 5 (the adaptive-thinking generation — see
+    # DEEP-tier analyze runs Sonnet 5 (the adaptive-thinking generation — see
     # `model_uses_adaptive_thinking`; the wrapper omits sampling params and
     # disables thinking for it). triage/trace/patch/synthesize + STANDARD-tier
     # analyze run Haiku 4.5.
     triage_model: str = "claude-haiku-4-5"
     analyze_model: str = "claude-sonnet-5"
     # See DECISIONS.md#041 — the DEEP-tier model is `analyze_model`; STANDARD-tier files
-    # route here. Defaults to Haiku (1/3 of Sonnet's per-token price) after the eval
+    # route here. Defaults to Haiku after the eval
     # quality gate (PR #51) showed Haiku holds STANDARD-tier recall and does not over-flag
     # safe code worse than Sonnet. DEEP-tier files stay on `analyze_model` (Sonnet); so do
     # trace-fetched (no-tier) files. Override per-deployment via

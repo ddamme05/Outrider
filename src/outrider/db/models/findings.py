@@ -1,34 +1,15 @@
 # See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
-"""FINDINGS.
+"""Retained finding content, one row per persisted finding_id.
 
-One row per analyst finding produced by the agent. Three foreign keys:
+Review purge cascades to findings; installation RESTRICT requires explicit purge
+with a purge_audit record. Policy-version RESTRICT preserves the severity policy
+needed for replay (severity-policy-versioned-for-replay).
 
-  - `review_id → reviews.id` ON DELETE CASCADE — both tables are content-tier
-    with retention; cascading review purge to its findings is correct, and
-    findings can also purge independently before their review via their own
-    `retention_expires_at`. This is the only review-scoped CASCADE in the schema.
-  - `installation_id → installations.installation_id` ON DELETE RESTRICT —
-    sweep job must purge findings for an install before the install itself
-    hard-deletes; RESTRICT prevents a silent CASCADE that would skip the
-    per-table `purge_audit` row.
-  - `policy_version → severity_policies.version` ON DELETE RESTRICT — severity
-    policies are versioned-forever per `severity-policy-versioned-for-replay`;
-    a finding's policy version must remain reachable for the lifetime of the
-    finding, so deleting a referenced policy is blocked.
-
-Proof-boundary columns (`evidence_tier`, `query_match_id`, `trace_path`) are
-shaped here at the DB layer; the application-side `ReviewFinding.enforce_proof_boundary`
-validator (in `policy/findings.py` when written) enforces that OBSERVED findings
-carry `query_match_id` and INFERRED carry `trace_path`. The DB allows nullable
-on both because not every finding has both — the validator enforces the
-either-or per-tier rule.
-
-Notably absent: no `confidence` column, per `confidence-is-computed-not-assigned`.
-The `tests/unit/test_orm_structural_invariants.py` (next commit's unit test)
-asserts the column's absence in code, not just review.
-
-CHECK constraints encode the invariant that `line_start >= 1` (1-indexed per
-`coordinates/`) and `line_end >= line_start`.
+Proof columns are nullable here; schemas/review_finding.py enforces each evidence
+tier's query_match_id or trace_path requirements. Confidence is computed from
+evidence, not stored (confidence-is-computed-not-assigned). Database checks keep
+line ranges 1-indexed and ordered. content_hash groups equivalent content; it is
+not a write-time uniqueness key.
 """
 
 from datetime import datetime

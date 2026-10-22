@@ -1,25 +1,13 @@
-"""Review-status sink + reader Protocols owned by the `db/` subsystem.
+"""Review lifecycle writes and decision-preflight reads.
 
-Mirrors the `audit/sinks.py` precedent (one Protocol per node responsibility,
-`@runtime_checkable`, durable + recording implementations) but for the
-`reviews` table lifecycle writes the HITL node owns: status flips +
-JSONB column writes paired in single transactions, plus the read surface
-the dashboard `/decide` endpoint consumes at interrupt time.
+The graph receives these protocols through dependency injection
+(nodes-receive-deps-via-closure). Each write atomically pairs a status transition
+with its request, decision, or timestamp fields. The dashboard reads the pending
+request from this cache because HITL has not yet returned its graph-state delta.
 
-Why a sink Protocol rather than direct `db_factory: async_sessionmaker`
-injection (intake's pattern): the HITL writes pair a STATUS flip with a
-JSONB column write atomically, and the resume path is a SECOND such write
-at a SEPARATE moment. A typed Protocol with four methods (`mark_awaiting_
-approval`, `mark_running`, `mark_awaiting_approval_expired`,
-`mark_completed`) documents the single-transaction contract cleanly and
-lets recording test doubles capture both transitions for assertion. Per
-the `nodes-receive-deps-via-closure` invariant, both Protocols are
-constructor-injected at `build_graph(...)` time.
-
-Per `DECISIONS.md#019`: cross-boundary models with a clear owner live
-with their owner. `ReviewDecidePreflight` lives here because `db/` owns
-the read-path shape; the dashboard endpoint + the
-`ReviewStatusReader.fetch_for_decide` implementation both consume it.
+Audit events remain canonical on divergence (DECISIONS.md#016,
+audit-events-append-only). ReviewDecidePreflight belongs to the database read
+boundary (DECISIONS.md#019).
 """
 
 from collections.abc import Mapping
@@ -33,30 +21,11 @@ from outrider.schemas.hitl import HITLDecision, HITLRequest
 
 
 class ReviewDecidePreflight(BaseModel):
-    """Snapshot of `reviews` row state the `/decide` endpoint needs before
-    admitting a reviewer decision.
+    """Review cache and audit-derived severity baselines needed before a decision.
 
-    Returned by `ReviewStatusReader.fetch_for_decide`. Frozen + extras-
-    forbidden per the cross-boundary-model convention. Four fields:
-
-    - `status` — string form of `reviews.status` (Postgres enum value).
-      Endpoint compares against `{'awaiting_approval',
-      'awaiting_approval_expired'}` for the state gate.
-    - `hitl_request` — Pydantic-deserialized `reviews.hitl_request` JSONB
-      cache. Canonical at interrupt time (the audit row is canonical
-      post-resume). `None` when the column is NULL — endpoint returns
-      409 Conflict.
-    - `hitl_decision` — Pydantic-deserialized `reviews.hitl_decision`
-      JSONB cache. Non-None means a decision already landed (single-shot
-      per spec Non-goals); endpoint returns 409 Conflict.
-    - `gated_finding_severities` — finding_id -> FindingSeverity map for
-      every finding in `hitl_request.findings_requiring_approval`,
-      sourced from the persisted-at-admit-time `FindingEvent.severity`
-      (carries the policy version per
-      `severity-policy-versioned-for-replay`). Endpoint uses this to
-      derive server-side `original_severity` for `PerFindingDecision`
-      construction. Empty when `hitl_request is None`. Bounded by gated-
-      set size <= 256.
+    The endpoint gates on status and any prior decision. Gated severities come from
+    persisted FindingEvents, preserving severity-policy-versioned-for-replay even
+    after the active policy changes. An absent request yields an empty severity map.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -69,30 +38,12 @@ class ReviewDecidePreflight(BaseModel):
 
 @runtime_checkable
 class ReviewStatusSink(Protocol):
-    """Sink for lifecycle status transitions + paired JSONB writes the
-    HITL node owns. Four methods, all idempotent against target state:
-    `mark_awaiting_approval`, `mark_running`, `mark_awaiting_approval_
-    expired`, `mark_completed`.
+    """Atomically persist each lifecycle transition and its paired fields.
 
-    Single-transaction contract: each method opens ONE `AsyncSession`,
-    runs ONE atomic `UPDATE reviews SET ...` statement covering status +
-    JSONB column + (where applicable) `expires_at`, commits.
-
-    Idempotency contract: every method MUST be a no-op when the row is
-    already in the target state. A `rowcount=0` UPDATE returns
-    successfully (NOT an error). This is load-bearing for the resume-
-    body re-run path: `mark_awaiting_approval` fires twice in the happy
-    case (once on first body invocation, once on resume body re-run);
-    the second call must not error. Same for `mark_running` against a
-    row already in `running`, `mark_awaiting_approval_expired` against
-    a row already in `awaiting_approval_expired`, and `mark_completed`
-    against a row already in `completed`.
-
-    Source-of-truth contract: on cross-persister divergence (JSONB
-    column vs `audit_events` row), the audit row is canonical per
-    `audit-events-append-only` + `DECISIONS.md#016`. The JSONB column
-    is a convenience cache for the dashboard read path. Replay
-    reconstruction always reads `audit_events`, never the JSONB.
+    Each method uses one session and UPDATE. A nonmatching predicate is a successful
+    no-op, allowing graph replay. Request and decision writes are first-write-only;
+    completion accepts only running reviews. The JSONB cache serves dashboard reads;
+    audit rows remain canonical (DECISIONS.md#016, audit-events-append-only).
     """
 
     async def mark_awaiting_approval(
@@ -102,18 +53,10 @@ class ReviewStatusSink(Protocol):
         expires_at: AwareDatetime,
         hitl_request_payload: dict[str, Any],
     ) -> None:
-        """Flip `reviews.status` from `running` -> `awaiting_approval`,
-        atomically writing `expires_at` + `hitl_request` JSONB.
+        """Store the first approval request, expiry, and awaiting_approval status.
 
-        Predicate: `WHERE id=:r AND status='running' AND hitl_request IS NULL`.
-        The `hitl_request IS NULL` discriminator makes the method
-        first-write-only: subsequent calls (re-emit on resume body
-        re-run; concurrent second background task post-first-completion
-        when `status='running'` again) see `hitl_request` already
-        populated and no-op (rowcount=0). Without this discriminator,
-        a post-completion replay (status flipped back to `running` by
-        the first task's `mark_running`) would REGRESS to
-        `awaiting_approval`, corrupting the lifecycle.
+        Require running and hitl_request IS NULL. Replay after resume must not replace
+        the original request or regress the review to awaiting approval.
         """
         ...
 
@@ -123,106 +66,42 @@ class ReviewStatusSink(Protocol):
         review_id: UUID,
         hitl_decision_payload: dict[str, Any],
     ) -> None:
-        """Flip `reviews.status` back to `running` on resume, atomically
-        writing `hitl_decision` JSONB.
+        """Store the first decision and resume an awaiting or expired review.
 
-        Predicate: `WHERE id=:r AND status IN ('awaiting_approval',
-        'awaiting_approval_expired') AND hitl_decision IS NULL`.
-
-        The `hitl_decision IS NULL` discriminator makes the method
-        first-write-only, mirroring `mark_awaiting_approval`'s
-        `hitl_request IS NULL` defense. Strengthening over the original
-        spec (which admitted `status='running'` as a source state for
-        idempotent re-fire): a divergent-content second decision whose
-        `AuditPersisterHITLDecisionNaturalKeyConflict` was caught by
-        the endpoint's failure wrapper could otherwise overwrite the
-        JSONB cache with content the audit row never ratified. Re-fires
-        after the first write see `hitl_decision` populated and no-op
-        (rowcount=0) — same idempotent semantic as the spec's `running`
-        admission, achieved via the discriminator instead. The audit
-        row remains canonical on cross-persister divergence per
-        `DECISIONS.md#016`.
-
-        Source states admitted: `awaiting_approval` (canonical
-        transition) + `awaiting_approval_expired` (remediation path per
-        `docs/spec.md` §4.1.6).
-
-        `reviews.expires_at` is LEFT IN PLACE (NOT cleared to NULL).
-        The sweep filter is `status='awaiting_approval' AND expires_at
-        < NOW()`; once status moves past `awaiting_approval`, the row
-        is no longer in the sweep's query result regardless of
-        `expires_at` value. Keeping the value preserves forensic
-        visibility (when did HITL fire? when would it have expired?)
-        at zero correctness cost.
+        Require hitl_decision IS NULL so a conflicting replay cannot replace the cache
+        with a decision the audit stream did not accept (DECISIONS.md#016). Keep
+        expires_at for forensic visibility; the expiry sweep filters on awaiting status.
+        Expired reviews use the remediation path in docs/spec.md §4.1.6.
         """
         ...
 
     async def mark_awaiting_approval_expired(self, *, review_id: UUID) -> None:
-        """Flip `reviews.status` -> `awaiting_approval_expired` (the
-        sweep-job entrypoint).
-
-        Predicate: `WHERE id=:r AND status IN ('awaiting_approval',
-        'awaiting_approval_expired')`. First clause is the canonical
-        transition; second admits idempotent re-fire when a sweep tick
-        re-processes an already-expired row (the partial unique index
-        on the anomaly side makes the paired anomaly emit no-op via
-        `on_conflict_do_nothing`).
-        """
+        """Mark an awaiting review expired; an already-expired row is also admitted."""
         ...
 
     async def mark_completed(self, *, review_id: UUID) -> None:
-        """Flip `reviews.status` -> `completed` AND write
-        `completed_at = NOW()` at publish-node terminal success.
+        """Complete a running review and stamp completed_at at terminal publish success.
 
-        Predicate: `WHERE id=:r AND status='running'`. The narrow
-        `running` source-state matches the post-`mark_running` (HITL
-        path) AND the no-HITL graph path (intake/triage/analyze/trace
-        all leave the row at `running` until publish terminates).
-        Idempotent on re-fire: rowcount=0 if the row is already
-        `completed` (a prior body re-run that succeeded) — same no-
-        error semantics as the other three mark_* methods.
-
-        Closes the lifecycle gap per canonical `docs/spec.md` §3.3
-        step 10 + `docs/architecture.md` step 10: the publish node
-        is canonical owner of the `completed` write, and without
-        this write successful reviews accumulate forever at
-        `status='running'`, excluded from `sweep/purge_expired.py`'s
-        retention purge by `_REVIEWS_ACTIVE_STATUSES`.
+        This includes successful graph paths that post nothing. Replays after completion
+        match no rows. Completion makes the review eligible for retention purge
+        (docs/spec.md §3.3 step 10; docs/architecture.md step 10).
         """
         ...
 
 
 @runtime_checkable
 class ReviewStatusReader(Protocol):
-    """Read surface for the dashboard `/decide` endpoint at interrupt
-    time.
+    """Read the persisted approval request before admitting a human decision.
 
-    Endpoint reads the canonical HITLRequest snapshot from
-    `reviews.hitl_request` JSONB, NOT from `graph.aget_state(...)`. The
-    state delta `{"hitl_request": ..., "hitl_decision": ...}` only
-    returns AFTER resume completes (step 13 of the HITL node body), so
-    at interrupt time the state-snapshot view of `hitl_request` is
-    empty; the only place the canonical snapshot exists is the JSONB
-    column the node body's `mark_awaiting_approval` wrote atomically
-    BEFORE `interrupt()`.
-
-    `gated_finding_severities` is populated via a sibling SELECT against
-    `audit_events` filtered on `event_type='finding'` for the gated set,
-    reading `FindingEvent.severity` (the persisted-at-admit-time
-    severity carrying the policy version under which the finding was
-    admitted). Bounded by gated-set size <= 256.
+    HITL writes the request before interrupt; its graph-state delta returns only
+    after resume. Read gated severities from the canonical audit stream, bounded by
+    the request's 256-finding cap.
     """
 
     async def fetch_for_decide(self, *, review_id: UUID) -> ReviewDecidePreflight | None:
-        """Return the `/decide` endpoint preflight snapshot, or `None`
-        if the review row does not exist.
+        """Return None for an absent review, otherwise deserialize its request and decision.
 
-        Runs TWO SELECTs in one session: (1) `SELECT status,
-        hitl_request, hitl_decision FROM reviews WHERE id=:r`; (2) -
-        only when `hitl_request is not None` - a JSONB-filtered SELECT
-        against `audit_events` to populate `gated_finding_severities`.
-        Both JSONB columns deserialize via `HITLRequest.model_validate`
-        and `HITLDecision.model_validate` respectively.
+        Load gated severities in the same session only when the request exists.
         """
         ...
 

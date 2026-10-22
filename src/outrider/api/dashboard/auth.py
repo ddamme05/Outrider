@@ -1,20 +1,8 @@
-"""Bearer-token auth for the dashboard endpoints.
+"""Authenticate dashboard admin and read-only agent scopes with separate keys.
 
-`require_admin_api_key` is a FastAPI dependency that validates the
-incoming `Authorization: Bearer <key>` header against
-`app.state.admin_api_key` (wired at lifespan startup from
-`DashboardSettings`). HMAC `compare_digest` is used to prevent the
-timing-oracle class of attack where character-by-character comparison
-leaks the key length / prefix.
-
-Per the M12 step-order contract on the `/decide` endpoint (auth ->
-state -> mismatch), this dependency fires FIRST so an unauthenticated
-caller cannot enumerate review state by probing the endpoint with
-various review_ids and observing the 200/409/422 response shape.
-
-Same `compare_digest` idiom as `api/webhooks/signature.py`. Trust
-boundary classification per `docs/trust-boundaries.md` §5 (input
-boundary, sub-rule 4).
+Compare bearer-token bytes with hmac.compare_digest. Authentication precedes
+review-state inspection on /decide (M12: auth → state → mismatch), so rejected
+callers cannot enumerate review state. See docs/trust-boundaries.md §5.
 """
 
 from __future__ import annotations
@@ -32,20 +20,11 @@ _BEARER_PREFIX = "Bearer "
 
 
 async def require_admin_api_key(request: Request) -> None:
-    """Validate `Authorization: Bearer <key>` against the lifespan-bound
-    admin key. Raises HTTP 401 on any failure mode.
+    """Require the admin bearer key before reading review state.
 
-    Failure modes that surface as 401 (uniform response shape so the
-    error surface doesn't disclose which check failed):
-      - No Authorization header
-      - Header doesn't start with `Bearer `
-      - The token after `Bearer ` doesn't match the configured key
-
-    `hmac.compare_digest` requires both arguments to be the same type
-    AND the same length; mismatched lengths return False without
-    leaking via timing. The comparison runs against the *bytes*
-    encoding so a unicode-shaped key submission can't change the
-    comparison surface.
+    Missing configuration, malformed headers, and mismatched tokens share one 401
+    response. Compare UTF-8 bytes so submitted Unicode does not trigger str's
+    ASCII-only comparison restriction.
     """
     expected: SecretStr | None = getattr(request.app.state, "admin_api_key", None)
     if expected is None:
@@ -78,16 +57,10 @@ async def require_admin_api_key(request: Request) -> None:
 
 
 async def require_agent_api_key(request: Request) -> None:
-    """Validate `Authorization: Bearer <key>` against the lifespan-bound, OPTIONAL
-    agent key (feature 3 / S2). Read-only `/agent-view` scope ONLY.
+    """Require the separate read-only agent key for /agent-view.
 
-    SEPARATE scope from the admin key, with NO admin fallback: an agent must never
-    authenticate with the admin key (which can `POST /decide`), and the admin key
-    must not read this endpoint either — strict one-directional separation. Same
-    uniform-401 surface + `hmac.compare_digest`-on-bytes idiom as
-    `require_admin_api_key`. When `OUTRIDER_AGENT_API_KEY` is unset
-    (`app.state.agent_api_key is None`) the surface is DISABLED and every request
-    gets a uniform 401 — never a 500.
+    There is no admin fallback. An unset key disables the surface with the same
+    uniform 401 response used for invalid tokens.
     """
     expected: SecretStr | None = getattr(request.app.state, "agent_api_key", None)
     if expected is None:

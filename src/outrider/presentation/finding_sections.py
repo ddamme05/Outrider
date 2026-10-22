@@ -13,7 +13,7 @@ The humanization maps are the single source of truth for the labels Python rende
 Slack). The dashboard mirrors them in `dashboard/src/lib/findingSections.ts`; a parity fixture
 keeps the two in lockstep. Eligibility / HITL-outcome phrasing is dashboard-only and lives in
 the TS mirror. An import-time totality assert makes a new enum member without a label crash
-loudly (mirrors `policy.severity`'s `_V1_SEVERITY_GATE`).
+loudly, like the totality guard in `policy/publish_eligibility.py`.
 """
 
 from __future__ import annotations

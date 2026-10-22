@@ -53,6 +53,7 @@ from outrider.schemas import (
     ReviewFinding,
     ReviewState,
     TraceCandidate,
+    TraceDecision,
     TraceFetchedFile,
 )
 from outrider.schemas.pr_context import ChangedFile, PRContext
@@ -857,3 +858,268 @@ def test_trace_router_routes_to_synthesize_at_max_rounds() -> None:
     assert len(state_at_ceiling.analysis_rounds) == MAX_ANALYSIS_ROUNDS
     assert state_at_ceiling.last_trace_pass_fetched_count > 0  # scalar gate would pass
     assert _trace_router(state_at_ceiling) == "synthesize"  # depth gate fires
+
+
+# ---------------------------------------------------------------------------
+# Candidate selection through the real trace(): excluding findings already
+# decided, bounding unique imports, and ordering candidates for ranking
+# ---------------------------------------------------------------------------
+
+
+def _build_multi_state(
+    *,
+    review_id: object,
+    findings: tuple[ReviewFinding, ...],
+    candidates: tuple[TraceCandidate, ...],
+    prior_decisions: tuple[TraceDecision, ...] = (),
+) -> ReviewState:
+    """A state carrying several findings and their candidates.
+
+    `_build_state` above holds exactly one finding and one candidate; selection
+    behavior that depends on more than one of either needs this builder.
+    """
+    now = datetime.now(UTC)
+    analysis_round = AnalysisRound(
+        round_id=compute_round_id(
+            pass_index=0,
+            files_examined=tuple(f.file_path for f in findings),
+            files_skipped=(),
+            finding_content_hashes=tuple(f.content_hash for f in findings),
+        ),
+        pass_index=0,
+        findings=findings,
+        files_examined=tuple(f.file_path for f in findings),
+        files_skipped=(),
+        started_at=now,
+        ended_at=now,
+    )
+    return ReviewState(
+        review_id=review_id,  # type: ignore[arg-type]
+        pr_context=PRContext(
+            installation_id=12345,
+            owner="o",
+            repo="r",
+            pr_number=1,
+            pr_title="x",
+            head_sha="a" * 40,
+            base_sha="b" * 40,
+            author="dev",
+            total_additions=5,
+            total_deletions=2,
+            changed_files=(),
+        ),
+        received_at=now,
+        analysis_rounds=[analysis_round],
+        trace_candidates=list(candidates),
+        trace_decisions=list(prior_decisions),
+    )
+
+
+@pytest.mark.asyncio
+async def test_already_traced_finding_is_excluded_from_selection(
+    persister_setup: PersisterTestSetup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A finding whose decision is already in state is not decided again.
+
+    Within-graph re-entry idempotency (`DECISIONS.md#025` point 5): a later pass
+    must leave a finding the earlier pass already decided alone, while still
+    deciding the ones it has not seen.
+    """
+    review_id = persister_setup.review_id
+    traced = _build_finding(review_id=review_id, proposal_hash="a" * 64, file_path="src/a.py")
+    fresh = _build_finding(review_id=review_id, proposal_hash="b" * 64, file_path="src/b.py")
+    cand_traced = _build_candidate(source_proposal_hash="a" * 64, import_string="pkg.already")
+    cand_fresh = _build_candidate(source_proposal_hash="b" * 64, import_string="pkg.fresh")
+    prior = TraceDecision(
+        source_finding_id=traced.finding_id,
+        target_file="src/already.py",
+        reason="decided on the previous pass",
+        resolution_status="resolved",
+        proposed_import_strings=("pkg.already",),
+        resolved_candidate_paths=("src/already.py",),
+    )
+    state = _build_multi_state(
+        review_id=review_id,
+        findings=(traced, fresh),
+        candidates=(cand_traced, cand_fresh),
+        prior_decisions=(prior,),
+    )
+
+    async def fake_fetch(*_args: object, **_kwargs: object) -> bytes | None:
+        return None  # every probe misses; resolution is not what this pins
+
+    monkeypatch.setattr(trace_module, "fetch_file_content_at", fake_fetch)
+    provider = _MockLLMProvider(ranked_candidate_ids=(cand_fresh.candidate_id,))
+
+    state_delta = await trace(
+        state,
+        provider=provider,  # type: ignore[arg-type]
+        trace_model="claude-haiku-test",
+        phase_event_sink=persister_setup.persister,
+        trace_sink=persister_setup.persister,
+        github_factory=_stub_github_factory,  # type: ignore[arg-type]
+    )
+
+    decided = {d.source_finding_id for d in state_delta.get("trace_decisions", [])}
+    assert fresh.finding_id in decided, "the un-traced finding must still be decided"
+    assert traced.finding_id not in decided, (
+        "a finding already carrying a TraceDecision must not be re-decided"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ranking_request_carries_unique_imports_not_raw_entries(
+    persister_setup: PersisterTestSetup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dedupe runs BEFORE the per-finding cap, so the cap bounds UNIQUE imports.
+
+    A bucket of 7 candidates over 3 distinct import strings must reach ranking
+    as those 3, not as the first `MAX_CANDIDATES_PER_FINDING` raw entries — a
+    loquacious analyze-LLM repeating one import with different rationales would
+    otherwise crowd every slot and starve the unique ones.
+    """
+    from outrider.agent.nodes.trace import MAX_CANDIDATES_PER_FINDING
+
+    review_id = persister_setup.review_id
+    noisy = _build_finding(review_id=review_id, proposal_hash="c" * 64, file_path="src/c.py")
+    other = _build_finding(review_id=review_id, proposal_hash="d" * 64, file_path="src/d.py")
+    # 7 raw entries, 3 unique imports, with the repeat filling the whole cap:
+    # capping FIRST would keep only `pkg.one` and starve the other two. A fixture
+    # whose uniques all fall inside the first MAX_CANDIDATES_PER_FINDING entries
+    # cannot tell the two orders apart — both yield the same set.
+    noisy_cands = tuple(
+        TraceCandidate(
+            candidate_id=compute_candidate_id(
+                source_proposal_hash="c" * 64, import_string=imp, reason=f"rationale {i}"
+            ),
+            source_proposal_hash="c" * 64,
+            reason=f"rationale {i}",
+            import_string=imp,
+        )
+        for i, imp in enumerate(
+            ["pkg.one", "pkg.one", "pkg.one", "pkg.one", "pkg.one", "pkg.two", "pkg.three"]
+        )
+    )
+    # A second bucket with two candidates, so the singleton bypass cannot fire.
+    other_cands = (
+        _build_candidate(source_proposal_hash="d" * 64, import_string="pkg.alpha"),
+        _build_candidate(source_proposal_hash="d" * 64, import_string="pkg.beta"),
+    )
+    state = _build_multi_state(
+        review_id=review_id,
+        findings=(noisy, other),
+        candidates=(*noisy_cands, *other_cands),
+    )
+
+    async def fake_fetch(*_args: object, **_kwargs: object) -> bytes | None:
+        return None
+
+    monkeypatch.setattr(trace_module, "fetch_file_content_at", fake_fetch)
+    provider = _MockLLMProvider(ranked_candidate_ids=())
+
+    await trace(
+        state,
+        provider=provider,  # type: ignore[arg-type]
+        trace_model="claude-haiku-test",
+        phase_event_sink=persister_setup.persister,
+        trace_sink=persister_setup.persister,
+        github_factory=_stub_github_factory,  # type: ignore[arg-type]
+    )
+
+    assert len(provider.calls) == 1, "two multi-candidate buckets must fire exactly one ranking"
+    prompt = provider.calls[0].user_prompt
+    assert prompt.count("pkg.one") == 1, (
+        "the repeated import must reach ranking once, not once per rationale"
+    )
+    for unique in ("pkg.one", "pkg.two", "pkg.three"):
+        assert unique in prompt, f"{unique} was crowded out of the capped set"
+    assert len(noisy_cands) > MAX_CANDIDATES_PER_FINDING, (
+        "fixture must exceed the cap or it proves nothing about dedupe-before-cap"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ranking_request_orders_buckets_by_finding_id(
+    persister_setup: PersisterTestSetup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cross-bucket order is `sorted(source_finding_id)`; intra-bucket is insertion order.
+
+    Intra-bucket is deliberately NOT sorted by `candidate_id` — that is a hash of
+    LLM-controlled fields, so sorting on it would let a hostile analyze-LLM grind
+    ids to win the top of the ranking prompt.
+    """
+    review_id = persister_setup.review_id
+    first = _build_finding(review_id=review_id, proposal_hash="e" * 64, file_path="src/e.py")
+    second = _build_finding(review_id=review_id, proposal_hash="f" * 64, file_path="src/f.py")
+    lo, hi = sorted((first, second), key=lambda f: f.finding_id)
+    lo_hash = "e" * 64 if lo is first else "f" * 64
+    hi_hash = "e" * 64 if hi is first else "f" * 64
+    lo_cands = (
+        _build_candidate(source_proposal_hash=lo_hash, import_string="lo.second_emitted"),
+        _build_candidate(source_proposal_hash=lo_hash, import_string="lo.first_emitted"),
+    )
+    hi_cands = (
+        _build_candidate(source_proposal_hash=hi_hash, import_string="hi.second_emitted"),
+        _build_candidate(source_proposal_hash=hi_hash, import_string="hi.first_emitted"),
+    )
+    state = _build_multi_state(
+        review_id=review_id,
+        findings=(first, second),
+        # Emitted hi-bucket first, so a correct flatten must still put lo first.
+        candidates=(*hi_cands, *lo_cands),
+    )
+
+    async def fake_fetch(*_args: object, **_kwargs: object) -> bytes | None:
+        return None
+
+    monkeypatch.setattr(trace_module, "fetch_file_content_at", fake_fetch)
+    # Rank the four INTERLEAVED across buckets and reversed within each, so the
+    # provider's order differs from both the request order and insertion order.
+    provider = _MockLLMProvider(
+        ranked_candidate_ids=(
+            hi_cands[1].candidate_id,
+            lo_cands[1].candidate_id,
+            hi_cands[0].candidate_id,
+            lo_cands[0].candidate_id,
+        )
+    )
+
+    state_delta = await trace(
+        state,
+        provider=provider,  # type: ignore[arg-type]
+        trace_model="claude-haiku-test",
+        phase_event_sink=persister_setup.persister,
+        trace_sink=persister_setup.persister,
+        github_factory=_stub_github_factory,  # type: ignore[arg-type]
+    )
+
+    assert len(provider.calls) == 1
+    prompt = provider.calls[0].user_prompt
+    positions = [
+        prompt.index("lo.second_emitted"),
+        prompt.index("lo.first_emitted"),
+        prompt.index("hi.second_emitted"),
+        prompt.index("hi.first_emitted"),
+    ]
+    assert positions == sorted(positions), (
+        "buckets must flatten in sorted(source_finding_id) order with insertion "
+        f"order preserved inside each; got offsets {positions}"
+    )
+
+    decisions = list(state_delta.get("trace_decisions", []))
+    assert [d.source_finding_id for d in decisions] == sorted(
+        d.source_finding_id for d in decisions
+    ), "decisions must come back sorted by finding id"
+
+    # Re-grouping puts each candidate back under its own finding in the order the
+    # provider ranked them. `proposed_import_strings` cannot show this — both
+    # schemas canonicalize it via a sorting field_validator — but the aggregated
+    # `reason` concatenates per candidate in bucket order and does survive.
+    reason_by_finding = {d.source_finding_id: d.reason for d in decisions}
+    for finding, cands in ((lo, lo_cands), (hi, hi_cands)):
+        reason = reason_by_finding[finding.finding_id]
+        ranked_first, ranked_second = cands[1].import_string, cands[0].import_string
+        assert reason.index(ranked_first) < reason.index(ranked_second), (
+            f"aggregated reason must follow the provider's ranking "
+            f"({ranked_first} before {ranked_second}); got {reason!r}"
+        )

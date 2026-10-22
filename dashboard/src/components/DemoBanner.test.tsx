@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { expect, test } from "vitest";
 
@@ -18,17 +18,13 @@ function mount(meta: () => Response | Promise<Response>) {
   );
 }
 
-test("renders on a confirmed demo deployment", async () => {
-  mount(() => HttpResponse.json({ demo_mode: true }));
-  expect(await screen.findByText(BANNER)).toBeInTheDocument();
-});
-
-test("brands the browser tab on a confirmed demo", async () => {
+test("renders the demo banner and brands the browser tab", async () => {
   const original = document.title;
   try {
+    document.title = "Outrider test";
     mount(() => HttpResponse.json({ demo_mode: true }));
-    await screen.findByText(BANNER); // wait for the demo status to resolve
-    expect(document.title).toBe("Outrider — Read-Only Demo");
+    expect(await screen.findByText(BANNER)).toBeInTheDocument();
+    await waitFor(() => expect(document.title).toBe("Outrider — Read-Only Demo"));
   } finally {
     document.title = original;
   }

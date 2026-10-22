@@ -390,11 +390,7 @@ def test_compute_truncation_hmac_differs_per_byte_count() -> None:
 
 
 def test_strip_fake_truncation_markers_removes_attacker_prepended_fake() -> None:
-    """Attacker-prepended fake marker is stripped before sanitization.
-
-    Defends against a reader being tricked into believing Outrider
-    did the eliding when in fact the attacker chose what to elide.
-    """
+    """The literal-marker remover drops an unobscured input marker."""
     fake = "[truncated, original 999 bytes · deadbeef]"
     text = f"normal content {fake} more content"
     cleaned = strip_fake_truncation_markers(text)
@@ -402,7 +398,7 @@ def test_strip_fake_truncation_markers_removes_attacker_prepended_fake() -> None
 
 
 def test_sanitize_display_string_strips_fake_marker_inline() -> None:
-    """The full sanitize pipeline runs fake-marker stripping first."""
+    """The full pipeline drops an unobscured marker; obscured ordering is pinned below."""
     fake = "[truncated, original 999 bytes · deadbeef]"
     text = f"prepended {fake}"
     cleaned = sanitize_display_string(text)
@@ -517,3 +513,53 @@ def test_is_safe_link_url_accepts_well_formed(url: str) -> None:
 )
 def test_is_safe_link_url_rejects_malformed(url: str) -> None:
     assert is_safe_link_url(url) is False
+
+
+# ---------------------------------------------------------------------------
+# Obscured forged truncation markers
+# ---------------------------------------------------------------------------
+
+_OBSCURED_MARKERS: list[tuple[str, str]] = [
+    # Each breaks the marker's literal text with a codepoint the sanitizer strips,
+    # so the marker regex cannot match it until AFTER that strip has run.
+    ("zero_width_joiner", "\n\n[truncated,‍ original 999 bytes · deadbeef]"),
+    ("bidi_override", "\n\n[truncated,‮ original 999 bytes · deadbeef]"),
+    ("ansi_csi", "\n\n[truncated,\x1b[0m original 999 bytes · deadbeef]"),
+    ("ansi_mid_word", "\n\n[trun\x1b[0mcated, original 999 bytes · deadbeef]"),
+    ("nul", "\n\n[truncated,\x00 original 999 bytes · deadbeef]"),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "payload"), _OBSCURED_MARKERS, ids=[m[0] for m in _OBSCURED_MARKERS]
+)
+def test_display_strips_marker_obscured_by_stripped_codepoints(label: str, payload: str) -> None:
+    """A forged marker hidden behind a stripped codepoint must not survive prose
+    sanitization.
+
+    The strip order is the property under test: controls come out first so the
+    payload collapses to the literal form the marker regex matches. Marker-first
+    ordering lets these through, and then removes the obscuring characters — handing
+    the reader a clean forged marker.
+    """
+    out = sanitize_display_string(f"real finding text{payload}")
+    assert "truncated, original 999" not in out.replace("\\", "")
+
+
+@pytest.mark.parametrize(
+    ("label", "payload"), _OBSCURED_MARKERS, ids=[m[0] for m in _OBSCURED_MARKERS]
+)
+def test_fenced_block_strips_marker_obscured_by_stripped_codepoints(
+    label: str, payload: str
+) -> None:
+    """Same property on the fenced path — a fence stops markdown interpretation, not
+    a forged provenance claim."""
+    out = render_fenced_block(f"real finding text{payload}")
+    assert "truncated, original 999" not in out.replace("\\", "")
+
+
+def test_unobscured_marker_still_stripped_on_both_paths() -> None:
+    """The plain case the reorder must not regress."""
+    payload = "\n\n[truncated, original 999 bytes · deadbeef]"
+    assert "truncated, original 999" not in sanitize_display_string(f"text{payload}")
+    assert "truncated, original 999" not in render_fenced_block(f"text{payload}")

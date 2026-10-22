@@ -17,6 +17,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from outrider.audit.events import (
     FindingEvent,
@@ -89,23 +90,13 @@ def test_finding_factory_recomputes_hash_on_field_overrides() -> None:
 
 
 def test_finding_event_factory_produces_finding_event_with_is_eval_true() -> None:
-    """FindingEventFactory.create() returns a FindingEvent with is_eval=True.
-
-    Severity comes from `SEVERITY_POLICY[finding_type]` via `lookup_severity`,
-    NOT a hard-coded constant — encoding the policy rule rather than today's
-    policy value, so the test catches policy drift.
-
-    Note on hash assertion: FindingEvent has a construction-time validator
-    that enforces `finding_content_hash` equality with the canonical helper,
-    so a wrong-hash factory would fail at `FindingEventFactory.create()`
-    before reaching the test body. Asserting equality here anyway for
-    self-documentation parity with the FindingFactory test (round 7) and
-    so a future change that loosens the validator doesn't silently weaken
-    this test's guarantees.
-    """
+    """Default events carry eval isolation, judged evidence and canonical policy/hash values."""
     event = FindingEventFactory.create()
     assert isinstance(event, FindingEvent)
     assert event.is_eval is True
+    assert event.evidence_tier == EvidenceTier.JUDGED
+    assert event.query_match_id is None
+    assert event.trace_path is None
     expected_hash = compute_finding_content_hash(
         file_path=event.file_path,
         line_start=event.line_start,
@@ -118,12 +109,9 @@ def test_finding_event_factory_produces_finding_event_with_is_eval_true() -> Non
 
 
 def test_finding_event_factory_validator_runs_on_construction() -> None:
-    """The FindingEvent proof-boundary + canonical-hash validators fire via the factory."""
-    # JUDGED is the default tier; query_match_id and trace_path can be None
-    event = FindingEventFactory.create()
-    assert event.evidence_tier == EvidenceTier.JUDGED
-    assert event.query_match_id is None
-    assert event.trace_path is None
+    """An explicit, well-formed hash still has to match the finding's identity."""
+    with pytest.raises(ValidationError, match="finding_content_hash"):
+        FindingEventFactory.create(finding_content_hash="0" * 64)
 
 
 def test_trace_decision_event_factory_satisfies_validator_rules() -> None:

@@ -1,36 +1,13 @@
 # HITL gate envelope per docs/spec.md §6.4 + §7.4 (severity override)
-"""HITL gate envelope: PerFindingOutcome / PerFindingDecision / HITLRequest / HITLDecision.
+"""Immutable approval requests and reviewer decisions.
 
-These models are the typed surface the publish gate consumes. The HITL node
-(agent/nodes/hitl.py, separate spec) interrupts the LangGraph state machine
-when any finding has severity CRITICAL or HIGH per spec §6.4; the dashboard's
-POST /reviews/{id}/decide endpoint constructs a HITLDecision from reviewer
-input and resumes the graph with Command(resume=hitl_decision).
+The HITL node interrupts for CRITICAL/HIGH findings. The dashboard decide
+endpoint builds HITLDecision and resumes the graph with Command(resume=...).
+Publish consumes these artifacts to validate approvals and overrides.
 
-All three of PerFindingDecision / HITLRequest / HITLDecision use frozen=True:
-they are decision artifacts that are final at construction. A reviewer's
-per-finding decision doesn't change after submission; HITLDecision is the
-full set of decisions, final at submit; HITLRequest is the agent's gate
-envelope at the moment it interrupts the graph (reviewer state mutates
-HITLDecision, not HITLRequest). Contrast ReviewFinding (NOT frozen) — see
-schemas/review_finding.py module docstring for the lifecycle rationale.
-
-PerFindingDecision.enforce_override_fields covers THREE spec §7.4 rules:
-(1) SEVERITY_OVERRIDE requires both override_severity and original_severity
-    (lines 277-283),
-(2) APPROVE / REJECT / SUPPRESS must NOT carry override_severity or
-    original_severity — those fields are SEVERITY_OVERRIDE-specific per the
-    field docstrings ("Only set when outcome == SEVERITY_OVERRIDE"), and
-(3) any non-APPROVE outcome requires a non-empty reason (lines 284-285).
-APPROVE callers pass reason="" to keep the decision-record shape uniform.
-
-HITL artifact container fields use tuple[..., ...] for true immutability:
-Pydantic frozen=True only blocks attribute reassignment, not in-place
-container mutation, so a list field can still be .append()'d after
-construction. tuple delivers what frozen=True is meant to deliver. The
-spec.md §6.4 / §7.4 sketches now also use tuple[..., ...]; field names
-and roles match the spec verbatim.
-"""
+PerFindingDecision.enforce_override_fields requires paired override fields,
+a real severity change, and a reason for every non-APPROVE outcome. Frozen
+models and tuple containers keep submitted artifacts immutable."""
 
 from enum import StrEnum
 from typing import Self
@@ -53,8 +30,7 @@ class PerFindingOutcome(StrEnum):
 class PerFindingDecision(BaseModel):
     """One reviewer's decision on one finding.
 
-    Frozen: a per-finding decision is final at construction. Reviewer-state
-    revisions produce a new decision, not a mutation.
+    Frozen: a per-finding decision is final at construction and cannot be mutated.
 
     Canonical source of HITL override provenance: the `findings`-table override
     columns are read-model projections of this (carried on `HITLDecisionEvent`),
@@ -90,26 +66,9 @@ class PerFindingDecision(BaseModel):
                 f"{self.outcome.value} must not carry override_severity or original_severity "
                 "(those fields are severity_override-specific)"
             )
-        # No-op override defense: a SEVERITY_OVERRIDE decision whose
-        # `override_severity` equals the policy `original_severity`
-        # claims an override that doesn't actually change severity.
-        # Without this guard, the no-op override passes endpoint
-        # validation, the `HITLDecisionEvent` lands in audit (append-
-        # only, can't undo), `mark_running` flips `reviews.status` to
-        # `running`, and the publish-time
-        # `PublishEligibilityEvent._enforce_override_legitimacy`
-        # validator rejects the row — wedging the review at
-        # `status='running'` past `/decide` retry (preflight sees
-        # `hitl_decision != NULL` → 409). `reclaim_stuck_hitl_states`'
-        # window-(g) scan technically admits the row, but the
-        # graph-driven `Command(resume=)` recovery cannot break the
-        # publish-eligibility rejection loop — every replay hits the
-        # same validator. The row stays wedged at `running` until
-        # operator intervention. Reject at the decision-construction
-        # site so the audit row never lands. The endpoint's pre-
-        # construction check produces the 422; this validator is
-        # defense-in-depth for any path constructing PerFindingDecision
-        # (replay code, sweep code, tests).
+        # Reject no-op overrides before a decision reaches append-only audit.
+        # A reviewer acknowledging the baseline uses APPROVE; claiming an
+        # unchanged override would fail the later publish schema check.
         if (
             self.outcome == PerFindingOutcome.SEVERITY_OVERRIDE
             and self.override_severity == self.original_severity
@@ -192,8 +151,8 @@ class HITLRequest(BaseModel):
 class HITLDecision(BaseModel):
     """Reviewer's full decision set for a HITL gate, final at submission.
 
-    Frozen: the decision is the audit record at submit time. Per spec §7.4
-    line 290 the field is `decisions: tuple[PerFindingDecision, ...]` (NOT
+    Frozen: the submitted decision is final at construction. Per spec §7.4
+    the field is `decisions: tuple[PerFindingDecision, ...]` (NOT
     `per_finding_decisions`; tuple-not-list for true immutability — see
     module docstring); the dashboard endpoint constructs this from reviewer
     input and the graph resumes with Command(resume=hitl_decision).

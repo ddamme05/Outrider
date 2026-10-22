@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Outrider operator console — React 19 + Vite SPA over the read-only dashboard API.",
+  "description": "Outrider operator console for reviews, approvals, and GitHub/Slack setup.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

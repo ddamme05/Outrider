@@ -1,20 +1,9 @@
-"""DashboardSettings — env-backed bearer-token credential for the
-HITL endpoints.
+"""Immutable dashboard auth and link settings loaded at startup.
 
-Separate Pydantic-settings class from `GitHubAppSettings` because the
-dashboard's V1.5 surface will grow (per-reviewer auth, OAuth, etc.)
-and conflating those settings into the GitHub-App namespace would
-collide with the `OUTRIDER_GITHUB_*` env prefix. `frozen=True` +
-`extra="forbid"` mirror the existing config-class precedent.
-
-`SecretStr` wraps the API key so accidental string logging shows
-`SecretStr('**********')` rather than the cleartext value. Callers
-unwrap via `.get_secret_value()` at the HMAC-compare site (one place:
-`api/dashboard/auth.py`).
-
-V1: a single global admin key used by an internal dashboard. V1.5+:
-expand to a per-reviewer-id table; the Protocol seam is the existing
-`require_admin_api_key` FastAPI dependency.
+OUTRIDER_ADMIN_API_KEY is required; OUTRIDER_AGENT_API_KEY is an optional,
+distinct read-only key. SecretStr masks representations; auth.py unwraps only
+for comparison. OUTRIDER_DASHBOARD_BASE_URL supplies optional publish links,
+validated when rendered (DECISIONS.md#050).
 """
 
 from pydantic import SecretStr, field_validator, model_validator

@@ -18,8 +18,7 @@ describe("unionDurationMs", () => {
   });
 
   test("overlapping concurrent phases merge — NOT summed (the parallel-analyze bug)", () => {
-    // Four workers of 5s each, heavily overlapping under concurrency: wall-time is the union
-    // (~6s here), not 4×5s=20s. Summing was the pre-fix double-count.
+    // Four overlapping workers cover 6s of wall time, not 20s.
     const workers = [span(0, 5000), span(1000, 6000), span(500, 5500), span(200, 5200)];
     expect(unionDurationMs(workers)).toBe(6000);
     // Order-independence: shuffling the same intervals yields the same union.
@@ -31,9 +30,7 @@ describe("unionDurationMs", () => {
   });
 
   test("multi-pass: trace gap between analyze passes is EXCLUDED (finding 1)", () => {
-    // pass-0 workers span [0,5s]; trace runs [5s,20s]; pass-1 workers span [20s,23s].
-    // A naive earliest→latest span would be 23s (swallowing the 15s trace gap); the union of
-    // the two disjoint analyze clusters is 5s + 3s = 8s.
+    // Analyze covers 0–5s and 20–23s; the 15s trace gap is excluded.
     const pass0 = [span(0, 5000), span(1000, 4000)];
     const pass1 = [span(20000, 23000), span(20500, 22000)];
     expect(unionDurationMs([...pass0, ...pass1])).toBe(8000);

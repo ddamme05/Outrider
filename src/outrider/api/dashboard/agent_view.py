@@ -1,25 +1,14 @@
 # Agent-view endpoint per ROADMAP.md section 3 / S2 + FUP-154.
-"""GET /reviews/{review_id}/agent-view — read-only structured review for AI agents.
+"""Authenticated, read-only JSON for agents following one review.
 
-The unforgeable channel (feature 3 / S2): an AI agent reads trust-critical fields
-(severity, evidence tier, HITL decision) from this authenticated JSON endpoint
-instead of grepping the forgeable comment prose (the S1/S1.5 markers; FUP-154).
+The router uses a separate agent token; it cannot authorize dashboard decisions.
+It projects stored review, finding, decision and publication data without writing
+new audit events. Audit queries stay scoped to the review's `is_eval` value.
 
-Mounted on its OWN router gated by `require_agent_api_key` — a SEPARATE read-only
-token from the admin key, so an agent never holds the key that can `POST /decide`.
-Read-only: a pure projection of existing state (the `reviews` row, FindingEvent /
-Finding content, HITLDecisionEvent, PublishEvent, InstallationRepository); it emits
-no audit event.
-
-Every audit read is `is_eval`-scoped (FUP-130). Fields are OMITTED from the V1
-contract, not faked: `github_comment_url` (Outrider records only the review-level
-`github_review_id`), and `suggested_fix` (feature 2 / DECISIONS.md#040 generates the
-patch in synthesize and renders it as a GitHub ```suggestion at publish, but does NOT
-persist it to the finding content row — it lives only in graph state + the GitHub
-comment — so it is not readable here yet). Projecting `suggested_fix` on this
-unforgeable channel, gated on publish having routed the finding INLINE_COMMENT +
-ELIGIBLE, is a deferred follow-up (it requires the findings-row persistence first).
-`schema_version` lets agents branch on future contract revisions.
+V1 omits per-comment URLs and suggested fixes. Publication records a GitHub review
+ID, not individual comment URLs. Analyze persists findings before synthesis adds
+patches to graph state, so this endpoint does not project those generated patches.
+`schema_version` identifies the response contract (ROADMAP §3 / S2, FUP-154).
 """
 
 from __future__ import annotations
@@ -45,12 +34,12 @@ if TYPE_CHECKING:
 
 
 class AgentReviewerDecision(BaseModel):
-    """One finding's HITL decision, for an agent. Projected from the canonical
-    HITLDecisionEvent (DECISIONS.md#034); `reviewer_id` is `"admin"` in V1
-    (DECISIONS.md#011). Present only when the finding was decided (gated + reached).
-    `original_severity` / `override_severity` are non-null ONLY when
-    `outcome == "severity_override"` (the policy value vs the reviewer's value); the
-    finding's `severity` already reflects the override, these carry the provenance."""
+    """A finding's recorded human decision and severity-override provenance.
+
+    Projected from HITLDecisionEvent (DECISIONS.md#034); V1 reviewer_id is "admin"
+    (DECISIONS.md#011).
+    Original and override severities are present only for severity overrides.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -63,16 +52,13 @@ class AgentReviewerDecision(BaseModel):
 
 
 class AgentFindingView(BaseModel):
-    """One finding in the agent shape. `severity` is the EFFECTIVE severity an agent
-    should act on — the post-HITL-override value (matching the S1 `outrider:severity`
-    marker); a `severity_override` decision swaps the policy value for the reviewer's,
-    and `reviewer_decision.original_severity` keeps the pre-override (policy) value.
-    `severity` / `evidence_tier` are policy/human-decided, never model output.
-    `title` / `description` are model-generated content (`None` on a retention-redacted
-    stub). `github_comment_url` AND the feature-2 `suggested_fix` are omitted in V1: the
-    patch (DECISIONS.md#040) is rendered as a GitHub ```suggestion at publish but is not
-    persisted to the finding row, so it is not readable here — gated projection is a
-    deferred follow-up."""
+    """An admitted finding with effective severity and its recorded decision.
+
+    Severity comes from policy or a human override; original_severity preserves
+    the policy value. Evidence tier comes from the validated finding record.
+    Title and description may come from query metadata or a model, and can be
+    absent after retention. V1 omits per-comment URLs and suggested fixes.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -90,8 +76,7 @@ class AgentFindingView(BaseModel):
 
 
 class AgentPublishEvent(BaseModel):
-    """The review's GitHub publish outcome. `None` when publish never ran
-    (zero-eligible / no-op)."""
+    """A recorded GitHub review and its posted comment count."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -101,8 +86,7 @@ class AgentPublishEvent(BaseModel):
 
 
 class AgentReviewView(BaseModel):
-    """The structured agent-view of a review (ROADMAP §3 / S2). `schema_version` is
-    the versioned contract handle so agents can branch on future shape changes."""
+    """Stored review state for agents; schema_version identifies the contract."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -125,9 +109,10 @@ router = APIRouter(
 async def _pr_url(
     session: AsyncSession, *, installation_id: int, repo_id: int, pr_number: int
 ) -> str | None:
-    """`https://github.com/{repo_full_name}/pull/{pr_number}` from the active
-    InstallationRepository membership. `None` when the membership row is absent or
-    removed (a repo rename/removal) — never 500 the whole view for a missing join."""
+    """Build the PR URL from active repository membership, or return None.
+
+    Missing membership is a normal state, not malformed audit data.
+    """
     repo_full_name = (
         await session.execute(
             select(InstallationRepository.repo_full_name).where(
@@ -143,8 +128,10 @@ async def _pr_url(
 async def _latest_publish_event(
     session: AsyncSession, review_id: UUID, review_is_eval: bool
 ) -> AgentPublishEvent | None:
-    """The review's latest PublishEvent (github_review_id / review_status /
-    comments_posted), `is_eval`-scoped (FUP-130). `None` when publish never ran."""
+    """Read the latest recorded GitHub publication in this review's eval scope.
+
+    No event returns None, even if the graph completed without posting.
+    """
     payload = (
         await session.execute(
             select(AuditEvent.payload)
@@ -159,13 +146,8 @@ async def _latest_publish_event(
     ).scalar_one_or_none()
     if payload is None:
         return None
-    # Bracket-access (not `.get()`) is deliberate, here and in `_hitl_decided_at`:
-    # audit payloads are write-validated (Pydantic) + append-only, so these keys are
-    # present in all non-corrupt data. A malformed payload is corruption and SHOULD
-    # surface loudly (a 500), not be masked as a null field — the codebase's fail-loud /
-    # no-auto-coerce posture (see tests/eval is_eval gate). Same as the sibling dashboard
-    # reads (`reviews.py`). `_pr_url` returns None instead because a missing membership
-    # row is a NORMAL state (repo rename/removal), not corruption.
+    # Missing keys indicate corrupt validated audit data. Do not hide them as
+    # absent publication, unlike the normal missing-membership case in _pr_url.
     return AgentPublishEvent(
         github_review_id=payload["github_review_id"],
         review_status=payload["review_status"],
@@ -176,8 +158,7 @@ async def _latest_publish_event(
 async def _hitl_decided_at(
     session: AsyncSession, review_id: UUID, review_is_eval: bool
 ) -> AwareDatetime | None:
-    """The review's single HITLDecisionEvent `decided_at` (event-level — shared by
-    every per-finding decision), `is_eval`-scoped. `None` when no decision exists."""
+    """Read the latest decision timestamp, shared by its per-finding decisions."""
     payload = (
         await session.execute(
             select(AuditEvent.payload)
@@ -192,9 +173,7 @@ async def _hitl_decided_at(
     ).scalar_one_or_none()
     if payload is None:
         return None
-    # Stored as a tz-aware ISO string in the JSONB payload (HITLDecisionEvent.
-    # decided_at is AwareDatetime). Parse to a real datetime so the typed return
-    # holds; AgentReviewerDecision.decided_at (AwareDatetime) accepts it.
+    # Validated audit timestamps are stored as aware ISO strings in JSONB.
     raw = payload["decided_at"]
     return datetime.fromisoformat(raw) if raw is not None else None
 
@@ -202,13 +181,11 @@ async def _hitl_decided_at(
 def _to_agent_finding(
     fv: FindingView, *, gated_fids: set[str], decided_at: AwareDatetime | None
 ) -> AgentFindingView:
-    """Map a `FindingView` (the shared assembly) to the agent shape. `hitl_gated` =
-    the finding is in the persisted gated set; `reviewer_decision` is present only
-    when the finding carries a HITL decision (gated + decided), with the event-level
-    `decided_at`. `severity` is the EFFECTIVE value: a `severity_override` decision
-    swaps the policy value (kept as `reviewer_decision.original_severity`) for the
-    reviewer's — matching the S1 `outrider:severity` marker, so the two agent channels
-    agree. Both the policy and override values are human/policy-set, never model output."""
+    """Project gate history and any timestamped decision onto an admitted finding.
+
+    A severity override becomes the effective value; the decision retains the
+    original policy severity. Gate membership comes from the saved HITL request.
+    """
     decision = fv.hitl_decision
     effective_severity = fv.severity
     reviewer_decision = None
@@ -240,9 +217,11 @@ def _to_agent_finding(
 
 @router.get("/{review_id}/agent-view", response_model=AgentReviewView)
 async def get_agent_view(request: Request, review_id: UUID) -> AgentReviewView:
-    """Structured, read-only review for an AI agent. 404 if the review is absent
-    (holding the id suffices, like `get_review`). Reuses `_assemble_finding_views`
-    then maps each finding to the agent shape. Every audit read is `is_eval`-scoped."""
+    """Read an authenticated review projection; return 404 for an unknown ID.
+
+    Shared finding assembly supplies content/proof and retention behavior.
+    Audit reads use the stored review's production/eval scope.
+    """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         review = (

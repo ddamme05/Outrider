@@ -1,46 +1,16 @@
 # Triage-output cross-boundary models per docs/spec.md §7.2 (RiskLevel: Amended 2026-05-08)
-"""Triage envelope: ReviewTier / RiskLevel / TriageResult.
+"""Triage classifications and the policy snapshot used by later nodes.
 
-These models are the typed output contract of the triage node (separate spec).
-Triage runs a fast Haiku pass over PRContext, classifies each changed file
-into a ReviewTier, classifies the overall PR into a RiskLevel, and identifies
-which ReviewDimensions the deeper-reviewed files should be analyzed under.
-The deterministic floor — that triage suggestions don't bypass review for
-high-risk PRs — is enforced upstream of the model output, not by this schema.
+Triage proposes per-file tiers, overall PR risk, and review dimensions;
+agent/nodes/triage.py enforces deterministic review floors. PRContext separates
+webhook metadata from intake-enriched source per DECISIONS.md#020. The PR-size gate
+produces SKIP, while model classifications are DEEP/STANDARD/SKIM.
+RiskLevel measures the whole PR; FindingSeverity measures one finding.
 
-ReviewTier values are lowercase serialized per project convention (matches
-PerFindingOutcome, EvidenceTier, FindingSeverity, ReviewDimension). DEEP /
-STANDARD / SKIM / SKIP are the four tiers per spec §4.1.2 + §6.10; SKIP
-exists in the enum because §6.10 size-cap classification (>1000 lines OR
->30 files) maps directly to the same tier vocabulary, even though the LLM
-itself is not the producer of SKIP under §4.1.2.
-
-RiskLevel was added 2026-05-08 to close the canonical-shape gap (referenced
-by TriageResult.overall_risk and ReviewReport.overall_risk in spec §7.2 but
-never defined as a class). Same ladder shape as FindingSeverity minus INFO,
-since "informational PR-level risk" has no operational meaning. See
-specs/2026-05-08-schema-foundation.md and the spec.md §7.2 amendment for the
-rationale; RiskLevel measures the PR as a whole, FindingSeverity measures
-one finding within it.
-
-TriageResult is frozen=True: it round-trips through LangGraph state JSON on
-every checkpoint. The model's output is final at construction; downstream
-nodes (analyze, trace, synthesize, publish) consume the value, never mutate
-it. `relevant_dimensions` is `tuple[ReviewDimension, ...]` not
-`list[ReviewDimension]` — same hitl/audit precedent as PRContext.changed_files
-(frozen=True is faux-immutable over in-place container mutation; tuple
-delivers true immutability). `file_tiers` is `Mapping[str, ReviewTier]` with
-a `field_validator` that wraps the dict input in `MappingProxyType` so post-
-construction mutation (`triage.file_tiers["x"] = ...`) raises `TypeError`
-(closes FUP-018). JSON round-trip is preserved by a paired
-`field_serializer` that dumps the MappingProxyType as a regular dict (via
-`dict(value)`); StrEnum values serialize via Pydantic's default StrEnum
-handling. Spec.md §7.2 was amended same-day (2026-05-08) to widen the field
-type from `dict` to `Mapping` (the abstract supertype admits both `dict`
-input and `MappingProxyType` runtime — no contradiction with #020 or §7.2's
-intent; just a precision fix that lets the runtime type carry the
-immutability the carrier-level annotation can't enforce alone).
-"""
+The result is immutable across checkpoints: tuple dimensions, a copied
+MappingProxyType file map, and a serializer returning ordinary JSON data.
+The policy_version field captures the active version at construction and
+supports explicit historical versions during replay."""
 
 from collections.abc import Mapping
 from enum import StrEnum
@@ -86,14 +56,12 @@ class RiskLevel(StrEnum):
 
 
 class TriageResult(BaseModel):
-    """Output of the triage node, per spec §7.2.
+    """Triage classification plus a captured policy-version anchor.
 
-    Frozen: see module docstring. All four fields are required; the LLM's
-    structured output produces the values, the schema enforces the typed
-    shape. relevant_dimensions enumerates which review dimensions apply to
-    this PR — pure CSS changes don't get a security review, migrations
-    don't get a style review (per spec §4.1.2 cost-control rationale).
-    """
+    The four classification fields are required; policy_version defaults to the
+    active version. The live triage gate rejects a different model-supplied
+    version. Frozen fields, a copied read-only file map, and canonical dimension
+    ordering keep checkpoint representations stable."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

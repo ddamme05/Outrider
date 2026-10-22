@@ -2,39 +2,24 @@
 # specs/2026-07-02-js-ts-tree-sitter-adapters.md.
 """JavaScript/JSX adapter for tree-sitter-javascript 0.25.0.
 
-Ports `PythonAdapter` method-for-method against the JS grammar (JSX is
-native to tree-sitter-javascript, so `.jsx` and JSX-in-`.js` parse
-cleanly; Flow-typed `.js` degrades to per-scope `has_error`). Structural
-extraction is a tree walk — no `.scm` queries are involved, mirroring
-the Python adapter.
+Structural extraction walks the tree without `.scm` queries. JSX parses
+natively; Flow-typed `.js` degrades through per-scope `has_error`.
+`TypeScriptAdapter` reuses the walk with extended node-type tables.
 
-Scope-kind fold per the spec (canonical §5.4 enums unchanged):
-  * `function_declaration` / `generator_function_declaration`, and
-    `arrow_function` / `function_expression` / `generator_function`
-    bound to a `variable_declarator` identifier → ``kind="function"``
-    (named by the binding).
-  * `method_definition` (class body OR object literal), and class-field
-    arrows (`field_definition` with a function value) → ``kind="method"``.
-  * `class_declaration` and `class` expressions bound to a declarator
-    identifier → ``kind="class"``.
-  * Anonymous arrows / IIFEs / callbacks and computed-name members are
-    not extracted (no stable `qualified_name` — mirrors Python lambdas).
-  * Object-literal values nest into `qualified_name` (``obj.method``),
-    so same-named members of sibling literals keep distinct unit_ids.
+Canonical §5.4 scope kinds: function declarations and identifier-bound
+function expressions are functions; class/object methods and function-valued
+class fields are methods; class declarations and identifier-bound class
+expressions are classes. Anonymous functions and computed-name members have
+no stable scope name. Object-literal bindings qualify members (`obj.method`)
+to keep sibling unit_ids distinct.
 
-Import-kind fold per the spec: relative specifiers (`./`, `../`) →
-``"relative"`` regardless of form; default/named imports, destructured
-`require`, and `export … from` re-exports → ``"from"``; namespace
-(`import * as ns`), side-effect, bare `require`, and TS
-`import x = require(...)` → ``"direct"``; `export * from` → ``"star"``.
-Dynamic `import()` is an expression, not a static import — not
-extracted. Relative static imports (``import_kind="relative"`` — any
-extracted form whose source is `./`-, `../`-, `.`- or `..`-shaped)
-carry ``is_simple_direct=True`` and resolve through
-`resolve_simple_direct_import` via the injected resolver's
-relative-specifier surface (`DECISIONS.md#024`, Amended 2026-07-03);
-bare and namespace-package specifiers stay ``False`` (`node_modules`
-resolution is out of scope).
+Import kinds: default/named imports, destructured `require`, and named
+re-exports are `from`; namespace/side-effect imports, identifier-bound
+`require`, and TS `import x = require(...)` are `direct`; wildcard re-exports
+are `star`. Relative specifiers (`./`, `../`, `.`, `..`) override any form
+with `relative` and `is_simple_direct=True` (DECISIONS.md#024). Only these
+resolve through the injected resolver; `node_modules` resolution is out of
+scope. Dynamic `import()` expressions are not extracted.
 """
 
 from __future__ import annotations
@@ -69,19 +54,12 @@ if TYPE_CHECKING:
 
     from outrider.ast_facts.base import ImportPathResolver
 
-# ---------------------------------------------------------------------------
-# Module-level singletons
-# ---------------------------------------------------------------------------
+# Shared JavaScript parser.
 
 _JS_LANGUAGE: Final = Language(tree_sitter_javascript.language())
 _JS_PARSER: Final = Parser(_JS_LANGUAGE)
 
 _RELATIVE_SPECIFIER_PREFIXES: Final = ("./", "../")
-
-
-# ---------------------------------------------------------------------------
-# JavaScriptAdapter
-# ---------------------------------------------------------------------------
 
 
 class JavaScriptAdapter:
@@ -102,18 +80,13 @@ class JavaScriptAdapter:
         {"arrow_function", "function_expression", "generator_function"}
     )
     _CLASS_VALUE_TYPES: ClassVar[frozenset[str]] = frozenset({"class"})
-    # Method/field name node types with a stable identifier (computed
-    # names and string/number keys are skipped — no stable qualified_name).
+    # Computed/string/number keys have no stable qualified_name.
     _MEMBER_NAME_TYPES: ClassVar[frozenset[str]] = frozenset(
         {"property_identifier", "private_property_identifier"}
     )
-    # Lexical-binding visibility frames (DECISIONS.md#060). Function
-    # frames bound params + hoisted `var`; `let`/`const` bind at the
-    # nearest block frame; `function`/`class` declarations at the
-    # nearest frame of EITHER set (the combined `decl_frames` search).
-    # A function body IS a `statement_block`, so the block set alone
-    # resolves block-scoped kinds inside functions; expression-bodied
-    # arrows cannot contain declarations.
+    # Visibility frames (DECISIONS.md#060): params/var use functions,
+    # let/const use blocks, function/class declarations use either.
+    # Function bodies are statement_blocks; expression arrows have no declarations.
     _FUNCTION_FRAME_TYPES: ClassVar[frozenset[str]] = frozenset(
         {
             "function_declaration",
@@ -127,12 +100,9 @@ class JavaScriptAdapter:
     _BLOCK_FRAME_TYPES: ClassVar[frozenset[str]] = frozenset(
         {"statement_block", "for_statement", "for_in_statement", "switch_body"}
     )
-    # Binding-position pattern nodes the identifier collector recurses
-    # into. Unknown node types are NOT recursed (under-collection means
-    # the shadow guard misses an exotic pattern — the FP persists and
-    # JUDGED covers; over-collection would wrongly deny). TS parameter
-    # wrappers (`required_parameter`/`optional_parameter`) are handled
-    # by field, so `type_annotation` subtrees are never walked.
+    # Recurse only through known binding patterns. Missing an exotic pattern
+    # leaves a false positive for JUDGED; over-collection would wrongly deny it.
+    # TS parameter wrappers are handled by field, excluding type annotations.
     _PATTERN_RECURSE_TYPES: ClassVar[frozenset[str]] = frozenset(
         {"object_pattern", "array_pattern", "rest_pattern"}
     )
@@ -141,26 +111,23 @@ class JavaScriptAdapter:
         self._resolver = resolver
         self._parser: Parser = _JS_PARSER
 
-    # ------------------------------------------------------------------
     # Internal helpers
-    # ------------------------------------------------------------------
 
     def _parse(self, source: bytes) -> Tree:
         return self._parser.parse(source)
 
     @staticmethod
     def _node_text(node: Node) -> str:
-        # Node.text returns bytes; decode UTF-8. Source has already
-        # passed UTF-8 validation per the parse pipeline.
+        # The parse pipeline has already validated source UTF-8.
         return node.text.decode("utf-8") if node.text else ""
 
     @staticmethod
     def _string_text(string_node: Node | None) -> str:
-        """Unquoted specifier text of a `string` node: `string_fragment`
-        and `escape_sequence` children concatenated in order (`''` has
-        none). Escape sequences are preserved as raw source text
-        (`\\u002D` stays `\\u002D`, not decoded to `-`) — dropping them
-        would corrupt the specifier; decoding is a resolver concern."""
+        """Join a string's fragments and escapes without quotes (`''` is empty).
+
+        Preserve raw escapes (`\\u002D` stays `\\u002D`, not `-`); dropping them
+        corrupts the specifier, while decoding belongs to the resolver.
+        """
         if string_node is None:
             return ""
         return "".join(
@@ -171,18 +138,16 @@ class JavaScriptAdapter:
 
     @staticmethod
     def _decorators_for(node: Node) -> tuple[tuple[str, ...], Node | None]:
-        """Decorator text for a scope node, `@` stripped (Python-adapter
-        convention), plus the earliest decorator node that lies OUTSIDE
-        the scope node's own span (for span widening).
+        """Return decorator text without `@` and the first span-widening sibling.
 
-        Two attachment sites, verified against the grammars:
-          * decorator children INSIDE the node (TS non-exported decorated
-            class) — already inside the span, no widening;
-          * immediately preceding named siblings (TS method decorators in
-            a class_body; exported-class decorators hang on the
-            export_statement as siblings of the declaration).
+        TS non-exported classes hold decorators as children, already in span.
+        Methods and exported classes have preceding decorator siblings under
+        class_body/export_statement; these widen the scope's start.
         """
-        inside = [c for c in node.named_children if c.type == "decorator"]
+        inside: list[Node] = []
+        for decorator_child in node.named_children:
+            if decorator_child.type == "decorator":
+                inside.append(decorator_child)
         outside: list[Node] = []
         sib = node.prev_named_sibling
         while sib is not None and sib.type == "decorator":
@@ -198,10 +163,9 @@ class JavaScriptAdapter:
 
     @staticmethod
     def _walk(node: Node) -> Iterator[Node]:
-        """Pre-order traversal of `node` and all descendants (unnamed
-        nodes included; callers filter by `node.type`). Iterative so
-        adversarially deep parse trees can't exhaust the recursion
-        limit — same rationale as `PythonAdapter._walk`.
+        """Walk all descendants in pre-order, including unnamed nodes.
+
+        Iteration avoids recursion-limit exhaustion on deeply nested trees.
         """
         stack: list[Node] = [node]
         while stack:
@@ -209,9 +173,7 @@ class JavaScriptAdapter:
             yield current
             stack.extend(reversed(current.children))
 
-    # ------------------------------------------------------------------
-    # extract_scopes
-    # ------------------------------------------------------------------
+    # Scope extraction
 
     def extract_scopes(self, source: bytes, file_path: str) -> tuple[ScopeUnit, ...]:
         return self._extract_scopes_from_tree(self._parse(source), file_path)
@@ -224,25 +186,52 @@ class JavaScriptAdapter:
         in_class: bool,
         parent_unit_id: str | None,
     ) -> None:
-        """Generic descent for the scope walk: push all children with the
-        inherited frame, reversed so leftmost pops first (pre-order).
+        """Queue children in pre-order with the inherited scope frame.
 
-        `decorator` subtrees are NOT descended: their contents (config
-        object literals, inline arrows) are metadata captured as
-        decorator text, not code scopes — descending emitted phantom
-        method ScopeUnits from decorator-argument object pairs.
+        Skip decorator subtrees: their objects/arrows are captured metadata,
+        and descending them would emit phantom code scopes.
         """
         for child in reversed(node.children):
             if child.type == "decorator":
                 continue
             stack.append((child, qual_path, in_class, parent_unit_id))
 
+    def _emit_and_descend(
+        self,
+        scopes: list[ScopeUnit],
+        stack: list[tuple[Node, tuple[str, ...], bool, str | None]],
+        *,
+        span_node: Node,
+        kind: str,
+        name: str,
+        qual_path: tuple[str, ...],
+        file_path: str,
+        parent_unit_id: str | None,
+        body_owner: Node,
+        child_in_class: bool,
+    ) -> None:
+        """Emit one scope, then queue its body as a child frame.
+
+        `body_owner` is the declaration or its function/class value. A body-less
+        node emits a scope without further descent.
+        """
+        unit_id = self._emit(
+            scopes,
+            span_node=span_node,
+            kind=kind,
+            name=name,
+            qual_path=qual_path,
+            file_path=file_path,
+            parent_unit_id=parent_unit_id,
+        )
+        body = body_owner.child_by_field_name("body")
+        if body is not None:
+            stack.append((body, (*qual_path, name), child_in_class, unit_id))
+
     def _extract_scopes_from_tree(self, tree: Tree, file_path: str) -> tuple[ScopeUnit, ...]:
         scopes: list[ScopeUnit] = []
-        # Frame: (node, qual_path, in_class, parent_unit_id) — the same
-        # state the Python walker carries. `in_class` is tracked for
-        # shape parity though JS methods are recognized by node type
-        # (method_definition), not by position.
+        # in_class preserves the Python frame shape; JS methods use node type,
+        # rather than position, for recognition.
         stack: list[tuple[Node, tuple[str, ...], bool, str | None]] = [
             (tree.root_node, (), False, None)
         ]
@@ -255,18 +244,18 @@ class JavaScriptAdapter:
                 if name_node is None:
                     continue
                 name = self._node_text(name_node)
-                unit_id = self._emit(
+                self._emit_and_descend(
                     scopes,
+                    stack,
                     span_node=node,
                     kind="function",
                     name=name,
                     qual_path=qual_path,
                     file_path=file_path,
                     parent_unit_id=parent_unit_id,
+                    body_owner=node,
+                    child_in_class=False,
                 )
-                body = node.child_by_field_name("body")
-                if body is not None:
-                    stack.append((body, (*qual_path, name), False, unit_id))
                 continue
 
             if node_type in self._CLASS_DECL_TYPES:
@@ -274,42 +263,40 @@ class JavaScriptAdapter:
                 if name_node is None:
                     continue
                 name = self._node_text(name_node)
-                unit_id = self._emit(
+                self._emit_and_descend(
                     scopes,
+                    stack,
                     span_node=node,
                     kind="class",
                     name=name,
                     qual_path=qual_path,
                     file_path=file_path,
                     parent_unit_id=parent_unit_id,
+                    body_owner=node,
+                    child_in_class=True,
                 )
-                body = node.child_by_field_name("body")
-                if body is not None:
-                    stack.append((body, (*qual_path, name), True, unit_id))
                 continue
 
             if node_type == "method_definition":
                 name_node = node.child_by_field_name("name")
                 if name_node is None or name_node.type not in self._MEMBER_NAME_TYPES:
-                    # Computed/string-keyed member: no stable name for a
-                    # ScopeUnit, but the BODY may hold named scopes —
-                    # descend generically (dropping the subtree lost
-                    # nested functions and mis-attributed their calls).
+                    # Unnamed members still descend: nested named scopes need
+                    # extraction so their calls are attributed correctly.
                     self._push_scope_children(stack, node, qual_path, in_class, parent_unit_id)
                     continue
                 name = self._node_text(name_node)
-                unit_id = self._emit(
+                self._emit_and_descend(
                     scopes,
+                    stack,
                     span_node=node,
                     kind="method",
                     name=name,
                     qual_path=qual_path,
                     file_path=file_path,
                     parent_unit_id=parent_unit_id,
+                    body_owner=node,
+                    child_in_class=False,
                 )
-                body = node.child_by_field_name("body")
-                if body is not None:
-                    stack.append((body, (*qual_path, name), False, unit_id))
                 continue
 
             if node_type in self._FIELD_DEF_TYPES:
@@ -324,18 +311,18 @@ class JavaScriptAdapter:
                     and value.type in self._FUNCTION_VALUE_TYPES
                 ):
                     name = self._node_text(prop)
-                    unit_id = self._emit(
+                    self._emit_and_descend(
                         scopes,
+                        stack,
                         span_node=node,
                         kind="method",
                         name=name,
                         qual_path=qual_path,
                         file_path=file_path,
                         parent_unit_id=parent_unit_id,
+                        body_owner=value,
+                        child_in_class=False,
                     )
-                    body = value.child_by_field_name("body")
-                    if body is not None:
-                        stack.append((body, (*qual_path, name), False, unit_id))
                     continue
                 self._push_scope_children(stack, node, qual_path, in_class, parent_unit_id)
                 continue
@@ -346,23 +333,22 @@ class JavaScriptAdapter:
                 if key is not None and key.type == "property_identifier" and value is not None:
                     name = self._node_text(key)
                     if value.type in self._FUNCTION_VALUE_TYPES:
-                        unit_id = self._emit(
+                        self._emit_and_descend(
                             scopes,
+                            stack,
                             span_node=node,
                             kind="method",
                             name=name,
                             qual_path=qual_path,
                             file_path=file_path,
                             parent_unit_id=parent_unit_id,
+                            body_owner=value,
+                            child_in_class=False,
                         )
-                        body = value.child_by_field_name("body")
-                        if body is not None:
-                            stack.append((body, (*qual_path, name), False, unit_id))
                         continue
                     if value.type == "object":
-                        # Nested literal: extend the qualified path so
-                        # members keep distinct unit_ids; no scope emitted
-                        # for the object itself.
+                        # Qualify nested members for distinct unit_ids without
+                        # emitting a scope for the object itself.
                         stack.append((value, (*qual_path, name), False, parent_unit_id))
                         continue
                 self._push_scope_children(stack, node, qual_path, in_class, parent_unit_id)
@@ -374,32 +360,32 @@ class JavaScriptAdapter:
                 if name_node is not None and name_node.type == "identifier" and value is not None:
                     name = self._node_text(name_node)
                     if value.type in self._FUNCTION_VALUE_TYPES:
-                        unit_id = self._emit(
+                        self._emit_and_descend(
                             scopes,
+                            stack,
                             span_node=node,
                             kind="function",
                             name=name,
                             qual_path=qual_path,
                             file_path=file_path,
                             parent_unit_id=parent_unit_id,
+                            body_owner=value,
+                            child_in_class=False,
                         )
-                        body = value.child_by_field_name("body")
-                        if body is not None:
-                            stack.append((body, (*qual_path, name), False, unit_id))
                         continue
                     if value.type in self._CLASS_VALUE_TYPES:
-                        unit_id = self._emit(
+                        self._emit_and_descend(
                             scopes,
+                            stack,
                             span_node=node,
                             kind="class",
                             name=name,
                             qual_path=qual_path,
                             file_path=file_path,
                             parent_unit_id=parent_unit_id,
+                            body_owner=value,
+                            child_in_class=True,
                         )
-                        body = value.child_by_field_name("body")
-                        if body is not None:
-                            stack.append((body, (*qual_path, name), True, unit_id))
                         continue
                     if value.type == "object":
                         stack.append((value, (*qual_path, name), False, parent_unit_id))
@@ -421,11 +407,10 @@ class JavaScriptAdapter:
         file_path: str,
         parent_unit_id: str | None,
     ) -> str:
-        """Construct + append a ScopeUnit; returns its unit_id.
+        """Append a ScopeUnit and return its unit_id.
 
-        Span = the span node, widened to include any decorator nodes
-        that precede it as siblings (TS method decorators live in the
-        class_body; exported-class decorators on the export_statement).
+        Widen the node's span for preceding decorator siblings (TS methods
+        and exported classes).
         """
         decorators, first_outside_dec = self._decorators_for(span_node)
         byte_start, byte_end = span_node.start_byte, span_node.end_byte
@@ -453,9 +438,7 @@ class JavaScriptAdapter:
         )
         return unit_id
 
-    # ------------------------------------------------------------------
-    # extract_imports
-    # ------------------------------------------------------------------
+    # Static import extraction
 
     def extract_imports(self, source: bytes, file_path: str) -> tuple[ImportRef, ...]:
         return self._extract_imports_from_tree(self._parse(source), file_path)
@@ -475,10 +458,10 @@ class JavaScriptAdapter:
 
     @classmethod
     def _kind_for(cls, module: str, default_kind: str) -> str:
-        """Relative specifiers win over the syntactic form, mirroring
-        Python where `relative` is its own kind. Bare `.` and `..`
-        (directory-index imports) are relative too — Node resolves them
-        against the importing file, same as `./`-prefixed forms."""
+        """Relative specifiers override syntax, including directory-index `.`/`..`.
+
+        Node resolves these against the importing file, like `./` and `../`.
+        """
         if module in (".", "..") or module.startswith(_RELATIVE_SPECIFIER_PREFIXES):
             return "relative"
         return default_kind
@@ -502,9 +485,8 @@ class JavaScriptAdapter:
                 is_value_import=bool(names),
             )
         module = self._string_text(node.child_by_field_name("source"))
-        # TS statement-level type-only import (`import type { X } from 'm'`):
-        # a bare `type` keyword token rides between `import` and the clause.
-        # Type-space bindings cannot back a runtime call — non-value.
+        # TS statement-level `type` precedes the clause; these bindings cannot
+        # back runtime calls.
         statement_type_only = any(c.type == "type" for c in node.children)
         clause = next((c for c in node.named_children if c.type == "import_clause"), None)
         defaults: list[str] = []
@@ -524,9 +506,7 @@ class JavaScriptAdapter:
                     for spec in child.named_children:
                         if spec.type != "import_specifier":
                             continue
-                        # TS per-specifier type-only (`import { type Pool,
-                        # Client }`): the type-space name is not a value
-                        # binding — excluded from `names`.
+                        # TS per-specifier `type` names are not value bindings.
                         if any(c.type == "type" for c in spec.children):
                             continue
                         alias = spec.child_by_field_name("alias")
@@ -535,18 +515,11 @@ class JavaScriptAdapter:
                         if target is not None:
                             named.append(self._node_text(target))
         names = tuple(n for n in (*defaults, *namespaces, *named) if n)
-        # Namespace-only and side-effect imports bind at most one
-        # namespace name — the `import m as ns` analog → "direct";
-        # any default/named binding → "from".
+        # Default/named forms are "from"; namespace/side-effect forms are "direct".
         default_kind = "from" if (defaults or has_named_imports) else "direct"
         kind = self._kind_for(module, default_kind)
-        # Value iff the statement is not type-only AND at least one VALUE
-        # binding survived specifier stripping: a side-effect `import "m"`
-        # binds nothing, and `import { type Pool } from "pg"` (every
-        # specifier type-only) strips to names=() — both load the module
-        # but bind no name a runtime call can resolve through
-        # (/code-review angle-A find: the clause-presence check alone let
-        # the all-type-specifier spelling prove module_presence).
+        # Value imports need a surviving runtime binding. Side-effect and
+        # all-type-specifier imports bind none, so cannot prove module_presence.
         return ImportRef(
             file_path=file_path,
             line=line,
@@ -575,8 +548,7 @@ class JavaScriptAdapter:
             kind = self._kind_for(module, "from")
             names = tuple(names_list)
         elif ns_export is not None:
-            # `export * as ns from 'm'` — still the namespace-polluting
-            # wildcard on the source side → "star", with the bound name.
+            # `export * as ns` remains a source-side wildcard, with a name.
             kind = self._kind_for(module, "star")
             names = tuple(
                 self._node_text(i) for i in ns_export.named_children if i.type == "identifier"
@@ -584,8 +556,7 @@ class JavaScriptAdapter:
         else:
             kind = self._kind_for(module, "star")
             names = ()
-        # Re-exports bind NO local name — nothing in this file can call
-        # through them, so they are never value imports.
+        # Re-exports bind no local callable name, so are never value imports.
         return ImportRef(
             file_path=file_path,
             line=line,
@@ -597,12 +568,10 @@ class JavaScriptAdapter:
         )
 
     def _maybe_require(self, node: Node, file_path: str) -> ImportRef | None:
-        """CommonJS `const x = require('m')` / `const {a, b: c} = require('m')`.
+        """Extract CommonJS require calls bound to identifiers or object patterns.
 
-        Only single-string-literal `require` calls bound directly to an
-        identifier or object pattern are extracted; anything else
-        (member chains, computed specifiers, array patterns) is not an
-        import statement shape we can attribute.
+        Require one string literal; member chains, computed specifiers, and
+        array patterns cannot be attributed as import shapes.
         """
         value = node.child_by_field_name("value")
         if value is None or value.type != "call_expression":
@@ -637,11 +606,8 @@ class JavaScriptAdapter:
             names = tuple(collected)
         else:
             return None
-        # Same value rule as the ESM builder: a require that binds no
-        # surviving local name (`const {} = require("pg")`) loads the
-        # module but nothing a runtime call can resolve through — it must
-        # not prove module_presence (Codex implementation-audit find, the
-        # CJS twin of the all-type-specifier ESM case).
+        # As in ESM, a binding-less require (`const {} = require("pg")`) loads
+        # the module but cannot prove module_presence for a runtime call.
         return ImportRef(
             file_path=file_path,
             line=line,
@@ -652,20 +618,18 @@ class JavaScriptAdapter:
             is_value_import=bool(names),
         )
 
-    # ------------------------------------------------------------------
-    # extract_lexical_bindings (shadowing-guard spec)
-    # ------------------------------------------------------------------
+    # Lexical bindings for the shadowing guard
 
     def extract_lexical_bindings(self, source: bytes, file_path: str) -> tuple[LexicalBinding, ...]:
         return self._extract_lexical_bindings_from_tree(self._parse(source), file_path)
 
     def _pattern_identifiers(self, node: Node) -> Iterator[Node]:
-        """Binding-POSITION identifiers of a declaration pattern: plain
-        identifiers, destructuring shorthands, `{key: local}` values,
-        defaults' LEFT sides, rest elements, and TS parameter wrappers
-        (by field, so `type_annotation` subtrees are never walked —
-        identifiers inside types or default-value EXPRESSIONS are uses,
-        not bindings, and must not widen the shadow set)."""
+        """Collect binding identifiers from patterns and TS parameter wrappers.
+
+        Follow `{key: local}` values, default left sides, and rest elements.
+        Type annotations and default-value expressions are uses, not bindings,
+        and must not widen the shadow set.
+        """
         if node.type in ("identifier", "shorthand_property_identifier_pattern"):
             yield node
         elif node.type == "pair_pattern":
@@ -697,15 +661,14 @@ class JavaScriptAdapter:
     def _extract_lexical_bindings_from_tree(
         self, tree: Tree, file_path: str
     ) -> tuple[LexicalBinding, ...]:
-        """Per-kind visibility spans per the shadowing-guard spec:
-        params → the enclosing function node; `var` → nearest enclosing
-        function frame, else the whole module (hoisting); `let`/`const`
-        → nearest block frame, else module; `function`/`class`
-        declarations → nearest block/function frame, else module; catch
-        params → the catch clause. Module-scope non-import declarations
-        DO emit records (a global like `process` is legally shadowable
-        at module scope); CJS `require` declarators and import/export
-        statements emit none — an import binding must not self-shadow.
+        """Extract visibility spans per the shadowing-guard spec (DECISIONS.md#060).
+
+        Params span their function; var hoists to the nearest function;
+        let/const use the nearest block; function/class declarations use the
+        nearest block or function. Missing frames fall back to module scope;
+        catch params span the catch clause. Module declarations can shadow
+        globals, but imports/re-exports and CJS require bindings emit no records
+        so an import cannot shadow itself.
         """
         bindings: list[LexicalBinding] = []
         root = tree.root_node
@@ -767,9 +730,8 @@ class JavaScriptAdapter:
                     for ident in self._pattern_identifiers(name_node):
                         _add(ident, kind, span)
             elif node.type == "for_in_statement":
-                # `for (const k in obj)` / `for (const v of arr)`: the
-                # declaration rides ON the statement (kind + left fields),
-                # not as a nested lexical_declaration node.
+                # for-in/of declarations use the statement's kind/left fields,
+                # rather than a nested lexical_declaration.
                 kind_node = node.child_by_field_name("kind")
                 left = node.child_by_field_name("left")
                 if kind_node is not None and left is not None:
@@ -800,9 +762,7 @@ class JavaScriptAdapter:
                         _add(ident, "catch", catch_span)
         return tuple(bindings)
 
-    # ------------------------------------------------------------------
-    # extract_call_sites
-    # ------------------------------------------------------------------
+    # Call sites inside extracted scopes
 
     def extract_call_sites(
         self,
@@ -810,8 +770,7 @@ class JavaScriptAdapter:
         file_path: str,
         scope_units: tuple[ScopeUnit, ...],
     ) -> tuple[CallSite, ...]:
-        """Calls inside extracted ScopeUnits. Module-level calls are
-        skipped per the §5.4 non-goal (same as Python)."""
+        """Extract scoped calls; module-level calls are a canonical §5.4 non-goal."""
         return self._extract_call_sites_from_tree(self._parse(source), file_path, scope_units)
 
     def _extract_call_sites_from_tree(
@@ -823,9 +782,7 @@ class JavaScriptAdapter:
         sorted_scopes = sorted(scope_units, key=lambda s: (s.byte_start, -s.byte_end))
         calls: list[CallSite] = []
         for node in self._walk(tree.root_node):
-            # `new Pool(cfg)` is a `new_expression` (callee under the
-            # `constructor` field), not a `call_expression` — Python
-            # parity requires it: `Pool(cfg)` is a `call` node there.
+            # Constructors are calls too, with the callee in a different field.
             if node.type == "call_expression":
                 function_node = node.child_by_field_name("function")
             elif node.type == "new_expression":
@@ -837,9 +794,7 @@ class JavaScriptAdapter:
                 continue
             if function_node is None:
                 continue
-            # `callee_name` is RAW SOURCE TEXT per canonical §5.4 ("raw
-            # text; resolution is a separate concern") — same contract
-            # as the Python adapter.
+            # Canonical §5.4 keeps callee_name as raw text; resolution is separate.
             calls.append(
                 CallSite(
                     file_path=file_path,
@@ -850,9 +805,7 @@ class JavaScriptAdapter:
             )
         return tuple(calls)
 
-    # ------------------------------------------------------------------
-    # extract_assignments
-    # ------------------------------------------------------------------
+    # Assignments inside extracted scopes
 
     def extract_assignments(
         self,
@@ -868,13 +821,10 @@ class JavaScriptAdapter:
         file_path: str,
         scope_units: tuple[ScopeUnit, ...],
     ) -> tuple[AssignmentSite, ...]:
-        """Single-identifier targets only, mirroring the Python V1 rule:
-        `assignment_expression` with an identifier left side, plus
-        value-bearing `variable_declarator`s (JS declarations are the
-        assignment form Python doesn't have). Declarators whose value is
-        a function/class are already represented as ScopeUnits and are
-        not double-counted as assignments; destructuring, member, and
-        subscript targets return nothing (name-keyed backward tracing).
+        """Extract identifier assignments and value-bearing variable declarators.
+
+        Function/class declarators are scopes, not duplicate assignments.
+        Name-keyed backward tracing excludes destructuring and member targets.
         """
         sorted_scopes = sorted(scope_units, key=lambda s: (s.byte_start, -s.byte_end))
         scope_value_types = self._FUNCTION_VALUE_TYPES | self._CLASS_VALUE_TYPES
@@ -913,33 +863,29 @@ class JavaScriptAdapter:
             )
         return tuple(sites)
 
-    # ------------------------------------------------------------------
-    # resolve_simple_direct_import
-    # ------------------------------------------------------------------
+    # Relative import resolution
 
     def resolve_simple_direct_import(
         self, import_ref: ImportRef, import_root: Path
     ) -> ImportResolution:
-        """Resolve a relative static import via the injected resolver's
-        relative-specifier surface (`DECISIONS.md#024`, Amended
-        2026-07-03). Mirrors `PythonAdapter.resolve_simple_direct_import`:
-        candidates come pre-validated (containment + symlink-safe walk in
-        the resolver implementation); existence checks use the
-        symlink-safe primitive (allowlist: only
-        `.is_file(follow_symlinks=False)`). Resolution is
-        importing-file-relative — the ref's own `file_path` anchors the
-        specifier. Non-relative refs (`is_simple_direct=False`: bare and
-        namespace-package specifiers) stay `unresolved` — `node_modules`
-        resolution is out of scope.
+        """Resolve relative static imports through the injected resolver (#024).
+
+        DECISIONS.md#024 anchors specifiers to the importing ref's file_path.
+        The resolver validates containment and walks without symlinks; existence
+        checks must use the allowlisted `.is_file(follow_symlinks=False)`.
+        One existing candidate resolves; multiple existing candidates are ambiguous.
+        No existing candidates means unresolved.
+        Non-relative refs stay unresolved; node_modules resolution is out of scope.
         """
         if not import_ref.is_simple_direct:
             return ImportResolution(status="unresolved", target_path=None)
         candidates = self._resolver.resolve_specifier_candidate_paths(
             import_ref.module, import_ref.file_path, import_root
         )
-        existing: list[Path] = [
-            c for c in candidates if (import_root / c).is_file(follow_symlinks=False)
-        ]
+        existing: list[Path] = []
+        for candidate_path in candidates:
+            if (import_root / candidate_path).is_file(follow_symlinks=False):
+                existing.append(candidate_path)
         if len(existing) == 1:
             return ImportResolution(
                 status="resolved",
@@ -949,9 +895,7 @@ class JavaScriptAdapter:
             return ImportResolution(status="ambiguous", target_path=None)
         return ImportResolution(status="unresolved", target_path=None)
 
-    # ------------------------------------------------------------------
-    # compute_parser_outcome
-    # ------------------------------------------------------------------
+    # Per-scope parse errors
 
     def compute_parser_outcome(
         self,
@@ -959,15 +903,11 @@ class JavaScriptAdapter:
         file_path: str,
         scope_units: tuple[ScopeUnit, ...],
     ) -> tuple[ComputedParserOutcome, dict[str, bool]]:
-        """Per-scope `has_error` map keyed by `unit_id`.
+        """Return `("clean", has_error)`, with errors keyed by scope unit_id.
 
-        **V1 policy: always returns `("clean", has_error)`** — identical
-        to the Python adapter: tree-sitter degrades to ERROR/MISSING
-        nodes rather than failing outright (verified for Flow-typed
-        `.js`, which localizes ERROR nodes to the affected scope), so
-        the "failed" outcome remains the defensive forward-compat shape.
-        Pinned by `tests/unit/test_ast_facts_javascript.py`; changing
-        the policy is a `DECISIONS.md` matter, as for Python.
+        V1 treats tree-sitter ERROR/MISSING nodes as per-scope degradation,
+        including Flow-typed .js. The failed outcome is a defensive future shape.
+        Tests pin this policy; changing it requires a DECISIONS.md entry.
         """
         del file_path
         return self._compute_parser_outcome_from_tree(self._parse(source), scope_units)
@@ -977,23 +917,11 @@ class JavaScriptAdapter:
         tree: Tree,
         scope_units: tuple[ScopeUnit, ...],
     ) -> tuple[ComputedParserOutcome, dict[str, bool]]:
-        # Error-span intersection instead of Python's ScopeUnit→node
-        # containment lookup: JS/TS ScopeUnit spans may start at a
-        # preceding decorator sibling (see `_emit`), so no single tree
-        # node corresponds to the span — a node lookup either misses the
-        # decorator region entirely (top-level exported decorated class)
-        # or lands on a decorator-argument node and reads the wrong
-        # `has_error`. A scope has an error iff any ERROR/MISSING span
-        # intersects its (widened) byte range; zero-width MISSING nodes
-        # count as points with an INCLUSIVE end bound — tree-sitter
-        # inserts a missing closing token at exactly the recovered
-        # scope's byte_end (`class A { m() { return 1; }` with the class
-        # brace unclosed puts MISSING at A's and A.m's shared end), so a
-        # half-open point check would read the broken scope as clean.
-        # Slightly conservative vs Python (an ERROR region enclosing a
-        # recovered scope flags it; a boundary MISSING flags the scope
-        # it abuts), which is the safe direction under
-        # `parse-errors-degrade-to-judged`.
+        # Intersect error spans with the widened scope: preceding decorators
+        # mean no single tree node covers it. Zero-width MISSING points include
+        # byte_end, where tree-sitter can insert a missing closing token.
+        # Enclosing ERROR regions and boundary MISSING points conservatively
+        # degrade affected scopes under `parse-errors-degrade-to-judged`.
         error_spans = error_byte_spans_from_tree(tree)
         has_error: dict[str, bool] = {}
         for scope in scope_units:
@@ -1005,18 +933,15 @@ class JavaScriptAdapter:
         return "clean", has_error
 
 
-# ---------------------------------------------------------------------------
-# Shared parse pipeline + canonical entry point
-# ---------------------------------------------------------------------------
+# Shared parse pipeline and canonical entry point
 
 
 def _run_parse_pipeline(
     adapter: JavaScriptAdapter, source: bytes, file_path: str, *, entry_point: str
 ) -> ParseResult:
-    """size→pattern→decode→parse pipeline shared by `parse_javascript`
-    and `parse_typescript` — the same ordering `parse_python` runs, with
-    one parse shared across the extraction passes. `entry_point` names
-    the caller in the bytes-guard message.
+    """Share one parse across JS/TS extraction in size→pattern→decode→parse order.
+
+    `entry_point` identifies the caller in the bytes-guard error message.
     """
     if not isinstance(source, bytes):
         raise TypeError(
@@ -1040,8 +965,7 @@ def _run_parse_pipeline(
     lexical_bindings = adapter._extract_lexical_bindings_from_tree(tree, file_path)
     outcome, has_error = adapter._compute_parser_outcome_from_tree(tree, scope_units)
     if outcome == "failed":
-        # Discard extracted tuples: the failed-path ParseResult carries
-        # the empty-tuples shape (enforced by the ParseResult validator).
+        # Failed ParseResults require empty tuples; discard extracted facts.
         return ParseResult(parser_outcome="failed")
     return ParseResult(
         parser_outcome="clean",

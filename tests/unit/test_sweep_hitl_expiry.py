@@ -429,8 +429,7 @@ async def test_reclaim_window_c_marks_failed_when_no_audit_and_no_checkpoint() -
     # `update_result.rowcount > 0` gates the failed-count + log emit.
     # Return a result with rowcount=1 so the test exercises the
     # "match found, increment failed" branch (the happy path for
-    # window-c reclaim). A separate test could mock rowcount=0 to
-    # exercise the concurrent-actor-changed-status branch.
+    # window-c reclaim).
     update_result = MagicMock()
     update_result.rowcount = 1
     session_inner = MagicMock()
@@ -775,3 +774,154 @@ async def test_reclaim_window_g_skips_when_decided_at_within_grace() -> None:
     compiled_graph.aget_state.assert_not_awaited()
     compiled_graph.ainvoke.assert_not_awaited()
     assert result == {"recovered": 0, "failed": 0}
+
+
+# ---------------------------------------------------------------------------
+# Window-(c) admission and reporting guards.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_grace", [timedelta(0), timedelta(seconds=-1)])
+@pytest.mark.asyncio
+async def test_non_positive_grace_raises_before_touching_anything(
+    bad_grace: timedelta,
+) -> None:
+    """A non-positive grace period is rejected before any I/O.
+
+    A positive grace supplies a post-expiry safety window before window (c)
+    may mark a row failed. Rejecting invalid configuration before the candidate
+    query also preserves fail-fast, no-I/O behavior.
+    """
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    checkpointer = MagicMock()
+    checkpointer.aget = AsyncMock()
+    session_factory = MagicMock()
+    audit_persister = MagicMock()
+    audit_persister.query_hitl_decision_event = AsyncMock()
+
+    with pytest.raises(ValueError) as exc_info:
+        await reclaim_stuck_hitl_states(
+            conn=conn,
+            session_factory=session_factory,
+            audit_persister=audit_persister,
+            review_status_sink=_StubReviewStatusSink(),  # type: ignore[arg-type]
+            checkpointer=checkpointer,
+            compiled_graph=MagicMock(),
+            grace_period=bad_grace,
+        )
+
+    assert str(exc_info.value) == (
+        f"reclaim_stuck_hitl_states: grace_period must be > timedelta(0); "
+        f"got {bad_grace!r}. A non-positive grace_period makes "
+        f"the grace gate admit every awaiting-approval row regardless "
+        f"of age — mass-marks-failed."
+    )
+    conn.execute.assert_not_awaited()
+    checkpointer.aget.assert_not_awaited()
+    session_factory.assert_not_called()
+    audit_persister.query_hitl_decision_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_matching_no_row_does_not_count_as_failed() -> None:
+    """A window-c UPDATE that matches nothing leaves `failed` at zero.
+
+    Between the candidate SELECT and the UPDATE another actor — a peer sweep,
+    an operator, the dashboard — can move the row out of the two admitted
+    source states. The UPDATE then matches nothing, and counting it would
+    report a reclaim that never happened.
+    """
+    review_id = uuid4()
+    past_expires_at = datetime.now(UTC) - timedelta(hours=1)
+    conn = MagicMock()
+
+    async def _execute(stmt: Any, params: Any = None) -> Any:  # noqa: ARG001
+        result = MagicMock()
+        if isinstance(stmt, TextClause):
+            result.scalar_one = MagicMock(return_value=True)
+            return result
+        result.all = MagicMock(
+            return_value=[MagicMock(id=review_id, expires_at=past_expires_at)],
+        )
+        return result
+
+    conn.execute = AsyncMock(side_effect=_execute)
+    audit_persister = MagicMock()
+    audit_persister.query_hitl_decision_event = AsyncMock(return_value=None)
+    checkpointer = MagicMock()
+    checkpointer.aget = AsyncMock(return_value=None)
+
+    update_result = MagicMock()
+    update_result.rowcount = 0  # the concurrent-actor case
+    session_inner = MagicMock()
+    session_inner.execute = AsyncMock(return_value=update_result)
+    session_inner.__aenter__ = AsyncMock(return_value=session_inner)
+    session_inner.__aexit__ = AsyncMock(return_value=None)
+    session_inner.begin = MagicMock(return_value=session_inner)
+    session_factory = MagicMock(return_value=session_inner)
+    status_sink = _StubReviewStatusSink()
+
+    result = await reclaim_stuck_hitl_states(
+        conn=conn,
+        session_factory=session_factory,
+        audit_persister=audit_persister,
+        review_status_sink=status_sink,  # type: ignore[arg-type]
+        checkpointer=checkpointer,
+        compiled_graph=MagicMock(),
+    )
+
+    assert result == {"recovered": 0, "failed": 0}
+    # The UPDATE was attempted — this is the no-match case, not a skip.
+    session_inner.execute.assert_awaited_once()
+    assert status_sink.running_calls == []
+
+
+@pytest.mark.asyncio
+async def test_row_within_grace_skips_checkpoint_lookup_and_update() -> None:
+    """A row whose `expires_at` has not aged past the grace period is left alone.
+
+    The candidate SELECT admits both awaiting-approval states without filtering
+    on `expires_at`, so this per-row gate is what keeps a review still inside
+    its normal HITL window from being read as a crash. It must skip before the
+    checkpointer read and before the mark-failed UPDATE.
+
+    `expires_at` is set one hour into the FUTURE against a one-second grace
+    period. That margin is far wider than the time between the call and the
+    gate, so ordinary execution timing cannot move the comparison across the
+    boundary; a wall-clock jump of that size still could.
+    """
+    review_id = uuid4()
+    not_yet_expired = datetime.now(UTC) + timedelta(hours=1)
+    conn = MagicMock()
+
+    async def _execute(stmt: Any, params: Any = None) -> Any:  # noqa: ARG001
+        result = MagicMock()
+        if isinstance(stmt, TextClause):
+            result.scalar_one = MagicMock(return_value=True)
+            return result
+        result.all = MagicMock(
+            return_value=[MagicMock(id=review_id, expires_at=not_yet_expired)],
+        )
+        return result
+
+    conn.execute = AsyncMock(side_effect=_execute)
+    audit_persister = MagicMock()
+    audit_persister.query_hitl_decision_event = AsyncMock(return_value=None)
+    checkpointer = MagicMock()
+    checkpointer.aget = AsyncMock(return_value=None)
+    session_factory = MagicMock()
+
+    result = await reclaim_stuck_hitl_states(
+        conn=conn,
+        session_factory=session_factory,
+        audit_persister=audit_persister,
+        review_status_sink=_StubReviewStatusSink(),  # type: ignore[arg-type]
+        checkpointer=checkpointer,
+        compiled_graph=MagicMock(),
+        grace_period=timedelta(seconds=1),
+    )
+
+    assert result == {"recovered": 0, "failed": 0}
+    checkpointer.aget.assert_not_awaited()
+    session_factory.assert_not_called()

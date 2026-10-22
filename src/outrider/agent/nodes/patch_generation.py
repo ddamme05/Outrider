@@ -1,20 +1,14 @@
 # See DECISIONS.md#040 — suggested-patch generation (the synthesize patch pass).
-"""Patch generation for suggested fixes (DECISIONS.md#040).
+"""Generate optional single-line fixes during synthesis (DECISIONS.md#040).
 
-The synthesize node calls `generate_patches(...)` over the deduped finding set:
-it gates HIGH/CRITICAL single-line findings (CRITICAL-first, capped), makes ONE
-batched Haiku call, and sets `ReviewFinding.suggested_fix` (the EXACT replacement
-text — never markdown) on the findings the model returned a usable single-line
-fix for. publish renders the GitHub ```suggestion (only for INLINE_COMMENT
-routing); this module never renders markdown.
+Select HIGH/CRITICAL single-line findings, CRITICAL first and capped, then make
+one call to the configured patch model. Accepted replacements become validated
+ReviewFinding.suggested_fix values. Publish later decides whether an inline
+GitHub suggestion can be rendered; this module produces no markdown.
 
-The prompt + parser are the TRUST SURFACE (model output → a comment a developer
-one-click-applies), so the schema is boring and strict and parsing FAILS CLOSED:
-a malformed batch yields ZERO suggestions (no half-trust); a bad item in an
-otherwise-valid batch drops only that item. Routing is NOT an input here — it is
-decided downstream in publish (graph order `synthesize → hitl → publish`), so a
-patch generated for a finding that turns out un-renderable is bounded waste.
-"""
+Malformed batches yield no suggestions. Valid batches reject duplicate IDs,
+unknown findings, mismatched target-line echoes and unsafe replacements per item.
+Provider errors leave findings unpatched; other unexpected failures propagate."""
 
 from __future__ import annotations
 
@@ -43,14 +37,11 @@ logger = logging.getLogger(__name__)
 
 
 class PatchSuggestion(BaseModel):
-    """One model-proposed fix. `original_line` is the model's ECHO of the exact
-    target line we sent — an anchor sanity check that catches drift ("fixed the
-    nearby line") without coordinate math (DECISIONS.md#040). `replacement_line=None`
-    (+ a short `reason`) = "no good single-line fix." Only `finding_id` is required;
-    the rest are optional so a malformed ITEM drops in `apply_patch_batch` without
-    killing the whole batch (a non-UUID/missing `finding_id` IS batch-fatal — it is
-    the key). Business rules (echo match, one-line, no-markdown, dedup, length) live
-    in `apply_patch_batch` / `set_suggested_fix`, not raising validators here."""
+    """One proposed fix, keyed by finding_id, with an exact target-line echo.
+
+    Missing/non-UUID IDs and wrong field types reject the batch. Optional fields
+    allow apply_patch_batch to discard unusable items independently. A null
+    replacement means no suggested fix (DECISIONS.md#040)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -83,13 +74,17 @@ def select_eligible_findings(
     capped at `max_suggestions`. Routing is NOT a gate input — publish decides
     renderability downstream (#040); patches for findings that turn out
     REVIEW_BODY/DASHBOARD_ONLY are bounded, cap-limited waste."""
-    eligible = [
-        f
-        for f in findings
-        if is_hitl_gated_severity(_baseline_severity(f)) and f.line_start == f.line_end
-    ]
+    eligible: list[ReviewFinding] = []
+    for patch_finding in findings:
+        if (
+            is_hitl_gated_severity(_baseline_severity(patch_finding))
+            and patch_finding.line_start == patch_finding.line_end
+        ):
+            eligible.append(patch_finding)
     # CRITICAL before HIGH (severity priority for the cap); stable within a tier.
-    eligible.sort(key=lambda f: 0 if _baseline_severity(f) is FindingSeverity.CRITICAL else 1)
+    eligible.sort(
+        key=lambda finding: 0 if _baseline_severity(finding) is FindingSeverity.CRITICAL else 1
+    )
     return tuple(eligible[:max_suggestions])
 
 
@@ -153,7 +148,7 @@ def apply_patch_batch(
     duplicates entirely); `original_line` EXACTLY echoes `target_lines[finding_id]`
     (drops drifted anchoring — the cheap anchor check); and `replacement_line` passes
     `_is_valid_replacement` against that original."""
-    eligible_ids = {f.finding_id for f in eligible}
+    eligible_ids = {finding.finding_id for finding in eligible}
     try:
         batch = PatchSuggestionBatch.model_validate_json(strip_outer_json_fence(raw_response))
     except (ValidationError, ValueError) as exc:
@@ -162,20 +157,20 @@ def apply_patch_batch(
         )
         return {}  # fail closed — never half-trust a malformed batch
     id_counts = Counter(item.finding_id for item in batch.items)
-    out: dict[UUID, str] = {}
+    accepted_patches: dict[UUID, str] = {}
     for item in batch.items:
-        fid = item.finding_id
-        if id_counts[fid] > 1 or fid not in eligible_ids:
+        finding_id = item.finding_id
+        if id_counts[finding_id] > 1 or finding_id not in eligible_ids:
             continue  # duplicate / unknown / ineligible → drop
-        target = target_lines.get(fid)
+        target = target_lines.get(finding_id)
         if target is None or item.original_line != target:
             continue  # echo mismatch (or no target) → drop as untrusted anchoring
         if item.replacement_line is None or not _is_valid_replacement(
             item.replacement_line, target
         ):
             continue  # null / multi-line / markdown / diff-marker / no-op → drop
-        out[fid] = item.replacement_line
-    return out
+        accepted_patches[finding_id] = item.replacement_line
+    return accepted_patches
 
 
 def set_suggested_fix(
@@ -211,32 +206,30 @@ async def generate_patches(
     patches_enabled: bool,
     max_suggestions: int,
 ) -> tuple[ReviewFinding, ...]:
-    """The synthesize patch pass (DECISIONS.md#040): gate → extract target lines →
-    ONE batched Haiku call → parse (echo-checked, fail-closed) → set `suggested_fix`.
+    """Select eligible findings, read target lines, call the patch model and validate.
 
-    Returns `findings` UNCHANGED when patches are disabled, nothing is eligible, no
-    target line is extractable, or no item survives parsing. The provider call emits
-    an `LLMCallEvent` with `node_id="synthesize"` (the patch cost rolls into
-    synthesize's aggregate — synthesize already makes a second call here). Patches are
-    BEST-EFFORT: an `LLMProviderError` on the patch call fails CLOSED (findings ship
-    unpatched) rather than failing the whole review — unlike synthesize's own summary
-    call, whose failure is fatal. Routing is decided later in publish.
-    """
+    Disabled/empty paths return the original tuple. LLMProviderError also returns
+    unpatched findings; the summary call in synthesize has a separate fatal-error
+    contract. The provider records this call under node_id="synthesize", so patch
+    cost is included in synthesis metrics (DECISIONS.md#040)."""
     if not patches_enabled:
         return findings
     eligible = select_eligible_findings(findings, max_suggestions=max_suggestions)
     if not eligible:
         return findings
-    content_by_path = {cf.path: cf.content_head for cf in state.pr_context.changed_files}
+    content_by_path = {
+        changed_file.path: changed_file.content_head
+        for changed_file in state.pr_context.changed_files
+    }
     target_lines = extract_target_lines(eligible, content_by_path)
     if not target_lines:
         return findings
 
-    parts = patch_prompt.render(eligible, target_lines)
+    prompt_parts = patch_prompt.render(eligible, target_lines)
     request = LLMRequest(
         model=patch_model,
-        system_prompt=parts.system_prompt,
-        user_prompt=parts.user_prompt,
+        system_prompt=prompt_parts.system_prompt,
+        user_prompt=prompt_parts.user_prompt,
         max_tokens=patch_prompt.MAX_TOKENS,
         temperature=patch_prompt.TEMPERATURE,
         review_id=state.review_id,

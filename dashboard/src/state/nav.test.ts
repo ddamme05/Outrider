@@ -5,7 +5,7 @@ import { useNav } from "./nav";
 beforeEach(() => useNav.setState({ open: false }));
 
 test("the drawer starts closed", () => {
-  expect(useNav.getState().open).toBe(false);
+  expect(useNav.getInitialState().open).toBe(false);
 });
 
 test("setOpen(true) opens the drawer", () => {

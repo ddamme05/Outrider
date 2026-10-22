@@ -1,15 +1,8 @@
-"""Slack notifier boundary — Protocol + result + typed exceptions.
+"""Slack transport protocol, result, and typed failures.
 
-The notify subsystem consumes the `SlackNotifier` Protocol here, never the
-`slack_sdk` SDK directly. The concrete `slack_sdk`-backed implementation lives in
-`notify/slack.py` (the only place `import slack_sdk` is allowed — the
-`vendor-sdks-only-in-wrappers` boundary), mirroring `llm/base.py` vs the concrete
-provider.
-
-V1 posting is best-effort and fire-and-forget: the notify subsystem catches
-`SlackNotifyError` and degrades to the dashboard fallback (a failed post never
-blocks the HITL gate). Failures are classified by exception TYPE for logging /
-operator action, not retried at the node or graph layer.
+SDK calls stay in notify's wrappers (vendor-sdks-only-in-wrappers). The orchestrator
+awaits posts and contains ordinary notification failures so HITL and publication
+can continue through the dashboard. The graph does not retry Slack failures.
 """
 
 from __future__ import annotations
@@ -19,9 +12,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
-# Block Kit blocks are a list of JSON-object layout blocks; the notifier passes
-# them through to chat.postMessage / chat.update unchanged (message composition
-# lives in the builder, a later commit, not in the transport boundary).
+# Message composition lives in messages.py; transport passes blocks through unchanged.
 SlackBlocks = Sequence[Mapping[str, Any]]
 
 

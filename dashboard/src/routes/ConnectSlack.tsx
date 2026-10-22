@@ -9,20 +9,11 @@ import {
   startSlackInstall,
 } from "../api/slackSetup";
 
-// Connect-Slack onboarding (DECISIONS.md#051/#052): the dashboard front-end for the
-// `GET /slack/install` OAuth start. The operator picks a GitHub installation + a Slack channel;
-// we fetch the Slack authorize URL (admin-authed) and navigate the browser to Slack, which then
-// redirects to the backend's `/slack/oauth/callback` (server-rendered — the SPA does not handle
-// the return). Reuses the `.setup-*` chrome from the GitHub App setup page.
-//
-// Like `/setup`, the Slack routes mount only under FastAPI-serves-the-built-SPA (production), so on
-// the Vite dev server or the demo box this page surfaces a topology error rather than a control
-// that cannot work.
+// Connect-Slack onboarding (DECISIONS.md#051/#052): request an admin-authorized OAuth URL,
+// then navigate to Slack. Slack returns to the backend's server-rendered callback.
+// A non-API reply hides the form; the Vite dev server does not proxy /slack.
 
-// A GitHub installation id is a positive integer; a Slack channel id is `C…`/`G…` (public/private).
-// This friendly pre-check must not narrow the authoritative contract: it mirrors the backend's
-// `_CHANNEL_ID_RE` (`[CG][A-Z0-9]{5,}` — six chars minimum) exactly, so no backend-valid id is
-// rejected client-side. The server re-validates regardless.
+// Match the backend's [CG][A-Z0-9]{5,} channel check; the server validates again.
 function channelLooksValid(channel: string): boolean {
   return /^[CG][A-Z0-9]{5,}$/.test(channel.trim());
 }
@@ -32,14 +23,14 @@ export function ConnectSlack() {
   const [channelId, setChannelId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [topology, setTopology] = useState<string | null>(null);
+  const [protocolErrorMessage, setProtocolErrorMessage] = useState<string | null>(null);
 
-  async function onConnect(e: FormEvent): Promise<void> {
-    e.preventDefault();
+  async function onConnect(event: FormEvent): Promise<void> {
+    event.preventDefault();
     setError(null);
-    setTopology(null);
-    const idNum = Number(installationId.trim());
-    if (!Number.isInteger(idNum) || idNum <= 0) {
+    setProtocolErrorMessage(null);
+    const parsedInstallationId = Number(installationId.trim());
+    if (!Number.isInteger(parsedInstallationId) || parsedInstallationId <= 0) {
       setError("Enter the numeric GitHub installation id (the number at the end of the App’s " +
         "installation settings URL).");
       return;
@@ -51,19 +42,18 @@ export function ConnectSlack() {
     }
     setBusy(true);
     try {
-      const { authorize_url } = await startSlackInstall(idNum, channelId.trim());
-      // Navigates the browser to Slack (origin-guarded) and this component unmounts; `busy` is
-      // only reset on the error paths below.
+      const { authorize_url } = await startSlackInstall(parsedInstallationId, channelId.trim());
+      // Keep the form busy during navigation; failures below unlock it.
       navigateToSlack(authorize_url);
-    } catch (err) {
-      if (err instanceof SlackSetupProtocolError) {
-        setTopology(err.message);
+    } catch (connectionError) {
+      if (connectionError instanceof SlackSetupProtocolError) {
+        setProtocolErrorMessage(connectionError.message);
       } else if (
-        err instanceof SlackNotConfiguredError ||
-        err instanceof SlackSetupUnreachableError ||
-        err instanceof SlackSetupError
+        connectionError instanceof SlackNotConfiguredError ||
+        connectionError instanceof SlackSetupUnreachableError ||
+        connectionError instanceof SlackSetupError
       ) {
-        setError(err.message);
+        setError(connectionError.message);
       } else {
         setError("Couldn’t start the Slack connection — check the server logs.");
       }
@@ -84,10 +74,8 @@ export function ConnectSlack() {
           </p>
         </header>
 
-        {/* Once we KNOW the peer isn't the Outrider API, fail closed: hide the form (connecting
-            again would fail identically) and explain — mirrors the GitHub setup page, which drops
-            Start on a topology fault. */}
-        {topology ? (
+        {/* Hide the form after a protocol rejection; another attempt needs a working API. */}
+        {protocolErrorMessage ? (
           <p className="setup-note setup-note--error">
             This page isn&rsquo;t reaching the Outrider API &mdash; something else answered. The
             Slack flow is supported only when FastAPI serves the built dashboard; the Vite dev
@@ -103,7 +91,7 @@ export function ConnectSlack() {
                 id="slack-install-id"
                 className="setup-field__input"
                 value={installationId}
-                onChange={(e) => setInstallationId(e.target.value)}
+                onChange={(event) => setInstallationId(event.target.value)}
                 placeholder="12345678"
                 inputMode="numeric"
                 autoComplete="off"
@@ -124,7 +112,7 @@ export function ConnectSlack() {
                 id="slack-channel-id"
                 className="setup-field__input"
                 value={channelId}
-                onChange={(e) => setChannelId(e.target.value)}
+                onChange={(event) => setChannelId(event.target.value)}
                 placeholder="C0123456789"
                 autoComplete="off"
                 spellCheck={false}

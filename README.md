@@ -1,34 +1,37 @@
 # Outrider
 
 **Get started:** [Production setup](#production-setup) ·
+[Follow one review in source](#follow-one-review-in-source) ·
 [Seeded read-only demo](https://outrider-review.duckdns.org/#token=demo_0d4890832aa14a0c0b3d64cb38bae952) (keyless, read-only, six seeded reviews)
 
-Outrider is a self-hosted AI code-review agent for GitHub. A seven-stage LangGraph pipeline
-reviews eligible pull requests and can post an ordinary GitHub review with inline comments
-and suggested fixes. For supported languages (Python and JS/TS/TSX today), tree-sitter gives the
-review structural context rather than a bare diff: on the normal clean-parse path, the model
-sees the complete bodies of the code scopes containing added lines, with the diff hunks
-clipped to those same boundaries.
+Outrider reviews GitHub pull requests on your own server. It can post a GitHub review
+with inline comments and suggested fixes. It supports Python, JavaScript, TypeScript,
+and TSX. Usually, when the code parses without errors, the model sees complete code
+sections, such as functions or classes, containing added lines and the matching
+parts of the diff.
 
-It is built around a specific trust posture: **models propose, deterministic code disposes.**
-Model stages choose file tiers, classify overall risk, and propose findings, summaries, and
-fix suggestions. Deterministic code owns the trust-critical publication gates: severity comes
-from a
-versioned policy table (the model has no severity field to set), evidence claims are
-schema-enforced, comment placement comes from coordinate translation, and no critical or high
-severity finding reaches GitHub without explicit human approval from the dashboard. Every step
-along the way (each completed LLM exchange, file examination, cross-file trace, finding, human
-decision, and publish routing) lands in an append-only audit trail, and a background job
-verifies replay equivalence for each completed production review after a short settle window.
+The model chooses how closely to review each file and proposes issues and fixes.
+Outrider assigns severity from a versioned policy, checks the evidence, and chooses
+where comments can appear. Critical and high-severity findings require your approval
+in the dashboard before they reach GitHub.
 
-You run it on your own infrastructure, with **your own LLM API keys** (Anthropic by default,
-with OpenAI-compatible hosts such as Fireworks and Baseten (GLM-5.2 tested) supported). Beyond GitHub itself, raw source context, diff
-patches, and the PR title go only to your configured model provider (Slack, when enabled, gets
-limited notification fields, and model-written finding titles may quote short fragments). Everything Outrider stores stays in
-your Postgres. Review, finding, and LLM-exchange content ages out under retention windows you
-configure. Two stores sit outside those windows: the append-only audit metadata, and the
-LangGraph checkpoint store, which Outrider does not purge or scrub in V1 whether it shares the
-application database or runs separately. Apply your own retention controls to it.
+The saved review history records completed model exchanges, files examined,
+cross-file checks, findings, human decisions, and comment placement. These audit
+records are append-only. After each completed production review, a background job
+waits briefly for records to finish saving, then checks that the history reconstructs
+the expected result. The seven review stages use LangGraph;
+[How a review works](#how-a-review-works) walks through them.
+
+You supply your own model API keys. Anthropic is the default; Fireworks and Baseten
+also work through their OpenAI-compatible APIs, with GLM-5.2 tested. Beyond GitHub,
+source context, diffs, and PR titles go only to your chosen model provider. Optional
+Slack notifications contain limited fields; model-written titles may quote short
+code fragments. Outrider stores its data in your Postgres database.
+
+You choose how long to keep review, finding, and model-exchange content. Those
+settings do not cover audit metadata or LangGraph's saved workflow state
+(checkpoints). Outrider does not purge or scrub checkpoints in V1, even when they
+share the application database. Set retention controls for that store yourself.
 
 [![CI](https://github.com/ddamme05/Outrider/actions/workflows/ci.yml/badge.svg)](https://github.com/ddamme05/Outrider/actions/workflows/ci.yml)
 ![Python 3.13](https://img.shields.io/badge/python-3.13-blue)
@@ -49,10 +52,10 @@ application database or runs separately. Apply your own retention controls to it
   - [Optional: Slack notifications](#optional-slack-notifications)
   - [Troubleshooting](#troubleshooting)
 - [How a review works](#how-a-review-works)
+  - [Follow one review in source](#follow-one-review-in-source)
   - [A file's journey](#a-files-journey)
 - [Design guarantees](#design-guarantees)
 - [Evaluation](#evaluation)
-- [How Codex and GPT-5.6 helped me build Outrider](#how-codex-and-gpt-56-helped-me-build-outrider)
 - [Configuration](#configuration)
 - [Security and privacy](#security-and-privacy)
 - [What Outrider is not](#what-outrider-is-not)
@@ -82,7 +85,7 @@ cp .env.example deploy/.env
 
 Edit `deploy/.env` (it is fully commented). Minimum for a first boot: `POSTGRES_USER` /
 `POSTGRES_PASSWORD` / `POSTGRES_DB`, `ANTHROPIC_API_KEY`, `OUTRIDER_ADMIN_API_KEY` (dashboard
-bearer token, a random secret), and `OUTRIDER_TRUNCATION_HMAC_SECRET` (a random secret, 32+
+access key, a random secret), and `OUTRIDER_TRUNCATION_HMAC_SECRET` (a random secret, 32+
 chars). To use a GLM host instead of Anthropic, set `OUTRIDER_LLM_HOST=fireworks` plus
 `FIREWORKS_API_KEY` (or `baseten` plus `BASETEN_API_KEY`) in place of the Anthropic key.
 
@@ -96,14 +99,15 @@ OUTRIDER_SETUP_STATE_SECRET=<generate-a-random-secret>       # 32+ chars
 OUTRIDER_GITHUB_CREDENTIAL_ENC_KEY=<generate-a-key>          # python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
 ```
 
-Generate every secret independently. Startup rejects a setup-state secret that matches any other
-configured secret root, and rejects reusing the GitHub credential-encryption key as the Slack
+Generate every secret independently. Startup checks the setup-state secret against a
+[defined list of other Outrider keys](src/outrider/api/setup/state_token.py) and rejects
+any match. It also rejects reusing the GitHub credential-encryption key as the Slack
 token-encryption key. It does not check every other pair for reuse, so keeping the rest distinct
 is on you. To bring your own GitHub App instead, set those variables now — see
 [Alternative: use an existing GitHub App](#alternative-use-an-existing-github-app) below.
 
 Next, decide how traffic reaches the app. It serves on `127.0.0.1:8000`, which is loopback only,
-so put your own ingress in front.
+so use a reverse proxy or tunnel to make it reachable from GitHub.
 
 <details>
 <summary><strong>No static domain? Use an HTTPS tunnel</strong></summary>
@@ -149,21 +153,22 @@ docker compose --env-file deploy/.env --profile tls -f deploy/docker-compose.pro
 
 The image builds the dashboard and installs dependencies, a one-shot `migrate` container applies
 database migrations before the app starts, and the app serves both the API and the dashboard.
-`GET /health` returns `{"status":"ok"}` once the app has booted. It is a liveness probe only and
-does not check database or provider reachability.
+`GET /health` returns `{"status":"ok"}` once the app has booted. This confirms the app is
+running; it does not check whether the database or model provider is reachable.
 
 ### Recommended: guided GitHub App setup
 
 Outrider creates its own GitHub App for you from an [App Manifest](DECISIONS.md#070-self-service-onboarding-credential-mode--provider--setup-state-machine-refines-066).
-Every deployment gets its own App, key, and webhook secret. There is no shared app and no
-phone-home ([#066](DECISIONS.md#066-oss-self-host-via-github-app-manifest--one-app-per-deployment)).
+Every deployment gets its own App, key, and webhook secret. Outrider does not share an
+App across deployments or call a central Outrider service
+([#066](DECISIONS.md#066-oss-self-host-via-github-app-manifest--one-app-per-deployment)).
 
 With the stack running and `GET /health` green, open the dashboard's `/setup` page, enter your
 GitHub org, and follow the redirect. GitHub creates the App (permissions `contents: read` and
 `pull_requests: write`, subscribed to `pull_request` events, webhook pointed at
 `{base_url}/webhooks/github`) and redirects back. Outrider verifies the response against what it
 requested, encrypts the private key and webhook secret into Postgres, and sends you to GitHub's
-install page to pick repositories. Setup state is a signed single-use token, so refreshing the
+install page to pick repositories. The setup link carries a signed, single-use token, so refreshing the
 callback URL fails by design.
 
 ### Verify the installation
@@ -226,8 +231,7 @@ file location, and model-written title (an overflow line summarizes the rest). A
 publishes without gating gets a one-line message carrying the repository, PR number, and
 posted versus dashboard-only counts. Descriptions, evidence,
 suggested fixes, and source context are not sent to Slack, though model-written
-titles may quote short source fragments. Both kinds deep-link to the
-dashboard when
+titles may quote short source fragments. Both kinds link to the dashboard when
 `OUTRIDER_DASHBOARD_BASE_URL` is set and omit the link otherwise. You cannot trigger reviews
 or approve findings from Slack. Delivery and deduplication are best effort. Outrider posts
 to Slack before it records the post, so a failure to record can repeat a message after a
@@ -242,7 +246,7 @@ approve the app, Slack redirects back, and the bot token is stored encrypted. Th
 when the app is serving the built dashboard (the same one-origin requirement as GitHub App
 setup), not on the Vite dev server.
 
-For a headless deployment you can drive the same endpoint by hand. It needs your admin bearer
+If you are setting up Slack without the dashboard, call the same endpoint with curl. It needs your admin bearer
 token (export it from `deploy/.env` first, since Production setup only wrote it there), then
 fetch the redirect with curl and open the returned Slack URL in a browser:
 
@@ -256,10 +260,10 @@ curl -si -H "Authorization: Bearer $OUTRIDER_ADMIN_API_KEY" \
 The GitHub installation id is the number at the end of the App's installation settings URL on
 GitHub. The Slack channel id starts with `C` (or `G` for private groups) and sits at the
 bottom of the channel's details
-pane. The redirect URL carries an HMAC-signed, expiring `state` value binding the
-installation and channel ids, and the public callback at `GET /slack/oauth/callback` verifies
-that state before exchanging the code for a bot token (identity comes from the verified
-state, never from the callback's own query parameters). After the OAuth install completes,
+pane. The redirect URL carries a signed, expiring `state` value containing the
+installation and channel ids. The public callback at `GET /slack/oauth/callback` verifies
+that state before exchanging the code for a bot token. It takes the installation
+and channel identity from the verified state, never from other callback query parameters. After the OAuth install completes,
 invite the bot to the channel (`/invite @Outrider`) so posts succeed. Bot tokens are
 encrypted at rest. When the Slack variables are unset, Slack is simply off and never blocks
 the review pipeline.
@@ -291,6 +295,7 @@ flowchart LR
     TR --> AN[analyze<br/>parallel per-file]
     AN --> XT[trace<br/>cross-file]
     XT --> AN
+    XT --> SY
     AN --> SY[synthesize]
     SY --> HI[hitl<br/>human approval]
     HI --> PB[publish]
@@ -303,43 +308,83 @@ flowchart LR
     AU[(Append-only<br/>audit trail)] --- IN & TR & AN & XT & SY & HI & PB
 ```
 
-The seven logical stages. The analyze stage fans out to parallel per-file workers, so the
-physical graph has a few more vertices than seven.
+A review has seven stages. During analyze, several file reviews can run at once,
+so the workflow contains more steps than this stage-level diagram shows.
 
 1. **intake** fetches the PR file list and per-file content from GitHub. No LLM call.
 2. **triage** is a fast model pass that assigns each file a deep, standard, or skim tier and
    classifies overall PR risk. Deep and standard files enter the core analyze stage, and skim
    files do not. Oversized pull requests are skipped deterministically during intake, before
    triage runs.
-3. **analyze** is the core review. For each admitted clean-parsed file, tree-sitter extracts
-   the code scopes containing added lines and builds a focused context window. Deep-tier files go to the stronger
-   model and standard-tier files to the cheaper one, all under a pre-flight token budget.
+3. **analyze** reviews each selected file. When code parses without errors,
+   tree-sitter, a code parser, usually selects the code sections containing added lines.
+   Deep-tier files go to the stronger model and standard-tier files to the cheaper
+   one. Outrider checks the token budget before each call.
    That split is the Anthropic default, and a GLM host serves both tiers with one model. A
    deterministic catalog of 19 tree-sitter structural checks (Python and JS/TS, mostly
    security plus reliability patterns) contributes findings alongside the model's.
-4. **trace** handles findings that may depend on code outside the diff. It ranks candidate
-   imports, derives and validates possible repository paths, and resolves them through bounded
-   GitHub fetch probes. A uniquely resolved file loops back to analyze only when it sits
-   outside the diff, was not already fetched, fits the fetch budget, and fetches as usable
-   text, all with bounded depth.
-5. **synthesize** merges findings from all rounds into one deduplicated, severity-ordered
-   report and generates bounded fix suggestions for eligible findings.
+4. **trace** checks code outside the diff when a finding may depend on it. It ranks
+   possible imports, checks their repository paths, and tries to locate each file
+   through GitHub. A file returns to analyze only when its location is unambiguous,
+   it is outside the diff, it has not been fetched already, and the fetch budget
+   allows it. The fetched content must be usable text, and trace depth is limited.
+5. **synthesize** combines findings from all rounds, removes duplicates, orders them
+   by severity, and generates a limited number of fix suggestions for eligible findings.
 6. **hitl** is the human gate. If any finding is critical or high severity, the graph
-   interrupts and persists its state. A human approves, rejects, overrides severity, or
+   pauses and saves its state. A human approves, rejects, overrides severity, or
    suppresses each finding from the dashboard. By default nothing critical or high reaches
    GitHub without that decision, ever. The timeout action is `expire_only`, not auto-post.
 7. **publish** posts one GitHub review when at least one eligible or surfaced finding
    remains, and otherwise records `no_op_empty` and makes no GitHub call. Each finding routes
-   to an inline comment, the review body, or dashboard-only, based on whether its span maps to
-   a reviewable diff line. That is a deterministic coordinate computation, never a model
-   choice.
+   to an inline comment, the review body, or dashboard-only, based on whether its
+   code location maps to a line GitHub can accept. Outrider computes that location;
+   the model cannot choose it.
 
-Review state checkpoints to Postgres at every node, so a review interrupted for human approval
-survives process restarts and resumes in a fresh process.
+Outrider saves workflow state to Postgres at each step. A review paused for approval
+can survive an application restart and resume afterward.
+
+### Follow one review in source
+
+After [installing the GitHub App](#production-setup), open a non-draft PR, push a commit,
+reopen the PR, or mark a draft ready for review. GitHub sends the event to Outrider.
+One review follows one PR head commit: a new commit gets a new review ID; another delivery
+for the same repository, PR and commit reuses the existing review.
+
+Read these entry points in order, following the same `review_id`:
+
+| Step | What happens | Start reading here |
+|---|---|---|
+| 1. Receive the PR | Verify the webhook, check eligibility, save the review, and return its ID. | [`receive_pull_request_webhook`](src/outrider/api/webhooks/router.py) |
+| 2. Start work | Queue background execution; the runner created at startup uses the review ID to find its saved workflow state. | [`BackgroundTasksDispatcher.dispatch`](src/outrider/dispatcher/background_tasks.py), `run_graph` in [lifespan.py](src/outrider/api/lifespan.py) |
+| 3. Review code | Fetch files, choose review depth, analyze, optionally trace other files, and assemble findings. | [`build_graph`](src/outrider/agent/graph.py), then the named functions in [agent/nodes](src/outrider/agent/nodes/) |
+| 4. See progress | The dashboard reads stored status, findings, and audit history through the API. | [`ReviewDetail`](dashboard/src/routes/ReviewDetail.tsx), [dashboard read endpoints](src/outrider/api/dashboard/reviews.py) |
+| 5. Make a decision | High/critical findings pause the workflow. Dashboard decisions resume the saved review. | [`hitl`](src/outrider/agent/nodes/hitl.py), [`decide`](src/outrider/api/dashboard/hitl.py) |
+| 6. Post to GitHub | Apply decisions and publication rules, choose comment locations, and submit a comment review when there is material to publish. | [`publish`](src/outrider/agent/nodes/publish.py), [`GitHubKitPublisher.create_review`](src/outrider/github/publisher.py) |
+| 7. Inspect the outcome | Show findings, their destinations, and recorded execution; replay plays stored history. | [`FindingCard`](dashboard/src/components/FindingCard.tsx), [`ReplayFeed`](dashboard/src/components/ReplayFeed.tsx), [`ReplayReconstruct`](dashboard/src/routes/ReplayReconstruct.tsx) |
+
+Within analysis, [analyze.py](src/outrider/agent/nodes/analyze.py) coordinates each file.
+Follow [analyze_observed.py](src/outrider/agent/nodes/analyze_observed.py) for evidence from
+local code queries and [analyze_parser.py](src/outrider/agent/nodes/analyze_parser.py) for
+checking model proposals, then return to the coordinator for cost, audit and cache handling.
+
+To walk through a real example, open `/reviews`, select one review, and follow one finding
+from its evidence to its decision and publication destination. The review page polls status
+and audit progress every two seconds; refresh to reload finding details after publication.
+The replay page inspects saved work and makes no new model or GitHub calls.
+
+For the browser side, follow the [dashboard source walkthrough](dashboard/README.md)
+from startup and authentication to pages, shared components, and approval submission.
+
+`completed` means processing finished. Check the publication outcome separately: an empty
+result makes no GitHub call, and some findings remain dashboard-only. Published reviews use
+GitHub's `COMMENT` event; dashboard approval controls what Outrider posts.
 
 ### A file's journey
 
 What stays local and what reaches the model, stage by stage:
+
+<details>
+<summary>Detailed file and model-data flow</summary>
 
 ```mermaid
 flowchart TD
@@ -397,57 +442,60 @@ flowchart TD
     PUB -.-> SL
 ```
 
+</details>
+
 Intake fetches complete eligible file content (bounded per file and per review) because
 tree-sitter parsing, the structural checks, coordinate validation, and suggested-fix anchoring
 all need the authoritative source. For modified and renamed files, both the base and head
 versions are retained in review state.
 
-On the normal clean-parse path, the analyze call does not send the complete file to the
-model. Outrider parses the complete file locally, identifies the scopes containing added
-lines, and sends the complete bodies of those scopes together with diff hunks clipped to the
-same boundaries. A supported file whose changed regions fail to parse takes a degraded path
-instead: bounded diff hunks without scope bodies, with its findings admitted as model
-judgment only. The model gets
-the surrounding logic inside the changed function or class without unrelated code from
-elsewhere in the file. Focused context narrows the model's review surface and lets admission
-bind findings to known scope ranges. It is intended to lower input tokens, but overlapping
-nested scopes can duplicate source (the budget planner reserves for exactly that), so cost
-and quality against whole-file context remain measurements to run, not guarantees.
+When code parses without errors, Outrider usually selects the code sections
+containing added lines and sends their complete bodies with the matching diff
+sections. The model sees
+the surrounding logic without unrelated parts of the file.
 
-When a finding may depend on another file, trace ranks the proposed dependency, derives and
-validates possible repository paths, and uses bounded GitHub fetch probes to resolve it. A
-uniquely resolved file is fetched and parsed locally only when it sits outside the diff, was
-not already fetched, and fits the fetch budget. A follow-up analyze pass then examines its
-error-free scope bodies. A missing file just logs the decision, while a transport failure
-aborts the trace pass rather than silently continuing.
+If changed code cannot be parsed, Outrider sends only size-limited diff sections.
+Findings from that path count as model judgment, without structural proof.
+Selecting code sections also lets Outrider check proposed finding locations against
+the sections it sent. Nested sections can overlap and duplicate code; the token
+budget accounts for that. Whether this lowers cost or improves quality compared
+with sending whole files still needs measurement.
+
+When a finding may depend on another file, trace checks possible repository paths
+through GitHub. Outrider fetches and parses a file for further analysis only if
+it resolves to one location, is outside the diff, has not been fetched already,
+and fits the budget.
+A follow-up analyze pass reviews its code sections that parsed without errors.
+A missing file produces a recorded decision. A connection failure stops the trace pass.
 
 ## Design guarantees
 
-The load-bearing properties, with links to the public architecture-decision records in
-[DECISIONS.md](DECISIONS.md) where a numbered decision established them:
+These rules govern findings and publication. The linked entries in
+[DECISIONS.md](DECISIONS.md) explain why each rule exists:
 
 | Guarantee | Mechanism |
 |---|---|
-| Severity is never model-assigned | The LLM picks a `FindingType` from a 22-member enum. A frozen, versioned policy table maps type to severity. The response schema has no severity field (`extra="forbid"`), the policy table is immutable at runtime, and historical reviews replay under the policy version they ran under. |
-| Findings can't claim evidence they don't have | Every finding carries an evidence tier: `observed` (a tree-sitter query fired, with the query id), `inferred` (a recorded trace path), or `judged` (model judgment). The check is layered: the schema requires an id, analyze admission verifies the id belongs to a query that actually fired, and replay later verifies registry membership. |
-| High-risk findings require a human | Critical and high findings gate at an interrupt checkpoint. The review resumes only on an explicit per-finding decision (dashboard `POST /reviews/{id}/decide`), and a timed-out approval expires without posting. |
-| Reviews are reconstructable | Append-only `audit_events` (database triggers block UPDATE and DELETE, verified by an integration test), with asynchronous replay-equivalence verification of each eligible completed production review by a background job (eval runs excluded). Replay validates event structure, proof references, and content hashes. Re-executing stored queries against evidence spans is future scope. |
-| Vendor SDKs are quarantined | `anthropic` and `openai` import only under `llm/`, `githubkit` under `github/` and the webhook receiver, `tree_sitter` under `ast_facts/` and the query catalog (`queries/`), `slack_sdk` under `notify/`. A CI boundary lint enforces this ([#038](DECISIONS.md#038-the-cipre-commit-import-lint-is-the-deterministic-trust-boundary-floor-fup-005), [`scripts/check_import_boundaries.py`](scripts/check_import_boundaries.py)). Auditing or replacing a vendor dependency touches a small, explicitly bounded surface. |
+| Outrider assigns severity | The model chooses one of 22 `FindingType` values. A versioned policy table sets severity. Model responses cannot supply a severity field (`extra="forbid"`), the table cannot change at runtime, and past reviews use their original policy version during replay. |
+| Evidence claims need supporting records | Every finding has an evidence tier: `observed` (a structural check matched, with its query id), `inferred` (a recorded trace path), or `judged` (model judgment). An observed finding must supply an id. Analyze checks that the referenced query ran and matched; replay checks that the query exists in the registry. |
+| High-risk findings require a human | Critical and high findings pause the saved review. It resumes only after an explicit decision for each finding (dashboard `POST /reviews/{id}/decide`). A timed-out approval expires without posting. |
+| Saved history can reconstruct a review | The `audit_events` table is append-only: database triggers block UPDATE and DELETE, checked by an integration test. A background job replays each eligible completed production review; evaluation runs are excluded. It checks event structure, evidence references, and content hashes. Running stored queries again against the evidence is planned work. |
+| External libraries stay in specific modules | `anthropic` and `openai` import only under `llm/`, `githubkit` under `github/` and the webhook receiver, `tree_sitter` under `ast_facts/` and the query catalog (`queries/`), `slack_sdk` under `notify/`. CI checks those import locations ([#038](DECISIONS.md#038-the-cipre-commit-import-lint-is-the-deterministic-trust-boundary-floor-fup-005), [`scripts/check_import_boundaries.py`](scripts/check_import_boundaries.py)). Reviewing or replacing a library stays within a few modules. |
 
 ## Evaluation
 
-The quality tables below come from artifacts tracked in this repository. You can recompute
-every number from the JSON without trusting this README.
+The tables below come from result files stored in this repository. You can
+recompute every number from their JSON.
 
 ### Cross-provider baseline (tracked artifact)
 
 [`tests/eval/baselines/analyze-exemplars/analyze-v10+suite-v2.json`](tests/eval/baselines/analyze-exemplars/analyze-v10+suite-v2.json)
-records 288 provider calls: three model configurations (two Anthropic tiers plus GLM on
-Fireworks) × 32 fixtures (22 planted-vulnerability plus 10 safe) × 3 repetitions, majority
-vote at 2 of 3. It was frozen 2026-07-15 as the pre-registered bar that
-future prompt changes must clear. The gate binds the analyze prompt version plus a content
-digest of the shared system prefix. The user-side message templates are not yet covered by
-that digest, and widening the bound identity is tracked follow-up work.
+records 288 model calls: three configurations (two Anthropic tiers plus GLM on
+Fireworks) × 32 test cases (22 with planted vulnerabilities and 10 safe) × 3 repetitions.
+A finding counts as detected when it appears in at least two of the three runs.
+This baseline was frozen on 2026-07-15, before testing future prompt changes.
+The comparison checks the analyze prompt version and a content hash of its shared
+system instructions. That hash does not yet cover the user-side message templates;
+adding them is tracked follow-up work.
 
 | Model configuration (as recorded) | Vulnerable fixtures detected | Safe fixtures wrongly flagged | Structured outputs accepted |
 |---|---:|---:|---:|
@@ -455,21 +503,20 @@ that digest, and widening the bound identity is tracked follow-up work.
 | `claude-haiku-4-5` (standard tier) | 21 / 22 | 6 / 10 | 96 / 96 |
 | `accounts/fireworks/models/glm-5p2` | 18 / 22 | 0 / 10 | 96 / 96 |
 
-Provenance: prompt `analyze-v10` (content digest `4520a0062443…`), fixture suite `suite-v2`,
+Recorded with prompt `analyze-v10` (content digest `4520a0062443…`), fixture suite `suite-v2`,
 measurement contract `exemplar-mc-2`, artifact schema v4. Frozen in commit `0d75028`. A later
 commit (`e467626`) corrected one line of schema-version metadata, with every measured value
-byte-identical. The eval gate accepts a prompt change only if, per provider and per finding
-type, recall does not decrease, false positives do not increase, and per-fixture over-emission
-does not grow. It fails closed unless both the prompt version and its content digest actually
-changed.
+byte-identical. For each provider and finding type, a prompt change must find at least as many
+real issues, flag no more safe cases, and produce no more extra findings per test
+case. The check also requires both the prompt version and its content hash to change.
 
-> These results describe a versioned benchmark on controlled fixtures. They are not production
-> performance, and not a statistical ranking of models. Three repetitions detect directional
-> differences but cannot order model populations.
+> These are results from controlled test cases. They do not measure production
+> performance or establish a statistical ranking of models. Three runs can show
+> differences in this sample, but cannot rank the models in general.
 
 ### Prompt-cache measurement (same artifact)
 
-Input-side token classes for the 96 Sonnet calls in the baseline above:
+Input token counts for the 96 Sonnet calls in the baseline above:
 
 ```text
 cache-read      1,033,030
@@ -478,64 +525,48 @@ ordinary input     41,358
 total           1,085,262   →  95.2% served from cache (Haiku: 94.8%)
 ```
 
-This is a benchmark cache-read share under a sequential harness, not a measured production hit
-rate or cost figure. The GLM/Fireworks share was 66.7% under the same harness. Its caching
-showed no cross-request affinity in our probes, which is consistent with replica-local caching,
-so parallel production traffic likely realizes less.
+The test ran calls one after another. These percentages measure cached input in
+that test, not production cache use or cost. GLM/Fireworks reached 66.7% in the same
+runner. Our probes found no consistent cache reuse between requests, which suggests
+caches belong to individual server replicas. Parallel production calls likely reuse less.
 
 ### Structured-output reliability (tracked artifact)
 
 [`tests/eval/baselines/glm-yield/analyze-v10-glm-yield.json`](tests/eval/baselines/glm-yield/analyze-v10-glm-yield.json)
-is a dedicated two-host read: 60/60 outputs accepted on Fireworks and 60/60 on Baseten, zero
-rejected, zero provider errors, raw counts persisted. Combined with the baseline's 288/288, no
+records a separate test on two hosts: 60/60 outputs accepted on Fireworks and 60/60
+on Baseten, zero rejected and zero provider errors, with the raw counts saved. Combined with the baseline's 288/288, no
 structured output was rejected in 408 recorded calls across three hosts.
 
 ### False-positive calibration (internally measured)
 
-Early prompt versions behaved as if every review had to produce a finding. Fixing one wrong
-label just moved the over-flag to a different finding type on the same clean code. Replacing
-per-type carve-outs with a single calibration rule (an empty findings list is a valid, common,
-correct result) cut false positives 28 → 5 across finding types with zero recall loss. The
+Early prompts often produced a finding even for clean code. Fixing one wrong label
+led to a different wrong label on the same code. A shared rule that an empty findings
+list is a valid, common result cut false positives 28 → 5 across finding types,
+without missing any more real issues. The
 probe: 3 prompt variants × 2 Claude models × 11 fixtures × 5 repetitions, 330 runs in all.
 
-A note on provenance: the rule text ships in the production prompt and its exact wording is
+The rule ships in the production prompt and its exact wording is
 pinned by a unit test ([`tests/unit/test_prompts_analyze.py`](tests/unit/test_prompts_analyze.py)),
 but the raw probe artifact is not yet published in this repository. Treat 28 → 5 as an
 internally measured result, unlike the tables above, which are recomputable from tracked JSON.
 
 ### The offline tiers
 
-The eval harness's structural tier (currently 186 tests, collected by
-`uv run pytest tests/eval/scenarios/structural --is-eval`) validates tree-sitter extraction and
-coordinate translation with zero LLM calls and no network. Every fixture in the paid suite
-is first driven through the real analyze admission path offline, so a fixture the pipeline
-would skip or veto never reaches a paid run.
-
-## How Codex and GPT-5.6 helped me build Outrider
-
-I used [Codex](https://openai.com/codex/) with [GPT-5.6 Sol](https://openai.com/index/gpt-5-6/) as an independent reviewer throughout development. This was development tooling only — GPT-5.6 is not one of Outrider's runtime model providers, which are Anthropic by default plus OpenAI-compatible hosts such as Fireworks and Baseten (see [`OUTRIDER_LLM_HOST`](#configuration)).
-
-Outrider has a catalog of rules covering things like severity, evidence, audit history, comment placement, and human approval. After each implementation pass, Codex read the diff and checked it against those rules, the project's trust boundaries, and its architectural decisions.
-
-That review process caught several real problems. It found a Slack update race that could replace a finished status with stale text, a React StrictMode issue in the GitHub setup flow, and places where benchmark wording claimed more than the saved results could prove. It also caught smaller problems such as outdated comments and tests whose names promised more coverage than they actually provided.
-
-Codex stayed read-only during these reviews. It reported findings with file and line references, explained which project rule was involved, and gave each finding a confidence level. I reviewed the findings, chose which ones to accept, and routed the accepted changes back through the implementation workflow. I ran the test suites and supplied the results for the next review.
-
-Every review was recorded in a local append-only audit log, including clean reviews where Codex found nothing. That gave me a running history of what was checked, what was caught, and how each finding was handled.
-
-Using GPT-5.6 Sol this way was especially helpful for changes that crossed several parts of the project. It could follow a workflow from the dashboard through saved state, background jobs, Slack, and GitHub, then point out where those pieces could disagree.
-
-The process ended up looking a lot like Outrider itself: findings came with evidence, important decisions stayed with me, and each review left a record I could revisit later.
+The structural evaluation tests (currently 186, collected by
+`uv run pytest tests/eval/scenarios/structural --is-eval`) check code parsing and
+comment-location translation with no model calls or network access. Every paid test
+case first goes through the real analyze checks offline. Cases that would be skipped
+or rejected do not reach a paid run.
 
 ## Configuration
 
 [`.env.example`](.env.example) is the complete, commented reference for every variable. The
-load-bearing subset:
+most-used settings:
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `DATABASE_URL` | yes (the prod compose derives it) | none | Postgres, `postgresql+psycopg://` scheme enforced |
-| `CHECKPOINT_DATABASE_URL` | no | falls back to `DATABASE_URL` | separate LangGraph checkpoint store. Content-bearing and not purged by Outrider in V1 (shared or split), so your retention controls must cover it |
+| `CHECKPOINT_DATABASE_URL` | no | falls back to `DATABASE_URL` | separate LangGraph checkpoint store. Contains review content; Outrider does not delete it in V1 (shared or split), so set your own retention controls |
 | `OUTRIDER_ADMIN_API_KEY` | yes | none | dashboard and approval-endpoint bearer token |
 | `OUTRIDER_TRUNCATION_HMAC_SECRET` | yes | none | authenticates truncation markers in sanitized output |
 | `ANTHROPIC_API_KEY` | with the default host | none | LLM provider key |
@@ -545,11 +576,11 @@ load-bearing subset:
 | `OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS` | no | `200000` | pre-flight per-review token budget |
 | `OUTRIDER_MAX_CONCURRENT_REVIEWS` | no | `8` | per-process concurrent-review cap |
 | `OUTRIDER_HITL_TIMEOUT_ACTION` | no | `expire_only` | what happens when approval times out. The default never auto-posts |
-| `OUTRIDER_AUDIT_LLM_CONTENT_RETENTION_TTL` | no | `P90D` | LLM-content retention, ISO-8601 duration. Two sibling TTLs cover findings and reviews |
+| `OUTRIDER_AUDIT_LLM_CONTENT_RETENTION_TTL` | no | `P90D` | How long to keep model-exchange content, as an ISO-8601 duration. Separate settings cover findings and reviews |
 | `OUTRIDER_PATCHES_ENABLED` | no | `true` | suggested-fix patches, bounded by `OUTRIDER_MAX_PATCH_SUGGESTIONS_PER_REVIEW` (default 5) |
 | `OUTRIDER_ENABLE_DOCS` | no | off | opt-in `/docs` and `/openapi.json`, off in production by default |
 
-Sharp edges worth knowing: `.env` values don't interpolate, so if you change
+A few configuration details: `.env` values don't interpolate, so if you change
 `POSTGRES_PASSWORD` you must also update the password inside `DATABASE_URL` (the prod compose
 stack handles this for you). Retention TTLs parse as ISO-8601 durations (`P90D`, `PT24H`), not
 integer seconds. A few variables documented near the end of `.env.example` are marked as not
@@ -557,36 +588,50 @@ yet read by any code.
 
 ## Security and privacy
 
-**What leaves your infrastructure.** The project's user-facing privacy statement is pinned
-under change control by
+**What leaves your infrastructure.** The full privacy statement below describes
+what Outrider sends and stores. Its terms are recorded in
 [#015](DECISIONS.md#015-zdr-is-an-operator-attestation-not-a-runtime-opt-in) and
-[#016](DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only)
-(rewording it requires a superseding decision, not a README edit):
+[#016](DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only).
 
-> Outrider sends data to the configured LLM provider only through its review-stage model calls. Depending on the stage, this includes: the PR title, changed-file paths and metadata, diff patches, complete bodies of scopes containing added lines (or bounded diff hunks on degraded paths), structural query identifiers, trace candidate identifiers, import strings, and reasons, scope bodies from uniquely resolved related files, finding identifiers, metadata, titles, descriptions, and evidence, target source lines used for suggested fixes, and the risk classification and metrics used to generate the final summary. Outrider does not currently send the PR body, author login, commit messages, or branch names; adding any of these requires a new privacy-contract amendment. Complete eligible file content is fetched and checkpointed locally. Outrider does not send the separately fetched base and head file blobs as whole-file payloads during normal analysis, but GitHub diff patches may contain most or all of an added or heavily rewritten file. Under Anthropic's default terms, API inputs and outputs are deleted within 30 days, though retention can extend under contractual arrangements, Usage Policy enforcement, or legal requirements; content flagged for policy violations is retained up to 2 years, classification scores up to 7 years; no data is used for training without permission. If your organization has a ZDR arrangement with Anthropic, set `ANTHROPIC_ZDR_ENABLED=true` — Outrider uses the flag to adjust its startup notice and privacy statement; it does not enable ZDR on its own. Contact Anthropic sales if you need to arrange ZDR. Outrider does not currently support HIPAA-subject workloads.
+<!-- Privacy wording is fixed by #015/#016. Changes require a superseding decision. -->
+
+<details>
+<summary>Read the full privacy statement</summary>
+
+> Outrider sends data to the configured LLM provider only through its review-stage model calls. Depending on the stage, this includes: the PR title, changed-file paths and metadata, diff patches, complete bodies of scopes containing added lines (or bounded diff hunks on degraded paths), structural query identifiers, trace candidate identifiers, import strings, and reasons, scope bodies from uniquely resolved related files, finding identifiers, metadata, titles, descriptions, and evidence, target source lines used for suggested fixes, and the risk classification and metrics used to generate the final summary. Outrider does not currently send the PR body, author login, commit messages, or branch names; adding any of these requires a new privacy-contract amendment.
+>
+> Complete eligible file content is fetched and checkpointed locally. Outrider does not send the separately fetched base and head file blobs as whole-file payloads during normal analysis, but GitHub diff patches may contain most or all of an added or heavily rewritten file.
+>
+> Under Anthropic's default terms, API inputs and outputs are deleted within 30 days, though retention can extend under contractual arrangements, Usage Policy enforcement, or legal requirements; content flagged for policy violations is retained up to 2 years, classification scores up to 7 years; no data is used for training without permission.
+>
+> If your organization has a ZDR arrangement with Anthropic, set `ANTHROPIC_ZDR_ENABLED=true` — Outrider uses the flag to adjust its startup notice and privacy statement; it does not enable ZDR on its own. Contact Anthropic sales if you need to arrange ZDR. Outrider does not currently support HIPAA-subject workloads.
 >
 > Outrider stores LLM request and response content in your local database under configured retention TTL (default values in operator configuration; purged on `installation.deleted` along with reviews and findings, per [#012](DECISIONS.md#012-data-retention-ttls-configurable-purge-on-installationdeleted) + [#014](DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings)). Outrider does not transmit stored LLM content to any third party other than the configured LLM provider at request time per #013/#015's egress rules.
 
-The pinned statement covers the default Anthropic host. Outrider's egress include list is the
-same on every host. What changes with `OUTRIDER_LLM_HOST` is who receives the data and whose
+</details>
+
+The pinned statement covers the default Anthropic host. Outrider sends the
+same listed data to every host. What changes with `OUTRIDER_LLM_HOST` is who receives the data and whose
 terms govern its handling after receipt: see
 [Fireworks](https://docs.fireworks.ai/guides/security_compliance/data_handling) and
 [Baseten](https://docs.baseten.co/observability/security).
 
-Application logs stay metadata-only. LLM content lives in the database, never in log streams.
+Application logs record metadata, such as IDs and counts. Model requests and responses
+stay in the database and never appear in application logs.
 Slack, when enabled, receives finding titles, types, severities, file locations, and
 dashboard links. Descriptions, evidence, suggested fixes, and source context never go to
 Slack (titles are model-written, so treat them as potentially quoting short fragments).
 
-**Input hardening.** Webhook signatures verify with `hmac.compare_digest`. Payloads parse
-through shape-validated schemas before anything downstream sees them (unknown GitHub fields
-are deliberately tolerated for forward compatibility). File paths validate before
-filesystem or API use. There is no shell execution with GitHub-sourced strings anywhere in the
+**Checking incoming data.** Outrider verifies webhook signatures with `hmac.compare_digest`.
+It checks the expected payload fields before processing them; extra GitHub fields
+are allowed so GitHub can add fields without breaking the receiver. It validates
+file paths before using them with the filesystem or an API. There is no shell
+execution with GitHub-sourced strings anywhere in the
 application source tree (`src/outrider/`, CI-enforced). The deliberately vulnerable demo
 fixtures under `scripts/demo_fixtures/` are the documented exception in the wider repo.
-Database-stored GitHub App credentials (setup mode A) and Slack tokens are encrypted before
-they are written to Postgres, and the App-setup callback carries single-use signed state. In
-mode B the App credentials live in your environment, and protecting that file is on you.
+GitHub App credentials stored by guided setup and Slack tokens are encrypted before
+they are written to Postgres, and the App-setup callback carries single-use signed
+state. With an existing App, credentials live in your environment file; protect that file.
 Outrider does not include its own operator credentials (GitHub App private key, webhook
 secret, installation tokens, Slack tokens) in model prompts. It
 does not secret-scan repository content before review, so secrets accidentally
@@ -598,16 +643,17 @@ penetration tested.
 
 ## What Outrider is not
 
-- Not a replacement for human code review, and no guarantee every defect is found.
-- Not a hosted service. You run it, on your infrastructure, with your provider keys
+- Keep human code review. Outrider can miss defects.
+- You run it on your infrastructure, with your provider keys
   ([#011](DECISIONS.md#011-self-hosted-is-canonical-v1-saas-is-v15)).
-- No production deployments or users yet. Live validation has been on author-controlled
-  sandbox repositories with planted vulnerabilities.
+- There are no production deployments or users yet. Live tests have used
+  author-controlled sandbox repositories with planted vulnerabilities.
 - The benchmark results above are controlled-fixture measurements, not production precision or
   recall.
-- Slack is notification plus deep-link only. No review triggering, no inline approval.
+- Slack sends notifications and dashboard links. It cannot start reviews or accept approvals.
 - Reviews post as PR reviews. There is no GitHub Checks integration.
-- Not independently security audited. No SLA. Not suitable for HIPAA-subject workloads.
+- Outrider has not had an independent security audit. It has no service-level
+  guarantee and is unsuitable for HIPAA-subject workloads.
 - It does not train models on your code. Raw source context, diff patches, and the PR title
   go only to your configured model provider. Review output posts back to GitHub, and Slack (when
   enabled) receives only the limited notification fields described above (model-written titles
@@ -619,18 +665,19 @@ penetration tested.
 - **Cost per review at full coverage is unmeasured.** Internal sandbox runs (not a tracked
   artifact) came in around $0.10 to $0.12, but they ran under a token budget that skipped
   files. Treat any composed full-coverage figure as a model, not a measurement.
-- **Module-level-only Python changes can escape LLM review.** A diff touching only imports or
+- **Python changes outside functions and classes can escape model review.** A diff
+  touching only imports or
   module constants is skipped unless a structural query matches, so a hardcoded secret added in
-  a constants-only diff is not reviewed today. Known, tracked, and honestly the sharpest
-  current gap. Our own eval fixtures found it.
-- **Deletion-only changes can escape LLM review.** Scopes are selected by added lines. An
+  a constants-only diff is not reviewed today. This gap is tracked and was found by our
+  evaluation tests.
+- **Deletion-only changes can escape model review.** Code sections are selected by added lines. An
   otherwise reviewable file whose diff contains only deletions can receive no analyze call at
   all, and in a mixed file a deletion-only scope can be omitted even while another scope gets
-  the file reviewed. Deleting an authorization check is the canonical bad case. Same family
-  as the module-level gap.
-- **Two cost optimizations run in shadow mode by default** (a trivial-scope filter and a
-  file-hash analyze cache). They measure and audit but don't act, pending evidence. Savings
-  claimed from them: none.
+  the file reviewed. Deleting an authorization check is one
+  example. This is related to the gap for code outside functions and classes.
+- **Two cost optimizations only measure by default** (a filter for trivial code
+  sections and an analyze cache keyed by file content). They record what they would
+  skip or reuse without changing the review. No savings are claimed.
 - **Prompts are tuned against Claude models only.** Prompt calibration was performed against
   Sonnet and Haiku. GLM runs the same prefix and holds its own baseline column above, but no
   GLM-specific calibration experiment has been run.
@@ -655,16 +702,17 @@ npm --prefix dashboard ci                   # install dashboard deps
 npm --prefix dashboard run test             # dashboard (vitest)
 ```
 
-The integration and eval tiers need only `TEST_DATABASE_URL` exported. The unit tier
-deliberately runs with no environment at all.
+Integration and evaluation tests need only `TEST_DATABASE_URL` exported. Run unit
+tests without loading the application environment.
+The [eval guide](tests/eval/README.md) maps the suite and explains saved evidence
+and paid runs.
 
 CI runs eight jobs on every push to main and every pull request: lint, mypy (strict), the
-trust-boundary import lint, unit, integration, eval, dashboard, and pre-commit checks. The
-boundary lint ([`scripts/check_import_boundaries.py`](scripts/check_import_boundaries.py)) is
-the deterministic floor under the vendor-SDK quarantine. CI fails on an `anthropic` import
+trust-boundary import lint, unit, integration, eval, dashboard, and pre-commit checks. The import check
+([`scripts/check_import_boundaries.py`](scripts/check_import_boundaries.py)) enforces
+where external libraries can be used. CI fails on an `anthropic` import
 outside `llm/`, a `tree_sitter` import outside `ast_facts/` and `queries/`, or shell
-execution in the
-application source tree.
+execution in the application source tree.
 
 Architectural decisions are recorded in [DECISIONS.md](DECISIONS.md): numbered, append-only,
 and cited from code comments by anchor. If you want to know why something is the way it is,

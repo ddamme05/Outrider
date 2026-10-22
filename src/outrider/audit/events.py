@@ -2,101 +2,36 @@
 # Append-only contract per docs/trust-boundaries.md §7.
 # Planned under DECISIONS.md#056: the identity triad (`profile_id`/`reasoning_enabled`/
 # `profile_contract_digest`) on LLMCall/Analyze/SynthesizeCompletedEvent.
-"""Audit event class hierarchy + discriminated union.
+"""Audit event class hierarchy and its discriminated union.
 
-`AuditEventBase` is the shared base. The hierarchy has twenty-two
-concrete subtypes: the twelve original V1 subtypes (`AgentTransitionEvent`,
-`ReviewPhaseEvent`, `LLMCallEvent`, `FileExaminationEvent`,
-`FindingEvent`, `TraceDecisionEvent`, `HITLRequestEvent`,
-`HITLDecisionEvent`, `PublishEvent`, `PublishRoutingEvent`,
-`PublishEligibilityEvent`, `PublishAttemptEvent`), three
-analyze-foundation additions (`AnalyzeCompletedEvent`,
-`FindingProposalRejectedEvent`, `AnalyzeResponseRejectedEvent`), the
-synthesize-node addition (`SynthesizeCompletedEvent`), the
-replay-verdict-projection addition (`ReplayVerdictEvent`), the
-trivial-scope-filter addition (`ScopeExclusionEvent`), the
-analyze-cache lookup addition (`CacheLookupEvent`), the analyze-cache
-serve addition (`CacheServeEvent`), the OBSERVED-tier skip-shadow
-addition (`ObservedSkipShadowEvent`, Cost Lever 3), and the Slack-notification
-addition (`SlackNotificationEvent`, dashboard-in-Slack V1). Each
-declares its own `event_type: Literal[...]` discriminator value. The
-`AuditEvent` discriminated-union alias is what `audit/replay.py` uses to
-reconstruct concrete events from `audit_events.payload` JSONB at read time:
+Every concrete event subclasses `AuditEventBase` and declares its own
+`event_type: Literal[...]` discriminator. The `AuditEvent` union alias at the
+bottom of this module is the live inventory of those subtypes, and it is what
+`audit/replay.py` validates rows against when reconstructing from the
+`audit_events.payload` JSONB:
 
     TypeAdapter(AuditEvent).validate_python({**payload, "sequence_number": row.sequence_number})
 
-Every event uses `ConfigDict(frozen=True, extra="forbid")` per
-`audit-events-frozen-extra-forbid`. Tuple-typed sequence fields
-(`context_summary`, `trace_path`, the HITL containers,
-`proposed_import_strings`, `resolved_candidate_paths`)
-deliver true immutability — Pydantic `frozen=True` only blocks attribute
-reassignment, not in-place container mutation. Nested Pydantic payload
-classes (`ContextManifestEntry`) carry their own `frozen=True + extra=forbid`
-because the outer model's frozen-ness does not propagate.
+`sequence_number` is a DB-assigned BIGSERIAL that lives on the row rather than
+in the payload. New events carry `None` until INSERT; the persister excludes the
+field from JSONB, and replay restores the assigned value before validation.
 
-Eleven event types carry validators (plus `PerFindingDecision` inherited
-by `HITLDecisionEvent.decisions`):
+Immutability takes three separate mechanisms, because `frozen=True` alone is not
+enough (`audit-events-frozen-extra-forbid`):
 
-  - `LLMCallEvent` enforces the `degradation_reason` cross-field rule
-    per `DECISIONS.md#016`: non-None iff `degraded_mode is True`.
-  - `FileExaminationEvent` enforces the `skip_reason` cross-field rule
-    per `DECISIONS.md#018`: `skip_reason is not None` ↔
-    `parse_status == "skipped"`.
-  - `ScopeExclusionEvent` runs the `validate_diff_path` audit-shadow on
-    `file_path`; its nested `ScopeExclusionEntry` carries the
-    trivial ↔ reason pairing model validator.
-  - `CacheLookupEvent` runs the same `validate_diff_path` audit-shadow
-    on `file_path`.
-  - `CacheServeEvent` runs the same `validate_diff_path` audit-shadow on
-    `file_path` (its nested `ServedTraceCandidateRef` carries pattern-validated
-    `candidate_id` / `source_proposal_hash`).
-  - `ObservedSkipShadowEvent` carries three validators: the `validate_diff_path`
-    audit-shadow on `file_path`, the outcome↔blockers biconditional
-    (`would_skip` iff no blockers, `not_eligible` iff ≥1 blocker), and the
-    `would_skip` coverage-coherence rule (a `would_skip` with changed regions
-    requires `covering_matches` and forbids base-side regions, so the row stays a
-    reconstructable promotion proof); its nested `ObservedSkipChangedRegion` /
-    `ObservedSkipCoveringMatch` each carry a `line_end >= line_start` validator.
-  - `FindingEvent` carries three validators — proof-boundary
-    (`policy/findings.enforce_proof_boundary`, backs
-    `evidence-tier-schema-enforced`), the line constraint
-    (`line_end >= line_start`), and `_verify_content_hash` per spec §8.5
-    (rejects emitter bugs that produce a mis-computed hash with the
-    right shape).
-  - `TraceDecisionEvent` enforces the three-rule resolution invariant
-    per `DECISIONS.md#017` × `#024` amendment:
-    (a) resolved ↔ `len(resolved_candidate_paths) == 1` AND
-        `target_file == resolved_candidate_paths[0]`;
-    (b) unresolved ↔ `len(resolved_candidate_paths) == 0` AND
-        `target_file is None`;
-    (c) ambiguous ↔ `len(resolved_candidate_paths) > 1` AND
-        `target_file is None`.
-    Plus per-element `is_valid_trace_import_string` (the two-form
-    dispatcher per `DECISIONS.md#024`, Amended 2026-07-03) on
-    `proposed_import_strings`
-    and `validate_diff_path` on `resolved_candidate_paths` + `target_file`.
-  - `AnalyzeCompletedEvent` enforces two accounting equations per
-    foundation §5: `n_proposals_seen == (n_findings_emitted -
-    n_findings_served - n_findings_observed) + n_proposals_rejected
-    + n_proposals_superseded_by_observed` (cache-served AND deterministic
-    OBSERVED findings ride in n_findings_emitted but sit outside the
-    proposal lifecycle, so they subtract; JUDGED proposals superseded by a
-    colliding OBSERVED finding per #054 have no surviving finding, so they
-    ADD), and `n_responses_rejected <= n_llm_calls`.
-  - `FindingProposalRejectedEvent` enforces the bidirectional
-    `claimed_evidence_tier` ↔ `rejection_reason ==
-    "evidence_tier_not_in_enum"` coupling.
-  - `ReplayVerdictEvent` carries two validators: `reason` paired iff
-    inequivalent, and the reconstruction-metadata envelope (`mode` + the
-    three counts) all-present-or-all-absent — present iff reconstruction
-    succeeded, so an equivalent verdict requires it.
-  - `PerFindingDecision` (referenced via `HITLDecisionEvent.decisions`)
-    carries its own validator per `schemas/hitl.py`; the wrapping event
-    inherits that gate.
+  - `ConfigDict(frozen=True, extra="forbid")` on every event blocks attribute
+    reassignment and unknown fields.
+  - Sequence fields are TUPLE-typed, because frozen does not prevent in-place
+    mutation of a list.
+  - Nested payload models carry their own `frozen=True, extra="forbid"`, because
+    the outer model's frozen-ness does not propagate into them.
 
-Replay merges the row-level `sequence_number` (DB-assigned BIGSERIAL)
-into the payload before validating; the emitter dumps with
-`mode="json", exclude={"sequence_number"}` per the row-vs-payload split.
+Cross-field rules live as validators on the classes that own them, next to the
+fields they constrain.
+
+Where present, `phase_key` identifies the planner, worker, or aggregate phase
+under the parallel-analyze fan-out and is `None` on sequential-era rows.
+Grouping follows the strict derived-owner hybrid (`DECISIONS.md#064`).
 """
 
 import hashlib
@@ -107,6 +42,7 @@ from typing import Annotated, Final, Literal, Self
 from uuid import UUID, uuid4
 
 from pydantic import (
+    AfterValidator,
     AwareDatetime,
     BaseModel,
     ConfigDict,
@@ -138,6 +74,16 @@ from outrider.schemas.hitl import PerFindingDecision
 from outrider.schemas.observed_subsumption import ObservedSubsumedMatch
 from outrider.schemas.review_finding import PublishDestination, ReviewDimension
 from outrider.schemas.triage_result import RiskLevel
+
+# The audit-side mirror of `AnalysisRound.files_examined` and
+# `ReviewFinding.file_path`: every audit payload path uses the same
+# repo-relative POSIX/NFC gate and must be at least as strict as those
+# in-memory schemas. Keeping the gate in the annotation makes it visible
+# at every field and prevents carrier-specific drift. Pydantic applies
+# `max_length=1024` before `validate_diff_path`; `CoordinateError`
+# propagates directly rather than becoming `ValidationError`.
+DiffPathStr = Annotated[str, Field(max_length=1024), AfterValidator(validate_diff_path)]
+
 
 # SHA-256 hashes are 256 bits = 64 hex characters per spec §8.5
 # (FindingEvent.finding_content_hash = SHA-256(file_path + line_start +
@@ -295,7 +241,7 @@ class ContextManifestEntry(BaseModel):
     # (function/method/class name) plus optional dotted qualifier;
     # 1024 chars accommodates deeply-nested closures while bounding
     # the audit-row growth.
-    file_path: str = Field(max_length=1024)
+    file_path: DiffPathStr
     scope_unit_name: str = Field(max_length=1024)
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
@@ -304,18 +250,6 @@ class ContextManifestEntry(BaseModel):
         "same_file_context",
         "trace_expansion",
     ]
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Re-run `validate_diff_path` so the audit-event side enforces the
-        same repo-relative-POSIX invariant `AnalysisRound.files_examined`
-        does. Without this gate, a traversal-bearing or shell-metacharacter
-        path on a `ContextManifestEntry` inside `LLMCallEvent.context_summary`
-        could ride into the append-only audit log without going through
-        the canonical path-validation gate.
-        """
-        return validate_diff_path(path)
 
     @model_validator(mode="after")
     def _enforce_line_constraint(self) -> Self:
@@ -379,17 +313,40 @@ def _triad_all_set_or_all_none(
     reasoning_enabled: bool | None,
     profile_contract_digest: str | None,
 ) -> bool:
-    """The host-identity triad (DECISIONS.md#056) are peers — set together or absent
-    together. True for all-three-present OR all-three-None; a partial triad (a write that
-    stamped some-but-not-all, or a corrupt row) is incoherent. The stricter fresh-write
-    guard (all-present on new events) lands in a later step-4 commit; this is the always-on
-    coherence envelope that holds for historical (all-None) rows too."""
+    """Accept either a complete host-identity triad or an unqualified historical row.
+
+    Partial triads are incoherent (`DECISIONS.md#056`). This read-tolerant schema
+    check also admits all-None history; `AuditPersister` separately requires all
+    three fields on fresh triad-bearing writes.
+    """
     present = (
         profile_id is not None,
         reasoning_enabled is not None,
         profile_contract_digest is not None,
     )
     return all(present) or not any(present)
+
+
+def _require_triad_coherence(
+    profile_id: str | None,
+    reasoning_enabled: bool | None,
+    profile_contract_digest: str | None,
+) -> None:
+    """Raise unless the host-identity triad is all-present or all-None.
+
+    The raising half of `_triad_all_set_or_all_none`, shared by every event that
+    carries the triad so the three classes cannot drift in message or in what they
+    accept.
+    """
+    if _triad_all_set_or_all_none(profile_id, reasoning_enabled, profile_contract_digest):
+        return
+    raise ValueError(
+        "host-identity triad (DECISIONS.md#056) is peers — all-present or all-None; "
+        f"got profile_id={profile_id!r}, "
+        f"reasoning_enabled={reasoning_enabled!r}, "
+        f"digest_set={profile_contract_digest is not None}. The fresh-write "
+        "all-present guard lands in a later step-4 commit."
+    )
 
 
 class DegradationReason(StrEnum):
@@ -432,10 +389,6 @@ class LLMCallEvent(AuditEventBase):
     """
 
     event_type: Literal["llm_call"] = "llm_call"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     model: str
     # The provider's normalized stop reason (`end_turn`/`refusal`/`max_tokens`/…),
@@ -490,13 +443,9 @@ class LLMCallEvent(AuditEventBase):
     # — replay/ops distinguish them by THIS field, and the analyze cache key
     # folds the same value so the two surfaces cannot drift.
     response_format_digest: str | None = Field(default=None, pattern=_SHA256_HEX_PATTERN)
-    # Host-identity triad (DECISIONS.md#056), additive + nullable: `profile_id` the active
-    # HostProfile.host_id (or "anthropic"); `reasoning_enabled` the provider-level flag;
-    # `profile_contract_digest` sha256 over the profile's wire-affecting fields +
-    # SHAPER_CONTRACT_VERSION. All three None = an UNQUALIFIED pre-#056 row (read-tolerant per
-    # DECISIONS#032; never slug→host inferred). Fresh writes stamp all three — the write-time
-    # fail-closed validator + the stamping land in later step-4 commits. Replay then splits the
-    # populations the analyze cache key splits (the FUP-096 shape).
+    # Providers stamp the full host triad; the persister enforces fresh writes
+    # and checks it against the response (DECISIONS.md#056). All-None historical
+    # rows stay unqualified; never infer their host from a model slug (#032).
     profile_id: str | None = None
     reasoning_enabled: bool | None = None
     profile_contract_digest: str | None = Field(default=None, pattern=_SHA256_HEX_PATTERN)
@@ -518,9 +467,10 @@ class LLMCallEvent(AuditEventBase):
 
     @model_validator(mode="after")
     def _enforce_cost_unpriced_coupling(self) -> Self:
-        """priced ⇔ reason absent: `cost_usd=None` requires a typed reason and a typed
-        reason forbids a cost — a zero-or-missing cost can never masquerade as priced,
-        and a reasoned row can never carry a fabricated number."""
+        """Require a cost with no reason, or an unpriced reason with no cost.
+
+        Zero is a valid priced value, never a sentinel for missing pricing.
+        """
         if (self.cost_usd is None) != (self.cost_unpriced_reason is not None):
             raise ValueError(
                 f"cost_usd/cost_unpriced_reason coupling violated: cost_usd="
@@ -532,16 +482,9 @@ class LLMCallEvent(AuditEventBase):
 
     @model_validator(mode="after")
     def _enforce_triad_coherence(self) -> Self:
-        if not _triad_all_set_or_all_none(
+        _require_triad_coherence(
             self.profile_id, self.reasoning_enabled, self.profile_contract_digest
-        ):
-            raise ValueError(
-                "host-identity triad (DECISIONS.md#056) is peers — all-present or all-None; "
-                f"got profile_id={self.profile_id!r}, "
-                f"reasoning_enabled={self.reasoning_enabled!r}, "
-                f"digest_set={self.profile_contract_digest is not None}. The fresh-write "
-                "all-present guard lands in a later step-4 commit."
-            )
+        )
         return self
 
     @model_validator(mode="after")
@@ -699,12 +642,8 @@ class ScopeExclusionEvent(AuditEventBase):
     """
 
     event_type: Literal["scope_exclusion"] = "scope_exclusion"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     node_id: Literal["analyze"] = "analyze"
     applied: bool
     # The code-pinned matcher version (ast_facts.triviality
@@ -713,14 +652,6 @@ class ScopeExclusionEvent(AuditEventBase):
     # cache-key component per FUP-166.
     filter_version: Annotated[str, Field(max_length=64, min_length=1)]
     entries: tuple[ScopeExclusionEntry, ...] = Field(min_length=1)
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use` — same as
-        every sibling path-bearing event: a traversal-bearing or
-        shell-metacharacter path can't ride into the append-only log."""
-        return validate_diff_path(path)
 
 
 class CacheLookupEvent(AuditEventBase):
@@ -751,22 +682,11 @@ class CacheLookupEvent(AuditEventBase):
     """
 
     event_type: Literal["cache_lookup"] = "cache_lookup"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     node_id: Literal["analyze"] = "analyze"
     outcome: Literal["would_hit", "miss"]
     cache_key: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use` — same as
-        every sibling path-bearing event."""
-        return validate_diff_path(path)
 
 
 class ServedTraceCandidateRef(BaseModel):
@@ -833,12 +753,8 @@ class CacheServeEvent(AuditEventBase):
     """
 
     event_type: Literal["cache_serve"] = "cache_serve"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     node_id: Literal["analyze"] = "analyze"
     cache_key: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     installation_id: int
@@ -853,13 +769,6 @@ class CacheServeEvent(AuditEventBase):
     served_trace_candidates: tuple[ServedTraceCandidateRef, ...] = ()
     source_review_id: UUID
     source_cache_created_at: AwareDatetime
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use` — same as
-        every sibling path-bearing event."""
-        return validate_diff_path(path)
 
 
 class ObservedSkipChangedRegion(BaseModel):
@@ -949,13 +858,9 @@ class ObservedSkipShadowEvent(AuditEventBase):
     """
 
     event_type: Literal["observed_skip_shadow"] = "observed_skip_shadow"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     node_id: Literal["analyze"] = "analyze"
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     outcome: Literal["would_skip", "not_eligible"]
     changed_regions: tuple[ObservedSkipChangedRegion, ...]
     covering_matches: tuple[ObservedSkipCoveringMatch, ...] = ()
@@ -965,13 +870,6 @@ class ObservedSkipShadowEvent(AuditEventBase):
     # enforced `would_skip` branch sets it True. Default-valued -> no migration; a
     # pre-3b row replays as False (the CacheLookupEvent field-widening precedent).
     skip_enforced: bool = False
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use` — same as
-        every sibling path-bearing event."""
-        return validate_diff_path(path)
 
     @model_validator(mode="after")
     def _enforce_outcome_blocker_consistency(self) -> Self:
@@ -1043,12 +941,8 @@ class FileExaminationEvent(AuditEventBase):
     """
 
     event_type: Literal["file_examination"] = "file_examination"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     # Bounded to the two actually-emitted values today: intake's
     # per-file fetch record (`emit_file_examination` sites in
     # `agent/nodes/intake.py`) and analyze's per-file examination (the
@@ -1067,17 +961,6 @@ class FileExaminationEvent(AuditEventBase):
     node_id: Literal["intake", "analyze"]
     parse_status: Literal["clean", "degraded", "failed", "skipped"]
     skip_reason: SkipReason | None = None
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use`. Matches
-        the `AnalysisRound.files_examined` validator at the schemas side
-        so the audit-row contract is at least as strict as the in-memory
-        shape — a traversal-bearing or shell-metacharacter path can't
-        ride into the append-only log unvalidated.
-        """
-        return validate_diff_path(path)
 
     @model_validator(mode="after")
     def _enforce_skip_reason_outcome(self) -> Self:
@@ -1128,15 +1011,11 @@ class FindingEvent(AuditEventBase):
     """
 
     event_type: Literal["finding"] = "finding"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     finding_id: UUID
     finding_type: FindingType
     severity: FindingSeverity
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
     dimension: ReviewDimension
@@ -1166,17 +1045,6 @@ class FindingEvent(AuditEventBase):
     # recipe (#025 point 3): content hash stays stable across LLM
     # phrasing variation; proposal_hash carries provenance.
     proposal_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use`. Matches
-        the `ReviewFinding.file_path` validator at the schemas side —
-        the audit shadow must be at least as strict as the in-memory
-        shape, or a traversal-bearing file_path could ride into the
-        append-only log unvalidated.
-        """
-        return validate_diff_path(path)
 
     @field_validator("proposal_hash")
     @classmethod
@@ -1254,37 +1122,13 @@ class FindingEvent(AuditEventBase):
 
     @model_validator(mode="after")
     def _enforce_severity_matches_policy(self) -> Self:
-        """`severity` must equal `SEVERITY_POLICY[finding_type]` under the
-        live policy version. Backs `severity-set-by-policy`.
+        """Check baseline severity against the live policy when versions match.
 
-        FindingEvent is emitted by the analyze node BEFORE HITL; it
-        carries the policy-computed baseline. HITL overrides do not
-        rewrite FindingEvent — they emit a separate HITLDecisionEvent
-        with `override_severity` + `original_severity`. So this event's
-        severity must always match SEVERITY_POLICY[finding_type] at
-        write time, no override case to consider.
-
-        Replay-aware scoping. `model_validate` is the SAME path
-        `TypeAdapter(AuditEvent).validate_python(...)` uses to
-        reconstruct historical events (see module docstring at
-        the top of this file). A historical event under an older
-        `policy_version` MUST validate cleanly — the severity it
-        carries was correct AT WRITE TIME under its frozen policy,
-        and we have no synchronous loader for the historical
-        mapping here (`policy/versions.py::load_policy_for_version`
-        is async; it's the persister/replay layer's job, not the
-        schema's).
-
-        Scope: the live-policy match check below fires ONLY when
-        `policy_version == ACTIVE_POLICY_VERSION`. Older versions
-        skip and trust the historical row. The "fresh-write smuggle"
-        concern (a producer setting `policy_version="0.9.0"` to
-        dodge the live check) is NOT defended at the schema layer —
-        it's a producer-side discipline enforced by the emitter and,
-        when the replay/persister spec lands, by the persister's
-        write-time check that incoming events carry the active
-        version. The schema layer cannot distinguish fresh writes
-        from replay reconstruction inside `model_validate`.
+        Finding events precede HITL. Overrides belong in `HITLDecisionEvent` and do
+        not rewrite this immutable baseline. Older policy versions skip this live
+        mapping check so historical events can deserialize; the versioned-policy
+        cross-check belongs in replay. This schema cannot distinguish a fresh write
+        from a historical read, so it does not enforce freshness of policy versions.
         """
         # Local import: policy modules cannot import from audit.events
         # at top-level (they don't), so this could move up; kept local
@@ -2034,7 +1878,7 @@ class PublishRoutingEvent(AuditEventBase):
     # but different diagnostic stories — replay can tell them apart via
     # this field.
     coordinate_error_kind: str | None = None
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
     # Carried so `_verify_finding_content_hash` can recompute against the
@@ -2043,12 +1887,6 @@ class PublishRoutingEvent(AuditEventBase):
     finding_type: FindingType
     finding_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     decision_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow mirror of `paths-validated-before-use`."""
-        return validate_diff_path(path)
 
     @field_validator("coordinate_error_kind")
     @classmethod
@@ -2254,7 +2092,7 @@ class PublishEligibilityEvent(AuditEventBase):
 
     event_type: Literal["publish_eligibility"] = "publish_eligibility"
     finding_id: UUID
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
     finding_type: FindingType
@@ -2274,11 +2112,6 @@ class PublishEligibilityEvent(AuditEventBase):
     eligibility: PublishEligibility
     reason: PublishEligibilityReason | None = None
     policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        return validate_diff_path(path)
 
     @model_validator(mode="after")
     def _enforce_line_constraint(self) -> Self:
@@ -2645,19 +2478,15 @@ _SHA256_HEX_PATTERN_SHORT: Final = SHA256_HEX_PATTERN_SHORT
 
 
 class AnalyzeCompletedEvent(AuditEventBase):
-    """Per-pass aggregate emitted at the end of each analyze ⇄ trace iteration.
+    """Per-pass aggregate for each analyze/trace iteration.
 
-    Counter fields are cross-validated by two model validators so a counter
-    that lies (`n_findings_emitted=5` with only 3 findings actually fired)
-    fails Pydantic construction, not just reads weird. See §5 of
+    Validators check the counter accounting equations, including findings from
+    cache and deterministic producers that have no model proposal. They do not
+    query the audit stream to verify each underlying emission. See §5 of
     `specs/2026-05-19-analyze-foundation.md`.
     """
 
     event_type: Literal["analyze_completed"] = "analyze_completed"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     pass_index: int = Field(ge=0)
     node_id: Literal["analyze"] = "analyze"
@@ -2667,13 +2496,11 @@ class AnalyzeCompletedEvent(AuditEventBase):
     n_proposals_seen: int = Field(ge=0)
     n_findings_emitted: int = Field(ge=0)
     n_findings_served: int = Field(ge=0, default=0)
-    """Count of cache-SERVED findings this pass (Stage B serve flip). Served
-    findings increment `n_findings_emitted` too (they fire real `FindingEvent`s,
-    keeping that counter equal to the actual event count) but carry no LLM
-    proposal, so `_enforce_proposal_accounting` subtracts them — the proposal
-    lifecycle equation counts only model-proposed findings. Default 0 (no served
-    findings under `cache_mode=shadow`, the default; analyze hasn't shipped so no
-    historical payloads exist — the default is a forward-compat hedge)."""
+    """Cache-served findings emitted this pass, also included in `n_findings_emitted`.
+    They emit `FindingEvent`s but have no new model proposal, so proposal
+    accounting subtracts them. Default zero preserves older payloads; shadow
+    mode does not serve findings.
+    """
     n_findings_observed: int = Field(ge=0, default=0)
     """Count of deterministic OBSERVED-tier findings the analyze node produced and
     merged this pass (Cost Lever 3). Like served findings, they increment
@@ -2726,41 +2553,20 @@ class AnalyzeCompletedEvent(AuditEventBase):
     n_proposals_rejected: int = Field(ge=0)
     n_responses_rejected: int = Field(ge=0)
     n_trace_candidates_emitted: int = Field(ge=0)
-    """Count of `TraceCandidate` records the parser emitted across this
-    pass's per-file calls — pre-dedup. The state-side reducer on
-    `ReviewState.trace_candidates` is `append_with_dedup_by(candidate_id)`
-    (`schemas/review_state.py`), so the unique-candidate count visible
-    to downstream consumers equals `len(state.trace_candidates_delta)`,
-    not this counter. Keeping the counter pre-dedup preserves the audit
-    signal "model proposed the same candidate twice" which would
-    otherwise be invisible — a model emitting N duplicate candidate_ids
-    indicates either prompt confusion or a model behavior worth tracking.
-    Reviewers periodically suggest deduping here; that would erase the
-    signal, hence the explicit contract. Since the #024 from-import
-    correction amendment, the count also includes parser-emitted
-    corrected module-form SIBLINGS (one per correction; never replacing
-    the model's candidate), so it is model-proposals PLUS corrections —
-    the node's INFO log carries the per-file correction count when
-    disentangling matters."""
+    """Parser-emitted trace candidates across this pass's model calls, before dedup.
+    Include corrected module-form siblings (`DECISIONS.md#024`), which supplement
+    rather than replace model candidates. The state reducer deduplicates by
+    `candidate_id`, so this counter can exceed the number of unique candidates
+    added to state. Keeping duplicates makes repeated model proposals visible;
+    the per-file correction log separates corrections when needed.
+    """
     n_trace_candidates_dropped_malformed: int = Field(ge=0, default=0)
-    """Count of raw `trace_candidates` entries the parser DROPPED because
-    the per-language form validation rejected the `import_string_raw` —
-    or, for specifier form, admission-time repo-escape containment did
-    (sharp-edges F1 audit-fold per `specs/2026-05-23-trace-node.md` arc).
-    Per `DECISIONS.md#024` (Amended 2026-07-03) trace candidates carry
-    one of two syntactic forms — dotted Python import string or JS/TS
-    relative specifier; the parser applies the analyzed file's single
-    admitted form (the same per-form validators the shared
-    `coordinates.is_valid_trace_import_string` dispatcher composes) and
-    silently drops failing candidates (rather than
-    crashing the whole pass) to preserve the n_proposals_seen accounting
-    equation, but the count surfaces here so operators can distinguish
-    "model proposed no trace candidates" from "every proposal was
-    malformed" — drift in this metric over time signals prompt drift or
-    a model retraining that warrants prompt-template review.
-    Default=0 for backward compatibility with pre-fold AnalyzeCompletedEvent
-    payloads (none exist in production yet — analyze hasn't shipped — so
-    the default is a forward-compat hedge, not a backfill substitute)."""
+    """Raw trace entries dropped by language-form validation or repo containment.
+    Python dotted imports and JS/TS relative specifiers use the analyzed file's
+    admitted form (`DECISIONS.md#024`, amended 2026-07-03). Invalid candidates
+    are dropped individually; this counter distinguishes absent candidates
+    from malformed ones. Default zero keeps pre-field events readable.
+    """
     total_input_tokens: int = Field(ge=0)
     total_cache_read_tokens: int = Field(ge=0)
     """Sum of `LLMResponse.cache_read_tokens` across this pass's LLM calls.
@@ -2790,36 +2596,23 @@ class AnalyzeCompletedEvent(AuditEventBase):
     (`specs/2026-06-08-analyze-tiered-model-routing.md`) — the STANDARD-tier model is
     on `standard_analyze_model`."""
     standard_analyze_model: str | None = None
-    """The STANDARD-tier model used this pass, or `None` when NO STANDARD-tier LLM call
-    ran — a pass with no STANDARD-tier files, or a pass-1 trace round (trace-fetched
-    files have no tier and stay on `analyze_model`). When a STANDARD file IS analyzed the
-    field records the model used EVEN under inert config where it equals the DEEP
-    `analyze_model`: `None` means "no STANDARD call ran," NOT "same model as DEEP"
-    (observability over distinctness — you can always tell which model handled the
-    STANDARD tier). Additive field; `None` on historical `AnalyzeCompletedEvent` payloads
-    (none exist in production yet — analyze hasn't shipped — so the default is a
-    forward-compat hedge), so persister / replay / dashboard readers tolerate its
-    absence. `specs/2026-06-08-analyze-tiered-model-routing.md`."""
-    # Host-identity triad (DECISIONS.md#056), additive + nullable — set by graph config
-    # (`build_graph` closes the triad for these zero-LLM-call completion paths, a later
-    # step-4 commit). All three None = an UNQUALIFIED pre-#056 row (read-tolerant per
-    # DECISIONS#032). Same shape + SHAPER_CONTRACT_VERSION digest as LLMCallEvent's triad.
+    """STANDARD-tier model used this pass, or None if no STANDARD-tier call ran.
+    Record it even when its slug equals the DEEP model. Pass-1 trace-fetched files
+    stay on `analyze_model`; historical payloads default to None. See
+    `specs/2026-06-08-analyze-tiered-model-routing.md`.
+    """
+    # Graph configuration supplies the triad even for passes with no LLM calls.
+    # Fresh writes require it; all-None historical rows remain unqualified
+    # (DECISIONS.md#056/#032), with the same digest recipe as LLMCallEvent.
     profile_id: str | None = None
     reasoning_enabled: bool | None = None
     profile_contract_digest: str | None = Field(default=None, pattern=_SHA256_HEX_PATTERN)
 
     @model_validator(mode="after")
     def _enforce_triad_coherence(self) -> Self:
-        if not _triad_all_set_or_all_none(
+        _require_triad_coherence(
             self.profile_id, self.reasoning_enabled, self.profile_contract_digest
-        ):
-            raise ValueError(
-                "host-identity triad (DECISIONS.md#056) is peers — all-present or all-None; "
-                f"got profile_id={self.profile_id!r}, "
-                f"reasoning_enabled={self.reasoning_enabled!r}, "
-                f"digest_set={self.profile_contract_digest is not None}. The fresh-write "
-                "all-present guard lands in a later step-4 commit."
-            )
+        )
         return self
 
     @model_validator(mode="after")
@@ -2906,13 +2699,9 @@ class FindingProposalRejectedEvent(AuditEventBase):
     """
 
     event_type: Literal["finding_proposal_rejected"] = "finding_proposal_rejected"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     node_id: Literal["analyze"] = "analyze"
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     proposal_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     claimed_evidence_tier: EvidenceTier | None = None
     claimed_finding_type_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN_SHORT)]
@@ -2933,16 +2722,6 @@ class FindingProposalRejectedEvent(AuditEventBase):
         "schema_construction_failed",
     ]
     rejection_detail: Annotated[str, Field(max_length=500)]
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow `paths-validated-before-use`. Even rejected
-        proposals carry a file_path that names the analyze target;
-        a traversal-bearing path here would land in the audit log
-        with no in-memory ReviewFinding to gate it.
-        """
-        return validate_diff_path(path)
 
     @field_validator("proposal_hash")
     @classmethod
@@ -3002,23 +2781,12 @@ class AnalyzeResponseRejectedEvent(AuditEventBase):
     """
 
     event_type: Literal["analyze_response_rejected"] = "analyze_response_rejected"
-    # V1.5 parallel-analyze phase attribution (DECISIONS.md#064): the
-    # emitting planner/worker/aggregate phase's key; None on
-    # sequential-era rows. Grouping is the strict derived-owner hybrid
-    # pinned by specs/2026-07-05-parallel-analyze.md.
     phase_key: str | None = None
     node_id: Literal["analyze"] = "analyze"
-    file_path: Annotated[str, Field(max_length=1024)]
+    file_path: DiffPathStr
     response_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     rejection_reason: Literal["raw_response_unparseable"]
     rejection_detail: Annotated[str, Field(max_length=500)]
-
-    @field_validator("file_path")
-    @classmethod
-    def _enforce_canonical_file_path(cls, path: str) -> str:
-        """Audit-shadow `paths-validated-before-use`. Same canonical
-        gate as `FindingProposalRejectedEvent.file_path` above."""
-        return validate_diff_path(path)
 
 
 class SynthesizeCompletedEvent(AuditEventBase):
@@ -3158,26 +2926,18 @@ class SynthesizeCompletedEvent(AuditEventBase):
     `model-strings-from-config-not-hardcoded`. Replay needs this to
     know which model produced the canonicalized summary text the hash
     binds."""
-    # Host-identity triad (DECISIONS.md#056), additive + nullable — set by graph config
-    # (`build_graph` closes the triad for these zero-LLM-call completion paths, a later
-    # step-4 commit). All three None = an UNQUALIFIED pre-#056 row (read-tolerant per
-    # DECISIONS#032). Same shape + SHAPER_CONTRACT_VERSION digest as LLMCallEvent's triad.
+    # Graph configuration supplies the triad even for passes with no LLM calls.
+    # Fresh writes require it; all-None historical rows remain unqualified
+    # (DECISIONS.md#056/#032), with the same digest recipe as LLMCallEvent.
     profile_id: str | None = None
     reasoning_enabled: bool | None = None
     profile_contract_digest: str | None = Field(default=None, pattern=_SHA256_HEX_PATTERN)
 
     @model_validator(mode="after")
     def _enforce_triad_coherence(self) -> Self:
-        if not _triad_all_set_or_all_none(
+        _require_triad_coherence(
             self.profile_id, self.reasoning_enabled, self.profile_contract_digest
-        ):
-            raise ValueError(
-                "host-identity triad (DECISIONS.md#056) is peers — all-present or all-None; "
-                f"got profile_id={self.profile_id!r}, "
-                f"reasoning_enabled={self.reasoning_enabled!r}, "
-                f"digest_set={self.profile_contract_digest is not None}. The fresh-write "
-                "all-present guard lands in a later step-4 commit."
-            )
+        )
         return self
 
 

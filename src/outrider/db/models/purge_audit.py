@@ -1,32 +1,15 @@
 # See DECISIONS.md#012-data-retention-ttls-configurable-purge-on-installationdeleted
 # See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
-"""PURGE_AUDIT.
+"""Permanent evidence of content purge and installation hard-delete.
 
-Append-only forever per #012, alongside `audit_events`. The append-only trigger
-on this table is added by migration 0001 (separate DDL); SQLAlchemy doesn't
-model triggers in metadata so the trigger is invisible at the ORM layer.
+Migration 0001 enforces append-only storage. installation_id is a loose reference:
+this trail must survive the installation it describes (DECISIONS.md#012 and #014;
+docs/schema.md, "PURGE_AUDIT.installation_id is a loose reference, not an FK").
 
-`installation_id` is a plain BIGINT with NO foreign key per docs/schema.md
-"PURGE_AUDIT.installation_id is a loose reference, not an FK." The forensic
-trail of which content rows were purged on which `installation.deleted` event
-must survive the installation hard-delete itself; an FK with CASCADE would
-erase the trail, RESTRICT would block the install delete. The loose reference
-lets PURGE_AUDIT outlive the installation it references — by design.
-
-Per the schema-layer spec: one PURGE_AUDIT row per target table per sweep run.
-The `target_table` column is a single concrete table name — one of the four
-content tables ("reviews", "findings", "llm_call_content", "analyze_file_cache")
-for a retention/TTL or content purge, OR "installations" for the install-row
-hard-delete evidence row that `purge_installation` writes so an uninstall purge
-leaves forensic proof even when the install had zero content (#012 — the
-`installations` row is the entity delete, deliberately outside the content-table
-set). A time-based sweep that purges all four content tables produces four rows;
-an install-purge produces one row per content table that had rows PLUS the
-"installations" row. Implicit grouping is by `(installation_id, timestamp)`
-clustering — the per-table rows commit in the same transaction so their
-`timestamp` defaults to a microsecond-precision window. Adding an explicit
-`sweep_run_id` column is a future additive change if forensic queries demand
-stronger grouping.
+Each row names one target table. Retention records each content-table purge;
+installation purge records nonempty content tables plus the installation deletion,
+even when no content existed. Rows from a purge commit together; there is no
+explicit sweep_run_id.
 """
 
 from datetime import datetime

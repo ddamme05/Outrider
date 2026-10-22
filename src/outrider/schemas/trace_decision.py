@@ -1,54 +1,17 @@
 # See specs/2026-05-23-trace-node.md (Q3 / Q4) and DECISIONS.md#017 × #024.
-"""`TraceDecision` — state-layer mirror of `TraceDecisionEvent`.
+"""One state-layer trace decision per source finding, mirrored in audit.
 
-The trace node produces one `TraceDecision` per source finding it considers
-per `DECISIONS.md#017` (Accepted 2026-04-29; amended same-day; amended again
-2026-05-24 by `#024` for the field-shape rename). State-layer twin of the
-audit-event `TraceDecisionEvent` defined in `audit/events.py`; same fields
-and same cross-field validators so a producer cannot construct a
-TraceDecision that would fail validation when lifted to the audit event.
+Per `DECISIONS.md#017` and `DECISIONS.md#024`, the reducer key is
+source_finding_id alone, including unresolved/ambiguous outcomes. Candidate
+import strings use the shared two-form validator; resolved paths and an
+optional target use validate_diff_path. Tuples are unique and sorted to
+match TraceDecisionEvent's canonical bytes.
 
-Reducer key on `ReviewState.trace_decisions` is `source_finding_id` alone
-(per #017 amended point 1 — explicitly rejects `(source_finding_id, target_file)`
-because that key collapses unresolved/ambiguous decisions on
-`(source_finding_id, None)`). The dedup-by-`source_finding_id` reducer
-makes replay idempotent: the same trace decision applied twice (webhook
-redelivery, checkpoint replay, retry) is a no-op.
-
-Field shape per #024 amendment to #017:
-
-- `proposed_import_strings: tuple[str, ...]` — the ADMITTED import
-  strings (any cardinality; two syntactic forms per #024 Amended
-  2026-07-03 — dotted module strings or JS/TS relative specifiers):
-  canonicalized, plus corrected
-  module-form siblings emitted when the analyzed file's from-imports
-  contradict a module-form candidate's prefix (#024 from-import
-  correction amendment; the model's original always survives
-  alongside). Raw model
-  strings live in the stored LLM exchange, recoverable within the
-  content retention window.
-- `resolved_candidate_paths: tuple[str, ...]` — the resolution outputs
-  (any cardinality). V1 source per M8: GitHub fetch-probes via
-  `_resolve_via_probes` (paths whose `fetch_file_content_at` returned
-  content). V1.5+ source: filesystem-aware
-  `coordinates.resolve_candidate_paths` (per `DECISIONS.md#024` point 4
-  Amended 2026-05-24). Each element passes through
-  `coordinates.validate_diff_path` at the schema boundary per #024
-  point 6 (audit-shadow discipline) regardless of which resolution
-  mechanism produced it.
-- `target_file: str | None` — selected candidate when `resolution_status
-  == "resolved"`, None otherwise. When non-None, passes through
-  `validate_diff_path`.
-
-Three cross-field validator rules per #024 point 5:
-
-- `resolved` → `len(resolved_candidate_paths) == 1` AND
-  `target_file == resolved_candidate_paths[0]`
-- `unresolved` → `len(resolved_candidate_paths) == 0` AND `target_file is None`
-- `ambiguous` → `len(resolved_candidate_paths) > 1` AND `target_file is None`
-
-Uniqueness validator split into two — one per tuple — per #024 amendment.
-"""
+Resolved means exactly one path and target_file equal to it. Unresolved
+means no paths and no target. Ambiguous means multiple paths and no target.
+V1 resolutions come from GitHub API probes; the filesystem-aware resolver
+is a separate future surface. Proposed strings retain the original admitted
+candidate alongside any from-import correction siblings."""
 
 from __future__ import annotations
 

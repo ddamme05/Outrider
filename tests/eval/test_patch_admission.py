@@ -48,8 +48,8 @@ from outrider.schemas import ReviewFinding
 from outrider.schemas.pr_context import ChangedFile, PRContext
 from outrider.schemas.review_state import ReviewState
 
+from .probe_capture import _PROBE_MANIFEST, verified_capture_fixture
 from .test_model_comparison import _ScriptedProvider
-from .test_openai_scorecard import _PROBE_MANIFEST, verified_capture_fixture
 
 # --- The deterministic admission scenario (duplicated in the probe) ---------
 # yaml.load -> yaml.safe_load: a real HIGH finding with an unambiguous,

@@ -1,25 +1,9 @@
-# Worker-outcome builders per specs/2026-07-05-parallel-analyze.md (3b-2b).
-"""Construct `AnalyzeWorkerOutcome` records at the node's five branch sites.
+# Worker-outcome builders per specs/2026-07-05-parallel-analyze.md.
+"""Build per-file analysis outcomes from parser, cache, and skip results.
 
-One builder per `WorkerSource`, called by the `analyze_file` worker at the
-exact site that knows the branch's facts — these builders are how the two
-3b-2 acceptance gates are met:
-
-- **Origin truth**: `worker_outcome_from_parser` derives
-  `producer_observed_hashes` from the #054 merge's OWN OBJECT PLACEMENT —
-  a producer finding that survived the merge is the same object in the
-  admitted list (eviction places it; append places it; a drop against a
-  non-JUDGED incumbent leaves it out). Evidence tier is never consulted,
-  so a model-cited OBSERVED proposal can never be classified as producer
-  output.
-- **Non-aliasing**: every builder CLONES findings into the outcome via
-  `model_validate` round-trip (the validator-safe clone — `model_copy`
-  skips validators per the `ReviewFinding` docstring), so no live parser
-  or producer object is aliased into state.
-
-Import-light (schemas only): parser tallies arrive as scalars — the
-wiring reads them off `ParserCounters`; this module never imports the
-parser.
+Builders use `ReviewFinding.validated_clone()` to avoid sharing findings
+with callers and to rerun validation. Counters arrive as values, so this
+module does not import the parser.
 """
 
 from decimal import Decimal
@@ -42,11 +26,11 @@ __all__ = [
 
 
 def _clone_all(findings: tuple[ReviewFinding, ...]) -> tuple[ReviewFinding, ...]:
-    return tuple(f.validated_clone() for f in findings)
+    return tuple(finding.validated_clone() for finding in findings)
 
 
 def _sorted_hashes(findings: tuple[ReviewFinding, ...]) -> tuple[str, ...]:
-    return tuple(sorted({f.content_hash for f in findings}))
+    return tuple(sorted({finding.content_hash for finding in findings}))
 
 
 def worker_outcome_from_parser(
@@ -71,15 +55,21 @@ def worker_outcome_from_parser(
     cost: Decimal,
     estimated_tokens: int,
 ) -> AnalyzeWorkerOutcome:
-    """The LLM branch. `admitted_findings` is the POST-#054-merge list;
-    `producer_findings` is `produce_observed_findings`' raw output. Origin
-    derives from object placement: a producer finding whose OBJECT is in
-    the admitted list survived the merge (evicted a JUDGED collision or
-    appended fresh); one dropped against a non-JUDGED incumbent is absent
-    and stays unlisted."""
-    admitted_ids = {id(f) for f in admitted_findings}
-    producer_hashes = tuple(
-        sorted({f.content_hash for f in producer_findings if id(f) in admitted_ids})
+    """Build an LLM outcome from findings after the producer merge.
+
+    Check producer object identity before cloning: only producer findings
+    that survive in `admitted_findings` count as producer output. Evidence
+    tier alone would also count model proposals citing structural queries.
+    """
+    admitted_object_ids = {id(finding) for finding in admitted_findings}
+    surviving_producer_hashes = tuple(
+        sorted(
+            {
+                finding.content_hash
+                for finding in producer_findings
+                if id(finding) in admitted_object_ids
+            }
+        )
     )
     return AnalyzeWorkerOutcome(
         path=path,
@@ -90,7 +80,7 @@ def worker_outcome_from_parser(
         admitted_findings=_clone_all(admitted_findings),
         trace_candidates=trace_candidates,
         subsumed_matches=subsumed_matches,
-        producer_observed_hashes=producer_hashes,
+        producer_observed_hashes=surviving_producer_hashes,
         n_proposals_seen=n_proposals_seen,
         n_proposals_rejected=n_proposals_rejected,
         n_responses_rejected=n_responses_rejected,
@@ -115,10 +105,11 @@ def worker_outcome_from_serve(
     subsumed_matches: tuple[ObservedSubsumedMatch, ...],
     estimated_tokens: int,
 ) -> AnalyzeWorkerOutcome:
-    """The cache-serve branch: everything admitted was reconstructed from
-    the cached payload (served hashes are EXACTLY the admitted set), the
-    candidates are prior-pass restorations, and the #055 records are the
-    payload's retained proof."""
+    """Restore cached findings, trace candidates, and subsumption proof.
+
+    Served hashes cover exactly the admitted findings. Cached candidates
+    are restored without counting as new model output in this pass.
+    """
     return AnalyzeWorkerOutcome(
         path=path,
         pass_index=pass_index,
@@ -141,9 +132,11 @@ def worker_outcome_from_observed_skip(
     skip_reason: SkipReason,
     producer_findings: tuple[ReviewFinding, ...],
 ) -> AnalyzeWorkerOutcome:
-    """The enforced/ride-out skip: every finding is the deterministic
-    producer's output by construction, so the producer list is the whole
-    admitted set."""
+    """Keep deterministic findings when LLM analysis is skipped.
+
+    Every finding is producer output; the outcome retains skipped status
+    and its reason.
+    """
     return AnalyzeWorkerOutcome(
         path=path,
         pass_index=pass_index,
@@ -164,10 +157,12 @@ def worker_outcome_from_observed_coverage(
     producer_findings: tuple[ReviewFinding, ...],
     estimated_tokens: int,
 ) -> AnalyzeWorkerOutcome:
-    """The #049 ENFORCED coverage skip: every changed scope was
-    skip_safe-covered, the LLM was not called, and the file counts as
-    EXAMINED (clean status, no SkipReason). Every finding is producer
-    output by construction."""
+    """Record deterministic coverage without an LLM call.
+
+    The caller proved that added lines in the included scopes have skip-safe
+    query coverage; removed lines would block skipping. Every finding is
+    producer output. The file counts as examined: clean status, no skip reason.
+    """
     return AnalyzeWorkerOutcome(
         path=path,
         pass_index=pass_index,
@@ -187,7 +182,7 @@ def worker_outcome_from_plain_skip(
     review_tier: ReviewTier,
     skip_reason: SkipReason,
 ) -> AnalyzeWorkerOutcome:
-    """A skip that emitted nothing."""
+    """Record a skip with no findings."""
     return AnalyzeWorkerOutcome(
         path=path,
         pass_index=pass_index,

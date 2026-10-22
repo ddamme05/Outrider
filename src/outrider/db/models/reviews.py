@@ -105,10 +105,8 @@ class Review(Base):
     # step 10). `None` while the review is in flight; populated alongside
     # the `status='completed'` flip.
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # HITL approval window cutoff. Mirrors `HITLRequest.expires_at` for
-    # sweep-query efficiency (`status='awaiting_approval' AND expires_at <
-    # NOW()` per `sweep/hitl_expiry.py`). `None` outside the HITL gate;
-    # set by `ReviewStatusSink.mark_awaiting_approval`, left in place by
-    # `mark_running` so the forensic record persists past the resume.
+    # Approval cutoff for sweep/hitl_expiry.py. NULL until the request is stored;
+    # mark_running retains it after resume for forensic visibility. The sweep
+    # only selects awaiting_approval rows whose cutoff has elapsed.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

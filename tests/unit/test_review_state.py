@@ -1,21 +1,4 @@
-"""ReviewState: V1 skeletal slice — webhook-seeded + triage-populated slots only.
-
-Per spec §7.1 + DECISIONS.md#020, ReviewState is the LangGraph state
-envelope. This V1 slice carries only review_id / pr_context / received_at
-(webhook-seeded by the receiver per #020) and triage_result (triage node
-output). Intake enriches `pr_context` in place by fetching the file list +
-per-file content and returning a fresh PRContext via {"pr_context":
-new_pr_context}. Slots populated by analyze, trace, synthesize, hitl,
-publish are deferred to their respective node specs (see
-schemas/review_state.py module docstring).
-
-ReviewState is NOT frozen — LangGraph nodes return partial-update dicts that
-reducers merge. A frozen state would break the reducer contract per
-docs/conventions.md "LangGraph specifics".
-
-received_at is AwareDatetime — naive datetimes round-trip as subtly wrong
-times through Postgres timestamptz per docs/conventions.md "Code style".
-"""
+"""`ReviewState` construction, assignment validation, and serialization tests."""
 
 from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4

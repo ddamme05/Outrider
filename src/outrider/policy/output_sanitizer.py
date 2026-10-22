@@ -44,14 +44,12 @@ Five concerns this module owns:
    hide.
 
 5. **HMAC-tagged truncation marker** — an 8-char HMAC keyed by the
-   `OUTRIDER_TRUNCATION_HMAC_SECRET` env var, embedded in the marker
-   text. An attacker who prepends a fake `[truncated, original N bytes
-   · faked8x]` to their content can't predict the HMAC, so the
-   sanitizer's `strip_fake_truncation_markers` (called BEFORE
-   sanitization) reliably distinguishes attacker-prepended markers
-   from sanitizer-produced ones. The HMAC is short (8 hex chars =
-   32 bits) — collision-resistance is NOT the goal; preimage
-   resistance against a key-less attacker is. 32 bits is plenty.
+   `OUTRIDER_TRUNCATION_HMAC_SECRET` env var binds the claimed original
+   byte count to the deployment secret. Marker-shaped input is removed
+   unconditionally after control-codepoint normalization; `_apply_byte_cap`
+   alone appends a legitimate marker afterward. The HMAC is short (8 hex
+   chars = 32 bits) because preimage resistance, not collision resistance,
+   is the goal.
 """
 
 from __future__ import annotations
@@ -68,22 +66,9 @@ from urllib.parse import urlparse
 # ---------------------------------------------------------------------------
 
 # Outrider policy cap on the rendered GitHub comment body, in UTF-8 bytes.
-#
-# This is an Outrider POLICY cap, NOT a measured GitHub maximum. GitHub
-# was empirically observed (sandbox PR-2 reviews, 2026-05-22) to accept
-# inline-comment bodies at least up to 70,000 ASCII chars under
-# apiVersion 2026-03-10; the actual vendor maximum above the probed
-# range is unverified and the cap was deliberately not walked further
-# (no shipping decision rides on the exact ceiling). The cap exists for
-# bounded output, deterministic truncation, and sanitizer predictability
-# — truncation fires here, not at an opaque API boundary, so the
-# publish call always succeeds (user sees a truncation marker, never
-# a 422 from the body field).
-#
-# Cap is enforced in UTF-8 BYTES including the truncation marker and
-# fencing overhead — ASCII test data hides the codepoint-vs-byte gap;
-# non-ASCII content (CJK identifiers, emoji, RTL text in evidence)
-# is the edge case that motivates byte-measurement.
+# This is an Outrider policy limit, not a measured GitHub maximum.
+# Count UTF-8 bytes, including the marker and fencing overhead, so non-ASCII
+# text cannot bypass the cap. API acceptance also depends on other fields.
 GITHUB_COMMENT_BODY_MAX: Final[int] = 65_536
 # Distinct GitHub surface from inline comments (the PR review BODY), kept separate
 # per DECISIONS.md#050 so the two caps can diverge without re-introducing the
@@ -134,8 +119,9 @@ _MIN_TRUNCATION_SECRET_LEN: Final[int] = 32
 # content didn't end with a newline. `original N bytes` wording pairs
 # with the BYTE measurement of the cap (NOT codepoints) so a reader
 # computing "how much was lost" gets the correct answer for non-ASCII
-# content. The HMAC tag (`<hmac8>`) is what distinguishes
-# sanitizer-produced markers from attacker-prepended fakes.
+# content. The HMAC tag (`<hmac8>`) binds the claimed original byte count to the
+# deployment secret; the strip itself does not consult it, removing every
+# marker-shaped run regardless of tag validity.
 _TRUNCATION_MARKER_TEMPLATE: Final[str] = "\n\n[truncated, original {n} bytes · {hmac}]"
 
 # Regex to detect any truncation-marker-shaped string in input. Used
@@ -246,20 +232,38 @@ _OUTRIDER_MARKER_OPEN_REGEX: Final[re.Pattern[str]] = re.compile(
 
 
 def strip_fake_truncation_markers(text: str) -> str:
-    """Remove any attacker-prepended truncation markers from input.
+    """Remove literal truncation-marker shapes from control-normalized input.
 
-    Called BEFORE other sanitization steps so an attacker who embeds
-    `[truncated, original 999 bytes · deadbeef]` in their finding text
-    can't trick a reader into believing Outrider did the eliding.
-
-    The legitimate truncation marker is appended by `_apply_byte_cap`
-    AT truncation time — never present in input. So stripping ALL
-    markers shaped like the regex is correct: zero false positives in
-    real finding text (nobody writes that pattern by accident), zero
-    false negatives (attacker can't avoid the regex without losing the
-    visual shape of the spoof).
+    `_strip_hostile_codepoints` calls this after stripping bidi/zero-width
+    characters, ANSI sequences, NUL, and lone surrogates. `_apply_byte_cap`
+    appends the only legitimate marker later, so every literal marker already
+    present in input is removed regardless of tag validity.
     """
     return _TRUNCATION_MARKER_REGEX.sub("", text)
+
+
+def _strip_hostile_codepoints(text: str) -> str:
+    """Remove the codepoint classes that attack the display layer.
+
+    Control codepoints come out FIRST, then forged truncation markers LAST.
+
+    That order is the security property. The marker regex matches literal text, so a
+    forged `[truncated, original N bytes · hex]` whose letters are separated by a
+    zero-width joiner, a bidi override, or an ANSI sequence does not match it. Strip
+    markers first and the obscured one survives — and the control strip that follows
+    then REMOVES the obscuring characters, handing the reader a clean forged marker.
+    Stripping controls first collapses the payload to the literal form the regex does
+    match, so the marker strip sees it.
+
+    Shared by prose sanitization and fenced-block rendering — a fence prevents
+    markdown interpretation, not terminal escapes or Trojan Source reordering, so
+    both need exactly this.
+    """
+    text = _strip_bidi_and_zero_width(text)
+    text = _ANSI_CONTROL_REGEX.sub("", text)
+    text = text.replace(_NUL_CHAR, "")
+    text = _drop_lone_surrogates(text)
+    return strip_fake_truncation_markers(text)
 
 
 def sanitize_display_string(text: str) -> str:
@@ -271,32 +275,24 @@ def sanitize_display_string(text: str) -> str:
     (reject-not-transform) + a fixed GitHub ```suggestion fence.
 
     Pipeline:
-      1. Strip fake truncation markers (attacker-prepended).
-      2. Strip bidi-override / zero-width / ANSI / NUL codepoints.
-      3. Drop lone surrogates (Python str admits them; UTF-8 encode rejects).
-      4. Escape markdown inline characters.
-      5. Escape leading block markers per line.
+      1. `_strip_hostile_codepoints` — fake truncation markers, bidi overrides,
+         zero-width joiners, ANSI sequences, NUL, lone surrogates.
+      2. Escape markdown inline characters.
+      3. Escape leading block markers per line.
 
     Does NOT truncate or fence — the publisher's `from_finding(...)`
     composes sanitized fields into the final body, then calls
     `apply_size_cap(body)` to truncate the assembled result.
     """
-    text = strip_fake_truncation_markers(text)
-    text = _strip_bidi_and_zero_width(text)
-    text = _ANSI_CONTROL_REGEX.sub("", text)
-    text = text.replace(_NUL_CHAR, "")
-    text = _drop_lone_surrogates(text)
+    text = _strip_hostile_codepoints(text)
     text = escape_markdown_prose(text)
     return text
 
 
 def escape_markdown_prose(text: str) -> str:
-    """Escape inline + leading-position markdown semantics for prose.
+    """Escape inline characters and leading block markers in prose.
 
-    Public so a caller composing a body manually (e.g., a future
-    `synthesize` review-body builder) can apply the same escaping
-    without going through the full sanitizer pipeline.
-    """
+    Body composers can use this independently of codepoint stripping and caps."""
     # Inline escapes: process backslash FIRST so later escapes don't
     # get doubly-escaped.
     for char, escaped in _MARKDOWN_INLINE_ESCAPES.items():
@@ -329,11 +325,7 @@ def render_fenced_block(content: str, *, language: str = "") -> str:
     `-_+` so attacker-controlled language strings can't break out.
     """
     # Inner content: strip control codes but keep the literal text shape.
-    content = strip_fake_truncation_markers(content)
-    content = _strip_bidi_and_zero_width(content)
-    content = _ANSI_CONTROL_REGEX.sub("", content)
-    content = content.replace(_NUL_CHAR, "")
-    content = _drop_lone_surrogates(content)
+    content = _strip_hostile_codepoints(content)
     # Neutralize any agent-marker signature by breaking `<!` → `\<\!` (exactly what prose escaping
     # does via `<`→`\<` + `!`→`\!`): the raw `<!--` token no longer appears in the bytes, so a
     # marker grep — substring OR line-anchored — can't see a forged `<!-- outrider… -->`.
@@ -388,14 +380,18 @@ def is_safe_suggestion_replacement(replacement: str) -> bool:
         return False
     if "<!--" in replacement or "-->" in replacement:
         return False
-    # Trojan-Source codepoints — the same set `render_fenced_block` strips from prose;
-    # here we REJECT (an applicable code fix can't be silently transformed).
-    return not (
+    # The same codepoint classes `_strip_hostile_codepoints` removes from prose, but
+    # here they REJECT rather than transform: GitHub commits a suggestion verbatim, so
+    # silently rewriting the code the reviewer is about to apply is not an option.
+    # Each test is "would stripping change the string", which is how a strip-based
+    # check becomes a detection.
+    carries_hostile_codepoint = (
         _strip_bidi_and_zero_width(replacement) != replacement
         or _ANSI_CONTROL_REGEX.search(replacement) is not None
         or _NUL_CHAR in replacement
         or _drop_lone_surrogates(replacement) != replacement
     )
+    return not carries_hostile_codepoint
 
 
 def is_safe_link_url(value: str) -> bool:
@@ -428,28 +424,15 @@ def is_safe_link_url(value: str) -> bool:
 def apply_size_cap(
     body: str, *, reserve_bytes: int = 0, max_bytes: int = GITHUB_COMMENT_BODY_MAX
 ) -> str:
-    """Truncate `body` to fit `max_bytes - reserve_bytes` UTF-8 bytes.
+    """Truncate the assembled body to max_bytes - reserve_bytes UTF-8 bytes.
 
-    `max_bytes` defaults to `GITHUB_COMMENT_BODY_MAX` (inline comments); the PR
-    review-body surface passes `GITHUB_REVIEW_BODY_MAX` (DECISIONS.md#050). Every
-    existing caller omits it, so behaviour is unchanged.
+    Inline comments default to GITHUB_COMMENT_BODY_MAX; review summaries pass
+    GITHUB_REVIEW_BODY_MAX (DECISIONS.md#050). Reserved bytes belong to content
+    appended after this call, such as intact S1 agent markers.
 
-    `reserve_bytes` holds back room for content the caller appends AFTER the
-    cap and that must NOT itself be truncated — the S1 agent-marker block is the
-    motivating case (an agent must be able to parse every `<!-- outrider:... -->`
-    line intact). The effective budget is `max_bytes - reserve_bytes`, so
-    `prose + appended-block` still fits GitHub's hard byte limit. Default
-    `reserve_bytes=0` preserves the original behaviour for every existing caller.
-
-    The truncation marker is INCLUDED in the (reduced) cap — if the assembled
-    body is already within `max_bytes - reserve_bytes`, it is returned unchanged;
-    otherwise truncated such that
-    `len((truncated + marker).encode("utf-8")) <= max_bytes - reserve_bytes`.
-
-    Care taken NOT to truncate mid-codepoint for non-ASCII content:
-    the loop trims bytes from the end and decodes with `errors="ignore"`
-    so any trailing partial UTF-8 sequence drops cleanly.
-    """
+    The returned text includes the truncation marker within that reduced budget.
+    Byte slicing with errors='ignore' drops a partial UTF-8 codepoint cleanly.
+    Invalid caps or insufficient marker space fail loudly."""
     if reserve_bytes < 0:
         raise ValueError(f"reserve_bytes must be >= 0; got {reserve_bytes}")
     if max_bytes <= 0:
@@ -537,17 +520,11 @@ def compute_truncation_hmac(original_byte_count: int) -> str:
 
 
 def require_truncation_secret() -> None:
-    """Assert ``OUTRIDER_TRUNCATION_HMAC_SECRET`` is set — for eager startup validation.
+    """Validate the truncation-marker secret eagerly at startup.
 
-    The truncation marker's HMAC keys off this secret, read LAZILY (only when a body
-    actually exceeds the size cap inside ``apply_size_cap``). That laziness means a
-    deploy missing the secret boots clean and reviews short PRs fine, then fails the
-    whole publish node with a bare ``RuntimeError`` the first time any finding body
-    truncates (the per-finding routing loop has no recovery wrapper, so it aborts the
-    review). The lifespan calls this once at startup so the misconfiguration fails
-    loud at boot instead of mid-review. Raises ``RuntimeError`` (via
-    ``_get_truncation_secret``) when the secret is unset/empty; returns None when set.
-    """
+    apply_size_cap otherwise reads it only when truncation occurs. Lifespan
+    calls this so a missing, placeholder, or short secret fails before review
+    processing instead of during publication."""
     _get_truncation_secret()
 
 
@@ -557,9 +534,7 @@ def require_truncation_secret() -> None:
 
 
 def _strip_bidi_and_zero_width(text: str) -> str:
-    """Strip bidi-override + zero-width codepoints. Inline so callers
-    using `render_fenced_block` get the same protection without
-    re-importing the constant sets."""
+    """Strip the shared bidi and zero-width sets from prose or fenced content."""
     if not text:
         return text
     result_chars: list[str] = []
@@ -607,12 +582,9 @@ def _build_truncation_marker(*, original_byte_count: int) -> str:
 
 
 def _get_truncation_secret() -> bytes:
-    """Read the HMAC secret from env. Fails loudly if absent.
+    """Read and validate the HMAC secret on each call; never cache it.
 
-    Read on every call (not cached) so a test fixture's monkeypatch
-    of the env var takes effect immediately. Per-call hashlib.sha256
-    is microsecond-cheap; no performance concern.
-    """
+    Validation uses the stripped value, while signing keeps the original bytes."""
     secret = os.environ.get(TRUNCATION_HMAC_SECRET_ENV, "")
     stripped = secret.strip()
     if not stripped:

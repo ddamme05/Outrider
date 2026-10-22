@@ -112,7 +112,7 @@ op run --env-file=.env -- printenv OUTRIDER_ADMIN_API_KEY
 - The reviews list — six reviews. Two park at `AWAITING_APPROVAL` (the HITL gate
   fires on a CRITICAL/HIGH finding), one is decided in-process at seed time
   (`observed_proof`: full gated lifecycle incl. a severity override), and the
-  rest publish inline comments.
+  others show recorded publication attempts.
 - A review's findings — severity comes from the policy table (not the model), and
   OBSERVED findings (`weak_crypto`, `blocking_call_in_async`) carry a real
   `query_match_id`.
@@ -122,7 +122,7 @@ op run --env-file=.env -- printenv OUTRIDER_ADMIN_API_KEY
   examinations. Its three largest modules exceed the absolute per-file token cap,
   so the cost gate skips them as `COST_BUDGET_EXHAUSTED` and the anomaly scanner
   raises a `cost_budget_starvation` anomaly — a live demonstration of the
-  cost-control machinery on a genuinely large PR, not a degraded review.
+  cost controls on a large PR, not a degraded review.
 
 **Restore from the snapshot instead** (the test container is ephemeral — a
 `docker compose restart postgres-test` wipes the seed DB; this also matches the

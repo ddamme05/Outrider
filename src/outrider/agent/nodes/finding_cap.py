@@ -1,34 +1,15 @@
 # Severity-ordered finding cap (FUP-180): keep findings BEFORE any FindingEvent/
 # round side-effect can strand the audit stream, and NEVER drop a HITL-gated
 # (CRITICAL/HIGH) finding. Shared by analyze (per-round) + synthesize (per-report).
-"""Gated-aware, deterministic finding truncation.
+"""Keep gated findings while capping lower-severity output (FUP-180).
 
-The per-round (`AnalysisRound.findings`) and per-report (`ReviewReport.findings`)
-caps are output-boundary truncation policy: when the admitted set exceeds the
-bound, drop findings — but never a gated one.
+Analyze applies the cap per round; synthesis applies it per report. CRITICAL/HIGH
+findings are never dropped. They may exceed soft_cap, leaving the caller to emit
+an anomaly, but exceeding hard_cap raises before the caller emits that result.
+HITL_MAX_GATED_FINDINGS sets the hard ceiling.
 
-The contract (FUP-180 + its review design call: "never drop gated; a telemetry
-counter is not a HITL gate"):
-
-- **Gated findings (CRITICAL/HIGH, `is_hitl_gated_severity`) are never dropped.**
-  Only non-gated (MEDIUM/LOW/INFO) are dropped, down to `soft_cap`. If gated
-  findings alone exceed `soft_cap`, ALL of them are kept (the result exceeds
-  `soft_cap`) and the caller emits a loud anomaly.
-- **`hard_cap` fails LOUD, it does not drop gated.** `hard_cap` is aligned to
-  `HITL_MAX_GATED_FINDINGS` (the most gated findings the HITL request can carry).
-  A review with MORE gated findings than that can't have them all reach HITL, so
-  rather than silently dropping a CRITICAL below the approval gate it raises
-  `FindingCapOverflowError` BEFORE any FINDING/round/completion side effect — so no
-  `FindingEvent` / `AnalysisRound` / `AnalyzeCompletedEvent` rows are stranded. (The
-  per-file observable events that fire earlier in the analyze loop —
-  `FileExaminationEvent`, `LLMCallEvent`, cache writes, the cost-starvation anomaly —
-  are complete records of work that genuinely happened, not strands.) Reachable only
-  on adversarial / degenerate input (>`HITL_MAX_GATED_FINDINGS` gated findings).
-
-Selection within each tier is content-deterministic (replay-stable): severity
-rank then `content_hash`. The rank derives from the `FindingSeverity` enum
-definition order (CRITICAL first … INFO last) — the single source of truth.
-"""
+Selection sorts by FindingSeverity order, then content_hash for replay stability.
+Earlier examination, model-call and cache records still describe completed work."""
 
 from __future__ import annotations
 
@@ -48,15 +29,10 @@ _SEVERITY_RANK: Final[dict[FindingSeverity, int]] = {s: i for i, s in enumerate(
 
 
 class FindingCapOverflowError(RuntimeError):
-    """Raised when HITL-gated (CRITICAL/HIGH) findings exceed the hard ceiling
-    (`MAX_FINDINGS_HARD_CAP`, aligned to `HITL_MAX_GATED_FINDINGS`).
+    """Gated findings exceed the hard ceiling aligned to HITL_MAX_GATED_FINDINGS.
 
-    Gated findings are never silently dropped (FUP-180): a review with more gated
-    findings than HITL can carry fails LOUD rather than dropping a CRITICAL below the
-    approval gate. Raised by `cap_findings_by_severity` BEFORE any FINDING/round/
-    completion side effect (FindingEvents, AnalysisRound, AnalyzeCompletedEvent), so
-    none of those are stranded; per-file observable events earlier in the loop are
-    complete records, not strands. Reachable only on adversarial / degenerate input."""
+    The caller must fail before emitting the capped round/report, rather than drop
+    a CRITICAL/HIGH finding below the approval gate (FUP-180)."""
 
     def __init__(self, n_gated: int, hard_cap: int) -> None:
         self.n_gated = n_gated
@@ -85,9 +61,12 @@ def cap_findings_by_severity(
     rather than dropping a gated finding. ``dropped`` therefore only ever contains
     non-gated findings. Both lists are in selection order (severity rank, then
     ``content_hash``)."""
-    gated = sorted((f for f in findings if is_hitl_gated_severity(f.severity)), key=_sort_key)
+    gated = sorted(
+        (finding for finding in findings if is_hitl_gated_severity(finding.severity)), key=_sort_key
+    )
     non_gated = sorted(
-        (f for f in findings if not is_hitl_gated_severity(f.severity)), key=_sort_key
+        (finding for finding in findings if not is_hitl_gated_severity(finding.severity)),
+        key=_sort_key,
     )
 
     if len(gated) > hard_cap:
@@ -95,11 +74,10 @@ def cap_findings_by_severity(
         # than silently drop a CRITICAL/HIGH below the approval gate (FUP-180).
         raise FindingCapOverflowError(len(gated), hard_cap)
 
-    # Keep ALL gated; fill the remaining soft-cap budget with the top non-gated. When
-    # len(gated) >= soft_cap the budget is 0, so all non-gated drop and the kept set is
-    # exactly the gated set (which exceeds soft_cap).
-    budget = max(0, soft_cap - len(gated))
-    return [*gated, *non_gated[:budget]], list(non_gated[budget:])
+    # Fill only the slots left after gated findings. At or above the soft cap,
+    # keep the gated set and drop every non-gated finding.
+    non_gated_slots = max(0, soft_cap - len(gated))
+    return [*gated, *non_gated[:non_gated_slots]], list(non_gated[non_gated_slots:])
 
 
 __all__ = ["FindingCapOverflowError", "cap_findings_by_severity"]
@@ -110,17 +88,35 @@ def admit_with_pair_dedup(
     admitted: list[ReviewFinding],
     keys_seen: set[tuple[str, str]],
 ) -> None:
-    """Append each finding unless its `(content_hash, proposal_hash)` pair was
-    already admitted (FUP-178). The SINGLE admission-dedup implementation for
-    both round-assembly paths — the sequential pass-1 accumulation
-    (`analyze.py`) and the fan-out fold (`analyze_aggregate.py`); `AnalysisRound`
-    enforces uniqueness on both keys, so this stops a logically-identical
-    finding from double-admitting before the round validators run. A key change
-    here changes BOTH paths together (drift between them was previously guarded
-    only by the parity test)."""
+    """Append unseen (content_hash, proposal_hash) pairs (FUP-178).
+
+    Sequential analysis and the fan-out fold share this admission rule. Final
+    content-hash uniqueness is enforced after their tier-aware merge or collapse."""
     for finding in findings:
         key = (finding.content_hash, finding.proposal_hash)
         if key in keys_seen:
             continue
         keys_seen.add(key)
         admitted.append(finding)
+
+
+def _collapse_by_content_hash(findings: Sequence[ReviewFinding]) -> list[ReviewFinding]:
+    """Keep the first finding per `content_hash`, preserving input order.
+
+    `AnalysisRound._enforce_findings_unique` requires content_hash uniqueness,
+    but admission keys on the `(content_hash, proposal_hash)` PAIR, and
+    content_hash excludes evidence_tier — so two findings can legitimately reach
+    a round sharing a content_hash and would trip that validator. Every plain
+    first-wins collapse uses this.
+
+    Not for the prefer-OBSERVED merge in `analyze.py`, which replaces a
+    colliding JUDGED incumbent and counts the supersessions rather than dropping
+    the newcomer.
+    """
+    collapsed: list[ReviewFinding] = []
+    seen_hashes: set[str] = set()
+    for finding in findings:
+        if finding.content_hash not in seen_hashes:
+            seen_hashes.add(finding.content_hash)
+            collapsed.append(finding)
+    return collapsed
