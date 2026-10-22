@@ -28,13 +28,20 @@ def capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
 
 def _rewrite_usage(
-    capture_dir: Path, capture: dict[str, Any], kind: str, updates: dict[str, object]
+    capture_dir: Path,
+    capture: dict[str, Any],
+    kind: str,
+    updates: dict[str, object],
+    *,
+    omitted: tuple[str, ...] = (),
 ) -> None:
     """Change wire usage and its recorded hash together, preserving other evidence."""
     row = capture["manifest"]["results"][f"{_SOL}:{kind}"]
     fixture_path = capture_dir / row["fixture"]
     document = json.loads(fixture_path.read_bytes())
     document["usage"].update(updates)
+    for field in omitted:
+        document["usage"].pop(field)
     payload = json.dumps(document, indent=2).encode("utf-8")
     fixture_path.write_bytes(payload)
     row["sha256"] = hashlib.sha256(payload).hexdigest()
@@ -127,6 +134,69 @@ def test_exact_zero_fresh_tokens_remains_admissible(
     else:
         counts = {"cached_tokens": 2000, "cache_write_tokens": 0}
     _rewrite_usage(tmp_path, capture, kind, {"prompt_tokens_details": counts})
+    _rewrite_artifact(tmp_path, capture["manifest"], capture["artifact"])
+
+    _require_probe_manifest()
+
+
+@pytest.mark.parametrize("kind", ["cold", "warm"])
+@pytest.mark.parametrize(
+    ("field", "value", "cold_cause"),
+    [
+        pytest.param("completion_tokens", -1, None, id="negative-completion"),
+        pytest.param(
+            "completion_tokens", True, "wire_omitted_total_tokens", id="boolean-completion"
+        ),
+        pytest.param(
+            "completion_tokens", 50.0, "wire_omitted_total_tokens", id="decimal-completion"
+        ),
+        pytest.param("total_tokens", -1, "total_matches_neither_equation", id="negative-total"),
+        pytest.param("total_tokens", True, "wire_omitted_total_tokens", id="boolean-total"),
+        pytest.param("total_tokens", 2050.0, "wire_omitted_total_tokens", id="decimal-total"),
+    ],
+)
+def test_present_output_counts_reject_invalid_values(
+    tmp_path: Path,
+    capture: dict[str, Any],
+    kind: str,
+    field: str,
+    value: object,
+    cold_cause: str | None,
+) -> None:
+    updates = {field: value}
+    if field == "completion_tokens" and value == -1:
+        updates["total_tokens"] = 1999  # Still equals prompt + completion.
+    if kind == "cold" and cold_cause is not None:
+        capture["artifact"]["count_reconciliation"] = {_SOL: cold_cause}
+    _rewrite_usage(tmp_path, capture, kind, updates)
+    _rewrite_artifact(tmp_path, capture["manifest"], capture["artifact"])
+
+    with pytest.raises(pytest.fail.Exception, match=f"{field} must be a nonnegative integer"):
+        _require_probe_manifest()
+
+
+@pytest.mark.parametrize("kind", ["cold", "warm"])
+@pytest.mark.parametrize("field", ["completion_tokens", "total_tokens"])
+@pytest.mark.parametrize("omitted", [True, False], ids=["missing", "null"])
+def test_unavailable_output_counts_keep_existing_reconciliation(
+    tmp_path: Path, capture: dict[str, Any], kind: str, field: str, omitted: bool
+) -> None:
+    if omitted:
+        _rewrite_usage(tmp_path, capture, kind, {}, omitted=(field,))
+    else:
+        _rewrite_usage(tmp_path, capture, kind, {field: None})
+    if kind == "cold":
+        capture["artifact"]["count_reconciliation"] = {_SOL: "wire_omitted_total_tokens"}
+    _rewrite_artifact(tmp_path, capture["manifest"], capture["artifact"])
+
+    _require_probe_manifest()
+
+
+@pytest.mark.parametrize("kind", ["cold", "warm"])
+def test_zero_completion_tokens_remains_admissible(
+    tmp_path: Path, capture: dict[str, Any], kind: str
+) -> None:
+    _rewrite_usage(tmp_path, capture, kind, {"completion_tokens": 0, "total_tokens": 2000})
     _rewrite_artifact(tmp_path, capture["manifest"], capture["artifact"])
 
     _require_probe_manifest()

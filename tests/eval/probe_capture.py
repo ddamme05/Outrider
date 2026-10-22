@@ -269,6 +269,10 @@ def _require_fixture_rows(
             doc = json.loads(fixture_bytes.decode("utf-8"))
             fixture_doc_by_row[tag] = doc
             usage = doc.get("usage") or {}
+            for field in ("completion_tokens", "total_tokens"):
+                count = usage.get(field)
+                if count is not None:
+                    _require_token_count(count, f"{fixture_name} {field}")
             prompt = usage.get("prompt_tokens")
             ptd = usage.get("prompt_tokens_details") or {}
             side = "cache_write_tokens" if kind == "cold" else "cached_tokens"
