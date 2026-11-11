@@ -166,9 +166,7 @@ def test_digest_folds_every_non_excluded_field() -> None:
     base = registry._registry_digest(bodies, registry._OBSERVED_QUERIES, registry.VALUE_PREDICATES)
     oid = next(iter(registry._OBSERVED_QUERIES))
     orig = registry._OBSERVED_QUERIES[oid]
-    folded_fields = set(registry._OBSERVED_QUERIES[oid].model_fields) - (
-        registry._DIGEST_EXCLUDED_OBSERVED_FIELDS
-    )
+    folded_fields = set(ObservedQuery.model_fields) - registry._DIGEST_EXCLUDED_OBSERVED_FIELDS
     other_ft = next(ft for ft in FindingType if ft is not orig.finding_type)
     # A distinct, type-valid mutation per folded field.
     mutations = {

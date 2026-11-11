@@ -46,7 +46,7 @@ def test_audit_event_base_timestamp_must_be_aware() -> None:
     with pytest.raises(ValidationError):
         _SampleEvent(
             review_id=uuid4(),
-            timestamp=datetime.utcnow(),  # type: ignore[arg-type]  # noqa: DTZ003
+            timestamp=datetime.now(UTC).replace(tzinfo=None),  # type: ignore[arg-type]
         )
 
 
