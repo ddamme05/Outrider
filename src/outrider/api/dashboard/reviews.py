@@ -430,8 +430,8 @@ router = APIRouter(
 
 async def _aggregate_metrics(
     session: AsyncSession, review_id: UUID, review_is_eval: bool
-) -> ReviewMetricsView:
-    """Combine LLM aggregates with the latest synthesis metrics for one review.
+) -> tuple[ReviewMetricsView, bool]:
+    """Return audit metrics and whether a matching synthesis completion exists.
 
     The caller supplies `reviews.is_eval` for the read-side isolation rule
     in the module docstring.
@@ -452,7 +452,9 @@ async def _aggregate_metrics(
         .order_by(AuditEvent.sequence_number.desc())
         .limit(1)
     )
-    synth_payload = (await session.execute(synth_stmt)).scalars().first()
+    synth_row = (await session.execute(synth_stmt)).first()
+    has_synthesis_completion = synth_row is not None
+    synth_payload = synth_row[0] if synth_row is not None else None
     if synth_payload is None:
         files_examined = files_traced_beyond_diff = None
         wall_clock_seconds = None
@@ -461,7 +463,7 @@ async def _aggregate_metrics(
         files_traced_beyond_diff = synth_payload["files_traced_beyond_diff"]
         wall_clock_seconds = synth_payload["wall_clock_seconds"]
 
-    return ReviewMetricsView(
+    metrics = ReviewMetricsView(
         llm_calls_made=agg.llm_calls_made,
         total_input_tokens=agg.total_input_tokens,
         total_output_tokens=agg.total_output_tokens,
@@ -472,31 +474,18 @@ async def _aggregate_metrics(
         files_traced_beyond_diff=files_traced_beyond_diff,
         wall_clock_seconds=(None if wall_clock_seconds is None else float(wall_clock_seconds)),
     )
+    return metrics, has_synthesis_completion
 
 
 async def _aggregate_severity_counts(
     session: AsyncSession, review_id: UUID, review_is_eval: bool
-) -> SeverityCounts | None:
+) -> SeverityCounts:
     """Count distinct finding hashes per baseline severity after synthesis.
 
     Use permanent FindingEvents so content purge cannot erase the tally
     (DECISIONS.md#014). Severity is policy-set; HITL overrides belong to
-    review detail. Return None until a synthesis completion exists.
+    review detail. The caller must establish that a matching synthesis exists.
     """
-    reached_synthesize = (
-        await session.execute(
-            select(func.count())
-            .select_from(AuditEvent)
-            .where(
-                AuditEvent.review_id == review_id,
-                AuditEvent.is_eval == review_is_eval,
-                AuditEvent.event_type == "synthesize_completed",
-            )
-        )
-    ).scalar_one()
-    if not reached_synthesize:
-        return None
-
     severity_key = AuditEvent.payload["severity"].astext
     rows = (
         await session.execute(
@@ -578,6 +567,9 @@ async def list_reviews(
         # Aggregate each row sequentially; the page limit bounds these queries.
         items: list[ReviewListItem] = []
         for review, repo_full_name in rows:
+            metrics, has_synthesis_completion = await _aggregate_metrics(
+                session, review.id, review.is_eval
+            )
             items.append(
                 ReviewListItem(
                     id=review.id,
@@ -592,9 +584,11 @@ async def list_reviews(
                     created_at=review.created_at,
                     updated_at=review.updated_at,
                     completed_at=review.completed_at,
-                    metrics=await _aggregate_metrics(session, review.id, review.is_eval),
-                    severity_counts=await _aggregate_severity_counts(
-                        session, review.id, review.is_eval
+                    metrics=metrics,
+                    severity_counts=(
+                        await _aggregate_severity_counts(session, review.id, review.is_eval)
+                        if has_synthesis_completion
+                        else None
                     ),
                 )
             )
@@ -633,7 +627,7 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
         if detail_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="review not found")
         review, repo_full_name = detail_row
-        metrics = await _aggregate_metrics(session, review.id, review.is_eval)
+        metrics, _ = await _aggregate_metrics(session, review.id, review.is_eval)
         # The earliest event carrying the review's policy snapshot supplies its
         # version (DECISIONS.md#028); None before analysis. Policy-version events
         # can use unguarded emit paths, so filter by the review's eval flag.
