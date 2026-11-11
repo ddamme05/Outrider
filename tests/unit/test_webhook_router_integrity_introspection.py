@@ -1,29 +1,9 @@
-"""Unit tests for `_is_reviews_natural_key_conflict` — the constraint-name
-introspection that distinguishes "duplicate webhook delivery" from
-"audit-side IntegrityError that must re-raise."
+"""Check duplicate-review constraint classification with fabricated database errors.
 
-The end-to-end IntegrityError-race scenarios are hard to orchestrate
-deterministically (the conflict requires another transaction to commit
-the colliding row BETWEEN the fast-path SELECT and the slow-path
-INSERT — a real race). These unit tests cover the load-bearing
-introspection function directly: fabricate `SQLAlchemyIntegrityError`
-objects with the various `exc.orig.diag.constraint_name` values the
-function decides against, assert correct classification.
-
-Cases pinned:
-  1. constraint_name == "uq_review_natural_key" → True (duplicate
-     delivery; the router short-circuits to existing review_id with 200).
-  2. constraint_name == "audit_events_pkey" → False (audit-side PK
-     collision; the router re-raises so GitHub retries).
-  3. constraint_name == None / missing → False (driver doesn't expose
-     diag; safer to re-raise than guess).
-  4. exc.orig is None → False (no underlying driver error; re-raise).
-
-The combined coverage of these four cases + the existing integration
-tests for fast-path 200 / unknown-installation 4xx / membership 4xx /
-happy-path 202 exercises every branch of the natural-key conflict
-discriminator the spec mandates.
-"""
+The predicate returns True only for uq_review_natural_key. False sends the
+handler to a natural-key lookup, which can still return a duplicate response.
+Real transaction and handler outcomes live in
+tests/integration/test_webhook_router_integration.py."""
 
 from __future__ import annotations
 
@@ -59,9 +39,7 @@ def _fabricate_integrity_error(
 
 
 def test_uq_review_natural_key_constraint_name_returns_true() -> None:
-    """psycopg3 diag.constraint_name == 'uq_review_natural_key' →
-    classified as duplicate delivery. The router short-circuits to
-    200 with existing review_id."""
+    """The reviews natural-key constraint returns True from the classifier."""
     orig = SimpleNamespace(
         diag=SimpleNamespace(constraint_name="uq_review_natural_key"),
     )
@@ -70,15 +48,12 @@ def test_uq_review_natural_key_constraint_name_returns_true() -> None:
 
 
 # ---------------------------------------------------------------------------
-# False cases — re-raise required
+# False cases, not a reviews natural-key conflict
 # ---------------------------------------------------------------------------
 
 
 def test_audit_events_pkey_constraint_returns_false() -> None:
-    """An IntegrityError from the audit_events PK collision (different
-    constraint name) MUST re-raise — misclassifying as duplicate would
-    silently swallow audit-side conflicts and lose the review-creation
-    work. Spec's load-bearing distinction."""
+    """An audit primary-key collision is not a reviews natural-key conflict."""
     orig = SimpleNamespace(
         diag=SimpleNamespace(constraint_name="audit_events_pkey"),
     )
@@ -98,9 +73,7 @@ def test_arbitrary_other_constraint_returns_false() -> None:
 
 
 def test_constraint_name_none_returns_false() -> None:
-    """`diag.constraint_name` is None (driver couldn't determine the
-    constraint) → fail-loud re-raise. Better than guessing duplicate
-    when uncertain."""
+    """A missing constraint name does not establish a reviews natural-key conflict."""
     orig = SimpleNamespace(
         diag=SimpleNamespace(constraint_name=None),
     )

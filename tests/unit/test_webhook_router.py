@@ -528,10 +528,11 @@ def test_x_github_delivery_logged_not_persisted(
 # against real Postgres via the project's `migrated_db` fixture. The
 # integration tier covers: unknown installation 4xx, inactive membership
 # 4xx, tombstoned installation 4xx, happy-path 202 with event_id-match,
-# idempotency fast-path 200, and retention-from-settings. The two
-# IntegrityError-race tests (natural-key conflict slow-path,
-# audit-side IntegrityError re-raise) remain skipped in the integration
-# file pending a monkey-patch fixture; tracked there, not duplicated here.
+# idempotency fast-path 200, retention-from-settings, a natural-key insert
+# race, and an audit primary-key collision with no matching review. The
+# collision check verifies rollback leaves no partial review, no dispatch,
+# and successful redelivery. Classifier checks remain in
+# tests/unit/test_webhook_router_integrity_introspection.py.
 
 
 # ---------------------------------------------------------------------------

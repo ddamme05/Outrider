@@ -1,50 +1,41 @@
-"""Webhook router DB-touching integration tests against real Postgres.
+"""Check webhook authorization and transaction outcomes against PostgreSQL.
 
-Per the intake-and-webhook spec Test Scenarios:
-  - test_webhook_to_triage_happy_path — full slice with mocked GitHub + real DB
-  - test_webhook_idempotency_returns_200 — fast-path on existing review row
-  - test_webhook_natural_key_conflict_returns_200 — slow-path via IntegrityError;
-    branch logic covered at unit tier (tests/unit/
-    test_webhook_router_integrity_introspection.py); end-to-end race
-    deferred pending a monkey-patch fixture
-  - test_webhook_unknown_installation_returns_4xx — fail-closed
-  - test_webhook_inactive_repo_membership_returns_4xx — fail-closed
-  - test_audit_side_integrity_error_reraises — branch logic covered at
-    unit tier (same file as above); end-to-end deferred pending a
-    monkey-patch fixture that forces the audit-side INSERT to collide
-
-These tests use the project's `migrated_db` fixture (per-test Postgres
-database with the genesis migration applied) and a minimal FastAPI app
-that mounts the webhook router with the necessary `app.state` slots.
-GitHub client + LLM are mocked; everything else (membership SELECT,
-review INSERT, audit_events INSERT, IntegrityError introspection)
-exercises real Postgres + psycopg3.
-"""
+Use a minimal app to exercise membership checks, review and audit writes,
+duplicate delivery, concurrent inserts and audit collisions. The graph runner
+records dispatches without calling GitHub or a model."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
+import logging
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+import outrider.api.webhooks.router as webhook_router
 from outrider.api.webhooks.router import router
 from outrider.audit.config import RetentionSettings
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Iterator
 
-    from sqlalchemy.ext.asyncio import AsyncEngine
+    from httpx import Response
+    from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +46,7 @@ if TYPE_CHECKING:
 _SECRET = "test-webhook-secret"  # noqa: S105 — test fixture
 _INSTALLATION_ID = 12345
 _REPO_ID = 999
+_LOGGER = logging.getLogger(__name__)
 
 
 def _sign(secret: str, body: bytes) -> str:
@@ -186,6 +178,85 @@ async def webhook_app(migrated_db: str) -> AsyncGenerator[tuple[FastAPI, AsyncEn
         yield app, engine
     finally:
         await engine.dispose()
+
+
+@pytest.fixture
+def webhook_sql_trace(
+    webhook_app: tuple[FastAPI, AsyncEngine], caplog: pytest.LogCaptureFixture
+) -> Iterator[list[dict[str, Any]]]:
+    """Observe successful SQL, actual driver errors and transaction rollbacks."""
+    _, engine = webhook_app
+    records: list[dict[str, Any]] = []
+    # Alembic's fileConfig disables existing loggers during the DB fixture.
+    logger_was_disabled = _LOGGER.disabled
+    _LOGGER.disabled = False
+    caplog.set_level(logging.INFO, logger=__name__)
+    _LOGGER.info("webhook SQL capture restored logger, previously disabled=%s", logger_was_disabled)
+
+    def record(item: dict[str, Any]) -> None:
+        records.append(item)
+        _LOGGER.info("webhook SQL %s", json.dumps(item, sort_keys=True))
+
+    def after_statement(
+        connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        normalized = " ".join(statement.split())
+        if " reviews" in normalized or " audit_events" in normalized:
+            record({"kind": "statement", "connection": id(connection), "sql": normalized})
+
+    def handle_error(context: Any) -> None:
+        original = context.original_exception
+        statement = context.statement
+        record(
+            {
+                "kind": "error",
+                "connection": id(context.connection),
+                "sql": None if statement is None else " ".join(statement.split()),
+                "driver": f"{type(original).__module__}.{type(original).__name__}",
+                "sqlstate": getattr(original, "sqlstate", None),
+                "constraint": getattr(getattr(original, "diag", None), "constraint_name", None),
+            }
+        )
+
+    def rollback(connection: Any) -> None:
+        record({"kind": "rollback", "connection": id(connection)})
+
+    listeners = (
+        ("after_cursor_execute", after_statement),
+        ("handle_error", handle_error),
+        ("rollback", rollback),
+    )
+    for name, listener in listeners:
+        event.listen(engine.sync_engine, name, listener)
+    try:
+        yield records
+    finally:
+        for name, listener in listeners:
+            event.remove(engine.sync_engine, name, listener)
+        _LOGGER.disabled = logger_was_disabled
+
+
+async def _post_signed_webhook(client: AsyncClient, body: bytes, delivery: str) -> Response:
+    headers = {
+        "X-Hub-Signature-256": _sign(_SECRET, body),
+        "X-GitHub-Event": "pull_request",
+        "X-GitHub-Delivery": delivery,
+    }
+    _LOGGER.info(
+        "webhook request %s",
+        json.dumps({"path": "/webhooks/github", "headers": headers, "body": body.decode()}),
+    )
+    response = await client.post("/webhooks/github", content=body, headers=headers)
+    _LOGGER.info(
+        "webhook response %s",
+        json.dumps({"delivery": delivery, "status": response.status_code, "body": response.text}),
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -556,64 +627,232 @@ async def test_webhook_retention_uses_settings_field(
     )
 
 
-# ---------------------------------------------------------------------------
-# Deferred — tracked at FOLLOWUPS.md#FUP-028
-#
-# The load-bearing branches the spec mandates — `uq_review_natural_key` →
-# duplicate (200) vs any other constraint → re-raise — are covered at the
-# unit tier in tests/unit/test_webhook_router_integrity_introspection.py
-# by fabricating SQLAlchemyIntegrityError objects with the relevant
-# `exc.orig.diag.constraint_name` values and asserting the classification.
-#
-# End-to-end transactional evidence (real psycopg, real `uq_review_natural_key`
-# collision, real session rollback) is tracked under FUP-028; closure
-# requires a fixture that deterministically forces either constraint-name
-# branch to fire. Spec line 105's `test_webhook_idempotency_race.py` is
-# also rolled into the same FUP — same orchestration prerequisite.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.skip(
-    reason=(
-        "Tracked at FOLLOWUPS.md#FUP-028. End-to-end race needs a fixture "
-        "to deterministically interleave two transactions between fast-path "
-        "SELECT and slow-path INSERT. The branch logic — "
-        "constraint_name == 'uq_review_natural_key' → 200 with existing "
-        "review_id — is covered at the unit tier in "
-        "tests/unit/test_webhook_router_integrity_introspection.py; this "
-        "test would add round-trip evidence but the predicate is not "
-        "untested."
-    )
+@pytest.mark.parametrize(
+    "authored_false",
+    [False, True],
+    ids=["ordinary-driver-classification", "authored-false-classification"],
 )
 @pytest.mark.asyncio
-async def test_webhook_natural_key_conflict_via_integrity_error_returns_200() -> None:
-    """Concurrent race where the fast-path SELECT misses but the INSERT
-    hits the UNIQUE on `uq_review_natural_key` → IntegrityError caught,
-    constraint-name introspected, 200 with existing review_id."""
-    # Fail-loud body: if someone removes the `@pytest.mark.skip` above
-    # without implementing the test, this raises rather than silently
-    # passing as an empty function. The skip-marker is the only thing
-    # making this an acceptable not-yet-implemented placeholder.
-    pytest.fail("FUP-028 placeholder body — implement before removing skip marker.")
+async def test_webhook_natural_key_conflict_via_integrity_error_returns_200(
+    webhook_app: tuple[FastAPI, AsyncEngine],
+    webhook_sql_trace: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    authored_false: bool,
+) -> None:
+    """Two real lookup misses produce one accepted review and one duplicate."""
+    app, engine = webhook_app
+    await _seed_installation_and_membership(engine)
+    real_session_factory = app.state.session_factory
+    session_entries = 0
+    lookup_exits = 0
+    both_lookups_finished = asyncio.Event()
 
+    @asynccontextmanager
+    async def interleaved_sessions() -> AsyncGenerator[AsyncSession]:
+        nonlocal session_entries, lookup_exits
+        entry = session_entries
+        session_entries += 1
+        async with real_session_factory() as session:
+            yield session
+        if entry < 2:
+            lookup_exits += 1
+            _LOGGER.info("webhook lookup session exited %s", lookup_exits)
+            if lookup_exits == 2:
+                both_lookups_finished.set()
+            await asyncio.wait_for(both_lookups_finished.wait(), timeout=10)
 
-@pytest.mark.skip(
-    reason=(
-        "Tracked at FOLLOWUPS.md#FUP-028. End-to-end audit-side "
-        "IntegrityError needs a fixture to force the AgentTransitionEvent "
-        "INSERT to collide (e.g., pre-insert a row with the pre-minted "
-        "event_id). The branch logic — any constraint name other than "
-        "'uq_review_natural_key' → re-raise — is covered at the unit tier "
-        "in tests/unit/test_webhook_router_integrity_introspection.py."
+    monkeypatch.setattr(app.state, "session_factory", interleaved_sessions)
+    body = json.dumps(_valid_payload()).encode()
+    real_classifier = webhook_router._is_reviews_natural_key_conflict  # noqa: SLF001
+    classification_results: list[bool] = []
+
+    def authored_false_classifier(error: SQLAlchemyIntegrityError) -> bool:
+        real_result = real_classifier(error)
+        classification_results.append(real_result)
+        _LOGGER.info(
+            "authored classifier override %s",
+            json.dumps(
+                {
+                    "real_result": real_result,
+                    "authored_result": False,
+                    "sqlstate": error.orig.sqlstate,
+                    "constraint": error.orig.diag.constraint_name,
+                }
+            ),
+        )
+        assert real_result is True
+        return False
+
+    with monkeypatch.context() as classifier_patch:
+        classifier_patch.setattr(webhook_router.logger, "disabled", False)
+        caplog.set_level(logging.WARNING, logger=webhook_router.logger.name)
+        if authored_false:
+            classifier_patch.setattr(
+                webhook_router, "_is_reviews_natural_key_conflict", authored_false_classifier
+            )
+        async with (
+            AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+            asyncio.timeout(20),
+            asyncio.TaskGroup() as tasks,
+        ):
+            first = tasks.create_task(_post_signed_webhook(client, body, "natural-key-first"))
+            second = tasks.create_task(_post_signed_webhook(client, body, "natural-key-second"))
+    responses = [first.result(), second.result()]
+    assert lookup_exits == 2
+    assert sorted(response.status_code for response in responses) == [200, 202]
+    review_id = responses[0].json()["review_id"]
+    assert all(
+        response.json() == {"status": "running", "review_id": review_id} for response in responses
     )
-)
+    fallback_warnings = [
+        record
+        for record in caplog.records
+        if record.name == webhook_router.logger.name
+        and record.levelno == logging.WARNING
+        and record.getMessage().startswith("webhook IntegrityError: natural-key row exists but ")
+    ]
+    if authored_false:
+        assert classification_results == [True]
+        assert len(fallback_warnings) == 1
+        warning = fallback_warnings[0]
+        assert warning.review_id == review_id
+        assert warning.x_github_delivery in {"natural-key-first", "natural-key-second"}
+        _LOGGER.info(
+            "actual router fallback warning %s",
+            json.dumps(
+                {
+                    "logger": warning.name,
+                    "level": warning.levelname,
+                    "message": warning.getMessage(),
+                    "review_id": warning.review_id,
+                    "x_github_delivery": warning.x_github_delivery,
+                }
+            ),
+        )
+    else:
+        assert classification_results == []
+        assert fallback_warnings == []
+
+    errors = [item for item in webhook_sql_trace if item["kind"] == "error"]
+    assert len(errors) == 1
+    conflict = errors[0]
+    assert (conflict["sqlstate"], conflict["constraint"]) == ("23505", "uq_review_natural_key")
+    assert conflict["driver"] == "psycopg.errors.UniqueViolation"
+    assert conflict["sql"].startswith("INSERT INTO reviews ")
+    assert any(
+        item["kind"] == "rollback" and item["connection"] == conflict["connection"]
+        for item in webhook_sql_trace[webhook_sql_trace.index(conflict) + 1 :]
+    )
+
+    async with engine.connect() as connection:
+        reviews = (
+            await connection.execute(
+                text("SELECT id, status, repo_id, pr_number, head_sha FROM reviews")
+            )
+        ).all()
+        audit_rows = (
+            await connection.execute(
+                text("SELECT event_id, review_id, event_type, payload FROM audit_events")
+            )
+        ).all()
+    assert len(reviews) == 1
+    review = reviews[0]
+    assert (str(review.id), review.status, review.repo_id, review.pr_number, review.head_sha) == (
+        review_id,
+        "running",
+        _REPO_ID,
+        42,
+        "a" * 40,
+    )
+    assert len(audit_rows) == 1
+    transition = audit_rows[0]
+    assert str(transition.review_id) == review_id
+    assert transition.event_type == "agent_transition"
+    assert transition.payload["from_node"] == "webhook"
+    assert transition.payload["to_node"] == "intake"
+    assert transition.payload["event_id"] == str(transition.event_id)
+    assert [str(state.review_id) for state in app.state._dispatched] == [review_id]  # noqa: SLF001
+
+
 @pytest.mark.asyncio
-async def test_webhook_audit_side_integrity_error_reraises() -> None:
-    """Force the AgentTransitionEvent INSERT to raise (e.g., pre-insert
-    a row with the same event_id pre-minted); the constraint-name
-    introspection at step 10 should re-raise the IntegrityError (not
-    misclassify as a natural-key duplicate). Returns 5xx."""
-    # Fail-loud body: if someone removes the `@pytest.mark.skip` above
-    # without implementing the test, this raises rather than silently
-    # passing as an empty function.
-    pytest.fail("FUP-028 placeholder body — implement before removing skip marker.")
+async def test_webhook_audit_side_integrity_error_reraises(
+    webhook_app: tuple[FastAPI, AsyncEngine],
+    webhook_sql_trace: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real audit collision leaves the new natural key absent and undispatched."""
+    app, engine = webhook_app
+    await _seed_installation_and_membership(engine)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        original = await _post_signed_webhook(
+            client, json.dumps(_valid_payload()).encode(), "audit-original"
+        )
+        assert original.status_code == 202
+        async with engine.connect() as connection:
+            original_review = dict(
+                (await connection.execute(text("SELECT * FROM reviews"))).mappings().one()
+            )
+            original_audit = dict(
+                (await connection.execute(text("SELECT * FROM audit_events"))).mappings().one()
+            )
+            assert (
+                await connection.scalar(text("SELECT count(*) FROM reviews WHERE pr_number = 43"))
+                == 0
+            )
+        app.state._dispatched.clear()  # noqa: SLF001
+        webhook_sql_trace.clear()
+        candidate_review_id = uuid4()
+        _LOGGER.info(
+            "webhook audit collision identities %s",
+            json.dumps(
+                {"review_id": str(candidate_review_id), "event_id": str(original_audit["event_id"])}
+            ),
+        )
+        attempted_ids = iter((candidate_review_id, original_audit["event_id"]))
+        body = json.dumps(_valid_payload(pr_number=43)).encode()
+        with monkeypatch.context() as patch:
+            patch.setattr(webhook_router, "uuid4", lambda: next(attempted_ids))
+            rejected = await _post_signed_webhook(client, body, "audit-collision")
+        assert rejected.status_code == 500
+
+        errors = [item for item in webhook_sql_trace if item["kind"] == "error"]
+        assert len(errors) == 1
+        conflict = errors[0]
+        assert (conflict["sqlstate"], conflict["constraint"]) == ("23505", "audit_events_pkey")
+        assert conflict["driver"] == "psycopg.errors.UniqueViolation"
+        assert conflict["sql"].startswith("INSERT INTO audit_events ")
+        assert any(
+            item["kind"] == "rollback" and item["connection"] == conflict["connection"]
+            for item in webhook_sql_trace[webhook_sql_trace.index(conflict) + 1 :]
+        )
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM reviews WHERE id = :id OR "
+                        "(repo_id = :repo AND pr_number = 43 AND head_sha = :sha)"
+                    ),
+                    {"id": candidate_review_id, "repo": _REPO_ID, "sha": "a" * 40},
+                )
+                == 0
+            )
+            assert (
+                await connection.scalar(
+                    text("SELECT count(*) FROM audit_events WHERE review_id = :id"),
+                    {"id": candidate_review_id},
+                )
+                == 0
+            )
+            reviews = (await connection.execute(text("SELECT * FROM reviews"))).mappings().all()
+            audits = (await connection.execute(text("SELECT * FROM audit_events"))).mappings().all()
+        assert [dict(row) for row in reviews] == [original_review]
+        assert [dict(row) for row in audits] == [original_audit]
+        assert app.state._dispatched == []  # noqa: SLF001
+
+        redelivery = await _post_signed_webhook(client, body, "audit-redelivery")
+        assert redelivery.status_code == 202
+        recovered_review_id = redelivery.json()["review_id"]
+        assert recovered_review_id != str(candidate_review_id)
+        assert [str(state.review_id) for state in app.state._dispatched] == [recovered_review_id]  # noqa: SLF001
