@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 from uuid import UUID  # noqa: TC003  (runtime: Pydantic field type)
 
@@ -254,13 +255,13 @@ def _assert_decisions_match_gate(
                 duplicates.append(str(fid))
             seen.add(fid)
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=HTTPStatus.UNPROCESSABLE_CONTENT.value,
             detail={"duplicate_finding_ids": sorted(duplicates)},
         )
 
     if submitted_ids != expected_ids:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=HTTPStatus.UNPROCESSABLE_CONTENT.value,
             detail={
                 "missing": sorted(str(u) for u in expected_ids - submitted_ids),
                 "extras": sorted(str(u) for u in submitted_ids - expected_ids),
@@ -320,7 +321,7 @@ def _assert_overrides_change_severity(
     )
     if no_op_overrides:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=HTTPStatus.UNPROCESSABLE_CONTENT.value,
             detail={
                 "error": "noop_severity_override",
                 "finding_ids": no_op_overrides,
