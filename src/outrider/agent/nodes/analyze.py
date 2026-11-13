@@ -3165,6 +3165,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             if degraded_mode and patched_file is not None
             else ()
         )
+    collect_trace_candidates = (
+        source_side == "head" and degradation_reason is not DegradationReason.TEXT_ONLY_CONTEXT
+    )
     parser_result = parse_analyze_response(
         response.text,
         review_id=review_id,
@@ -3190,13 +3193,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         # The registry owns candidate form: dotted modules for Python, relative
         # specifiers for JS/TS. The parser enforces form and repository containment
         # (DECISIONS.md#024).
-        collect_trace_candidates=(
-            source_side == "head" and degradation_reason is not DegradationReason.TEXT_ONLY_CONTEXT
-        ),
+        collect_trace_candidates=collect_trace_candidates,
         trace_candidate_form=(
-            "module"
-            if degradation_reason is DegradationReason.TEXT_ONLY_CONTEXT
-            else _trace_candidate_form_for(changed_file.path)
+            _trace_candidate_form_for(changed_file.path) if collect_trace_candidates else "module"
         ),
     )
     native_candidates = await _preserve_native_candidates(

@@ -250,6 +250,50 @@ async def test_removed_unsafe_body_never_generates_observed_findings():
     assert "removed" in (request.system_prompt + request.user_prompt).lower()
 
 
+@pytest.mark.parametrize(
+    ("suffix", "source"),
+    [
+        ("toml", "require_auth = true\n"),
+        ("yaml", "require_auth: true\n"),
+        ("yml", "require_auth: true\n"),
+        ("json", '{"require_auth": true}\n'),
+        ("ini", "[auth]\nrequired = true\n"),
+        ("cfg", "[auth]\nrequired = true\n"),
+    ],
+)
+@pytest.mark.parametrize("has_finding", [False, True], ids=["empty", "finding"])
+@pytest.mark.asyncio
+async def test_removed_configuration_completes_without_trace_collection(
+    suffix, source, has_finding
+):
+    proposal = {
+        "finding_type": "correctness_bug",
+        "evidence_tier": "judged",
+        "title": "Removing the required authentication setting changes behavior",
+        "description": "The removed configuration supplied the authentication requirement.",
+        "evidence": source.rstrip("\n"),
+        "line_start": 1,
+        "line_end": len(source.splitlines()),
+        "trace_candidates": [{"import_string_raw": "auth", "reason": "Check the consumer."}],
+    }
+    deps = _deps({"findings": [proposal] if has_finding else []})
+    removed = _removed(f"settings.{suffix}", source).model_copy(update={"language": None})
+
+    result = await run_analyze_pass(_state(removed), deps)
+
+    [request] = deps["provider"].calls
+    assert request.degradation_reason.value == "file_removal"
+    assert request.context_summary[0].source_side == "base"
+    assert not result["trace_candidates"]
+    [round_] = result["analysis_rounds"]
+    assert len(round_.findings) == int(has_finding)
+    if has_finding:
+        [finding] = round_.findings
+        assert finding.source_side == "base"
+        assert finding.evidence == source.rstrip("\n")
+    assert len(deps["analyze_event_sink"].completed) == 1
+
+
 @pytest.mark.asyncio
 async def test_missing_surviving_context_is_explicit_unknown():
     deps = _deps({"findings": []})
