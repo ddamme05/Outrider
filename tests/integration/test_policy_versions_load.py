@@ -1,28 +1,15 @@
-"""load_policy_for_version reads the seeded v1.0.0 row into typed enums.
+"""Check loading stored policy versions into typed finding and severity enums.
 
-Backs ``severity-policy-versioned-for-replay``. The genesis migration
-seeded ``severity_policies`` with version "1.0.0" carrying the canonical
-spec §7.4 mapping; the loader must round-trip that JSONB into the typed
-``dict[FindingType, FindingSeverity]`` shape that the application code
-(and replay) consumes.
-
-Three cases:
-
-  1. Happy path: load v1.0.0 → returns the canonical mapping with the
-     right enum types on both keys and values.
-  2. Unknown version → ``UnknownPolicyVersionError``.
-  3. Malformed JSONB (we INSERT a row with an unknown FindingType key)
-     → ``PolicyVersionShapeError``. Verifies the type-system gate at
-     the load boundary; a future migration that drifts from the
-     FindingType enum fails loud at replay rather than silently
-     poisoning classification.
-"""
+Cover the seeded initial mapping, an unknown version, and malformed stored JSON.
+Replay must fail explicitly rather than accept an invalid policy
+(``severity-policy-versioned-for-replay``)."""
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from outrider.policy import (
+    SEVERITY_POLICY,
     FindingSeverity,
     FindingType,
     PolicyVersionShapeError,
@@ -65,6 +52,21 @@ async def test_load_v1_0_0_returns_canonical_mapping(migrated_db: str) -> None:
             assert isinstance(value, FindingSeverity), (
                 f"Value {value!r} is not FindingSeverity (type={type(value).__name__})"
             )
+    finally:
+        await engine.dispose()
+
+
+async def test_previous_and_current_policy_versions_load_after_enum_growth(
+    migrated_db: str,
+) -> None:
+    engine = create_async_engine(migrated_db)
+    try:
+        async with engine.connect() as conn:
+            previous = await load_policy_for_version("1.2.0", conn)
+            current = await load_policy_for_version("1.3.0", conn)
+        assert current == SEVERITY_POLICY
+        assert FindingType.CORRECTNESS_BUG not in previous
+        assert current == {**previous, FindingType.CORRECTNESS_BUG: FindingSeverity.MEDIUM}
     finally:
         await engine.dispose()
 

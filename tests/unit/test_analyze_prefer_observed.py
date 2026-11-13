@@ -1,14 +1,7 @@
-# Per DECISIONS.md#054 — prefer-OBSERVED dedup accounting at the analyze node.
-"""Prefer-OBSERVED merge: counter accounting + surviving tier (node-level).
+"""Check counts when an OBSERVED finding replaces a same-line JUDGED proposal.
 
-The driver-backed eval collision scenarios assert the surviving finding is
-OBSERVED, but they do NOT inspect the `AnalyzeCompletedEvent` counters — and an
-accounting regression would only surface as the equation validator raising
-mid-`run_review`. This pins the counters directly: a same-line collision evicts
-the JUDGED proposal, keeps the OBSERVED, and balances the proposal-accounting
-equation with `n_proposals_superseded_by_observed == 1`
-(`seen=1, emitted=1, observed=1, rejected=0, superseded=1`).
-"""
+The OBSERVED finding survives and the superseded-proposal count keeps the
+accounting equation balanced. See DECISIONS.md#054."""
 
 from __future__ import annotations
 
@@ -34,31 +27,33 @@ from outrider.schemas.triage_result import ReviewDimension, ReviewTier, RiskLeve
 
 _REVIEW_ID = UUID("0fedcba9-8765-4321-0fed-cba987654321")
 
-# os.system on line 5 fires the command_injection_os_system OBSERVED query; the
-# scripted model JUDGES command_injection on the SAME line -> a content_hash
-# collision (file, line 5-5, command_injection).
-_HEAD = 'import os\n\n\ndef run(name):\n    os.system("echo " + name)\n    return True\n'
-_BASE = "import os\n"
+# requests.get on line 5 fires the tls_verify_disabled OBSERVED query; the
+# scripted model JUDGES tls_verify_disabled on the SAME line -> a content_hash
+# collision (file, line 5-5, tls_verify_disabled).
+_HEAD = (
+    "import requests\n\n\ndef run(name):\n    requests.get(name, verify=False)\n    return True\n"
+)
+_BASE = "import requests\n"
 _PATCH = (
     "--- a/app/run.py\n+++ b/app/run.py\n"
-    "@@ -1 +1,6 @@\n import os\n+\n+\n+def run(name):\n"
-    '+    os.system("echo " + name)\n'
+    "@@ -1 +1,6 @@\n import requests\n+\n+\n+def run(name):\n"
+    "+    requests.get(name, verify=False)\n"
     "+    return True\n"
 )
 _JUDGED_RESPONSE = json.dumps(
     {
         "findings": [
             {
-                "finding_type": "command_injection",
+                "finding_type": "tls_verify_disabled",
                 "evidence_tier": "judged",
                 "query_match_id": None,
                 "trace_path": None,
-                "title": "Command injection via os.system in run()",
+                "title": "TLS verification disabled in run()",
                 "description": (
-                    "run() passes an untrusted argument into os.system, a "
-                    "command-injection sink. Use subprocess with an argument list."
+                    "run() disables certificate verification in requests.get. "
+                    "Enable certificate verification."
                 ),
-                "evidence": '    os.system("echo " + name)',
+                "evidence": "    requests.get(name, verify=False)",
                 "line_start": 5,
                 "line_end": 5,
                 "trace_candidates": [],
@@ -196,7 +191,7 @@ async def test_prefer_observed_collision_counter_accounting() -> None:
     assert len(analyze_sink.findings) == 1
     finding = analyze_sink.findings[0]
     assert finding.evidence_tier is EvidenceTier.OBSERVED
-    assert finding.query_match_id == "python.command_injection_os_system"
+    assert finding.query_match_id == "python.tls_verify_disabled"
 
     # The accounting equation balances with the superseded term ADDED.
     [completed] = analyze_sink.completed

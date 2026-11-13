@@ -1,11 +1,7 @@
-"""HITLRequest and HITLDecision shape tests.
+"""Check immutable approval requests and reviewer decisions.
 
-Both are decision artifacts (frozen=True). HITLRequest is the agent's gate
-envelope at interrupt time; HITLDecision is the reviewer's full submission.
-The field on HITLDecision is `decisions: tuple[PerFindingDecision, ...]` per
-spec §7.4 — NOT `per_finding_decisions`. The dashboard-to-HITL resume
-boundary carries this model as JSON-shaped data.
-"""
+The decision carries a tuple named decisions across the dashboard resume
+boundary. See spec §7.4."""
 
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -44,8 +40,23 @@ def _build_decision(decisions: list[PerFindingDecision] | None = None) -> HITLDe
 def test_hitl_request_is_frozen() -> None:
     """Decision-snapshot artifact: assigning a field after construction raises."""
     request = _build_request()
+    assert "verification_hold_finding_ids" not in request.model_dump(mode="json")
     with pytest.raises(ValidationError):
         request.findings_requiring_approval = []  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_verification_hold_must_be_a_unique_subset_of_the_gate(duplicate):
+    request = _build_request()
+    gated_id = request.findings_requiring_approval[0]
+    invalid = (gated_id, gated_id) if duplicate else (request.auto_post_findings[0],)
+    with pytest.raises(ValidationError, match="verification hold"):
+        HITLRequest.model_validate(
+            {
+                **request.model_dump(),
+                "verification_hold_finding_ids": invalid,
+            }
+        )
 
 
 def test_hitl_request_accepts_gated_findings_at_cap() -> None:

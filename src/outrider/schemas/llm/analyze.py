@@ -40,7 +40,7 @@ class TraceCandidateProposalRaw(BaseModel):
     `import_string_raw` (the model's claimed import string, unvalidated
     bounded string); admitted layer carries `import_string`
     (already passed through `coordinates.is_valid_trace_import_string` —
-    NFC-normalized, per-form shape-checked: dotted module form or JS/TS
+    NFC-normalized, per-form shape-checked: absolute/relative Python module or JS/TS
     relative-specifier form per `DECISIONS.md#024`, Amended 2026-07-03).
     """
 
@@ -81,7 +81,7 @@ class AnalyzeFindingProposalRaw(BaseModel):
     # byte translation (`coordinates.line_range_to_span`) is parser-internal and
     # used solely for the degraded file-bounds check (FUP-126, `DECISIONS.md#022`
     # span-key amendment). Strictness matches the byte `Span` this replaced: a
-    # malformed range fails here → `raw_response_unparseable`.
+    # Malformed ranges are rejected independently of sibling proposals.
     line_start: Annotated[int, Field(ge=1)]
     line_end: Annotated[int, Field(ge=1)]
     trace_candidates: tuple[TraceCandidateProposalRaw, ...] = Field(default=(), max_length=20)

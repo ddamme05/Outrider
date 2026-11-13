@@ -1,11 +1,7 @@
-# See specs/2026-05-19-analyze-foundation.md §4.
-"""Span-based coordinate helper tests.
+"""Check half-open spans and whole-line byte conversion, including UTF-8.
 
-Pins the half-open interval semantics (byte_end exclusive), the file-size
-safety floor, the addable-diff intersection rule for degraded-mode admission,
-the 1-indexed-line → whole-line-byte-span conversion (including multibyte
-UTF-8 safety), and the scope-unit-bounded hunk clipping.
-"""
+Cover file bounds, changed-line intersection, and scope-limited hunk clipping.
+See specs/2026-05-19-analyze-foundation.md §4."""
 
 from __future__ import annotations
 
@@ -915,3 +911,54 @@ def test_veto_blocked_by_intersecting_unsafe_execute_site() -> None:
     # Boundary intersection (range end == unsafe start) blocks the veto.
     scan = _scan(safe=((4, 5),), extra_unsafe=((5, 6),))
     assert not line_range_vetoed_by_parameterized_call(4, 5, scan)
+
+
+@pytest.mark.parametrize(("max_lines", "max_chars"), [(100, 1000), (1, 1000), (100, 80)])
+def test_bounded_diff_context_tracks_actual_head_prefixes(max_lines: int, max_chars: int) -> None:
+    from outrider.coordinates import bound_diff_context
+
+    source = "keep = 1\n" + "é" * 80 + "\n"
+    patch = "--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,2 @@\n keep = 1\n-old\n+" + "é" * 80 + "\n"
+    context = bound_diff_context(
+        _patched_from(patch), source, max_lines=max_lines, max_chars=max_chars
+    )
+    assert context.text == bound_diff_hunks_text(
+        _patched_from(patch), max_lines=max_lines, max_chars=max_chars
+    )
+    assert context.head_byte_ranges[0][0] == 0
+    assert context.head_byte_ranges[0][1] <= len(source.encode())
+    visible = source.encode()[: context.head_byte_ranges[0][1]].decode()
+    assert visible.startswith("keep = 1\n")
+    if max_lines == 100 and max_chars == 1000:
+        assert visible == source
+    elif max_lines == 1:
+        assert visible == "keep = 1\n"
+    else:
+        assert "é" in visible and len(visible) < len(source)
+        assert "[truncated:" in context.text
+
+
+def test_bounded_diff_context_never_certifies_mismatched_head_text() -> None:
+    from outrider.coordinates import bound_diff_context
+
+    patch = "--- a/x.py\n+++ b/x.py\n@@ -0,0 +1 @@\n+expected\n"
+    context = bound_diff_context(_patched_from(patch), "different\n", max_lines=100, max_chars=8192)
+    assert context.text == "+expected\n"
+    assert context.head_byte_ranges == ()
+
+
+@pytest.mark.parametrize(("following", "expected_end"), [("\n", 2), (" hidden\n", 1), ("\r\n", 1)])
+def test_scope_context_adds_only_an_actual_rendered_lf(following: str, expected_end: int) -> None:
+    from outrider.coordinates import scope_unit_source_span
+
+    scope = _scope_unit(byte_start=0, byte_end=1, line_start=1, line_end=1)
+    span = scope_unit_source_span(scope, ("e" + following).encode(), include_trailing_newline=True)
+    assert (span.byte_start, span.byte_end) == (0, expected_end)
+
+
+def test_bounded_diff_context_does_not_invent_a_missing_final_newline() -> None:
+    from outrider.coordinates import bound_diff_context
+
+    patch = "--- /dev/null\n+++ b/x.py\n@@ -0,0 +1 @@\n+visible\n\\ No newline at end of file\n"
+    context = bound_diff_context(_patched_from(patch), "visible", max_lines=100, max_chars=8192)
+    assert context.head_byte_ranges == ((0, len("visible")),)

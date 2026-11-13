@@ -1,32 +1,10 @@
-"""Deterministic finding-grading for the analyze model-tier quality gate.
+"""Score finding results against declared expectations without another model.
 
-This is the load-bearing methodology for `specs/2026-06-08-analyze-tiered-model-routing.md`
-step 2 (the eval quality gate) — it gated the STANDARD→Haiku flip (`DECISIONS.md#041`, now
-shipped): before STANDARD-tier files could move from Sonnet to a cheaper model, we needed
-DETERMINISTIC evidence the cheaper model did not lose the known findings. So grading is
-STRUCTURAL, not LLM-as-judge — we do not put a model in the loop
-that is meant to validate a model (that would replace "did Haiku preserve recall?" with
-"does another model think Haiku preserved recall?").
-
-A model finding MATCHES a ground-truth finding iff ALL hold (the declared match contract):
-  1. same `finding_type`,
-  2. same `file_path`,
-  3. the finding's line range overlaps the expected range expanded by `line_window`,
-  4. same `severity` (policy-derived — a belt-and-suspenders check that catches a policy
-     drift even though severity follows `finding_type`).
-
-From the match set we compute recall (of the expected findings, how many were caught),
-precision (of the model's findings, how many matched an expected one — so extra/noise
-findings are counted separately, not hidden), and severity accuracy. `compare(...)` then
-applies the gate, which passes only if ALL THREE hold: the BASELINE itself cleared a
-DECLARED recall floor (`baseline_valid` — else a scenario both models fail would "hold
-recall" vacuously), the candidate's recall is within a DECLARED tolerance of the
-baseline's, AND its false-positive (extra) count did not balloon.
-
-Pure functions over already-validated `ReviewFinding`s + `ExpectedFinding` ground truth;
-no I/O, no LLM, no spend. The real-model run that produces the `ReviewFinding`s lives in
-the opt-in comparison runner; this module only grades.
-"""
+Match by type, file, overlapping line range and policy severity. Compute
+recall, precision and severity accuracy, then compare the candidate with a
+baseline that must itself meet the required recall floor. Reject excess
+recall loss or extra findings under the declared tolerances. This module
+grades supplied results and makes no model calls."""
 
 from __future__ import annotations
 
@@ -83,6 +61,8 @@ def finding_matches(
 ) -> bool:
     """Whether one model finding matches one ground-truth finding (the declared contract:
     same type + same file + line overlap-within-window + same severity)."""
+    if actual.source_side != "head":
+        raise ValueError("HEAD-only grading does not support BASE findings")
     return (
         actual.finding_type == expected.finding_type
         and actual.file_path == expected.file_path
@@ -133,6 +113,9 @@ def grade(
     severity right — though the match contract already requires it, so this is 1.0 unless
     the contract is loosened; kept explicit for when the window/severity rules diverge).
     """
+    actual = tuple(actual)
+    if any(finding.source_side != "head" for finding in actual):
+        raise ValueError("HEAD-only grading does not support BASE findings")
     expected_list = list(expected)
     matched_expected_idx: set[int] = set()
     # Greedy one-to-one matching: each actual finding claims at most one not-yet-claimed

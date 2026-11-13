@@ -24,6 +24,9 @@ export function DecisionControls({
   onChange: (next: DecisionDraft) => void;
 }) {
   const baselineSeverity = finding.severity.toLowerCase();
+  const outcomes = baselineSeverity === "critical" || baselineSeverity === "high"
+    ? OUTCOMES
+    : OUTCOMES.filter((outcome) => outcome !== "severity_override");
   const showReason = draft.outcome !== null && draft.outcome !== "approve";
   const showSeverityOverride = draft.outcome === "severity_override";
   const reasonLength = draft.reason.length;
@@ -35,7 +38,7 @@ export function DecisionControls({
       </div>
 
       <div className="outcome-row">
-        {OUTCOMES.map((outcome) => (
+        {outcomes.map((outcome) => (
           <button
             key={outcome}
             type="button"

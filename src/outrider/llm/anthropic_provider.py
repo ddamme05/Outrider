@@ -1,23 +1,14 @@
-# AnthropicProvider — concrete LLMProvider implementation.
-# Owns the Anthropic transport surface; vendor SDK imports stay inside
-# `src/outrider/llm/` per the folder-scoped `vendor-sdks-only-in-wrappers`
-# invariant (sibling modules within `llm/` may import SDK metadata).
-# See specs/2026-05-05-llm-provider-wrapper.md and DECISIONS.md #013/#015/#016.
-# DECISIONS.md#056: native host identity + FUP-197 pre-call pricing guard.
-"""Anthropic transport: validate, call, normalize, price, and persist.
+"""Call Anthropic and return a validated, recorded model response.
 
-Construction rejects missing credentials and configured models without rates,
-then logs the privacy notice (`DECISIONS.md#015`). `complete()` guards the
-closed state, missing persister, and request pricing before the paid call.
+complete checks the closed state, persistence and pricing before calling the
+model. It then normalizes the response, hashes prompts, runs the cache
+diagnostic and calculates cost before saving the event and content together.
+Only then does it return or raise a pending refusal. Persistence failure takes
+precedence over refusal. Provider failures expose safe metadata, never prompt
+or completion content.
 
-The call translates SDK failures into typed, content-clean errors, normalizes
-the response, and hashes the prompts. Refusals become empty completions with
-a pending refusal error. Run the cache diagnostic before pricing, then price
-the returned model; an upstream substitution can still lack a rate.
-
-Persist the event and content together before returning or raising a pending
-refusal. Persistence failure halts the review and supersedes that refusal
-(`DECISIONS.md#016`). The body's step numbers remain cross-reference markers.
+See DECISIONS.md#013, #015, #016, #056 and FUP-197;
+docs/trust-boundaries.md §8 defines the provider boundary.
 """
 
 import asyncio
@@ -28,6 +19,7 @@ import time
 from datetime import UTC, datetime
 from decimal import Decimal  # noqa: TC003 — runtime use in step 8 cost computation
 from typing import Any, Final
+from uuid import uuid4
 
 import anthropic
 import httpx
@@ -57,7 +49,7 @@ from outrider.llm.base import (
     _canonical_prompt_hash,
     _canonical_system_prompt_hash,
 )
-from outrider.llm.config import ModelConfig, model_uses_adaptive_thinking
+from outrider.llm.config import ModelConfig, model_text_only_thinking
 from outrider.llm.host_profiles import ANTHROPIC_CONTRACT_DIGEST, ANTHROPIC_PROFILE_ID
 from outrider.llm.pricing import (
     PRICING_VERSION,
@@ -84,34 +76,15 @@ _ZDR_FALSY: Final[frozenset[str]] = frozenset({"", "0", "false", "no"})
 # otherwise warn every time. Process-local, so each worker still warns once.
 _WARNED_RAW_VALUES: set[str] = set()
 
-# per Anthropic SDK 0.100 prompt-caching docs: silently-
-# disabled-cache diagnostic. Per the docs, prompts shorter than the
-# model's min-cacheable threshold (authoritative per-model values:
-# `pricing.MIN_CACHEABLE_TOKENS`) are processed without caching, with
-# NO error returned.
-# Detection: `cache_control=True` request with both
-# `cache_creation_input_tokens=0` AND `cache_read_input_tokens=0` in the
-# response. Without this signal, an operator who opted into caching sees
-# no cost reduction and has no way to discover the root cause without
-# aggregating across many events. Process-local set keyed by
-# (model, system_prompt_hash) bounds the volume when the parallel-analyze
-# fan-out drives many calls with the same prompt (same shape as
-# `_WARNED_RAW_VALUES` above).
+# Zero cache reads and writes can signal a prompt below the model's cache floor;
+# the SDK returns no error for that case. The diagnostic excludes refusals and
+# deduplicates by model and system-prompt hash within each process.
 _WARNED_NONCACHEABLE: set[tuple[str, str]] = set()
 
 
-# Read timeout for the SDK's httpx client. `complete()` is NON-streaming,
-# so no bytes arrive until generation finishes — the read timeout bounds
-# the WHOLE generation, not gaps between chunks. It must therefore cover
-# the worst LEGITIMATE response the wrapper itself permits: MAX_TOKENS=8192
-# at a loaded-Sonnet ~35 tok/s ≈ 234s, plus a TTFT/queuing tail (spikes
-# past 30s observed 2026-06-10 — one killed a full eval evidence run).
-# 300s covers that arithmetic and stays at half the SDK's own 600s
-# default. The original 30s (provider-wrapper spec AC#12, sized to the
-# "60-120s typical review" figure) conflated hung-connection fast-fail
-# with slow-but-healthy generation; fast hung-call detection properly
-# arrives with streaming or the FUP-025 node-retry layer, not by capping
-# legitimate work.
+# Non-streaming calls return no bytes until generation finishes. Allow a full
+# 8192-token response plus queuing time: at ~35 tokens/s, generation alone takes
+# about 234s. This read deadline must not replace agent retry policy (FUP-025).
 _READ_TIMEOUT_SECONDS: Final[float] = 300.0
 
 # Bounded teardown for `AnthropicProvider.aclose()`. 10s is twice the
@@ -120,12 +93,8 @@ _READ_TIMEOUT_SECONDS: Final[float] = 300.0
 # the read timeout) exceeds this and the wrapper releases without waiting.
 _ACLOSE_TIMEOUT_SECONDS: Final[float] = 10.0
 
-# Host-identity triad constants for the anthropic native path (DECISIONS.md#056) are
-# centralized in `host_profiles` (the single identity source the lifespan's
-# resolve_host_identity + this provider's stamp share, so they can't drift — Codex
-# guardrail). Re-bound under these private names so this module's stamping and the
-# downstream `from anthropic_provider import _ANTHROPIC_*` importers are unchanged (an
-# assignment, not an import-alias, so the names are explicitly defined/exportable).
+# Share the native host identity with the lifespan (DECISIONS.md#056).
+# Keep these private names for this module's stamping and existing importers.
 _ANTHROPIC_PROFILE_ID: Final[str] = ANTHROPIC_PROFILE_ID
 _ANTHROPIC_CONTRACT_DIGEST: Final[str] = ANTHROPIC_CONTRACT_DIGEST
 
@@ -135,17 +104,14 @@ def resolve_zdr_attestation(zdr_enabled: bool | None) -> bool:
     NEVER a per-request header. Constructor kwarg wins; falls back to
     `ANTHROPIC_ZDR_ENABLED` env var.
 
-    Public (was `_resolve_zdr_attestation`) so the `/privacy` disclosure page
-    (`api/privacy.py`) reads ZDR through THIS logic — the same truthy/falsy/
-    warn-once path the provider uses — so the rendered statement can't drift
-    from runtime attestation. Call `resolve_zdr_attestation(None)` for the
-    env-only resolution.
+    The `/privacy` disclosure page (`api/privacy.py`) uses the same resolution
+    and warning logic. Pass None for env-only resolution.
 
     Truthy values (case-insensitive): `"1"`, `"true"`, `"yes"`.
     Falsy values (case-insensitive): `""`, `"0"`, `"false"`, `"no"`.
     Unrecognized values fail closed (no ZDR attestation) AND log a
     WARNING on `outrider.llm.privacy_notice` so the operator sees the
-    misconfiguration at construction time .
+    misconfiguration at construction time.
     The warning fires once per distinct raw value per process, so repeated
     resolution of one invalid value does not warn repeatedly.
     """
@@ -220,14 +186,7 @@ class AnthropicProvider:
 
         # Reject missing configured rates before any paid call (AC#24). Normalize
         # dated model IDs to their aliases; returned substitutions are checked later.
-        configured_models = {
-            model_config.triage_model,
-            model_config.analyze_model,
-            model_config.standard_analyze_model,
-            model_config.synthesize_model,
-            model_config.trace_model,
-            model_config.patch_model,
-        }
+        configured_models = set(model_config.models())
         missing = sorted(
             m for m in configured_models if pricing_key(_ANTHROPIC_PROFILE_ID, m) not in RATE_TABLE
         )
@@ -267,16 +226,13 @@ class AnthropicProvider:
             ),
         )
 
-        # No observability-SDK import in core transport (vendor-sdks-only-in-wrappers).
-        # LLM-call tracing was removed in DECISIONS.md#058 (LangSmith dropped as a direct
-        # dep); `langsmith` is now forbidden in all project code by the import-lint.
+        # Core transport excludes observability SDKs; import lint forbids langsmith
+        # (DECISIONS.md#058; vendor-sdks-only-in-wrappers).
 
         # Privacy startup notice — canonical text per DECISIONS#015
         # point 4. Operator-attestation only; never a per-request header.
-        # previous emit had only structured
-        # fields, missing the mandatory message text that names the
-        # 30-day default / 2-year content / 7-year classification
-        # retention exceptions and the contract-arrangement requirement.
+        # The message itself must name retention exceptions and the required
+        # contract arrangement; structured fields alone do not disclose them.
         if self._zdr_enabled:
             notice_message = (
                 "privacy_notice anthropic_retention=zdr_attested; "
@@ -395,6 +351,8 @@ class AnthropicProvider:
         # Step 6: construct LLMResponse from SDK response.
         usage = sdk_response.usage
         response = LLMResponse(
+            exchange_event_id=uuid4(),
+            exchange_recorded_at=datetime.now(UTC),
             text=text,
             model=sdk_response.model,
             input_tokens=usage.input_tokens,
@@ -549,8 +507,9 @@ async def _persist_exchange(
     """
     # Step 9: build LLMCallEvent + await persister.persist().
     event = LLMCallEvent(
+        event_id=response.exchange_event_id or uuid4(),
         review_id=request.review_id,
-        timestamp=datetime.now(UTC),
+        timestamp=response.exchange_recorded_at or datetime.now(UTC),
         is_eval=request.is_eval,
         # Canonical metadata-only fields per spec.md §8.3.
         model=response.model,
@@ -579,6 +538,7 @@ async def _persist_exchange(
         # Preserve the typed degradation cause for metadata-only replay.
         degradation_reason=request.degradation_reason,
         phase_key=request.phase_key,
+        candidate_attempt_id=request.candidate_attempt_id,
         # Constrained-decoding provenance (FUP-096): identical prompt
         # bytes + template version can produce different output
         # populations once `output_config.format` exists — metadata-only
@@ -617,27 +577,11 @@ def _warn_if_cache_silently_disabled(
 
     Refusals are excluded; an unknown documented floor suppresses the warning.
     This records a candidate cache diagnostic, not proof of the cause.
-    """  # Prompt-caching silently-disabled diagnostic.
-    # Per Anthropic SDK 0.100 prompt-caching docs, prompts shorter than
-    # the model's min-cacheable threshold (authoritative per-model
-    # values: `pricing.MIN_CACHEABLE_TOKENS`) are processed without
-    # caching with NO error returned. `cache_control=True` AND both
-    # cache_creation/read tokens at 0 is the CANDIDATE signal: the
-    # first-ever cache write has cache_creation > 0, and eviction
-    # rewrites with cache_creation > 0, so neither reaches here. A
-    # refusal carrying 0/0 is the known counterexample — those counters
-    # arise for an unrelated reason and are excluded below. The floor lookup then
-    # decides whether to warn at all: a model with no documented floor
-    # cannot have a cache miss attributed to a short prompt.
-    #
-    # The dedup key uses `normalize_to_pricing_key(response.model)` so
-    # dated aliases share a warn-once budget with their undated base
-    # (e.g., `claude-haiku-4-5-20251001` and `claude-haiku-4-5` are
-    # treated as the same model for warning suppression — they share
-    # the same cache threshold by definition). The literal
-    # `response.model` is still logged in the extras for operator
-    # visibility into what actually executed. Same normalization rule
-    # as the cost-computation lookup at step 8.
+    """
+    # Initial writes and eviction rewrites have nonzero creation counters.
+    # Refusals can instead yield 0/0 for unrelated reasons and are excluded.
+    # Dated aliases share the base model's threshold and warning budget; extras
+    # keep response.model so operators can see the actual returned identifier.
     if (
         request.cache_control
         and response.cache_read_tokens == 0
@@ -732,9 +676,9 @@ def _build_sdk_kwargs(request: LLMRequest) -> dict[str, Any]:
     """Shape a non-streaming Anthropic request from the project DTO.
 
     The system text is the sole cacheable block (`docs/spec.md` §9.5);
-    per-call user/diff text stays outside its breakpoint. Adaptive-thinking
-    models disable thinking and omit sampling parameters to keep the expected
-    text-block shape. A response schema uses `output_config.format`; refusal
+    per-call user/diff text stays outside its breakpoint. Model-specific
+    thinking controls keep a single text block; sampling is omitted where
+    unsupported. A response schema uses `output_config.format`; refusal
     and truncation still need downstream handling (FUP-096).
     """
     if request.cache_control:
@@ -756,16 +700,12 @@ def _build_sdk_kwargs(request: LLMRequest) -> dict[str, Any]:
         "system": system_param,
         "messages": [{"role": "user", "content": request.user_prompt}],
     }
-    if model_uses_adaptive_thinking(request.model):
-        # Adaptive-thinking generation (Sonnet 5+, Opus 4.7+): non-default
-        # `temperature`/`top_p`/`top_k` are rejected with a 400, so OMIT the
-        # sampling param entirely (the model runs at its default sampling).
-        # Adaptive thinking is ON by default and would add a `thinking` block,
-        # breaking the single-text-block contract — disable it explicitly so the
-        # response stays one TextBlock (`_extract_single_text_block`). With
-        # structured output (`output_config.format` below) the single block is
-        # the schema-valid JSON; disabling thinking keeps that shape.
-        kwargs["thinking"] = {"type": "disabled"}
+    thinking_type = model_text_only_thinking(request.model)
+    if thinking_type is not None:
+        kwargs["thinking"] = {"type": thinking_type}
+        if thinking_type == "between_tools":
+            # Accepted only at high effort or below; no tools means text only.
+            kwargs["output_config"] = {"effort": "high"}
     else:
         # Current-generation models (Haiku 4.5, Sonnet 4.6, Opus 4.6) accept
         # `temperature` and have thinking off by default — keep the legacy shape.
@@ -780,11 +720,9 @@ def _build_sdk_kwargs(request: LLMRequest) -> dict[str, Any]:
         # rejection path and `strip_outer_json_fence` stay as belt-and-
         # suspenders. An unsupported-schema 400 surfaces through the normal
         # APIError → typed-error translation (fail-loud, no fallback).
-        kwargs["output_config"] = {
-            "format": {
-                "type": "json_schema",
-                "schema": json.loads(request.response_schema_json),
-            }
+        kwargs.setdefault("output_config", {})["format"] = {
+            "type": "json_schema",
+            "schema": json.loads(request.response_schema_json),
         }
     return kwargs
 
@@ -794,10 +732,9 @@ def _extract_single_text_block(message: Message) -> str:
 
     Per AC#10, multi-block responses (extended thinking, tool use, etc.)
     fail loud rather than silently flatten or drop. V1's single-text-block
-    assumption holds because the wrapper either passes no `thinking` kwarg
-    (current-generation models — thinking off by default) or explicitly
-    disables it (adaptive-thinking models via `thinking={"type":"disabled"}`
-    in `_build_sdk_kwargs`); both yield a single `TextBlock`. A refusal
+    assumption holds because `_build_sdk_kwargs` turns off up-front thinking
+    and sends no tools. Sonnet 5.5 uses `between_tools`; other supported
+    adaptive models use `disabled`. Earlier models have thinking off by default. A refusal
     (stop_reason="refusal", empty content) is caught upstream as
     `LLMRefusalError` before reaching here.
     """

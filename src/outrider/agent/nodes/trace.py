@@ -29,7 +29,9 @@ from outrider.audit.events import (
     TraceDecisionEvent,
 )
 from outrider.coordinates import (
+    is_python_relative_import_form,
     is_relative_specifier_form,
+    python_relative_trace_candidate_paths,
     relative_specifier_candidate_paths,
     validate_diff_path,
 )
@@ -164,7 +166,9 @@ async def trace(
     accumulated_decisions: list[TraceDecision] = []
     accumulated_fetched_files: list[TraceFetchedFile] = []
 
-    gh_client = await github_factory(state.pr_context.installation_id)
+    gh_client = (
+        await github_factory(state.pr_context.installation_id) if ranked_by_finding else None
+    )
     head_sha = state.pr_context.head_sha
     pr_file_paths: frozenset[str] = frozenset(cf.path for cf in state.pr_context.changed_files)
     # Already-fetched paths need no new content fetch and must not inflate
@@ -191,6 +195,8 @@ async def trace(
         }
 
     for finding_id in sorted(ranked_by_finding):
+        if gh_client is None:
+            raise RuntimeError("ranked trace candidates require a GitHub client")
         # Selection already deduplicated and capped this finding's imports.
         bucket = ranked_by_finding[finding_id]
 
@@ -298,6 +304,7 @@ async def trace(
         "trace_fetched_files": accumulated_fetched_files,
         "last_trace_pass_fetched_count": len(accumulated_fetched_files),
     }
+
     return state_delta
 
 
@@ -558,6 +565,7 @@ async def _resolve_via_probes(
     strip trailing names for function/class fallbacks (FUP-209). A fallback
     must find the first stripped name in a defining context in the content;
     an existing parent package alone does not prove the candidate exists.
+    Python relative imports keep that ladder, anchored to the finding's file.
     JS/TS relative imports resolve from the finding's file at level zero
     only, using the contained path rules in coordinates (DECISIONS.md#024).
 
@@ -764,17 +772,16 @@ def _candidate_paths_for(import_string: str) -> tuple[str, ...]:
 def _probe_paths_for(
     import_string: str, strip_level: int, source_finding_file: str
 ) -> tuple[str, ...]:
-    """Form-dispatched probe paths per `DECISIONS.md#024` (Amended 2026-07-03).
+    """Construct bounded paths for the candidate's syntax through coordinates.
 
-    Form discrimination delegates to `coordinates.is_relative_specifier_form`
-    (the single partition rule). Relative specifiers: level 0 fans out
-    via `coordinates.relative_specifier_candidate_paths` against the
-    proposing finding's file (importing-file-relative resolution,
-    containment + `validate_diff_path` inside `coordinates/`); levels
-    >= 1 return () — specifiers are already paths, so no suffix-strip
-    ladder exists for them. Everything else is module form and delegates
-    to `_tier_paths_for` (the FUP-209 ladder).
+    Python-relative modules retain their anchor across the suffix-strip ladder.
+    JS/TS path specifiers probe only level zero; absolute modules keep the
+    existing repository-root ladder. No branch guesses runtime import roots.
     """
+    if is_python_relative_import_form(import_string):
+        return python_relative_trace_candidate_paths(
+            import_string, source_finding_file, strip_level
+        )
     if is_relative_specifier_form(import_string):
         if strip_level > 0:
             return ()

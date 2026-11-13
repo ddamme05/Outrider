@@ -1,18 +1,7 @@
-# See specs/2026-05-19-analyze-foundation.md §0a + DECISIONS.md#018 Amended 2026-05-20.
-"""Focused test on the three SkipReason values added in §0a.
+"""Check the three analysis skip reasons and their accepted event values.
 
-The existing `test_file_examination_event.py` parameterizes over
-`list(SkipReason)` so it automatically picks up the new values via
-the audit-event cross-field validator. This file pins the §0a-specific
-contract explicitly: the three new values EXIST with the documented
-string values, and `FileExaminationEvent` accepts each one.
-
-Without this test, a future contributor renaming or removing one of
-the three would only see the parameterized test silently shift its
-count — no `SkipReason.COST_BUDGET_EXHAUSTED` reference to grep for,
-no specific assertion to break. This file is the deliberate grep
-target for the §0a contract.
-"""
+Explicit names catch removals that a test iterating the enum could miss.
+See specs/2026-05-19-analyze-foundation.md §0a and DECISIONS.md#018."""
 
 from __future__ import annotations
 
@@ -94,15 +83,6 @@ def test_skip_reason_patch_head_misaligned_exists_and_admits() -> None:
     assert event.skip_reason == SkipReason.PATCH_HEAD_MISALIGNED
 
 
-def test_skip_reason_has_twelve_total_values() -> None:
-    """6 parser-stage (5 original + `BINARY` from #018 2026-05-21
-    amendment) + 6 analyze-stage (3 from #018 2026-05-20 +
-    `UNSUPPORTED_LANGUAGE` from #018 2026-05-21 + `ALL_SCOPES_TRIVIAL`
-    from the trivial-scope-filter spec per #018 Amended 2026-06-11 +
-    `PATCH_HEAD_MISALIGNED` from FUP-217) = 12 total.
-
-    Pins the count so a future addition or removal surfaces in the
-    diff loud — adjusting this number is the canonical way to indicate
-    intent to expand or contract the taxonomy.
-    """
-    assert len(list(SkipReason)) == 12
+def test_skip_reason_has_thirteen_total_values() -> None:
+    """Six parser exclusions and seven analysis reasons, including BASE/HEAD misalignment."""
+    assert len(list(SkipReason)) == 13

@@ -1,8 +1,6 @@
-"""ModelConfig env reading + validators.
+"""Check model configuration from environment values and reject invalid or retired models.
 
-Covers AC#2: env-prefix reading, regex validation, deprecated-model
-rejection. Per spec §4.2.
-"""
+See spec §4.2."""
 
 from __future__ import annotations
 
@@ -49,15 +47,16 @@ def _env(**kvs: str) -> Iterator[None]:
 
 def test_defaults_match_canonical_spec() -> None:
     cfg = ModelConfig()
-    assert cfg.triage_model == "claude-haiku-4-5"
-    assert cfg.analyze_model == "claude-sonnet-5"
+    assert cfg.triage_model == "claude-haiku-5-5"
+    assert cfg.analyze_model == "claude-sonnet-5-5"
     # STANDARD-tier analyze defaults to Haiku (the eval-gated cost flip, DECISIONS.md#041);
     # DEEP-tier files stay on analyze_model (Sonnet).
-    assert cfg.standard_analyze_model == "claude-haiku-4-5"
+    assert cfg.standard_analyze_model == "claude-haiku-5-5"
     # Synthesize defaults to Haiku (DECISIONS.md#043 — one bounded summary call
     # per review; findings/severity/dedup are not model-dependent).
-    assert cfg.synthesize_model == "claude-haiku-4-5"
-    assert cfg.trace_model == "claude-haiku-4-5"
+    assert cfg.synthesize_model == "claude-haiku-5-5"
+    assert cfg.trace_model == "claude-haiku-5-5"
+    assert cfg.patch_model == "claude-haiku-5-5"
 
 
 def test_standard_analyze_model_env_override_and_validated() -> None:
@@ -89,12 +88,19 @@ def test_reads_env_prefix() -> None:
 
 
 def test_each_field_independently_overridable() -> None:
-    with _env(OUTRIDER_MODEL_TRACE_MODEL="claude-haiku-4-5"):
+    with _env(
+        OUTRIDER_MODEL_TRACE_MODEL="claude-haiku-4-5",
+        OUTRIDER_MODEL_PATCH_MODEL="claude-haiku-4-5",
+    ):
         cfg = ModelConfig()
         # Other fields keep defaults
-        assert cfg.triage_model == "claude-haiku-4-5"
-        assert cfg.analyze_model == "claude-sonnet-5"
+        assert cfg.triage_model == "claude-haiku-5-5"
+        assert cfg.analyze_model == "claude-sonnet-5-5"
         assert cfg.trace_model == "claude-haiku-4-5"
+        assert cfg.patch_model == "claude-haiku-4-5"
+        host_config = ModelConfig.for_host("anthropic")
+        assert host_config.trace_model == "claude-haiku-4-5"
+        assert host_config.patch_model == "claude-haiku-4-5"
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +138,8 @@ def test_rejects_almost_valid_string() -> None:
         "claude-sonnet-4-6",
         "claude-opus-4-7",
         "claude-haiku-5",  # without minor
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
         # Round-21 fold per Codex finding: SDK 0.100 catalog publishes
         # dated "exact pin" forms (e.g., claude-haiku-4-5-20251001)
         # alongside the undated alias. Regex must accept both shapes
@@ -169,6 +177,10 @@ def test_is_anthropic_family_model(slug: str, expected: bool) -> None:
     [
         # Adaptive-thinking generation: Sonnet 5+, Opus 4.7+.
         ("claude-sonnet-5", True),
+        ("claude-sonnet-5-5", True),
+        ("claude-sonnet-5-5-20260928", True),
+        ("claude-haiku-5-5", True),
+        ("claude-haiku-5-5-20261007", True),
         ("claude-sonnet-5-20260615", True),  # dated pin, no minor
         ("claude-opus-4-7", True),
         ("claude-opus-4-8", True),
@@ -179,17 +191,14 @@ def test_is_anthropic_family_model(slug: str, expected: bool) -> None:
         ("claude-haiku-4-5", False),
         ("claude-opus-4-6", False),
         ("claude-haiku-4-5-20251001", False),
-        ("claude-haiku-5", False),  # no next-gen Haiku yet
+        ("claude-haiku-5", False),  # distinct from the 5.5 release
         # Non-anthropic / malformed → legacy shape (False).
         ("zai-org/GLM-5.2", False),
         ("stub-model", False),
     ],
 )
 def test_model_uses_adaptive_thinking(slug: str, expected: bool) -> None:
-    """The generation predicate `AnthropicProvider._build_sdk_kwargs` reads to
-    shape the request: omit sampling params + disable adaptive thinking for
-    Sonnet 5+ / Opus 4.7+; keep the legacy shape (temperature, no `thinking`
-    kwarg) for current-gen and non-anthropic models."""
+    """Thinking-on-by-default models need sampling omitted and explicit control."""
     assert model_uses_adaptive_thinking(slug) is expected
 
 

@@ -1,8 +1,9 @@
-"""Choose skip, degraded or clean analysis from a file's parse and patch.
+"""Choose how much of a changed file can be reviewed.
 
-The decision carries changed scope units and their clipped hunks. analyze.py
-turns it into examination events and prompt selection. This module has no
-model calls or raw tree-sitter nodes, so structural scenarios can use it directly."""
+decide_degradation examines the parse and patch, then selects normal review,
+a bounded part of the diff, or a skip. analyze.py turns that decision into
+model requests and examination records. No model calls happen here.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from outrider.coordinates import (
     added_line_numbers,
     patched_file_has_added_lines,
     scope_unit_diff_hunks,
-    scope_unit_has_added_lines,
+    scope_unit_has_changed_lines,
 )
 
 if TYPE_CHECKING:
@@ -37,9 +38,9 @@ class DegradationDecision:
 
     `mode` is the discriminator: `"skip"` carries a `skip_reason`; `"degraded"`
     carries a `degradation_reason`; `"clean"` carries neither. `degraded`/`clean`
-    additionally carry the changed scope units + their clipped hunks (the prompt
-    inputs); `skip` carries none. `parse_status` is the `FileExaminationEvent`
-    value the node emits on the non-skip path. The node maps this decision to
+    additionally carry the changed scopes and clipped hunks. Clean review may also
+    carry primary changed line ranges; `skip` carries none. `parse_status` is the
+    `FileExaminationEvent` value the node emits on the non-skip path. The node maps this decision to
     behavior — it is the single place that does so.
     """
 
@@ -49,6 +50,7 @@ class DegradationDecision:
     degradation_reason: DegradationReason | None = None
     included_scope_units: tuple[ScopeUnit, ...] = ()
     included_clipped_hunks: tuple[tuple[str, ...], ...] = ()
+    included_primary_line_ranges: tuple[tuple[int, int], ...] = ()
 
     @property
     def is_module_level_route(self) -> bool:
@@ -85,17 +87,21 @@ class DegradationDecision:
 def _intersect_changed_scope_units(
     scope_units: tuple[ScopeUnit, ...],
     patched_file: PatchedFile,
+    *,
+    base_scope_units: tuple[ScopeUnit, ...],
 ) -> tuple[tuple[ScopeUnit, ...], tuple[tuple[str, ...], ...]]:
     """Return changed scopes and clipped hunks in matching tuple positions.
 
-    Include a scope only when it has added lines and non-empty clipped hunks.
+    Include a scope with additions or owned removals and non-empty clipped hunks.
     Coordinate calculations stay in coordinates; this function selects prompt input."""
     included: list[ScopeUnit] = []
     hunks: list[tuple[str, ...]] = []
     for scope_unit in scope_units:
-        if not scope_unit_has_added_lines(scope_unit, patched_file):
+        if not scope_unit_has_changed_lines(
+            scope_unit, patched_file, base_scope_units=base_scope_units
+        ):
             continue
-        clipped = scope_unit_diff_hunks(scope_unit, patched_file)
+        clipped = scope_unit_diff_hunks(scope_unit, patched_file, base_scope_units=base_scope_units)
         if not clipped:
             continue
         included.append(scope_unit)
@@ -108,6 +114,8 @@ def decide_degradation(
     patched_file: PatchedFile | None,
     *,
     module_level_observed_candidate: bool = False,
+    base_scope_units: tuple[ScopeUnit, ...] = (),
+    primary_line_ranges: tuple[tuple[int, int], ...] = (),
 ) -> DegradationDecision:
     """Decide skip / degraded / clean for one changed file from its parse + patch.
 
@@ -127,6 +135,8 @@ def decide_degradation(
       `tree_has_error_no_scope` and the candidate flag is never consulted.
     - `clean` with a changed scope unit that carries a tree error → `degraded`
       (`tree_has_error_in_changed_regions`).
+    - A fully clean parse may also carry bounded primary changed regions outside
+      the selected scopes. These permit normal review when no scope survives.
     - `clean` otherwise → `clean`, carrying the changed scope units + hunks.
 
     Parser-stage skips (`parser_outcome == "skipped"`) are NOT handled here — the
@@ -162,7 +172,7 @@ def decide_degradation(
             mode="skip", parse_status="clean", skip_reason=SkipReason.NO_CHANGED_SCOPE_UNITS
         )
     included_scope_units, included_clipped_hunks = _intersect_changed_scope_units(
-        tuple(parse_result.scope_units), patched_file
+        tuple(parse_result.scope_units), patched_file, base_scope_units=base_scope_units
     )
     if not included_scope_units:
         # No changed scope unit. Before skipping, the no-scope degraded case
@@ -170,8 +180,7 @@ def decide_degradation(
         # so `has_error` can't see it. If an ADDABLE changed line intersects an
         # `error_lines` line, degrade (JUDGED-only review of the bounded hunks)
         # instead of silently skipping — honoring `parse-errors-degrade-to-judged`.
-        # Addable-lines-only: a pure deletion over an error line carries no target
-        # line, so it stays a skip (FUP-050 limitation, an explicit non-goal).
+        # A removal has no target line to intersect the parser's error lines.
         if parse_result.error_lines & added_line_numbers(patched_file):
             return DegradationDecision(
                 mode="degraded",
@@ -181,21 +190,20 @@ def decide_degradation(
                 # bounded diff hunks, so included_scope_units/hunks stay ().
             )
         if module_level_observed_candidate:
-            # Module-scope admission arm: an eligible OBSERVED query admits a
-            # module-level match on the added lines, so the file gets a
-            # degraded (bounded-hunks, JUDGED-only) LLM review plus the
-            # module-level OBSERVED emission instead of a silent skip. The
-            # parse IS clean — parse_status stays truthful; the reason rides
-            # LLMCallEvent. Ordered AFTER the error-lines check (parse-error
-            # precedence for the MODULE arm: it never anchors proof on a tree
-            # carrying error nodes — the node gates the candidate on a fully
-            # error-free parse, so this branch is unreachable for
-            # error-bearing files; normal scope-contained production has its
-            # own, per-included-scope error discipline).
+            # A module match on added lines permits bounded-hunk JUDGED review
+            # plus OBSERVED production. The node requires a fully clean parse
+            # for this candidate; normal scope-contained production can tolerate
+            # errors outside its scopes. Keep this after the error-lines gate.
             return DegradationDecision(
                 mode="degraded",
                 parse_status="clean",
                 degradation_reason=DegradationReason.MODULE_LEVEL_OBSERVED_MATCH,
+            )
+        if primary_line_ranges and not parse_result.error_lines:
+            return DegradationDecision(
+                mode="clean",
+                parse_status="clean",
+                included_primary_line_ranges=primary_line_ranges,
             )
         return DegradationDecision(
             mode="skip", parse_status="clean", skip_reason=SkipReason.NO_CHANGED_SCOPE_UNITS
@@ -215,4 +223,5 @@ def decide_degradation(
         parse_status="clean",
         included_scope_units=included_scope_units,
         included_clipped_hunks=included_clipped_hunks,
+        included_primary_line_ranges=primary_line_ranges,
     )

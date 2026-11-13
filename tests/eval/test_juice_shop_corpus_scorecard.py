@@ -1,24 +1,11 @@
-"""Graded Juice Shop corpus — the LLM-free CI gate for the JS/TS OBSERVED catalog.
+"""Compare the real structural-query results with the saved Juice Shop scorecard.
 
-Runs the grading harness over the vendored corpus against the live catalog and
-asserts (a) the regenerated scorecard equals the checked-in
-`scorecard_juice_shop.json` byte-for-byte, and (b) the headline invariants hold
-directly, so a scorecard-file edit can't silently move the floor. This is where
-a catalog change that introduces a false positive, regresses a true positive, or
-silently closes a documented residual fails loudly.
-
-Structural (no LLM): drives `parse_source` -> `registry.match` ->
-`run_observed_matches` -> `produce_observed_findings` over checked-in fixtures.
-Lives under `tests/eval/` (a package member, relative import) rather than
-`scenarios/structural/`, because the harness it drives is an eval-package module
-and structural-scenario files are collected as top-level modules that cannot
-import it (see docs/testing.md's harness-tests-live-under-tests/eval rule). It is
-still collected LLM-free by `pytest tests/eval --is-eval`.
-`specs/2026-07-04-juice-shop-graded-corpus.md`.
-"""
+Check both the complete saved result and key expectations directly so editing
+the scorecard cannot hide a regression. No model runs; corpus files are inputs."""
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 from .corpus_grading import ExpectedFindingRow, grade, load_ground_truth
@@ -61,15 +48,21 @@ def test_no_false_positive_no_regression_no_unexpected() -> None:
 
 
 def test_known_detection_and_residual_counts() -> None:
-    """Pin the current measured shape: 3 true positives (weak_crypto + two eval),
-    2 accepted misses (both the module_presence file-level residual on SQL
-    injection), 3 true negatives. A change here is a real precision/recall shift
-    that must be adjudicated, not silently re-baselined."""
+    """Pin the structural finding count and the stage where each miss stops."""
     _, scorecard = _regrade()
     t = scorecard.totals
-    assert t.true_positive == 3
-    assert t.accepted_miss == 2
+    assert t.true_positive == 1
+    assert t.accepted_miss == 4
     assert t.true_negative == 3
+    residuals = Counter(
+        (row.observed_outcome, row.residual_tag)
+        for row in scorecard.row_scores
+        if row.grade == "accepted_miss"
+    )
+    assert residuals == {
+        ("denied_at_admission", "module_presence_file_level"): 2,
+        ("denied_at_production", "requires_context"): 2,
+    }
 
 
 def test_every_accepted_miss_names_a_residual() -> None:

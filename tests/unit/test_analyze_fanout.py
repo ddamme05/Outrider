@@ -1,18 +1,15 @@
-# Fan-out cutover pins per specs/2026-07-05-parallel-analyze.md (3b-2c-2).
-"""The graph-split contracts: planner Command shape, zero-worker route,
-pass-1 stays sequential, payload purity, the concurrency cap, and the
-proxy-covers-real calibration gate.
+"""Check analysis planning, worker routing, and the concurrency limit.
 
-These pin the SEAMS the cutover introduced; per-file pipeline behavior
-is pinned by test_analyze_node.py through `run_analyze_pass`, and the
-fold-vs-outcome parity by test_analyze_worker_wiring.py.
-"""
+Cover empty plans, sequential post-trace passes, pure-data payloads, and rendered-request
+budget allocation. Per-file behavior and fold equivalence have separate tests.
+See specs/2026-07-05-parallel-analyze.md."""
 
 # ruff: noqa: F811  — the imported deps fixture is intentionally shadowed by test params
+
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from langgraph.types import Command
@@ -32,14 +29,14 @@ from test_analyze_node import (  # noqa: F401  (deps is a fixture)
 )
 
 from outrider.agent.nodes.analyze import (
-    _PROXY_RENDER_MARGIN_TOKENS,
     DEFAULT_REVIEW_BUDGET_TOKENS,
     AnalyzeWorkerPayload,
     _estimate_tokens,
 )
-from outrider.agent.nodes.analyze_budget import proxy_estimate_tokens
-from outrider.prompts import analyze as analyze_prompt
 from outrider.schemas.triage_result import ReviewTier
+
+if TYPE_CHECKING:
+    from outrider.schemas import ReviewState
 
 
 def _two_file_state() -> Any:
@@ -79,10 +76,10 @@ async def test_pass_zero_returns_one_send_per_kept_file(deps: dict[str, Any]) ->
     assert [p.changed_file.path for p in payloads] == ["src/a.py", "src/b.py"]
     assert [p.review_tier for p in payloads] == [ReviewTier.DEEP, ReviewTier.STANDARD]
     assert all(p.pass_index == 0 for p in payloads)
-    # Funded under the default 200k budget: the allocation is the proxy
-    # estimate, strictly positive.
+    # Funded under the default 200k budget: each allocation covers the rendered
+    # request and its output reservation.
     assert all(p.allocation_tokens > 0 for p in payloads)
-    # No per-file work in the planner: no LLM call, no examination event.
+    # Planning makes no model call or examination event.
     assert deps["provider"].calls == []
     assert deps["file_examination_sink"].events == []
 
@@ -177,6 +174,52 @@ async def test_unfunded_allocation_skips_at_the_worker_gate(deps: dict[str, Any]
     assert deps["provider"].calls == []  # the LLM never fired
 
 
+@pytest.mark.asyncio
+async def test_unsupported_files_leave_budget_for_supported_worker(deps: dict[str, Any]) -> None:
+    from outrider.ast_facts.models import SkipReason
+
+    html_paths = [f"templates/{name}.html" for name in ("a", "b", "c")]
+    python_path = "src/reviewed.py"
+    files = tuple(
+        _build_changed_file(
+            path=path,
+            content=b"<p>Budget fixture</p>\n",
+            content_base="",
+            patch=f"--- a/{path}\n+++ b/{path}\n@@ -0,0 +1,1 @@\n+<p>Budget fixture</p>\n",
+        )
+        for path in html_paths
+    ) + (_build_changed_file(path=python_path),)
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=files),
+        triage_result=_build_triage_result(
+            file_tiers=dict.fromkeys([*html_paths, python_path], ReviewTier.DEEP)
+        ),
+    )
+    planned = await analyze(state, **deps)
+    assert isinstance(planned.goto, list)
+    assert [send.arg.changed_file.path for send in planned.goto] == [*html_paths, python_path]
+    python_estimate = planned.goto[-1].arg.allocation_tokens
+    assert python_estimate > 0
+    # The real estimate fits the 25% per-file cap. Reserving three small
+    # unsupported files would consume the 75% ordinary pool before Python.
+    deps["total_review_budget_tokens"] = 4 * python_estimate
+
+    result = await run_analyze_pass(state, deps)
+    outcomes = {outcome.path: outcome for outcome in result["analyze_worker_outcomes"]}
+    assert outcomes[python_path].source == "parser", outcomes[python_path].skip_reason
+    assert outcomes[python_path].skip_reason is None
+    assert set(outcomes) == {*html_paths, python_path}
+    assert all(outcomes[path].skip_reason is SkipReason.UNSUPPORTED_LANGUAGE for path in html_paths)
+    (request,) = deps["provider"].calls
+    assert request.phase_key == f"file:{python_path}#0"
+    events = deps["file_examination_sink"].events
+    assert [event.file_path for event in events] == [*html_paths, python_path]
+    assert all(event.phase_key == f"file:{event.file_path}#0" for event in events)
+    (completed,) = deps["analyze_event_sink"].completed
+    assert completed.n_files_analyzed == 1
+    assert completed.n_files_skipped == 3
+
+
 # ---------------------------------------------------------------------------
 # Concurrency cap.
 # ---------------------------------------------------------------------------
@@ -239,56 +282,43 @@ async def test_semaphore_bounds_in_flight_workers(deps: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Proxy-covers-real calibration (the regression gate for DUP_FACTOR).
+# Planner allocation against actual rendered worker requests.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_proxy_estimate_covers_real_rendered_estimate(deps: dict[str, Any]) -> None:
-    """CALIBRATION GATE: for every funded fixture file, the planner's
-    bytes-based proxy must be >= the worker's REAL rendered-prompt
-    estimate (recorded on the outcome). A proxy under-estimate converts
-    into spurious COST_BUDGET_EXHAUSTED skips — coverage loss, never
-    overspend — and this property is what licenses tightening DUP_FACTOR.
-    Not a proof (a fixture corpus cannot prove universality); a
-    regression gate."""
-    state = _two_file_state()
-    result = await run_analyze_pass(state, deps)
-    empty_parts = analyze_prompt.render(
-        file_path="", scope_unit_context="", query_match_id_list="", diff_hunks="", pass_index=0
-    )
-    fixed_overhead = (
-        _estimate_tokens(empty_parts.system_prompt)
-        + _estimate_tokens(empty_parts.user_prompt)
-        + analyze_prompt.MAX_TOKENS
-        + _PROXY_RENDER_MARGIN_TOKENS  # mirrors the planner's overhead exactly
-    )
-    by_path = {f.path: f for f in state.pr_context.changed_files}
+async def _check_rendered_allocations(state: ReviewState, deps: dict[str, Any]) -> int:
+    """Run each real Send and compare its reservation with the provider request."""
+    planned = await analyze(state, **deps)
+    worker_deps = {key: deps[key] for key in _WORKER_DEP_KEYS if key in deps}
+    assert isinstance(planned.goto, list)
     checked = 0
-    for outcome in result["analyze_worker_outcomes"]:
-        if outcome.source != "parser":
-            continue
-        cf = by_path[outcome.path]
-        proxy = proxy_estimate_tokens(
-            len((cf.content_head or "").encode("utf-8")),
-            len((cf.patch or "").encode("utf-8")),
-            fixed_overhead_tokens=fixed_overhead,
+    for send in planned.goto:
+        before_calls = len(deps["provider"].calls)
+        update = await analyze_file(send.arg, **worker_deps)
+        (outcome,) = update["analyze_worker_outcomes"]
+        assert outcome.source == "parser", outcome.skip_reason
+        assert len(deps["provider"].calls) == before_calls + 1
+        request = deps["provider"].calls[-1]
+        actual_tokens = (
+            _estimate_tokens(request.system_prompt)
+            + _estimate_tokens(request.user_prompt)
+            + request.max_tokens
         )
-        assert proxy >= outcome.estimated_tokens, (
-            f"proxy under-covers real estimate for {outcome.path}: "
-            f"{proxy} < {outcome.estimated_tokens}"
-        )
+        assert send.arg.allocation_tokens == actual_tokens
+        assert outcome.estimated_tokens == actual_tokens
         checked += 1
-    assert checked == 2  # both files funded and LLM-run — the gate actually ran
+    return checked
 
 
 @pytest.mark.asyncio
-async def test_proxy_covers_real_on_overlap_dense_scope_context(deps: dict[str, Any]) -> None:
-    """CALIBRATION, the adversarial shape: many small functions with dense
-    same-file call links, all changed — the rendered scope context includes
-    every unit PLUS same-file caller/callee excerpts, so content regions
-    DUPLICATE into the prompt (the exact overlap DUP_FACTOR exists to
-    absorb). The proxy must still cover the real rendered estimate."""
+async def test_planned_allocation_matches_rendered_worker_request(deps: dict[str, Any]) -> None:
+    """Both files receive exactly the reservation their actual requests need."""
+    assert await _check_rendered_allocations(_two_file_state(), deps) == 2
+
+
+@pytest.mark.asyncio
+async def test_rendered_allocation_includes_dense_overlapping_context(deps: dict[str, Any]) -> None:
+    """Dense same-file links are charged as rendered, including repeated excerpts."""
     n = 14
     lines: list[str] = []
     for i in range(n):
@@ -308,25 +338,7 @@ async def test_proxy_covers_real_on_overlap_dense_scope_context(deps: dict[str, 
         pr_context=_build_pr_context(changed_files=(cf,)),
         triage_result=_build_triage_result(file_tiers={"src/dense.py": ReviewTier.DEEP}),
     )
-    result = await run_analyze_pass(state, deps)
-    (outcome,) = result["analyze_worker_outcomes"]
-    assert outcome.source == "parser"  # funded and LLM-run — the gate is live
-    empty_parts = analyze_prompt.render(
-        file_path="", scope_unit_context="", query_match_id_list="", diff_hunks="", pass_index=0
-    )
-    fixed_overhead = (
-        _estimate_tokens(empty_parts.system_prompt)
-        + _estimate_tokens(empty_parts.user_prompt)
-        + analyze_prompt.MAX_TOKENS
-        + _PROXY_RENDER_MARGIN_TOKENS
-    )
-    proxy = proxy_estimate_tokens(
-        len(body.encode()), len(patch.encode()), fixed_overhead_tokens=fixed_overhead
-    )
-    assert proxy >= outcome.estimated_tokens, (
-        f"proxy under-covers the overlap-dense file: {proxy} < {outcome.estimated_tokens} — "
-        f"DUP_FACTOR/margin need re-calibration before trusting the planner on dense files"
-    )
+    assert await _check_rendered_allocations(state, deps) == 1
 
 
 @pytest.mark.asyncio

@@ -1,12 +1,7 @@
-"""Unit tests for the HITL node body.
+"""Check approval partitioning, interrupts, and audit ordering in the HITL node.
 
-Covers the spec's 13-step contract: partition logic, pass-through path
-(empty gated set), gated-path interrupt firing, deterministic body
-output under re-entrancy, and the audit-first emit ordering.
-
-Resume-path tests live in integration (they require LangGraph
-checkpoint replay); this file exercises the pure-body shapes.
-"""
+Cover empty gates and deterministic re-entry. Checkpoint resume behavior is
+tested separately with a graph and checkpointer."""
 
 from __future__ import annotations
 
@@ -102,6 +97,7 @@ class _FindingStub:
     def __init__(self, *, finding_id: UUID, severity: FindingSeverity) -> None:
         self.finding_id = finding_id
         self.severity = severity
+        self.source_side = "head"
 
 
 def _make_finding(*, review_id: UUID, severity: FindingSeverity) -> _FindingStub:
@@ -173,6 +169,9 @@ def _make_state(
             self.analysis_rounds = (_Round(rounds_findings),)
             self.review_report = _ReviewReport(tuple(findings)) if use_review_report else None
             self.pr_context = _PRCtx()
+            self.native_candidates: list[Any] = []
+            self.candidate_assessments: list[Any] = []
+            self.triage_result = None
 
     return _State()
 
@@ -411,6 +410,50 @@ async def test_body_returns_empty_delta_when_no_gated_findings() -> None:
     assert hitl_sink.decisions == []
     assert status_sink.awaiting == []
     assert status_sink.running == []
+
+
+@pytest.mark.asyncio
+async def test_disputed_low_finding_pauses_with_explicit_verification_hold(monkeypatch) -> None:
+    from test_publish_eligibility import (
+        _make_finding as make_real_finding,
+    )
+    from test_publish_eligibility import (
+        _verification_assessment,
+        _verification_ref,
+    )
+
+    finding = make_real_finding(severity=FindingSeverity.LOW)
+    state = _make_state(
+        findings=[finding], review_id=finding.review_id, received_at=datetime.now(UTC)
+    )
+    ref = _verification_ref(finding)
+    state.native_candidates = [ref]
+    state.candidate_assessments = [_verification_assessment(ref, status="refutes")]
+    original = finding.model_dump(mode="json")
+    sink, status_sink = _RecordingHITLSink(), _RecordingStatusSink()
+
+    class PausedError(Exception):
+        pass
+
+    def pause(_payload):
+        raise PausedError
+
+    monkeypatch.setattr("outrider.agent.nodes.hitl.interrupt", pause)
+    with pytest.raises(PausedError):
+        await hitl(
+            state,
+            phase_event_sink=_RecordingPhaseSink(),
+            hitl_event_sink=sink,
+            review_status_sink=status_sink,
+            hitl_config=HITLConfig(),
+        )
+    [event] = sink.requests
+    assert event.findings_requiring_approval == (finding.finding_id,)
+    assert event.auto_post_findings == ()
+    assert event.verification_hold_finding_ids == (finding.finding_id,)
+    request = HITLRequest.model_validate(status_sink.awaiting[0]["hitl_request_payload"])
+    assert request.verification_hold_finding_ids == event.verification_hold_finding_ids
+    assert finding.model_dump(mode="json") == original
 
 
 # ---------------------------------------------------------------------------

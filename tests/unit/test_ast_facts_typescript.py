@@ -1,9 +1,7 @@
-"""Unit tests for `ast_facts/typescript_adapter.py` (TS + TSX dialects).
+"""Check TypeScript/TSX parsing through the public adapter API.
 
-Consumes only the public `parse_typescript` entry point, the adapter's
-Protocol methods, and `ast_facts` domain models — no raw parse trees and
-no `tree_sitter` imports (per specs/2026-07-02-js-ts-tree-sitter-adapters.md).
-"""
+Tests use project models rather than raw trees or tree_sitter imports.
+See specs/2026-07-02-js-ts-tree-sitter-adapters.md."""
 
 from __future__ import annotations
 
@@ -11,11 +9,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from outrider.ast_facts.models import ParseResult, ScopeUnit, SkipReason
 from outrider.ast_facts.typescript_adapter import TypeScriptAdapter, parse_typescript
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from outrider.ast_facts.models import ParseResult, ScopeUnit
 
 
 class _NullResolver:
@@ -264,10 +263,11 @@ def test_dialect_argument_is_validated() -> None:
     "path",
     ["types/index.d.ts", "types/index.d.mts", "types/index.d.cts"],
 )
-def test_declaration_files_are_skipped_as_generated(path: str) -> None:
+def test_declaration_files_parse_without_runtime_scopes(path: str) -> None:
     result = _parse(b"export declare function f(): void;\n", path)
-    assert result.parser_outcome == "skipped"
-    assert result.skip_reason is SkipReason.GENERATED_FILENAME
+    assert result.parser_outcome == "clean"
+    assert result.skip_reason is None
+    assert result.error_lines == frozenset()
     assert result.scope_units == ()
 
 

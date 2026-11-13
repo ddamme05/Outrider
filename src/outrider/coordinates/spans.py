@@ -1,15 +1,16 @@
-# See specs/2026-05-19-analyze-foundation.md §4.
-"""Coordinate containment, line-to-byte mapping, and bounded diff text.
+"""Check source ranges and prepare bounded patch text for analysis.
 
-These translations belong to coordinates/ under
-`coordinates-module-is-sole-translator`; raw unidiff lines stay private.
-See docs/trust-boundaries.md#3-coordinate-translation.
-Byte spans and ranges are half-open `[byte_start, byte_end)`. Source line
-ranges are 1-indexed and inclusive.
+Byte ranges are half-open [byte_start, byte_end); source line ranges are
+1-indexed and inclusive. All translation stays in coordinates/ and raw patch
+lines remain private (coordinates-module-is-sole-translator).
+
+See specs/2026-05-19-analyze-foundation.md §4 and
+docs/trust-boundaries.md#3-coordinate-translation.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -171,7 +172,7 @@ def scope_unit_has_added_lines(scope_unit: ScopeUnit, patched_file: PatchedFile)
 
     Clipped hunks may contain only context, so their presence alone must not
     pull an unchanged neighboring scope into the prompt. Pure deletion edits
-    remain undetected by this added-line check (FUP-050).
+    are handled separately by `scope_unit_has_changed_lines`.
     """
     return any(
         line.is_added
@@ -180,6 +181,136 @@ def scope_unit_has_added_lines(scope_unit: ScopeUnit, patched_file: PatchedFile)
         for hunk in patched_file
         for line in hunk
     )
+
+
+def scope_unit_has_changed_lines(
+    scope_unit: ScopeUnit,
+    patched_file: PatchedFile,
+    *,
+    base_scope_units: tuple[ScopeUnit, ...] = (),
+) -> bool:
+    """Include additions in the head scope or removals from its surviving base owner.
+
+    Matching the surviving first line prevents a deletion immediately before a
+    scope from making that unchanged neighbor appear edited.
+    """
+    if scope_unit_has_added_lines(scope_unit, patched_file):
+        return True
+    owner = _surviving_base_scope(scope_unit, patched_file, base_scope_units)
+    if owner is None:
+        return False
+    return any(
+        line.is_removed
+        and line.source_line_no is not None
+        and owner.line_start <= line.source_line_no <= owner.line_end
+        for hunk in patched_file
+        for line in hunk
+    )
+
+
+def _surviving_base_scope(
+    scope_unit: ScopeUnit,
+    patched_file: PatchedFile,
+    base_scope_units: tuple[ScopeUnit, ...],
+) -> ScopeUnit | None:
+    source_line = _source_line_for_target(scope_unit.line_start, patched_file)
+    if source_line is None:
+        return None
+    owners = [
+        base
+        for base in base_scope_units
+        if base.file_path == scope_unit.file_path
+        and base.kind == scope_unit.kind
+        and base.qualified_name == scope_unit.qualified_name
+        and base.line_start <= source_line <= base.line_end
+    ]
+    return owners[0] if len(owners) == 1 else None
+
+
+def _source_line_for_target(target_line: int, patched_file: PatchedFile) -> int | None:
+    """Map a surviving target line to its source line; additions have no source."""
+    offset = 0
+    for hunk in patched_file:
+        # Empty ranges name the line before the change.
+        first_target = hunk.target_start if hunk.target_length else hunk.target_start + 1
+        if target_line < first_target:
+            return target_line + offset
+        for line in hunk:
+            if line.target_line_no == target_line:
+                source_line: int | None = line.source_line_no
+                return source_line
+        source_after = hunk.source_start + max(hunk.source_length, 1)
+        target_after = hunk.target_start + max(hunk.target_length, 1)
+        offset = source_after - target_after
+    return target_line + offset
+
+
+def unscoped_changed_line_ranges(
+    patched_file: PatchedFile,
+    included_scope_units: tuple[ScopeUnit, ...],
+    *,
+    base_scope_units: tuple[ScopeUnit, ...] = (),
+    head_line_count: int,
+    context_lines: int = 2,
+) -> tuple[tuple[int, int], ...]:
+    """Bound changed head regions not already owned by selected scopes.
+
+    Removed text anchors to the following surviving head line, or the last line
+    at EOF. Empty heads have no current source range. Results are merged,
+    inclusive 1-based ranges; source text is never invented for deleted lines.
+    """
+    if head_line_count < 0 or context_lines < 0:
+        raise CoordinateError(
+            "head line count and context lines must be non-negative",
+            kind=CoordinateErrorKind.ARGUMENT_VALIDATION_FAILED,
+        )
+    if head_line_count == 0:
+        return ()
+    base_owners = tuple(
+        owner
+        for scope in included_scope_units
+        if (owner := _surviving_base_scope(scope, patched_file, base_scope_units)) is not None
+    )
+    changed_lines: set[int] = set()
+    for hunk in patched_file:
+        target_cursor = hunk.target_start if hunk.target_length else hunk.target_start + 1
+        for line in hunk:
+            target_line = line.target_line_no
+            if target_line is not None:
+                if line.is_added and not 1 <= target_line <= head_line_count:
+                    raise CoordinateError(
+                        f"added line {target_line} exceeds head line count {head_line_count}",
+                        kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
+                    )
+                if line.is_added and not any(
+                    scope.line_start <= target_line <= scope.line_end
+                    for scope in included_scope_units
+                ):
+                    changed_lines.add(target_line)
+                target_cursor = target_line + 1
+                continue
+            if not line.is_removed:
+                continue
+            if any(
+                line.source_line_no is not None
+                and owner.line_start <= line.source_line_no <= owner.line_end
+                for owner in base_owners
+            ):
+                continue
+            if any(
+                scope.line_start < target_cursor <= scope.line_end for scope in included_scope_units
+            ):
+                continue
+            changed_lines.add(min(max(target_cursor, 1), head_line_count))
+    ranges: list[tuple[int, int]] = []
+    for line_no in sorted(changed_lines):
+        start = max(1, line_no - context_lines)
+        end = min(head_line_count, line_no + context_lines)
+        if ranges and start <= ranges[-1][1] + 1:
+            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], end))
+        else:
+            ranges.append((start, end))
+    return tuple(ranges)
 
 
 def span_is_nonempty(span: Span) -> bool:
@@ -208,6 +339,11 @@ def patched_file_has_removed_lines(patched_file: PatchedFile) -> bool:
     return any(line.is_removed for hunk in patched_file for line in hunk)
 
 
+def source_line_count(source: str) -> int:
+    """Count physical LF-delimited lines without inventing a trailing EOF line."""
+    return source.count("\n") + int(bool(source) and not source.endswith("\n"))
+
+
 def added_line_byte_ranges(patched_file: PatchedFile, source: str) -> tuple[tuple[int, int], ...]:
     """Return half-open whole-line byte ranges for added lines in head source.
 
@@ -216,17 +352,18 @@ def added_line_byte_ranges(patched_file: PatchedFile, source: str) -> tuple[tupl
     (DECISIONS.md#062). Both use the same deterministic diff anchor.
 
     Pure deletions have no target line and produce no range (FUP-050).
-    A target line beyond source raises CoordinateError through
-    `line_range_to_span`, exposing patch/source misalignment.
+    Every target line must exist physically in HEAD, including the end of a
+    contiguous added run. The empty position after a final newline is not source.
     """
-    added = sorted(
-        line.target_line_no
-        for hunk in patched_file
-        for line in hunk
-        if line.is_added and line.target_line_no is not None
-    )
+    added = sorted(added_line_numbers(patched_file))
     if not added:
         return ()
+    head_lines = source_line_count(source)
+    if any(not 1 <= line <= head_lines for line in added):
+        raise CoordinateError(
+            f"added target lines exceed physical HEAD line bounds (1-{head_lines})",
+            kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
+        )
     ranges: list[tuple[int, int]] = []
     run_start = run_end = added[0]
     for line_no in added[1:]:
@@ -267,6 +404,90 @@ def extract_scope_unit_body(scope_unit: ScopeUnit, source_bytes: bytes) -> str:
     )
 
 
+def scope_unit_body_owners(selected_scope_units: tuple[ScopeUnit, ...]) -> tuple[int, ...]:
+    """Assign each selected scope a complete rendered body, in original order.
+
+    Sort containing starts before children; keep the rendered body reaching furthest.
+    Partial overlaps retain both bodies. Equal byte spans use the first selected unit.
+    """
+    owners = list(range(len(selected_scope_units)))
+    ordered = sorted(
+        owners,
+        key=lambda index: (
+            selected_scope_units[index].file_path,
+            selected_scope_units[index].byte_start,
+            -selected_scope_units[index].byte_end,
+            index,
+        ),
+    )
+    owner_index: int | None = None
+    for index in ordered:
+        scope = selected_scope_units[index]
+        if owner_index is None:
+            owner_index = index
+            continue
+        owner = selected_scope_units[owner_index]
+        if scope.file_path != owner.file_path or scope.byte_end > owner.byte_end:
+            owner_index = index
+            continue
+        owners[index] = owner_index
+    return tuple(owners)
+
+
+def scope_unit_source_span(
+    scope_unit: ScopeUnit, source_bytes: bytes, *, include_trailing_newline: bool = False
+) -> Span:
+    """Return the body span, optionally including an actual following rendered LF."""
+    end = scope_unit.byte_end
+    if (
+        include_trailing_newline
+        and end < len(source_bytes)
+        and source_bytes[end : end + 1] == b"\n"
+    ):
+        end += 1
+    return Span(byte_start=scope_unit.byte_start, byte_end=end)
+
+
+def extract_line_range_body(line_start: int, line_end: int, source: str) -> str:
+    """Extract complete UTF-8 source lines after validating their inclusive bounds."""
+    span = line_range_to_span(line_start, line_end, source)
+    return source.encode("utf-8")[span.byte_start : span.byte_end].decode("utf-8")
+
+
+def exact_quote_overlaps_span(
+    quote: str,
+    source: str,
+    *,
+    required_overlap: Span,
+    visible_byte_ranges: tuple[tuple[int, int], ...],
+) -> bool:
+    """Find an exact visible source quote that overlaps a declared source span."""
+    source_bytes, quote_bytes = source.encode("utf-8"), quote.encode("utf-8")
+    if not quote_bytes or not 0 <= required_overlap.byte_start < required_overlap.byte_end <= len(
+        source_bytes
+    ):
+        return False
+    visible = tuple(
+        (start, end) for start, end in visible_byte_ranges if 0 <= start < end <= len(source_bytes)
+    )
+    start = max(0, required_overlap.byte_start - len(quote_bytes) + 1)
+    stop = min(len(source_bytes), required_overlap.byte_end + len(quote_bytes) - 1)
+    position = source_bytes.find(quote_bytes, start, stop)
+    while position >= 0:
+        if any(low <= position and position + len(quote_bytes) <= high for low, high in visible):
+            return True
+        position = source_bytes.find(quote_bytes, position + 1, stop)
+    return False
+
+
+@dataclass(frozen=True, slots=True)
+class BoundedDiffContext:
+    """Bounded rendered diff and the actual HEAD bytes represented within it."""
+
+    text: str
+    head_byte_ranges: tuple[tuple[int, int], ...]
+
+
 def bound_diff_hunks_text(
     patched_file: PatchedFile,
     *,
@@ -283,6 +504,51 @@ def bound_diff_hunks_text(
     The analyze layer sets degraded prompt limits (100 lines, 8192 characters);
     coordinates/ accepts the limits without choosing policy values.
     """
+    return _render_bounded_diff(patched_file, max_lines=max_lines, max_chars=max_chars)[0]
+
+
+def bound_diff_context(
+    patched_file: PatchedFile, source: str, *, max_lines: int, max_chars: int
+) -> BoundedDiffContext:
+    """Render the same bounded diff while recording shown HEAD prefixes only.
+
+    Removed lines and the truncation marker are not current source. A shown
+    prefix counts only when it exactly matches that physical HEAD line.
+    """
+    text, shown_lines = _render_bounded_diff(patched_file, max_lines=max_lines, max_chars=max_chars)
+    ranges: list[tuple[int, int]] = []
+    for line, rendered in shown_lines:
+        if line.target_line_no is None or not (line.is_added or line.is_context):
+            continue
+        prefix = rendered[1:]
+        if not prefix:
+            continue
+        try:
+            span = line_range_to_span(line.target_line_no, line.target_line_no, source)
+            body = extract_line_range_body(line.target_line_no, line.target_line_no, source)
+        except CoordinateError:
+            continue
+        if body.startswith(prefix):
+            shown = prefix
+        elif prefix.startswith(body):
+            # Diff framing can terminate a physical HEAD line that has no LF.
+            shown = body
+        else:
+            continue
+        if shown:
+            ranges.append((span.byte_start, span.byte_start + len(shown.encode("utf-8"))))
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(set(ranges)):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return BoundedDiffContext(text=text, head_byte_ranges=tuple(merged))
+
+
+def _render_bounded_diff(
+    patched_file: PatchedFile, *, max_lines: int, max_chars: int
+) -> tuple[str, tuple[tuple[Line, str], ...]]:
     if max_lines < 0:
         raise CoordinateError(
             f"bound_diff_hunks_text: max_lines must be non-negative, got {max_lines}",
@@ -297,15 +563,16 @@ def bound_diff_hunks_text(
     # Content can use the full budget. On truncation, fit the marker into
     # remaining space, shortening it if necessary; never exceed max_chars.
     pieces: list[str] = []
+    shown_lines: list[tuple[Line, str]] = []
     total_chars = 0
     line_count = 0
 
-    def _append_sentinel_and_return() -> str:
+    def _append_sentinel_and_return() -> tuple[str, tuple[tuple[Line, str], ...]]:
         remaining = max_chars - total_chars
         if remaining > 0:
             sentinel = truncation_sentinel[:remaining]
             pieces.append(sentinel)
-        return "".join(pieces)
+        return "".join(pieces), tuple(shown_lines)
 
     for hunk in patched_file:
         for line in hunk:
@@ -321,29 +588,78 @@ def bound_diff_hunks_text(
                     line_room = remaining - marker_room
                     if line_room > 0:
                         pieces.append(line_text[:line_room])
+                        shown_lines.append((line, line_text[:line_room]))
                         total_chars += line_room
                 return _append_sentinel_and_return()
             pieces.append(line_text)
+            shown_lines.append((line, line_text))
             total_chars += len(line_text)
             line_count += 1
-    return "".join(pieces)
+    return "".join(pieces), tuple(shown_lines)
 
 
-def scope_unit_diff_hunks(scope_unit: ScopeUnit, patched_file: PatchedFile) -> tuple[str, ...]:
+def scope_unit_diff_hunks(
+    scope_unit: ScopeUnit,
+    patched_file: PatchedFile,
+    *,
+    base_scope_units: tuple[ScopeUnit, ...] = (),
+) -> tuple[str, ...]:
     """Return one rendered string per hunk clipped to the scope's line range.
 
     Filter added and context lines by inclusive target bounds. Hunk overlap
     alone would leak changed lines outside the scope into the prompt. Removed
     lines ride along when either neighboring target line is in range, using
     `_clip_hunk_lines`' shared rule. Rewrite headers to match the clipped
-    source/target counts. Return () when no lines survive.
+    source/target counts. A known base owner also retains its removals when
+    the hunk supplies no target-side context. Return () when no lines survive.
     """
+    base_scope = _surviving_base_scope(scope_unit, patched_file, base_scope_units)
+    removed_line_range = (
+        (base_scope.line_start, base_scope.line_end) if base_scope is not None else None
+    )
     surviving: list[str] = []
     for hunk in patched_file:
         clipped = _clip_hunk_to_line_range(
             hunk,
             line_start=scope_unit.line_start,
             line_end=scope_unit.line_end,
+            removed_line_range=removed_line_range,
+        )
+        if clipped is not None:
+            surviving.append(clipped)
+    return tuple(surviving)
+
+
+def line_range_diff_hunks(
+    patched_file: PatchedFile,
+    line_start: int,
+    line_end: int,
+    *,
+    head_line_count: int,
+) -> tuple[str, ...]:
+    """Clip authentic hunks to a primary head range, retaining anchored removals."""
+    if line_start < 1 or line_end < line_start or line_end > head_line_count:
+        raise CoordinateError(
+            f"invalid primary head range ({line_start}, {line_end}) for {head_line_count} lines",
+            kind=CoordinateErrorKind.ARGUMENT_VALIDATION_FAILED,
+        )
+    surviving: list[str] = []
+    for hunk in patched_file:
+        target_cursor = hunk.target_start if hunk.target_length else hunk.target_start + 1
+        removed_lines: list[int] = []
+        for line in hunk:
+            if line.target_line_no is not None:
+                target_cursor = line.target_line_no + 1
+            elif line.is_removed and line.source_line_no is not None:
+                anchor = min(max(target_cursor, 1), head_line_count)
+                if line_start <= anchor <= line_end:
+                    removed_lines.append(line.source_line_no)
+        removed_line_range = (removed_lines[0], removed_lines[-1]) if removed_lines else None
+        clipped = _clip_hunk_to_line_range(
+            hunk,
+            line_start=line_start,
+            line_end=line_end,
+            removed_line_range=removed_line_range,
         )
         if clipped is not None:
             surviving.append(clipped)
@@ -356,6 +672,7 @@ def changed_line_spans(
     *,
     head_source: str,
     base_source: str | None,
+    base_scope_units: tuple[ScopeUnit, ...] = (),
 ) -> ScopeChangedLineSpans:
     """Build per-side changed-line spans for the trivial-scope veto (DECISIONS.md#044).
 
@@ -381,10 +698,17 @@ def changed_line_spans(
         ChangedLineSpan(line_no=n, span=line_range_to_span(n, n, head_source)) for n in added_nos
     )
 
+    base_scope = _surviving_base_scope(scope_unit, patched_file, base_scope_units)
+    removed_line_range = (
+        (base_scope.line_start, base_scope.line_end) if base_scope is not None else None
+    )
     removed_nos: set[int] = set()
     for hunk in patched_file:
         kept = _clip_hunk_lines(
-            hunk, line_start=scope_unit.line_start, line_end=scope_unit.line_end
+            hunk,
+            line_start=scope_unit.line_start,
+            line_end=scope_unit.line_end,
+            removed_line_range=removed_line_range,
         )
         for line in kept:
             src_no = getattr(line, "source_line_no", None)
@@ -410,6 +734,7 @@ def _clip_hunk_lines(
     *,
     line_start: int,
     line_end: int,
+    removed_line_range: tuple[int, int] | None = None,
 ) -> list[Line]:
     """Select raw lines for an inclusive target-side range.
 
@@ -442,6 +767,19 @@ def _clip_hunk_lines(
     # Trailing removals ride with the last target neighbor if it was kept.
     if any_kept_in_block:
         kept.extend(pending_removed)
+    if removed_line_range is not None:
+        kept_ids = {id(line) for line in kept}
+        source_start, source_end = removed_line_range
+        kept = [
+            line
+            for line in hunk
+            if id(line) in kept_ids
+            or (
+                line.is_removed
+                and line.source_line_no is not None
+                and source_start <= line.source_line_no <= source_end
+            )
+        ]
     return kept
 
 
@@ -450,13 +788,19 @@ def _clip_hunk_to_line_range(
     *,
     line_start: int,
     line_end: int,
+    removed_line_range: tuple[int, int] | None = None,
 ) -> str | None:
     """Render the selected lines with corrected source/target header counts.
 
     Use `_clip_hunk_lines` for selection; return None when no lines survive.
     """
     hunk_lines: list[Line] = list(hunk)
-    kept = _clip_hunk_lines(hunk, line_start=line_start, line_end=line_end)
+    kept = _clip_hunk_lines(
+        hunk,
+        line_start=line_start,
+        line_end=line_end,
+        removed_line_range=removed_line_range,
+    )
 
     if not kept:
         return None
@@ -470,7 +814,17 @@ def _clip_hunk_to_line_range(
             source_lines.append(line)
         if line.is_added or line.is_context:
             target_lines.append(line)
-    target_start = target_lines[0].target_line_no if target_lines else 0
+    if target_lines:
+        target_start = target_lines[0].target_line_no
+    else:
+        target_start = (
+            hunk.target_start if hunk.target_length == 0 else max(0, hunk.target_start - 1)
+        )
+        for original_line in hunk_lines:
+            if original_line is kept[0]:
+                break
+            if original_line.target_line_no is not None:
+                target_start = original_line.target_line_no
     source_count = len(source_lines)
     target_count = len(target_lines)
 

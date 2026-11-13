@@ -14,6 +14,8 @@ describe("prettyModel", () => {
     // Fireworks renders the version dot as `p`; Baseten uses a real dot. Both → GLM-5.2.
     expect(prettyModel("accounts/fireworks/models/glm-5p2")).toBe("GLM-5.2");
     expect(prettyModel("zai-org/GLM-5.2")).toBe("GLM-5.2");
+    expect(prettyModel("accounts/fireworks/models/glm-5p3-flash")).toBe("GLM-5.3 Flash");
+    expect(prettyModel("zai-org/GLM-5.3-Flash")).toBe("GLM-5.3 Flash");
   });
 
   test("unknown slug is returned verbatim (no lossy guess)", () => {
@@ -25,12 +27,13 @@ describe("prettyModel", () => {
   });
 });
 
-// Pin the explicit GPT-5.6 tier labels; unsupported forms stay verbatim.
-
-test("GPT-5.6 explicit slugs humanize per tier", () => {
+test("explicit GPT versions and tiers get short labels", () => {
   expect(prettyModel("gpt-5.6-sol")).toBe("GPT-5.6 Sol");
   expect(prettyModel("gpt-5.6-terra")).toBe("GPT-5.6 Terra");
   expect(prettyModel("gpt-5.6-luna")).toBe("GPT-5.6 Luna");
+  expect(prettyModel("gpt-6.1-sol")).toBe("GPT-6.1 Sol");
+  expect(prettyModel("gpt-6.1-terra")).toBe("GPT-6.1 Terra");
+  expect(prettyModel("gpt-6-luna")).toBe("GPT-6 Luna");
 });
 
 test("non-family gpt shapes fall through verbatim (no lossy guess)", () => {

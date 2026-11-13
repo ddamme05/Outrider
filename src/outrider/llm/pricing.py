@@ -1,33 +1,8 @@
-# Host-qualified token-cost rate table, keyed by `(profile_id, model)`.
-# See specs/2026-05-05-llm-provider-wrapper.md and DECISIONS.md #016 Amended 2026-05-05.
-# Per DECISIONS.md#056: the same model slug served by two hosts bills at two rates,
-# so identity is `(profile_id, model)` via `pricing_key`, not `model` alone.
-"""Host-qualified token-cost rate table + `PRICING_VERSION` constant.
+"""Calculate model-call costs from versioned host and model rates.
 
-Backs `LLMCallEvent.cost_usd` provider-side computation per the canonical
-contract: `AnthropicProvider.complete()` step 8 reads this table,
-multiplies token counts × rates, and produces `cost_usd`. Step 9
-populates `LLMCallEvent.pricing_version` from `PRICING_VERSION` so
-historical-row replay reads the version directly rather than depending
-on an external version-effective-range map (matches the
-`severity-policy-versioned-for-replay` precedent from DECISIONS#001).
-
-Four billable token classes per Anthropic's billing surface:
-  - regular input (uncached portion)
-  - cache write (`cache_creation_input_tokens` — premium over input)
-  - cache read (`cache_read_input_tokens` — discount under input)
-  - output
-
-`Decimal` precision to avoid IEEE-754 drift; the cast to `float` at
-`LLMCallEvent` construction is the documented precision boundary
-(deferred to a future DECISIONS amendment per Pending #6 if precision
-matters at scales V1 doesn't reach).
-
-When rates change:
-  1. Bump `PRICING_VERSION` (the constant string immediately below).
-  2. Update `RATE_TABLE` with new `ModelPricing` entries.
-  3. Update `EXPECTED_PRICING_DIGEST` in `tests/unit/test_llm_pricing.py`
-     so the digest-pinning test catches the change loud.
+Decimal arithmetic keeps recorded USD totals stable. Call records include
+their pricing version so stored costs remain explainable after rates change.
+Update PRICING_VERSION and the pricing test digest when changing the rate table.
 """
 
 import re
@@ -59,15 +34,8 @@ __all__ = [
 ]
 
 
-# — dated model IDs (e.g., `claude-haiku-4-5-20251001`)
-# are accepted by `ModelConfig`'s widened regex  but `RATE_TABLE` is
-# keyed only by undated aliases (`claude-haiku-4-5`). Without normalization,
-# `AnthropicProvider`'s eager pricing-coverage check would reject every dated
-# pin and step-8 cost computation would `KeyError`. The dated form is the SDK
-# catalog's exact-pin shape; pricing is identical to the alias.
-#
-# Pattern: trailing `-YYYYMMDD` (8 digits, anchored to end). Matches the
-# regex exactly. Does NOT match `-1` or `-2025` (wrong digit count).
+# Dated exact model IDs use their undated alias's rate. Only a trailing
+# eight-digit date is stripped; audit records keep the original identifier.
 _DATED_SUFFIX_PATTERN: Final = re.compile(r"-\d{8}$")
 
 
@@ -121,50 +89,12 @@ append-only audit log and break replay reconstruction's
 version-keyed cost aggregation.
 """
 
-# Bump on every rate-table change. The digest-pinning test in
-# `test_llm_pricing.py` fails if rates change without a version bump,
-# preventing silent replay drift.
-#
-# v1 (initial): claude-sonnet-4-7 + claude-haiku-4-5
-# v2 : replaced claude-sonnet-4-7 with claude-sonnet-4-6
-#   (the 4-7 model didn't exist in the Anthropic SDK 0.100 catalog;
-#   canonical model name correction)
-# v3 : added zai-org/GLM-5.2 (Baseten) for the GLM provider mode. Existing
-#   Anthropic rates unchanged; the bump records v3 on new calls so GLM-era
-#   reviews replay under the GLM-aware table. Per-MTok figures confirmed against
-#   baseten.co/pricing (1.40 in / 0.26 cached-in / 4.40 out); the Baseten pricing
-#   page is not in the docs mirror, so re-verify live if the rate table changes.
-# v4 (DECISIONS.md#056): host-qualified re-key. RATE_TABLE + MIN_CACHEABLE_TOKENS
-#   are now keyed by `(profile_id, model)` (the same slug served by two hosts bills
-#   at two rates), and compute_cost_usd / min_cacheable_tokens take a profile_id.
-#   No rate VALUES changed — the bump records v4 so a host-qualified call replays
-#   under the host-aware table rather than the v3 model-only one.
-# v5 (Sonnet 5 migration): added ("anthropic", "claude-sonnet-5") at its
-#   2026-06-30 INTRODUCTORY rate ($2.00 in / $10.00 out per MTok; cache read
-#   $0.20 = 0.10× input, cache write $2.50 = 1.25× input). Introductory pricing
-#   runs through 2026-08-31; STANDARD pricing ($3.00 in / $15.00 out) takes effect
-#   2026-09-01 and needs a bump then (FUP-201, now the v8 slot). The prior
-#   claude-sonnet-4-6 rates are RETAINED for historical replay + the GLM-vs-Anthropic
-#   scorecard baseline. Anthropic pricing values are runtime-enforced and can drift
-#   between snapshots — verify live before that bump.
-# v6 (DECISIONS.md#056 amendment 2026-07-06): added
-#   ("fireworks", "accounts/fireworks/models/glm-5p2") at $1.40 in / $0.14 cached-read /
-#   $4.40 out (Standard path), verified live against fireworks.ai + the 6/30 blog. Fireworks'
-#   cached-input DIVERGES from Baseten's $0.26 (dropped to $0.14 on 6/30) — the host-qualified
-#   key resolves both. No Anthropic/Baseten rate VALUES changed; the bump records v6 so a
-#   Fireworks-host call replays under this table.
-# v7 (specs/2026-07-18-openai-native-host.md): added the native OpenAI host — three
-#   ("openai", gpt-5.6-{sol,terra,luna}) rows at the Standard short-context rates
-#   (mirror openai-api snapshot 2026-07-18: Sol $5.00/$6.25/$0.50/$30.00 per MTok
-#   in/write/read/out; Terra $2.50/$3.125/$0.25/$15.00; Luna $1.00/$1.25/$0.10/$6.00;
-#   writes are 1.25× input across the family) — PLUS the versioned long-context/tier
-#   policy (LONG_CONTEXT_POLICY: >272K reprices the FULL request 2×/2×/2×/1.5×;
-#   SERVICE_TIER_MULTIPLIERS: flex 0.5×, priority 2× short-context-only) and the
-#   CostUnpricedReason classification AND the tier-echo-expecting profile set
-#   (TIER_ECHO_EXPECTED_PROFILE_IDS — openai), all folded into the widened v7 digest.
-#   No prior rate VALUES changed. The Sonnet 5 standard-rate bump (FUP-201) now
-#   targets v8.
-PRICING_VERSION: Final[str] = "v7"
+# Version the host-qualified rates (DECISIONS.md#056) together with long-context,
+# service-tier and unpriced-outcome policy (specs/2026-07-18-openai-native-host.md).
+# The digest-pinning test rejects unversioned changes. Retain older model rows
+# for replay and saved baselines. Current rates are verified against the official
+# pricing pages; saved events retain their recorded version and cost.
+PRICING_VERSION: Final[str] = "v8"
 if not re.fullmatch(PRICING_VERSION_PATTERN, PRICING_VERSION):
     raise RuntimeError(
         f"PRICING_VERSION must match {PRICING_VERSION_PATTERN!r} "
@@ -192,44 +122,20 @@ class ModelPricing(NamedTuple):
     out_per_token: Decimal
 
 
-# Anthropic per-token rates as of the V1 PRICING_VERSION bump.
-# Sources :
-#   - claude-sonnet-5: $2.00/MTok input, $10.00/MTok output, $0.20/MTok cache read,
-#     $2.50/MTok cache write — 2026-06-30 INTRODUCTORY rate (through 2026-08-31;
-#     standard $3.00/$15.00 from 2026-09-01, see PRICING_VERSION v5 note).
-#   - claude-sonnet-4-6: $3.00/MTok input, $15.00/MTok output,
-#     $0.30/MTok cache read, $3.75/MTok cache write (1.25× input premium).
-#   - claude-haiku-4-5: $1.00/MTok input, $5.00/MTok output,
-#     $0.10/MTok cache read, $1.25/MTok cache write.
-# Per-token = per-MTok / 1_000_000.
-#
-# Wrapped in `MappingProxyType` so runtime mutation raises `TypeError`
-# .
-# The `Final` annotation alone is a type-checker hint; `MappingProxyType`
-# enforces immutability at runtime. A test fixture that does
-# `RATE_TABLE["X"] = cheap_pricing` fails loudly instead of silently
-# mutating module state for the rest of the pytest session.
-#
-# (sweep against patterns): the dict literal is
-# inlined directly into `MappingProxyType(...)` rather than bound to a
-# module-level `_RATE_TABLE_RAW` name. The underscore-prefix convention
-# alone doesn't prevent `from outrider.llm.pricing import _RATE_TABLE_RAW`
-# followed by `_RATE_TABLE_RAW["X"] = cheap_pricing` — same defense-in-
-# depth class as Copilot's logging-filter finding (a back-door that
-# bypasses the documented protection). The inlined literal has no
-# importable name, so the only surface is the immutable proxy.
-# Keyed by `(profile_id, model)` per DECISIONS.md#056 — the same slug served by two
-# hosts bills at two rates. Anthropic-native models sit under `"anthropic"`; GLM 5.2
-# under `"baseten"`. Build the key via `pricing_key(profile_id, model)`.
+# Rates verified 2026-10-31, in USD per token (per-million rates / 1_000_000).
+# Sources: platform.claude.com/docs/en/about-claude/pricing,
+# baseten.co/pricing, fireworks.ai/models/fireworks/glm-5p3[-flash], and
+# developers.openai.com/api/docs/pricing. Cache writes use the default lifetime
+# (Anthropic: 5 minutes; OpenAI: 30 minutes). GLM hosts have no write-token class.
+# Keep host-qualified keys: the same model can have different cache rates.
+# Inline the backing dictionary so the immutable proxy has no mutable alias.
 RATE_TABLE: Final[Mapping[tuple[str, str], ModelPricing]] = MappingProxyType(
     {
         ("anthropic", "claude-sonnet-5"): ModelPricing(
-            # 2026-06-30 INTRODUCTORY rate (through 2026-08-31; $3.00/$15.00 standard
-            # from 2026-09-01 — see the PRICING_VERSION v5 note + FUP-201).
-            in_per_token=Decimal("0.000002"),  # 2.00/MTok (intro)
+            in_per_token=Decimal("0.000002"),  # 2.00/MTok
             cache_write_per_token=Decimal("0.0000025"),  # 2.50/MTok (1.25× input)
             cache_read_per_token=Decimal("0.0000002"),  # 0.20/MTok (0.10× input)
-            out_per_token=Decimal("0.00001"),  # 10.00/MTok (intro)
+            out_per_token=Decimal("0.00001"),  # 10.00/MTok
         ),
         ("anthropic", "claude-sonnet-4-6"): ModelPricing(
             in_per_token=Decimal("0.000003"),  # 3.00/MTok
@@ -243,26 +149,12 @@ RATE_TABLE: Final[Mapping[tuple[str, str], ModelPricing]] = MappingProxyType(
             cache_read_per_token=Decimal("0.0000001"),  # 0.10/MTok
             out_per_token=Decimal("0.000005"),  # 5.00/MTok
         ),
-        # GLM 5.2 on Baseten (PRICING_VERSION v3 added the rates; v4 host-qualified
-        # the key). Per-MTok figures confirmed against baseten.co/pricing (not in the
-        # docs mirror — re-verify live on a rate change). cache_write_per_token=0:
-        # Baseten automatic prefix caching has no cache-write/creation token class;
-        # read_usage's PROMPT_INCLUDES_CACHED arm returns cache_write=0, so the write
-        # term is inert for this host.
         ("baseten", "zai-org/GLM-5.2"): ModelPricing(
             in_per_token=Decimal("0.0000014"),  # 1.40/MTok
             cache_write_per_token=Decimal("0"),  # no Baseten cache-write class
-            cache_read_per_token=Decimal("0.00000026"),  # 0.26/MTok (cached input)
+            cache_read_per_token=Decimal("0.00000014"),  # 0.14/MTok (cached input)
             out_per_token=Decimal("0.0000044"),  # 4.40/MTok
         ),
-        # GLM 5.2 on Fireworks (PRICING_VERSION v6; DECISIONS.md#056 amendment 2026-07-06).
-        # Verified 2026-07-06 against fireworks.ai/models/fireworks/glm-5p2 AND the 6/30 blog:
-        # "$1.40 / $0.14 / $4.40 Per 1M Tokens (input/cached input/output)" — the STANDARD path
-        # (the Fast path, $2.10/$0.21/$6.60 at ~2× throughput, is not what this provider calls).
-        # cache_read DIVERGES from Baseten's 0.26 (Fireworks dropped cached-input to 0.14 on
-        # 6/30) — the "same slug, two hosts, two rates" case the host-qualified key exists for.
-        # cache_write_per_token=0: Fireworks automatic prompt caching surfaces no cache-write
-        # token class, and the provider sets cache_write_tokens=0 (PROMPT_INCLUDES_CACHED).
         ("fireworks", "accounts/fireworks/models/glm-5p2"): ModelPricing(
             in_per_token=Decimal("0.0000014"),  # 1.40/MTok
             cache_write_per_token=Decimal("0"),  # no Fireworks cache-write class
@@ -294,6 +186,60 @@ RATE_TABLE: Final[Mapping[tuple[str, str], ModelPricing]] = MappingProxyType(
             cache_write_per_token=Decimal("0.00000125"),  # 1.25/MTok (1.25× input)
             cache_read_per_token=Decimal("0.0000001"),  # 0.10/MTok (0.10× input)
             out_per_token=Decimal("0.000006"),  # 6.00/MTok
+        ),
+        ("anthropic", "claude-sonnet-5-5"): ModelPricing(
+            in_per_token=Decimal("0.000002"),
+            cache_write_per_token=Decimal("0.0000025"),
+            cache_read_per_token=Decimal("0.0000001"),
+            out_per_token=Decimal("0.00001"),
+        ),
+        ("anthropic", "claude-haiku-5-5"): ModelPricing(
+            in_per_token=Decimal("0.0000001"),
+            cache_write_per_token=Decimal("0.000000125"),
+            cache_read_per_token=Decimal("0.00000001"),
+            out_per_token=Decimal("0.0000005"),
+        ),
+        ("baseten", "zai-org/GLM-5.3"): ModelPricing(
+            in_per_token=Decimal("0.0000014"),
+            cache_write_per_token=Decimal("0"),
+            cache_read_per_token=Decimal("0.00000014"),
+            out_per_token=Decimal("0.0000044"),
+        ),
+        ("baseten", "zai-org/GLM-5.3-Flash"): ModelPricing(
+            in_per_token=Decimal("0.00000015"),
+            cache_write_per_token=Decimal("0"),
+            cache_read_per_token=Decimal("0.00000003"),
+            out_per_token=Decimal("0.0000005"),
+        ),
+        ("fireworks", "accounts/fireworks/models/glm-5p3"): ModelPricing(
+            in_per_token=Decimal("0.0000014"),
+            cache_write_per_token=Decimal("0"),
+            cache_read_per_token=Decimal("0.00000026"),
+            out_per_token=Decimal("0.0000044"),
+        ),
+        ("fireworks", "accounts/fireworks/models/glm-5p3-flash"): ModelPricing(
+            in_per_token=Decimal("0.00000015"),
+            cache_write_per_token=Decimal("0"),
+            cache_read_per_token=Decimal("0.00000003"),
+            out_per_token=Decimal("0.0000005"),
+        ),
+        ("openai", "gpt-6.1-sol"): ModelPricing(
+            in_per_token=Decimal("0.000002"),
+            cache_write_per_token=Decimal("0.0000025"),
+            cache_read_per_token=Decimal("0.0000001"),
+            out_per_token=Decimal("0.00001"),
+        ),
+        ("openai", "gpt-6.1-terra"): ModelPricing(
+            in_per_token=Decimal("0.000001"),
+            cache_write_per_token=Decimal("0.00000125"),
+            cache_read_per_token=Decimal("0.00000005"),
+            out_per_token=Decimal("0.000005"),
+        ),
+        ("openai", "gpt-6-luna"): ModelPricing(
+            in_per_token=Decimal("0.0000001"),
+            cache_write_per_token=Decimal("0.000000125"),
+            cache_read_per_token=Decimal("0.00000001"),
+            out_per_token=Decimal("0.0000005"),
         ),
     }
 )
@@ -349,6 +295,16 @@ MIN_CACHEABLE_TOKENS: Final[Mapping[tuple[str, str], int | None]] = MappingProxy
         ("openai", "gpt-5.6-sol"): 1024,
         ("openai", "gpt-5.6-terra"): 1024,
         ("openai", "gpt-5.6-luna"): 1024,
+        ("anthropic", "claude-sonnet-5-5"): 512,
+        ("anthropic", "claude-haiku-5-5"): 512,
+        # No model-specific cache floor is documented for these GLM releases.
+        ("baseten", "zai-org/GLM-5.3"): None,
+        ("baseten", "zai-org/GLM-5.3-Flash"): None,
+        ("fireworks", "accounts/fireworks/models/glm-5p3"): None,
+        ("fireworks", "accounts/fireworks/models/glm-5p3-flash"): None,
+        ("openai", "gpt-6.1-sol"): 1024,
+        ("openai", "gpt-6.1-terra"): 1024,
+        ("openai", "gpt-6-luna"): 1024,
     }
 )
 
@@ -419,11 +375,9 @@ class LongContextPolicy(NamedTuple):
     out_mult: Decimal
 
 
-# >272K-input requests reprice the FULL request (mirror openai-api snapshot
-# 2026-07-18, per-model pages: "2x input and 1.5x output for the full request";
-# the pricing table's long-context columns are exactly 2×/2×/2×/1.5× of each
-# flat row for all three models). Keyed like RATE_TABLE; absence = no
-# documented long-context repricing (every non-5.6 key today).
+# OpenAI reprices the whole request above 272K input tokens (2x input/cache,
+# 1.5x output). Haiku 5.5 reprices every token class at 5x above 100K input
+# tokens, counting uncached input plus both cache classes. Other rows stay flat.
 LONG_CONTEXT_POLICY: Final[Mapping[tuple[str, str], LongContextPolicy]] = MappingProxyType(
     {
         key: LongContextPolicy(
@@ -437,6 +391,18 @@ LONG_CONTEXT_POLICY: Final[Mapping[tuple[str, str], LongContextPolicy]] = Mappin
             ("openai", "gpt-5.6-sol"),
             ("openai", "gpt-5.6-terra"),
             ("openai", "gpt-5.6-luna"),
+            ("openai", "gpt-6.1-sol"),
+            ("openai", "gpt-6.1-terra"),
+            ("openai", "gpt-6-luna"),
+        )
+    }
+    | {
+        ("anthropic", "claude-haiku-5-5"): LongContextPolicy(
+            threshold_tokens=100_000,
+            in_mult=Decimal("5"),
+            cache_write_mult=Decimal("5"),
+            cache_read_mult=Decimal("5"),
+            out_mult=Decimal("5"),
         )
     }
 )
@@ -483,13 +449,10 @@ def compute_cost_outcome(
 ) -> PricingOutcome:
     """The canonical pricing authority (specs/2026-07-18-openai-native-host.md).
 
-    Derives EVERY policy decision internally: the >272K long-context
-    determination from the raw `billed_prompt_tokens` wire count, AND whether a
-    service-tier echo is expected from `profile_id` membership in the versioned
-    `TIER_ECHO_EXPECTED_PROFILE_IDS` — callers supply wire facts only, never
-    policy booleans, so an OpenAI caller cannot misprice an absent/auto/scale
-    echo as Standard by omitting a flag. Tier-less hosts (Anthropic, the GLM
-    hosts) price flat, byte-identical to the pre-v7 behavior. Raises `KeyError`
+    Derives long-context pricing from token counts and tier requirements from
+    the versioned host policy. Anthropic's disjoint input/cache counts sum to
+    prompt length; OpenAI uses the raw `billed_prompt_tokens` wire count.
+    Callers supply wire facts, never policy booleans. Raises `KeyError`
     on an unpriced `(profile_id, model)` (coverage bug, same as always);
     returns `Unpriced(reason)` for the documented-but-unpriceable echoes rather
     than fabricating a cost.
@@ -521,10 +484,17 @@ def compute_cost_outcome(
 
     long_context_candidate = LONG_CONTEXT_POLICY.get(key)
     long_policy: LongContextPolicy | None = None
+    # Anthropic reports disjoint input classes; all count toward prompt length.
+    # OpenAI retains its raw billed-prompt count because its normalization differs.
+    prompt_tokens = (
+        input_tokens + cache_write_tokens + cache_read_tokens
+        if profile_id == "anthropic"
+        else billed_prompt_tokens
+    )
     if (
         long_context_candidate is not None
-        and billed_prompt_tokens is not None
-        and billed_prompt_tokens > long_context_candidate.threshold_tokens
+        and prompt_tokens is not None
+        and prompt_tokens > long_context_candidate.threshold_tokens
     ):
         long_policy = long_context_candidate
     if long_policy is not None and expects_tier_echo and service_tier == "priority":

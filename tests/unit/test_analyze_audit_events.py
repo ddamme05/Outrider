@@ -1,20 +1,8 @@
-# See specs/2026-05-19-analyze-foundation.md §5 and
-# specs/2026-06-14-observed-query-library-v1.md (ObservedSkipShadowEvent).
-"""Analyze-event subclasses: shape + validator + discriminator tests.
+"""Check analysis audit-event validation and typed replay.
 
-Pins:
-- `AnalyzeCompletedEvent`: counter cross-field validators
-  (`_enforce_proposal_accounting`, `_enforce_response_accounting`).
-- `FindingProposalRejectedEvent`: bidirectional
-  `claimed_evidence_tier`/`rejection_reason` coupling; every rejection
-  reason accepted; pattern guards on hash fields.
-- `AnalyzeResponseRejectedEvent`: `response_hash` pattern; Literal
-  `rejection_reason`.
-- `ObservedSkipShadowEvent` (Cost Lever 3): outcome/blocker consistency,
-  sub-model line-order, file_path canonicalization, node_id pinning.
-- All four: frozen + extra="forbid", discriminator routing through
-  `AuditEventAdapter`.
-"""
+Cover proposal and response counts, rejection details, hash fields, skip-shadow
+coverage, paths, and immutable models. See specs/2026-05-19-analyze-foundation.md
+§5 and specs/2026-06-14-observed-query-library-v1.md."""
 
 from __future__ import annotations
 
@@ -572,6 +560,26 @@ def test_finding_proposal_rejected_frozen() -> None:
     event = FindingProposalRejectedEvent(**_rejected_proposal_kwargs())
     with pytest.raises(ValidationError, match="Instance is frozen"):
         event.file_path = "other.py"  # type: ignore[misc]
+
+
+def test_malformed_proposal_rejection_has_no_claimed_metadata() -> None:
+    kwargs = _rejected_proposal_kwargs(
+        rejection_reason="raw_proposal_invalid",
+        claimed_finding_type_hash=None,
+        claimed_finding_type_len=None,
+        claimed_evidence_tier=None,
+    )
+    event = FindingProposalRejectedEvent(**kwargs)
+    assert event.claimed_finding_type_hash is None
+    for field, value in (
+        ("claimed_finding_type_hash", "a" * 16),
+        ("claimed_finding_type_len", 0),
+        ("claimed_evidence_tier", EvidenceTier.JUDGED),
+    ):
+        with pytest.raises(ValidationError, match="requires absent type and tier metadata"):
+            FindingProposalRejectedEvent(**{**kwargs, field: value})
+    with pytest.raises(ValidationError, match="validated proposals require"):
+        FindingProposalRejectedEvent(**{**kwargs, "rejection_reason": "span_outside_file"})
 
 
 def test_finding_proposal_rejected_extra_forbid() -> None:

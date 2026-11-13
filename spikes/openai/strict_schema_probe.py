@@ -1,50 +1,19 @@
-"""Arc 2 — strict-schema feasibility probe (the arc's ONLY entrypoint).
+"""Run the experiment for strict analyze schemas and structured refusals.
 
-Answers two unverified questions with ONE bounded paid capture
-(specs/2026-07-20-arc2-strict-schema-feasibility.md):
+See specs/2026-07-20-arc2-strict-schema-feasibility.md. --dry-run and --self-test
+are free. Paid execution requires both --paid and --i-authorize-spend, and makes
+at most five real calls. The production OpenAI host remains unadmitted
+(DECISIONS.md#056; FUP-246).
 
-  1. Does the live API accept Outrider's exact proof-preserving,
-     evidence-tier-discriminated strict `json_schema`?
-  2. Does GPT-5.6 populate the API-owned `message.refusal` channel for it —
-     the discriminator the production `json_object` shape does not have, and
-     the reason the whole `openai` host is production-unadmitted
-     (`DECISIONS.md#056`, 2026-07-19 amendment / FUP-246 trigger 2)?
+Before calling, rebuild the reviewed contract and check every request's digest
+and byte cap against plan.REVIEWED_CAPS. Write a fresh evidence directory and
+retain each response or failure without retries. verifier.py derives the verdict
+from saved fixture bytes rather than trusting a recorded conclusion.
 
-**Gate 2 (current): the paid runner exists and SPENDS when authorized.**
-`--dry-run` and `--self-test` remain free. `--paid` requires the literal
-`--i-authorize-spend`; without it the run refuses before a client is constructed.
-
-The paid procedure, in order: rebuild the reviewed `PaidProbeContract` from the
-single dry-run manifest plus `plan.REVIEWED_CAPS`; preflight EVERY row against its
-exact request digest and byte cap (any violation aborts at zero spend); reserve a
-FRESH evidence directory, refusing rather than overwriting prior evidence; persist
-the contract before call one; then call rows in frozen order inside ONE event loop,
-persisting each fixture and rewriting `attempt_ledger.json` after every call, and
-stopping on the `terminal_reason` the verifier reports. No retries. A transport or
-shape failure is kept as evidence, not discarded. The verdict is derived from the
-persisted ledger; nothing stored is authoritative.
-
-**Caps and limits.** `plan.REVIEWED_CAPS` holds the caps a human reviewed on
-2026-07-20 — the EXACT measured per-row sizes, no headroom, because each row's
-request digest is already bound and re-derived, so any drift invalidates the
-contract before a byte cap would matter. `max_completion_tokens` rides under the
-profile-declared `token_limit_param`, which SHAPER v3 established is
-`max_completion_tokens` for GPT-5.6. Caps are generation-affecting, so the contract
-binds them into identity
-— see `arc2/contracts.py`, and `arc2/verifier.py` for how a capture is replayed
-against that identity.
-
-Deliberately NOT invented up front: numeric caps before the real request bodies
-exist would be conformance theater, and two implementations could spend
-materially differently while both claiming to follow the spec.
-
-Run (FREE):
+Free example:
     uv run --no-sync python spikes/openai/strict_schema_probe.py --dry-run
-    uv run --no-sync python spikes/openai/strict_schema_probe.py --self-test
-
-Run (SPENDS, up to five real calls):
-    op run --env-file=.env -- uv run --no-sync python \\
-      spikes/openai/strict_schema_probe.py --paid --i-authorize-spend
+Paid example:
+    uv run --no-sync python spikes/openai/strict_schema_probe.py --paid --i-authorize-spend
 """
 
 from __future__ import annotations
@@ -287,7 +256,7 @@ def _finding_body(**overrides: Any) -> str:
         "trace_path": None,
         "title": "SQL built by concatenation",
         "description": "User input is concatenated into a SQL string.",
-        "evidence": "conn.execute(...)",
+        "evidence": DEFECT_SCENARIO.source.splitlines()[EXPECTED_FINDING.line_start - 1],
         # The scenario authority's coordinates — NOT hand-picked. Hand-authored
         # line numbers agreed with a stale expectation instead of with the file,
         # which is what concealed the three-frame disagreement.

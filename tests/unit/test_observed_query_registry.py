@@ -1,19 +1,9 @@
-"""OBSERVED-tier query registry surface + digest behavior (Cost Lever 3).
+"""Check structural finding metadata, query lookup, and cache invalidation.
 
-Pins the contracts the deterministic OBSERVED producer (a later increment)
-depends on, plus the cache-key digest fold that the round-3 review of
-specs/2026-06-14-observed-query-library-v1.md added:
-
-- Every OBSERVED query carries metadata (finding_type in SEVERITY_POLICY,
-  a query_class, non-empty title/description).
-- V1 is default-deny: every query is SIGNAL_ONLY (zero SKIP_SAFE seeds).
-- OBSERVED ids resolve via get_query_source/match but are a SEPARATE
-  surface from REGISTERED_QUERY_IDS (the structural LLM-citation set).
-- `_registry_digest` folds every non-excluded ObservedQuery field (today
-  language/class/finding_type/title/description/binding, derived from the
-  model per FUP-181), so a metadata edit — not just a .scm body edit —
-  invalidates the analyze cache.
-"""
+Queries must carry policy types and static text. Signal-only queries cannot
+authorize model skips; the model-citable registry remains separate. Metadata
+changes must affect the registry digest as well as query-source changes.
+See specs/2026-06-14-observed-query-library-v1.md and FUP-181."""
 
 from __future__ import annotations
 
@@ -164,11 +154,9 @@ def test_digest_folds_every_non_excluded_field() -> None:
     subset, so a future field can't silently miss the cache key."""
     bodies = dict(registry._QUERY_BODIES)
     base = registry._registry_digest(bodies, registry._OBSERVED_QUERIES, registry.VALUE_PREDICATES)
-    oid = next(iter(registry._OBSERVED_QUERIES))
+    oid = "python.tls_verify_disabled"
     orig = registry._OBSERVED_QUERIES[oid]
-    folded_fields = set(registry._OBSERVED_QUERIES[oid].model_fields) - (
-        registry._DIGEST_EXCLUDED_OBSERVED_FIELDS
-    )
+    folded_fields = set(ObservedQuery.model_fields) - registry._DIGEST_EXCLUDED_OBSERVED_FIELDS
     other_ft = next(ft for ft in FindingType if ft is not orig.finding_type)
     # A distinct, type-valid mutation per folded field.
     mutations = {
@@ -186,6 +174,7 @@ def test_digest_folds_every_non_excluded_field() -> None:
         # Eligibility flips which matches the module-scope arm admits —
         # a cached row from before the flip must not serve after it.
         "module_scope_eligible": not orig.module_scope_eligible,
+        "requires_context": not orig.requires_context,
     }
     assert folded_fields <= set(mutations), (
         f"new folded field(s) {folded_fields - set(mutations)} need a mutation case here"

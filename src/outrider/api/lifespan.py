@@ -1,21 +1,11 @@
-# See specs/2026-05-16-audit-persister.md.
-# See DECISIONS.md#056: host/profile selector + build_graph identity closure.
-"""Construct FastAPI dependencies at startup and close them at shutdown.
+"""Create shared application services at startup and close them at shutdown.
 
-Startup proceeds through persistence, LLM host/provider (DECISIONS.md#056),
-GitHub credentials (DECISIONS.md#070), graph dependencies, graph construction,
-dispatch, and background sweeps. Request handlers resolve these dependencies
-through app.state. Stage comments explain the required ordering.
+build_lifespan prepares the database, model and GitHub providers, review graph,
+dispatcher and maintenance tasks. Routes find them on app.state. Cleanup runs
+in reverse order even when an earlier close fails.
 
-Demo mode constructs persistence and read-side state only, then yields and
-returns. It skips live review dependencies and the truncation-secret gate.
-
-AsyncExitStack unwinds resources in LIFO order even when cleanup raises,
-including provider closure (FUP-011). The log-content filter is reapplied after
-handler registration (FUP-006).
-
-Production uses the module-level lifespan. build_lifespan accepts factories
-and a fingerprint-check override for tests.
+Demo mode builds only read-side services. See specs/2026-05-16-audit-persister.md,
+DECISIONS.md#056, #070 and FUP-011, FUP-006.
 """
 
 from __future__ import annotations
@@ -55,6 +45,7 @@ from outrider.llm.host_profiles import (
     PRODUCTION_UNADMITTED_HOSTS,
     resolve_host_identity,
     resolve_host_profile,
+    validate_available_models,
 )
 from outrider.llm.logging import register_filter_on_all_handlers
 from outrider.llm.openai_compatible_provider import OpenAICompatibleProvider
@@ -263,6 +254,7 @@ def _default_provider_factory(
     Host, reasoning, and ModelConfig come from the lifespan's single validated
     read. Provider construction emits the privacy notice (DECISIONS#015 point 4).
     """
+    validate_available_models(host, model_config.models())
     provider: LLMProvider
     if host == ANTHROPIC_PROFILE_ID:
         try:
@@ -286,18 +278,7 @@ def _default_provider_factory(
                 f"{profile.api_key_env} env var is required for OUTRIDER_LLM_HOST={host!r}."
             ) from exc
         # Restrict paid calls to the distinct configured model slugs.
-        models = tuple(
-            sorted(
-                {
-                    model_config.triage_model,
-                    model_config.analyze_model,
-                    model_config.standard_analyze_model,
-                    model_config.synthesize_model,
-                    model_config.trace_model,
-                    model_config.patch_model,
-                }
-            )
-        )
+        models = tuple(sorted(set(model_config.models())))
         provider = OpenAICompatibleProvider(
             api_key=SecretStr(api_key_raw),
             profile=profile,
@@ -445,7 +426,7 @@ def build_lifespan(
             # Use the provider's identity source for completion events, including
             # zero-call cache-serve and skip paths.
             profile_id, reasoning_enabled, profile_contract_digest = resolve_host_identity(
-                llm_host, reasoning=llm_reasoning
+                llm_host, reasoning=llm_reasoning, models=model_config.models()
             )
 
             # GitHub credentials (DECISIONS.md#070): env mode validates at boot;
@@ -574,6 +555,7 @@ def build_lifespan(
                 patch_config=patch_config,
                 total_review_budget_tokens=analyze_config.review_budget_tokens,
                 analyze_max_concurrency=analyze_config.max_concurrency,
+                companion_context_enabled=analyze_config.companion_context_enabled,
                 checkpointer=checkpointer,
                 publisher=GitHubKitPublisher(),
                 import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,

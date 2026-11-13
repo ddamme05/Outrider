@@ -1,0 +1,32 @@
+[
+  {
+    "row_id": "acceptance_clean",
+    "prompt_bytes": 33458,
+    "estimated_tokens": 8364,
+    "request_body_digest": "8e83992b31a6930c07216347391655fbb1c01e24385d7862618b9a748555877f"
+  },
+  {
+    "row_id": "acceptance_finding",
+    "prompt_bytes": 33280,
+    "estimated_tokens": 8320,
+    "request_body_digest": "602a77aa5ed4cd5cf260f2150750305ce6ec328ad434cbbae0b18596b6ba756c"
+  },
+  {
+    "row_id": "refusal_elicit_1",
+    "prompt_bytes": 32184,
+    "estimated_tokens": 8046,
+    "request_body_digest": "23d43e2b20e004a6253c983f7ee8e90b98b94f088a453caee666aefa0b7d4013"
+  },
+  {
+    "row_id": "refusal_elicit_2",
+    "prompt_bytes": 32140,
+    "estimated_tokens": 8035,
+    "request_body_digest": "43968ac033c5164fac835cb6d25cdb366fd3f4af23343d094f3e209b6fc6b9e9"
+  },
+  {
+    "row_id": "refusal_elicit_3",
+    "prompt_bytes": 32112,
+    "estimated_tokens": 8028,
+    "request_body_digest": "f0a3a303049e54b1a75c271d16f0bbf5f079d2e7afc6892737388c2f56073f88"
+  }
+]

@@ -1,14 +1,7 @@
-"""Integration proof for `audit/replay.py` — reconstruct + assert from Postgres.
+"""Check audit replay against PostgreSQL.
 
-The first end-to-end proof of replay equivalence: seed real `audit_events`
-+ content-table rows, reconstruct via `AuditReplayer`, and assert. The seed
-is **replay-local and non-eval** — it reuses the `migrated_db` fixture and
-raw-SQL inserts (omitting `is_eval` so the server default `false` applies),
-deliberately NOT the eval factories (which force `is_eval=True` +
-`installation_id=-1` and would smuggle eval semantics into a
-production-semantic proof). The hitl_resume end-to-end scenario (FUP-107)
-is the eventual proof once the graph driver lands (FUP-105/106/108).
-"""
+Seed production-mode event and content rows, reconstruct the review, and check
+replay equivalence and the handling of retained or removed content."""
 
 from __future__ import annotations
 

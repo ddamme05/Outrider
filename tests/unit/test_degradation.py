@@ -1,18 +1,194 @@
-"""Unit tests for the pure analyze degradation decision (`agent/nodes/degradation.py`).
+"""Check analysis decisions for clean, degraded, and unusable parses.
 
-No LLM, no DB — these construct a `ParseResult` (+ optional `PatchedFile`) and
-assert the typed `DegradationDecision`. The clean-no-error and degraded paths over
-REAL parsed source are covered by the structural eval scenarios; here we pin the
-typed-decision contract, the parser-skip caller-guard, and the no-scope skips.
-"""
+Construct parse results without a model or database; real-source parsing is
+covered separately. Cover caller skip checks and files without usable scopes."""
 
 from __future__ import annotations
+
+from difflib import unified_diff
 
 import pytest
 
 from outrider.agent.nodes.degradation import DegradationDecision, decide_degradation
 from outrider.ast_facts.models import ParseResult, SkipReason
-from outrider.coordinates import lookup_patched_file
+from outrider.ast_facts.registry import parse_source
+from outrider.coordinates import (
+    COORDINATES_IMPORT_PATH_RESOLVER,
+    changed_line_spans,
+    extract_line_range_body,
+    line_range_diff_hunks,
+    lookup_patched_file,
+    unscoped_changed_line_ranges,
+)
+
+_GUARD_BASE = (
+    "def read_secret(user):\n"
+    "    if not user.is_admin:\n"
+    "        raise PermissionError()\n"
+    '    return "秘密"\n'
+)
+_GUARD_HEAD = 'def read_secret(user):\n    return "秘密"\n'
+
+
+@pytest.mark.parametrize(
+    ("base", "head", "expected_scopes", "context_lines"),
+    [
+        pytest.param(_GUARD_BASE, _GUARD_HEAD, (("read_secret", 1),), 3, id="guard"),
+        pytest.param(_GUARD_BASE, _GUARD_HEAD, (("read_secret", 1),), 0, id="guard-no-context"),
+        pytest.param(
+            '@require_auth\ndef read_secret(user):\n    return "秘密"\n',
+            _GUARD_HEAD,
+            (("read_secret", 1),),
+            0,
+            id="decorator",
+        ),
+        pytest.param(
+            'def removed():\n    return "secret"\n\ndef neighbor():\n    return 1\n',
+            "def neighbor():\n    return 1\n",
+            (),
+            0,
+            id="deleted-function-does-not-select-neighbor",
+        ),
+        pytest.param(
+            "def read_secret(user):\n    return 1\n\n" + _GUARD_BASE,
+            "def read_secret(user):\n    return 1\n\n" + _GUARD_HEAD,
+            (("read_secret", 4),),
+            0,
+            id="repeated-function-name",
+        ),
+        pytest.param(
+            "def first():\n    guard()\n    return 1\n\ndef second():\n    return 1\n",
+            "def first():\n    return 1\n\ndef second():\n    return 2\n",
+            (("first", 1), ("second", 4)),
+            3,
+            id="deletion-and-addition-in-different-functions",
+        ),
+        pytest.param(
+            "class Store:\n    def read(self):\n        guard()\n        return 1\n",
+            "class Store:\n    def read(self):\n        return 1\n",
+            (("Store", 1), ("Store.read", 2)),
+            0,
+            id="method-and-containing-class",
+        ),
+        pytest.param(
+            'def read_secret():\n    audit()\n    return "secret"\n',
+            "def read_secret():\n    audit()\n",
+            (("read_secret", 1),),
+            0,
+            id="last-statement",
+        ),
+    ],
+)
+def test_deleted_changes_select_the_surviving_scope(
+    base: str, head: str, expected_scopes: tuple[tuple[str, int], ...], context_lines: int
+) -> None:
+    path = "x.py"
+    resolver = COORDINATES_IMPORT_PATH_RESOLVER
+    base_parse = parse_source(base.encode(), path, resolver)
+    head_parse = parse_source(head.encode(), path, resolver)
+    patch = "".join(
+        unified_diff(
+            base.splitlines(keepends=True),
+            head.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            n=context_lines,
+        )
+    )
+    patched = lookup_patched_file(patch, path)
+    assert patched is not None
+    decision = decide_degradation(head_parse, patched, base_scope_units=base_parse.scope_units)
+    assert (
+        tuple((scope.qualified_name, scope.line_start) for scope in decision.included_scope_units)
+        == expected_scopes
+    )
+    if expected_scopes:
+        assert decision.mode == "clean"
+    for scope, hunks in zip(
+        decision.included_scope_units, decision.included_clipped_hunks, strict=True
+    ):
+        changed = changed_line_spans(
+            scope,
+            patched,
+            head_source=head,
+            base_source=base,
+            base_scope_units=base_parse.scope_units,
+        )
+        rendered_removals = [
+            line[1:] for hunk in hunks for line in hunk.splitlines()[1:] if line.startswith("-")
+        ]
+        assert rendered_removals == [
+            base.splitlines()[entry.line_no - 1] for entry in changed.base_removed
+        ]
+        assert hunks
+
+
+@pytest.mark.parametrize(
+    ("base", "head", "has_base_scopes", "expected_ranges"),
+    [
+        pytest.param(
+            "ALLOW_ADMIN = False\n\ndef read():\n    return 1\n",
+            "ALLOW_ADMIN = True\n\ndef read():\n    return 2\n",
+            True,
+            ((1, 3),),
+            id="setting-alongside-changed-function",
+        ),
+        pytest.param(_GUARD_BASE, _GUARD_HEAD, True, (), id="owned-guard-removal"),
+        pytest.param(_GUARD_BASE, _GUARD_HEAD, False, (), id="known-head-interior-without-base"),
+        pytest.param(
+            "def read():\n    guard()\n\ndef read():\n    return 1\n",
+            "def read():\n    return 1\n",
+            True,
+            ((1, 2),),
+            id="deleted-definition-with-repeated-name",
+        ),
+        pytest.param("VALUE = 1\nOLD = 2\n", "VALUE = 1\n", True, ((1, 1),), id="eof"),
+        pytest.param("VALUE = 1\n", "", True, (), id="empty-head"),
+        pytest.param(
+            "A = 0\nB = 0\nC = 0\nD = 0\n",
+            "A = 1\nB = 0\nC = 0\nD = 1\n",
+            True,
+            ((1, 4),),
+            id="merge-nearby-module-changes",
+        ),
+    ],
+)
+def test_primary_regions_cover_changes_outside_selected_scopes(
+    base: str,
+    head: str,
+    has_base_scopes: bool,
+    expected_ranges: tuple[tuple[int, int], ...],
+) -> None:
+    path = "x.py"
+    resolver = COORDINATES_IMPORT_PATH_RESOLVER
+    base_parse = parse_source(base.encode(), path, resolver)
+    head_parse = parse_source(head.encode(), path, resolver)
+    patch = "".join(
+        unified_diff(
+            base.splitlines(keepends=True),
+            head.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            n=0,
+        )
+    )
+    patched = lookup_patched_file(patch, path)
+    assert patched is not None
+    ranges = unscoped_changed_line_ranges(
+        patched,
+        head_parse.scope_units,
+        base_scope_units=base_parse.scope_units if has_base_scopes else (),
+        head_line_count=len(head.splitlines()),
+    )
+    assert ranges == expected_ranges
+    for start, end in ranges:
+        assert extract_line_range_body(start, end, head) == "".join(
+            head.splitlines(keepends=True)[start - 1 : end]
+        )
+        hunks = line_range_diff_hunks(patched, start, end, head_line_count=len(head.splitlines()))
+        assert any(line.startswith("-") for hunk in hunks for line in hunk.splitlines()[1:])
+        assert lookup_patched_file("".join(hunks), path) is not None
+
 
 # ---------------------------------------------------------------------------
 # DegradationDecision typed-contract guard (__post_init__)
@@ -77,6 +253,34 @@ def test_decide_degradation_clean_no_scope_units_skips_no_changed_scope_units() 
     decision = decide_degradation(ParseResult(parser_outcome="clean"), patched_file)
     assert decision.mode == "skip"
     assert decision.skip_reason == SkipReason.NO_CHANGED_SCOPE_UNITS
+
+
+@pytest.mark.parametrize(
+    ("error_lines", "observed_candidate", "expected_mode", "expected_reason"),
+    [
+        (frozenset(), False, "clean", None),
+        (frozenset({1}), False, "degraded", "tree_has_error_no_scope"),
+        (frozenset({5}), False, "skip", None),
+        (frozenset(), True, "degraded", "module_level_observed_match"),
+    ],
+)
+def test_primary_changed_regions_preserve_parse_and_observed_precedence(
+    error_lines: frozenset[int],
+    observed_candidate: bool,
+    expected_mode: str,
+    expected_reason: str | None,
+) -> None:
+    patched = lookup_patched_file("@@ -1 +1 @@\n-ALLOW = False\n+ALLOW = True\n", "x.py")
+    assert patched is not None
+    decision = decide_degradation(
+        ParseResult(parser_outcome="clean", error_lines=error_lines),
+        patched,
+        module_level_observed_candidate=observed_candidate,
+        primary_line_ranges=((1, 1),),
+    )
+    assert decision.mode == expected_mode
+    assert decision.degradation_reason == expected_reason
+    assert decision.included_primary_line_ranges == (((1, 1),) if expected_mode == "clean" else ())
 
 
 # The "failed" parser outcome is V1-unreachable (intake gates invalid UTF-8) but

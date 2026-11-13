@@ -1,15 +1,7 @@
-"""Unit tests for the corpus grading harness (`corpus_grading`).
+"""Check corpus grading and stage attribution using synthetic examples.
 
-Pure-logic tests on SYNTHETIC fixtures — no Juice Shop dependency. Lives under
-`tests/eval/` (a package member, relative import) per docs/testing.md's rule
-that harness-internal checks live alongside the harness they test; the
-Juice-Shop-driven CI gate is `test_juice_shop_corpus_scorecard.py`. Here we pin
-the row model, the stage-attribution logic, the classification table, scorecard
-determinism, and the not-graded / false-positive paths in isolation.
-
-The `eval(...)` strings below are inert synthetic JS FIXTURES fed to the OBSERVED
-detector — parsed for structure, never executed.
-"""
+No vendored corpus is needed here; its saved-scorecard check is separate.
+Unsafe JavaScript strings are parsed as test data, never executed."""
 
 from __future__ import annotations
 
@@ -157,6 +149,10 @@ def test_grade_improvement_when_residual_closes() -> None:
 # End-to-end grade() over a synthetic corpus (real catalog, no Juice Shop).
 # ---------------------------------------------------------------------------
 _EVAL_SRC = "export function handler(userInput) {\n  eval(userInput)\n}\n"
+_WEAK_HASH_SRC = (
+    'import { createHash } from "node:crypto";\n'
+    'export function hash() {\n  return createHash("md5");\n}\n'
+)
 _CLEAN_SRC = "export function ok() {\n  return 1 + 2\n}\n"
 
 
@@ -165,7 +161,7 @@ def _write(tmp_path, name: str, src: str) -> None:
 
 
 def test_grade_end_to_end_true_positive_and_true_negative(tmp_path) -> None:
-    _write(tmp_path, "evil.js", _EVAL_SRC)
+    _write(tmp_path, "weak-hash.js", _WEAK_HASH_SRC)
     _write(tmp_path, "clean.js", _CLEAN_SRC)
     gt = cg.GroundTruth.model_validate(
         {
@@ -173,13 +169,13 @@ def test_grade_end_to_end_true_positive_and_true_negative(tmp_path) -> None:
             "rows": [
                 {
                     "kind": "expected_finding",
-                    "file": "evil.js",
-                    "query_match_id": "javascript.command_injection_eval",
-                    "finding_type": "command_injection",
-                    "line": 2,
+                    "file": "weak-hash.js",
+                    "query_match_id": "javascript.weak_crypto_hash",
+                    "finding_type": "weak_crypto",
+                    "line": 3,
                     "real_vulnerability": True,
                     "current_outcome": "emitted",
-                    "rationale": "synthetic eval",
+                    "rationale": "synthetic weak hash",
                 },
                 {"kind": "expected_clean", "file": "clean.js", "rationale": "no sink"},
             ],
@@ -195,11 +191,11 @@ def test_grade_end_to_end_true_positive_and_true_negative(tmp_path) -> None:
 def test_grade_flags_false_positive_on_clean_file(tmp_path) -> None:
     """A file labelled clean that DOES emit grades as a false positive — FP
     detection is positive evidence, not absence of expectations."""
-    _write(tmp_path, "evil.js", _EVAL_SRC)
+    _write(tmp_path, "weak-hash.js", _WEAK_HASH_SRC)
     gt = cg.GroundTruth.model_validate(
         {
             "corpus_root": ".",
-            "rows": [{"kind": "expected_clean", "file": "evil.js", "rationale": "wrongly clean"}],
+            "rows": [{"kind": "expected_clean", "file": "weak-hash.js", "rationale": "mislabeled"}],
         }
     )
     sc = cg.grade(gt, repo_root=tmp_path)
@@ -286,8 +282,13 @@ def test_same_line_multiplicity_is_surfaced(tmp_path) -> None:
     """Two same-query emissions on one line must not collapse: the claiming
     row's detail carries the count, so a 1 -> 2 emission drift moves the
     scorecard (revert-the-fold: set-keyed observations grade this identically
-    to a single emission). The eval strings are inert parse fixtures."""
-    _write(tmp_path, "double.js", "export function h(a, b) {\n  eval(a); eval(b)\n}\n")
+    to a single emission). The source is only parsed."""
+    _write(
+        tmp_path,
+        "double.js",
+        'import { createHash } from "node:crypto";\n'
+        'export function hash() {\n  createHash("md5"); createHash("sha1");\n}\n',
+    )
     gt = cg.GroundTruth.model_validate(
         {
             "corpus_root": ".",
@@ -295,12 +296,12 @@ def test_same_line_multiplicity_is_surfaced(tmp_path) -> None:
                 {
                     "kind": "expected_finding",
                     "file": "double.js",
-                    "query_match_id": "javascript.command_injection_eval",
-                    "finding_type": "command_injection",
-                    "line": 2,
+                    "query_match_id": "javascript.weak_crypto_hash",
+                    "finding_type": "weak_crypto",
+                    "line": 3,
                     "real_vulnerability": True,
                     "current_outcome": "emitted",
-                    "rationale": "two sinks, one line",
+                    "rationale": "two weak hash calls on one line",
                 }
             ],
         }

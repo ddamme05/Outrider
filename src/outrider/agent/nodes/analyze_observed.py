@@ -1,15 +1,15 @@
-# Deterministic OBSERVED-tier finding producer per
-# specs/2026-06-14-observed-query-library-v1.md (Cost Lever 3).
-"""Find structural security evidence without model text.
+"""Match structural code facts and build emission-eligible findings.
 
-`run_observed_matches` owns query execution and ordered proof admission.
-`produce_observed_findings` maps admitted matches to policy-owned findings;
-`compute_observed_skip_shadow` measures coverage using only skip-safe matches.
+run_observed_matches checks query results and produce_observed_findings builds
+findings only when a match does not require contextual review.
+compute_observed_skip_shadow measures
+whether checks cover enough changed code to avoid a model call.
 
-Callers suppress queries on error-caused degraded routes. Module-level proof
-requires a fully error-free parse, even when ordinary scope-contained proof
-can safely ignore errors outside the included scopes. Production defaults
-augment the model pass: skip enforcement is off and no query is skip-safe.
+Errors in the relevant parsed code disqualify structural proof. Module-level
+matches require the whole parse to be clean. Defaults add findings alongside
+model review; they do not skip it.
+
+See specs/2026-06-14-observed-query-library-v1.md.
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ if TYPE_CHECKING:
 # lexical shadowing, zero-width handling, or byte-to-line mapping.
 # Binding/shadowing: DECISIONS.md#060; module scope: DECISIONS.md#062.
 # Query bodies and registry metadata use QUERY_REGISTRY_DIGEST separately.
-OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v7"
+OBSERVED_PRODUCER_VERSION: Final[str] = "observed-producer-v8"
 
 # Cap source evidence at `ReviewFinding.evidence`'s schema limit so long query
 # matches still construct a valid finding.
@@ -102,6 +102,7 @@ class ObservedMatch:
     # by `compute_observed_skip_shadow` to exclude module-arm matches from #049
     # skip coverage: their proof is diff-anchored, not scope-coverage-shaped.
     module_level: bool = False
+    requires_context: bool = False
 
 
 def _is_test_file(file_path: str, language: QueryLanguage | None) -> bool:
@@ -487,6 +488,7 @@ def run_observed_matches(
                     line_start=line_start,
                     line_end=line_end,
                     module_level=not contained,
+                    requires_context=observed.requires_context,
                 )
             )
     return tuple(matches)
@@ -532,13 +534,15 @@ def produce_observed_findings(
     installation_id: int,
     active_policy_version: str,
 ) -> tuple[ReviewFinding, ...]:
-    """Map every admitted match to a policy-owned finding in the same order.
+    """Map emission-eligible matches to policy-owned findings in the same order.
 
-    Both signal-only and skip-safe matches emit; query class affects routing.
-    Schema construction validates proof and content hashes.
+    Context-required execution facts remain matches, not vulnerability findings
+    (DECISIONS.md#071). Query class separately controls skip routing.
     """
     findings: list[ReviewFinding] = []
     for match in matches:
+        if match.requires_context:
+            continue
         proposal_hash = compute_proposal_hash(
             source_file_path=file_path,
             finding_type=match.finding_type.value,
@@ -590,6 +594,7 @@ def compute_observed_skip_shadow(
     base_source: str | None,
     review_id: UUID,
     is_eval: bool,
+    base_scope_units: tuple[ScopeUnit, ...] = (),
 ) -> ObservedSkipShadowEvent | None:
     """Measure skip eligibility without recording or enforcing the decision.
 
@@ -612,7 +617,9 @@ def compute_observed_skip_shadow(
     skip_safe_envelopes = tuple(
         (match.line_start, match.line_end)
         for match in matches
-        if match.query_class == QueryClass.SKIP_SAFE and not match.module_level
+        if match.query_class == QueryClass.SKIP_SAFE
+        and not match.module_level
+        and not match.requires_context
     )
 
     changed: list[ObservedSkipChangedRegion] = []
@@ -624,7 +631,11 @@ def compute_observed_skip_shadow(
     for scope in included_scope_units:
         try:
             spans = changed_line_spans(
-                scope, patched_file, head_source=head_source, base_source=base_source
+                scope,
+                patched_file,
+                head_source=head_source,
+                base_source=base_source,
+                base_scope_units=base_scope_units,
             )
         except CoordinateError:
             # Optional coverage telemetry must not abort a review.
@@ -662,6 +673,7 @@ def compute_observed_skip_shadow(
         )
         for match in matches
         if match.query_class == QueryClass.SKIP_SAFE
+        and not match.requires_context
         and any(match.line_start <= line_no <= match.line_end for line_no in covered_head_lines)
     )
 

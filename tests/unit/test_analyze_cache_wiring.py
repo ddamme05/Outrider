@@ -1,19 +1,9 @@
-# Per specs/2026-06-11-file-hash-analyze-cache.md — analyze-node shadow wiring.
-"""Analyze-cache shadow wiring through the analyze node.
+"""Check shadow-cache behavior through the analyze node.
 
-Pins the Stage-B contracts: store-or-None is the enable switch (None =
-zero cache behavior); a miss emits `CacheLookupEvent(outcome="miss")`,
-calls the model, and writes the store with the composed key + content
-payload + the full version-component set; a would-hit emits
-`outcome="would_hit"`, STILL calls the model (shadow — nothing served),
-and writes nothing; an eval review USES a wired store, scoped to is_eval
-rows by the lookup's is_eval predicate (the reviews-row scope's is_eval;
-a scope/state is_eval divergence disables the cache for the pass); the
-lookup excludes the review's own prior writes (crash-resume self-hits); a
-response-level rejection and a `max_tokens`-truncated response cache
-nothing; and a `CacheStoreError` from any store call is contained — the
-shadow cache must never abort a review.
-"""
+Misses call the model and store results; would-hit lookups still call the model
+without serving cached content. Cover evaluation scope, self-hit exclusion,
+rejected/truncated responses, and contained store failures. A missing store
+disables caching. See specs/2026-06-11-file-hash-analyze-cache.md."""
 
 from __future__ import annotations
 
@@ -975,27 +965,25 @@ class TestServedTraceCandidateRefImportStringValidator:
 
 
 @pytest.mark.asyncio
-async def test_module_scope_degraded_route_has_no_cache_activity() -> None:
-    """The module-scope degraded route is non-cacheable, same mechanism as
-    every degraded route (the parameterized-call scan is None in degraded
-    mode and the cache gate requires it non-None): with a wired store, a
-    module-only kill-switch diff (inert parse fixture) reviews and emits the
-    OBSERVED finding but computes no key, performs no lookup, and writes no
-    row. Only scope resolution (pass-scoped, pre-decision) runs."""
-    kill_head = 'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\nmodule.exports = {};\n'
-    kill_patch = (
-        "--- a/src/killswitch.js\n+++ b/src/killswitch.js\n"
-        "@@ -1,1 +1,2 @@\n"
-        '+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";\n'
-        " module.exports = {};\n"
-    )
+@pytest.mark.parametrize("route", ["legacy_module", "primary_module", "text_config"])
+async def test_module_and_text_region_routes_have_no_cache_activity(route: str) -> None:
+    """No new primary-region route can serve an old scope-only cache result."""
+    path = "src/killswitch.js" if route != "text_config" else "config/auth.yaml"
+    added = {
+        "legacy_module": 'process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";',
+        "primary_module": "const REQUIRE_AUTH = false;",
+        "text_config": "require_auth: false",
+    }[route]
+    base = "module.exports = {};\n" if route != "text_config" else "enabled: true\n"
+    kill_head = added + "\n" + base
+    kill_patch = f"--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,2 @@\n+{added}\n {base}"
     changed = ChangedFile(
-        path="src/killswitch.js",
+        path=path,
         status="modified",
         additions=1,
         deletions=0,
         patch=kill_patch,
-        content_base="module.exports = {};\n",
+        content_base=base,
         content_head=kill_head,
         previous_path=None,
         language="javascript",
@@ -1015,7 +1003,7 @@ async def test_module_scope_degraded_route_has_no_cache_activity() -> None:
         changed_files=(changed,),
     )
     triage = TriageResult(
-        file_tiers={"src/killswitch.js": ReviewTier.DEEP},
+        file_tiers={path: ReviewTier.DEEP},
         overall_risk=RiskLevel.MEDIUM,
         relevant_dimensions=(ReviewDimension.SECURITY,),
         reasoning="test",
@@ -1033,8 +1021,13 @@ async def test_module_scope_degraded_route_has_no_cache_activity() -> None:
 
     # The route reviewed (degraded LLM call with the module-scope reason)...
     [request] = provider.calls
-    assert request.degraded_mode is True
-    assert request.degradation_reason == "module_level_observed_match"
+    assert request.degraded_mode is (route != "primary_module")
+    expected_reason = {
+        "legacy_module": "module_level_observed_match",
+        "primary_module": None,
+        "text_config": "text_only_context",
+    }[route]
+    assert request.degradation_reason == expected_reason
     # ...but touched no cache surface beyond pass-scoped scope resolution.
     assert store.lookup_calls == []
     assert store.write_calls == []

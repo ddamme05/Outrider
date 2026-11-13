@@ -1,23 +1,8 @@
-"""Arc 2 — the COMPOSED lifecycle, end to end, at zero spend.
+"""Check the strict-schema probe lifecycle without network calls or spending.
 
-Every other Arc-2 test exercises one owner in isolation. That is exactly how a
-forged `GO` shipped twice: each owner was judged locally, and the
-producer→consumer composition — the only place the guarantees actually have to
-hold together — was never executed.
-
-This module drives the full path:
-
-    LockedProbeContract -> DryRunManifest -> PaidProbeContract
-        -> fixtures on disk -> AttemptLedger -> verify_and_derive -> verdict
-
-and then attacks it. Each attack mutates ONE fact and requires the replay to
-refuse or to derive a different verdict. The headline regression is
-`test_forged_ledger_content_cannot_manufacture_a_go`, which reproduces the
-demonstrated attack: honest fixtures containing no refusal, a ledger claiming
-one, every hash matching, verdict `GO`.
-
-No network call is possible here — the verifier only reads files.
-"""
+Drive locked inputs through manifests, saved fixtures, the attempt ledger, and
+verification. Changing one fact must be rejected or change the verdict; a forged
+ledger must not manufacture a positive result from fixtures containing no refusal."""
 
 from __future__ import annotations
 
@@ -60,6 +45,8 @@ from outrider.llm.raw_openai_capture import (
     RawUsage,
 )
 
+pytestmark = pytest.mark.usefixtures("arc2_reviewed_analyzer")
+
 #: DERIVED from the plan, not restated. A hand-copied source and a hand-copied
 #: expected span made this file a second authority on the experiment: when the v5
 #: scenario changed shape, every test here would have kept asserting the v4 one.
@@ -81,7 +68,7 @@ def _finding_body(**overrides: Any) -> str:
         "trace_path": None,
         "title": "SQL built by concatenation",
         "description": "User input is concatenated into a SQL string.",
-        "evidence": "conn.execute(...)",
+        "evidence": plan.DEFECT_SCENARIO.source.splitlines()[plan.EXPECTED_FINDING.line_start - 1],
         "line_start": plan.EXPECTED_FINDING.line_start,
         "line_end": plan.EXPECTED_FINDING.line_end,
         "trace_candidates": [],
@@ -99,26 +86,6 @@ def _evaluation() -> EvaluationContract:
     tests exercise the same reconstruction `verify_and_derive` compares against.
     """
     return registered_evaluation_contract()
-
-
-@pytest.fixture(autouse=True)
-def _frozen_elicitations(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run this whole file under a plan whose refusal prompts are FROZEN.
-
-    `registered_locked_contract()` refuses while they hold the placeholder — that
-    is Gate 1 working. These tests model the Gate-2 state, so they freeze the
-    prompts and exercise everything downstream of that freeze. Patched on `plan`,
-    the authority, never on the probe's re-export.
-    """
-    monkeypatch.setattr(
-        plan,
-        "_REFUSAL_ELICITATIONS",
-        {
-            RowId.REFUSAL_1: "frozen elicitation one",
-            RowId.REFUSAL_2: "frozen elicitation two",
-            RowId.REFUSAL_3: "frozen elicitation three",
-        },
-    )
 
 
 def _contracts() -> tuple[EvaluationContract, LockedProbeContract, PaidProbeContract]:
@@ -613,13 +580,11 @@ def test_a_self_consistent_forged_evaluation_cannot_whitelist_a_fabricated_query
         )
 
 
-def test_the_forged_allowlist_would_have_admitted_fabricated_proof(tmp_path: Path) -> None:
-    """Why the test above is a security test and not a consistency test.
+def test_model_observed_stays_rejected_even_with_a_forged_allowlist(tmp_path: Path) -> None:
+    """Generic registry membership cannot turn a model claim into producer proof.
 
-    Runs the REAL parser under the forged allowlist and shows the fabricated
-    `query_match_id` is admitted as an OBSERVED finding. Without this, the refusal
-    above proves only that two objects differ; with it, the thing being refused is
-    demonstrably a fabricated-proof admission.
+    Reconstruction rejects a forged registry; the parser independently rejects
+    model OBSERVED claims even when the caller supplies that forged registry.
     """
     from spikes.openai.arc2.verifier import ParserAdapter
 
@@ -628,10 +593,8 @@ def test_the_forged_allowlist_would_have_admitted_fabricated_proof(tmp_path: Pat
     outcome = ParserAdapter(forged, _SOURCE)(
         _finding_body(evidence_tier="observed", query_match_id=fabricated)
     )
-    assert [f.query_match_id for f in outcome.admitted] == [fabricated], (
-        "the forged allowlist must actually admit the fabricated id — otherwise the "
-        "refusal test above is guarding a threat that does not exist"
-    )
+    assert outcome.admitted == ()
+    assert "model_observed_not_supported" in outcome.rejection_reasons
 
     # And the registered plan rejects the very same body.
     honest = ParserAdapter.for_registered_plan()(
@@ -1034,7 +997,7 @@ def _install_fake(monkeypatch: pytest.MonkeyPatch, script: list[object]) -> None
 
 
 def _write_reviewed_manifest(d: Path) -> None:
-    """A manifest for the CURRENT plan, where the runner looks for it."""
+    """Write the rehearsal plan's manifest where the runner looks for it."""
     locked = plan.registered_locked_contract()
     dry = DryRunManifest(
         contract_version=STRICT_PROBE_CONTRACT_VERSION,
@@ -1338,9 +1301,7 @@ def test_a_contract_that_cannot_round_trip_aborts_before_any_call(
     assert list(tmp_path.glob("capture_*")) == []
     assert list(tmp_path.glob(".setup_*")) == [], "staging is discarded, not accumulated"
 
-    # And with the healthy writer, the very next run succeeds. Restoring only the
-    # writer — `monkeypatch.undo()` would also revert the autouse elicitation
-    # fixture and every other patch, which is not what "healthy writer" means.
+    # Restore the writer and keep the reviewed analyzer for the retry.
     monkeypatch.setattr(probe, "_write_atomic", _real_write)
     _install_fake(
         monkeypatch,

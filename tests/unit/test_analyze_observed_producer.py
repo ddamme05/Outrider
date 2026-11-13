@@ -1,11 +1,7 @@
-"""Deterministic OBSERVED producer — `produce_observed_findings` (Cost Lever 3).
+"""Check findings produced from structural query matches without model text.
 
-Pins that a tree-sitter security match becomes a policy-set OBSERVED
-`ReviewFinding` with no model text: correct finding_type/severity/dimension,
-the registry's static title/description, an `evidence` slice of the matched
-source, a span mapped through coordinates, and a passing proof boundary. Also
-pins the scope gate (no finding outside an included scope) and clean-parse use.
-"""
+Verify policy severity, static labels, source evidence, coordinates, proof, and
+scope restrictions on clean parses."""
 
 from __future__ import annotations
 
@@ -37,17 +33,20 @@ def _scopes(source: str):
     return _parsed(source).scope_units
 
 
-def _produce(source: str, scopes=None, file_path: str = "src/x.py"):
+def _matches(source: str, scopes=None, file_path: str = "src/x.py"):
     parsed = _parsed(source)
-    matches = run_observed_matches(
+    return run_observed_matches(
         file_path=file_path,
         head_content=source,
         included_scope_units=scopes if scopes is not None else parsed.scope_units,
         import_refs=parsed.imports,
         lexical_bindings=parsed.lexical_bindings,
     )
+
+
+def _produce(source: str, scopes=None, file_path: str = "src/x.py"):
     return produce_observed_findings(
-        matches,
+        _matches(source, scopes=scopes, file_path=file_path),
         file_path=file_path,
         review_id=uuid4(),
         installation_id=12345,
@@ -55,21 +54,15 @@ def _produce(source: str, scopes=None, file_path: str = "src/x.py"):
     )
 
 
-def test_subprocess_shell_true_produces_observed_command_injection() -> None:
+def test_subprocess_shell_true_retains_signal_without_automatic_finding() -> None:
     source = "import subprocess\n\n\ndef run_it(cmd):\n    subprocess.run(cmd, shell=True)\n"
-    findings = _produce(source)
-    assert len(findings) == 1
-    f = findings[0]
-    assert f.evidence_tier == EvidenceTier.OBSERVED
-    assert f.finding_type == FindingType.COMMAND_INJECTION
-    assert f.severity == FindingSeverity.CRITICAL  # policy-set (DECISIONS.md#048)
-    assert f.dimension == ReviewDimension.SECURITY
-    assert f.query_match_id == "python.command_injection_subprocess_shell"
-    assert "shell=True" in f.evidence
-    assert f.title and f.description  # registry static text, no model output
-    assert f.policy_version == ACTIVE_POLICY_VERSION
-    # The span anchors on the call, not the enclosing function.
-    assert f.line_start == f.line_end == 5
+    (match,) = _matches(source)
+    assert match.query_match_id == "python.command_injection_subprocess_shell"
+    assert match.finding_type == FindingType.COMMAND_INJECTION
+    assert match.requires_context is True
+    assert "shell=True" in match.evidence
+    assert match.line_start == match.line_end == 5
+    assert _produce(source) == ()
 
 
 def test_finding_has_valid_proof_and_content_hash() -> None:
@@ -94,13 +87,13 @@ def test_clean_file_with_no_security_pattern_yields_nothing() -> None:
 def test_match_outside_included_scopes_is_not_produced() -> None:
     """A match is gated to included scopes — passing no scopes yields nothing
     even though the query fires on the file."""
-    source = "import os\n\n\ndef danger():\n    os.system(cmd)\n"
+    source = "import requests\n\n\ndef danger(url):\n    requests.get(url, verify=False)\n"
     assert _produce(source, scopes=()) == ()
     # ...but with the function's scope included, it is produced.
     assert len(_produce(source)) == 1
 
 
-def test_multiple_patterns_produce_multiple_findings() -> None:
+def test_contextual_signal_preserves_independent_observed_fact() -> None:
     source = (
         "import subprocess\nimport requests\n\n\n"
         "def f(cmd, url):\n"
@@ -109,9 +102,12 @@ def test_multiple_patterns_produce_multiple_findings() -> None:
     )
     findings = _produce(source)
     types = {f.finding_type for f in findings}
-    assert FindingType.COMMAND_INJECTION in types
-    assert FindingType.TLS_VERIFY_DISABLED in types
-    assert len(findings) == 2
+    assert types == {FindingType.TLS_VERIFY_DISABLED}
+    assert len(findings) == 1
+    assert {m.finding_type for m in _matches(source)} == {
+        FindingType.COMMAND_INJECTION,
+        FindingType.TLS_VERIFY_DISABLED,
+    }
 
 
 def test_security_pattern_in_test_file_is_suppressed() -> None:
@@ -119,7 +115,7 @@ def test_security_pattern_in_test_file_is_suppressed() -> None:
     finding. The producer suppresses OBSERVED findings in test files
     structurally (the deterministic counterpart of the LLM's test-context
     judgment)."""
-    source = "def test_thing():\n    eval(payload)\n"
+    source = "import requests\n\ndef test_thing(url):\n    requests.get(url, verify=False)\n"
     for test_path in (
         "tests/test_evaluator.py",
         "src/pkg/tests/helpers.py",
@@ -133,7 +129,7 @@ def test_security_pattern_in_test_file_is_suppressed() -> None:
 
 def test_producer_is_deterministic() -> None:
     """Same input → identical findings (content/proposal hashes stable)."""
-    source = "import os\n\n\ndef f():\n    os.system(c)\n"
+    source = "import requests\n\n\ndef f(url):\n    requests.get(url, verify=False)\n"
     a = _produce(source)
     b = _produce(source)
     assert [(x.content_hash, x.proposal_hash) for x in a] == [
@@ -159,6 +155,7 @@ def test_run_observed_matches_surfaces_query_class_and_record_fields() -> None:
     m = matches[0]
     assert m.query_match_id == "python.command_injection_subprocess_shell"
     assert m.query_class == QueryClass.SIGNAL_ONLY  # default-deny: all V1 queries signal_only
+    assert m.requires_context is True
     assert m.finding_type == FindingType.COMMAND_INJECTION
     assert "shell=True" in m.evidence
     assert m.line_start == m.line_end == 5
@@ -206,17 +203,20 @@ def _scopes_for(source: str, file_path: str):
     return _parsed_at(source, file_path).scope_units
 
 
-def _produce_at(source: str, file_path: str):
+def _matches_at(source: str, file_path: str):
     parsed = _parsed_at(source, file_path)
-    matches = run_observed_matches(
+    return run_observed_matches(
         file_path=file_path,
         head_content=source,
         included_scope_units=parsed.scope_units,
         import_refs=parsed.imports,
         lexical_bindings=parsed.lexical_bindings,
     )
+
+
+def _produce_at(source: str, file_path: str):
     return produce_observed_findings(
-        matches,
+        _matches_at(source, file_path),
         file_path=file_path,
         review_id=uuid4(),
         installation_id=12345,
@@ -725,15 +725,19 @@ _BINDING_ADMISSION_CASES = (
 def test_binding_admission_per_variant(
     source: str, file_path: str, expected_query_id: str | None
 ) -> None:
-    """Per-variant import-binding admission pins: `None` rows must produce
-    ZERO OBSERVED findings (the unbound/lookalike/absent-module negatives),
-    admitted rows exactly one finding under the expected query id."""
+    """Retain import/shadow admission independently of automatic finding eligibility."""
+    matches = _matches_at(source, file_path)
     findings = _produce_at(source, file_path)
     if expected_query_id is None:
-        assert findings == ()
+        assert matches == findings == ()
     else:
-        (f,) = findings
-        assert f.query_match_id == expected_query_id
+        (match,) = matches
+        assert match.query_match_id == expected_query_id
+        if match.requires_context:
+            assert findings == ()
+        else:
+            (finding,) = findings
+            assert finding.query_match_id == expected_query_id
 
 
 def test_esm_destructured_createhash_is_admitted() -> None:
@@ -765,9 +769,11 @@ def test_member_exec_with_bound_bare_sibling_is_not_admitted() -> None:
         "  exec('ls ' + cmd);\n"
         "}\n"
     )
-    (f,) = _produce_at(source, "src/run.js")
-    assert f.query_match_id == "javascript.command_injection_child_process"
-    assert f.line_start == 4  # the bare bound call — NOT the regex receiver on line 3
+    (match,) = _matches_at(source, "src/run.js")
+    assert match.query_match_id == "javascript.command_injection_child_process"
+    assert match.requires_context is True
+    assert _produce_at(source, "src/run.js") == ()
+    assert match.line_start == 4  # the bare bound call — NOT the regex receiver on line 3
 
 
 def test_process_env_kill_switch_needs_no_import() -> None:

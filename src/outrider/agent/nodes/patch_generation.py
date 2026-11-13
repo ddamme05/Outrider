@@ -1,14 +1,12 @@
-# See DECISIONS.md#040 — suggested-patch generation (the synthesize patch pass).
-"""Generate optional single-line fixes during synthesis (DECISIONS.md#040).
+"""Ask the model for optional single-line fixes to selected findings.
 
-Select HIGH/CRITICAL single-line findings, CRITICAL first and capped, then make
-one call to the configured patch model. Accepted replacements become validated
-ReviewFinding.suggested_fix values. Publish later decides whether an inline
-GitHub suggestion can be rendered; this module produces no markdown.
+generate_patches selects a limited number of critical or high findings, sends
+one request, and validates each replacement. Invalid batches add no fixes;
+provider failures leave findings unchanged. Publication still decides whether
+an accepted fix can appear as a GitHub suggestion.
 
-Malformed batches yield no suggestions. Valid batches reject duplicate IDs,
-unknown findings, mismatched target-line echoes and unsafe replacements per item.
-Provider errors leave findings unpatched; other unexpected failures propagate."""
+See DECISIONS.md#040.
+"""
 
 from __future__ import annotations
 
@@ -70,14 +68,15 @@ def _baseline_severity(finding: ReviewFinding) -> FindingSeverity:
 def select_eligible_findings(
     findings: tuple[ReviewFinding, ...], *, max_suggestions: int
 ) -> tuple[ReviewFinding, ...]:
-    """HIGH/CRITICAL + single-line (`line_start == line_end`), CRITICAL-first,
+    """HEAD-only HIGH/CRITICAL single-line findings, CRITICAL-first,
     capped at `max_suggestions`. Routing is NOT a gate input — publish decides
     renderability downstream (#040); patches for findings that turn out
     REVIEW_BODY/DASHBOARD_ONLY are bounded, cap-limited waste."""
     eligible: list[ReviewFinding] = []
     for patch_finding in findings:
         if (
-            is_hitl_gated_severity(_baseline_severity(patch_finding))
+            patch_finding.source_side == "head"
+            and is_hitl_gated_severity(_baseline_severity(patch_finding))
             and patch_finding.line_start == patch_finding.line_end
         ):
             eligible.append(patch_finding)

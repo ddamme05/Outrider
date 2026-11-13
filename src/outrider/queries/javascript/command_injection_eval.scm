@@ -1,10 +1,9 @@
-; Dynamic code execution: `eval(<non-literal>)` and `new Function(...)` with
-; at least one non-literal argument. The argument alternation enumerates the
-; dynamic-expression node types (mirroring the Python eval/exec query): a
-; string literal or substitution-free template argument is constant code and
-; does not fire. Member `eval` (`math.eval(...)`) is excluded — third-party
-; evaluators are a JUDGED call, not the global. `new Function` with all-literal
-; arguments is likewise constant-code and excluded.
+; Match the listed expression forms in global eval calls and Function constructors.
+;
+; Plain string arguments and templates without substitutions do not match.
+; Member calls such as math.eval are excluded because they may use a
+; third-party evaluator rather than execute JavaScript.
+; The producer rejects locally shadowed eval or Function bindings.
 (call_expression
   function: (identifier) @_fn
   arguments: (arguments

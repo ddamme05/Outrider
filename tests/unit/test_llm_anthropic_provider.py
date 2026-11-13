@@ -1,11 +1,7 @@
-"""AnthropicProvider tests — covers AC#3, #4, #5, #6, #9, #10, #11, #12,
-#13, #14, #18, #19, #20, #24.
+"""Check Anthropic request translation, responses, errors, and audit writes.
 
-Strategy: mock the SDK client at the AsyncAnthropic level so we don't
-issue real HTTP calls. The wrapper's contract — translation, mapping,
-fail-closed, error taxonomy, persister contract, audit-event population —
-is testable without a live Anthropic endpoint.
-"""
+Replace the SDK client so no HTTP calls run. Cover validation, error mapping,
+and the exchange-persister contract."""
 
 import logging
 import os
@@ -648,7 +644,7 @@ async def test_cache_control_true_attaches_ephemeral_to_system_block() -> None:
     with _patched_create() as mock_create:
         await provider.complete(_request(cache_control=True))
     sdk_kwargs = mock_create.call_args.kwargs
-    # No top-level cache_control kwarg (round-21 reverted that).
+    # Cache control belongs on system blocks, not the top-level request.
     assert "cache_control" not in sdk_kwargs
     # System is a list with one TextBlockParam carrying ephemeral cache_control.
     system = sdk_kwargs["system"]
@@ -689,7 +685,7 @@ async def test_cache_control_default_is_true() -> None:
     with _patched_create() as mock_create:
         await provider.complete(_request())
     sdk_kwargs = mock_create.call_args.kwargs
-    # Round-21: per-block placement on system, not top-level kwarg
+    # Place cache control on each system block.
     assert "cache_control" not in sdk_kwargs
     system = sdk_kwargs["system"]
     assert isinstance(system, list)
@@ -1129,26 +1125,11 @@ async def test_unmapped_apierror_translates_to_unknown() -> None:
 
 @pytest.mark.asyncio
 async def test_translate_anthropic_error_does_not_leak_sdk_text_into_wrapper() -> None:
-    """Pins the round-26 codex fold: `_translate_anthropic_error()` MUST
-    NOT pass `str(exc)` (or any SDK exception body text) to the wrapper
-    class constructor, AND the `raise ... from None` at the wrapper site
-    MUST drop the SDK exception via `__suppress_context__`.
+    """SDK exception bodies must not reach wrapper messages or rendered tracebacks.
 
-    The leak vector: Anthropic SDK error messages render the underlying
-    httpx response body via `str(exc)`. The body can echo prompt
-    fragments from the failing request (most concretely:
-    context-length-exceeded errors quote the offending text). If the
-    wrapper passed `str(exc)` to e.g. `LLMRateLimitError(str(exc))`,
-    that text would land in `Exception.args[0]` and render in
-    `repr(wrapper)`, `str(wrapper)`, and traceback formatting by any
-    log handler using `exc_info=True`.
-
-    Test: mock an `anthropic.RateLimitError` whose `str()` contains a
-    distinctive sentinel; trigger `provider.complete()`; verify the
-    wrapper `LLMRateLimitError` does NOT carry the sentinel in any of
-    `str()`, `repr()`, `args`, or via the cause chain
-    (`exc.__cause__`/`__context__` with `__suppress_context__` set).
-    """
+    An SDK RateLimitError contains a distinctive sentinel. provider.complete() must
+    exclude it from the wrapper's str/repr/args and suppress the underlying exception
+    context with raise ... from None."""
     persister = _RecordingPersister()
     provider = AnthropicProvider(
         api_key=_api_key(),
@@ -1298,19 +1279,11 @@ async def test_non_apierror_anthropic_subclass_does_not_escape() -> None:
 
 @pytest.mark.asyncio
 async def test_non_anthropic_exception_from_sdk_translates_to_llm_unknown_error() -> None:
-    """The pre-call `_closed` check is best-effort, not atomic vs.
-    `aclose()`. A close that lands between the check and the awaited
-    SDK call surfaces a `RuntimeError("Cannot send a request, as the
-    client has been closed.")` from httpx — NOT an
-    `anthropic.AnthropicError`. Without translation, that would escape
-    the typed `LLMProviderError` contract.
+    """Unexpected SDK-call exceptions retain the typed provider-error contract.
 
-    Pin: any non-Anthropic Exception raised by the SDK call translates
-    to `LLMUnknownError`. The exception type name appears in the
-    wrapper message (class-level identifier, safe to render);
-    `from None` is used to drop the cause chain so SDK exception args
-    don't propagate.
-    """
+    A close between the preflight check and awaited call may raise httpx RuntimeError.
+    Translate it to LLMUnknownError with only the safe exception type name and suppress
+    the underlying exception context."""
     persister = _RecordingPersister()
     provider = AnthropicProvider(
         api_key=_api_key(),
@@ -1471,9 +1444,12 @@ async def test_persister_receives_complete_llm_call_event() -> None:
             cache_creation_input_tokens=100,
         )
     ):
-        await provider.complete(_request())
+        returned = await provider.complete(_request())
     assert len(persister.calls) == 1
     event, request, response = persister.calls[0]
+    assert getattr(returned, "exchange_event_id", None) is not None
+    assert returned.exchange_event_id == event.event_id == response.exchange_event_id
+    assert returned.exchange_recorded_at == event.timestamp
     # AC#18: cost_usd populated on event already
     assert event.cost_usd > 0
     # AC#19: four-class computation
@@ -1613,21 +1589,11 @@ async def test_persister_failure_wraps_as_persister_error() -> None:
 
 @pytest.mark.asyncio
 async def test_persister_unknown_exception_drops_cause_chain() -> None:
-    """Round-9 regression for DECISIONS#016 logs-stay-metadata-only.
+    """Unknown persister exceptions must not leak content (DECISIONS#016).
 
-    Unknown persister exception types (not in `METADATA_ONLY_EXCEPTION_TYPES`)
-    must be wrapped with `raise ... from None`. The wrapper's message is
-    sanitized to `<TypeName>`, but without `from None`, Python's traceback
-    formatter would render `__cause__` (the underlying exception's
-    `args` / `str()`), leaking raw content past the wrapper's sanitization.
-
-    Sentinel-string approach: raise `ValueError("SECRET_LEAK_SENTINEL")`
-    from the persister; catch the LLMPersisterError; verify:
-    - `__cause__ is None` (cause chain dropped)
-    - `__suppress_context__ is True` (implicit context also hidden)
-    - the sentinel string does NOT appear in `str(exc)` or `repr(exc)`
-    - the sentinel does NOT appear in the rendered traceback
-    """
+    Wrap with a type-only message and raise ... from None. A sentinel in the original
+    exception must be absent from str/repr and the rendered traceback; cause is None
+    and implicit context is suppressed."""
     import traceback
 
     secret = "SECRET_LEAK_SENTINEL_DO_NOT_LEAK_xyz"  # noqa: S105 — test fixture
@@ -1641,7 +1607,7 @@ async def test_persister_unknown_exception_drops_cause_chain() -> None:
         await provider.complete(_request())
 
     exc = exc_info.value
-    # Cause chain dropped — the round-9 fix.
+    # Suppress the underlying exception context.
     assert exc.__cause__ is None, (
         f"unknown persister exception must use `from None` to drop the "
         f"cause chain; got __cause__={exc.__cause__!r}"
@@ -1870,15 +1836,27 @@ def test_anthropic_reasoning_requested_fails_loud() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_adaptive_thinking_model_omits_temperature_and_disables_thinking() -> None:
-    """Sonnet 5+ (adaptive-thinking generation): non-default sampling params 400,
-    so `temperature` is OMITTED; adaptive thinking is disabled so the response
-    stays a single text block (`_extract_single_text_block`)."""
+@pytest.mark.parametrize(
+    ("model", "thinking_type"),
+    [
+        ("claude-sonnet-5", "disabled"),
+        ("claude-sonnet-5-5", "between_tools"),
+        ("claude-sonnet-5-5-20260928", "between_tools"),
+        ("claude-haiku-5-5", "disabled"),
+        ("claude-haiku-5-5-20261007", "disabled"),
+    ],
+)
+def test_adaptive_thinking_model_omits_temperature_and_disables_thinking(
+    model: str, thinking_type: str
+) -> None:
+    """Turn off up-front thinking without unsupported sampling parameters."""
     from outrider.llm.anthropic_provider import _build_sdk_kwargs
 
-    kwargs = _build_sdk_kwargs(_request(model="claude-sonnet-5", temperature=0.0))
-    assert "temperature" not in kwargs
-    assert kwargs["thinking"] == {"type": "disabled"}
+    kwargs = _build_sdk_kwargs(_request(model=model, temperature=0.0))
+    assert {"temperature", "top_p", "top_k", "tools"}.isdisjoint(kwargs)
+    assert kwargs["thinking"] == {"type": thinking_type}
+    if thinking_type == "between_tools":
+        assert kwargs["output_config"] == {"effort": "high"}
 
 
 def test_legacy_model_sends_temperature_and_no_thinking_kwarg() -> None:
@@ -1892,10 +1870,16 @@ def test_legacy_model_sends_temperature_and_no_thinking_kwarg() -> None:
         assert "thinking" not in kwargs
 
 
-def test_adaptive_thinking_model_keeps_structured_output() -> None:
-    """The disabled-thinking branch composes with constrained decoding: an
-    adaptive-thinking model with a response schema still gets `output_config`
-    AND disabled thinking AND no temperature."""
+@pytest.mark.parametrize(
+    ("model", "thinking_type"),
+    [
+        ("claude-sonnet-5", "disabled"),
+        ("claude-sonnet-5-5", "between_tools"),
+        ("claude-haiku-5-5", "disabled"),
+    ],
+)
+def test_adaptive_thinking_model_keeps_structured_output(model: str, thinking_type: str) -> None:
+    """The schema and thinking setting compose without losing the effort limit."""
     import json as _json
 
     from outrider.llm.anthropic_provider import _build_sdk_kwargs
@@ -1903,13 +1887,15 @@ def test_adaptive_thinking_model_keeps_structured_output() -> None:
     schema = {"type": "object", "properties": {}, "additionalProperties": False}
     kwargs = _build_sdk_kwargs(
         _request(
-            model="claude-sonnet-5",
+            model=model,
             response_schema_json=_json.dumps(schema, separators=(",", ":")),
         )
     )
-    assert kwargs["thinking"] == {"type": "disabled"}
+    assert kwargs["thinking"] == {"type": thinking_type}
     assert "temperature" not in kwargs
-    assert kwargs["output_config"]["format"]["type"] == "json_schema"
+    assert kwargs["output_config"]["format"] == {"type": "json_schema", "schema": schema}
+    if thinking_type == "between_tools":
+        assert kwargs["output_config"]["effort"] == "high"
 
 
 @pytest.mark.asyncio
@@ -2167,3 +2153,68 @@ async def test_cache_warning_is_emitted_before_the_pricing_error(
     assert len(cache_warnings) == 1, (
         "the cache diagnostic must fire before the pricing lookup raises, and only once"
     )
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "claude-haiku-5-5"])
+async def test_current_native_models_complete_with_sdk_wire_and_versioned_cost(model: str) -> None:
+    """Exercise the real SDK transport, text extraction, all usage classes and persistence."""
+    import json
+
+    from outrider.llm.pricing import compute_cost_usd
+
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(),
+        model_config=ModelConfig(analyze_model=model),
+        persister=persister,
+    )
+    captured: list[dict[str, Any]] = []
+
+    def receive(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        message = _sdk_message(
+            model=model,
+            input_tokens=40_000,
+            output_tokens=100,
+            cache_creation_input_tokens=30_000,
+            cache_read_input_tokens=30_001,
+        )
+        return httpx.Response(200, json=message.model_dump(mode="json"))
+
+    await provider._client.close()
+    provider._client = anthropic.AsyncAnthropic(
+        api_key="synthetic-key",
+        max_retries=0,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(receive)),
+    )
+    # Keep SDK platform probing outside this transport/serialization test.
+    provider._client._platform = "Linux"
+    try:
+        response = await provider.complete(_request(model=model))
+    finally:
+        await provider.aclose()
+    assert response.text == "model output"
+    assert len(captured) == len(persister.calls) == 1
+    wire = captured[0]
+    assert {"temperature", "top_p", "top_k", "tools"}.isdisjoint(wire)
+    assert wire["thinking"] == {
+        "type": "between_tools" if model == "claude-sonnet-5-5" else "disabled"
+    }
+    if model == "claude-sonnet-5-5":
+        assert wire["output_config"]["effort"] == "high"
+    expected = compute_cost_usd(
+        "anthropic",
+        model,
+        input_tokens=40_000,
+        cache_write_tokens=30_000,
+        cache_read_tokens=30_001,
+        output_tokens=100,
+    )
+    assert (
+        response.input_tokens,
+        response.cache_write_tokens,
+        response.cache_read_tokens,
+        response.output_tokens,
+    ) == (40_000, 30_000, 30_001, 100)
+    assert persister.calls[0][0].cost_usd == float(expected)
+    assert persister.calls[0][0].pricing_version == PRICING_VERSION

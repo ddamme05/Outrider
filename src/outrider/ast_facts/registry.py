@@ -26,10 +26,8 @@ if TYPE_CHECKING:
 # Extension groups — each group shares one adapter and one `parse_*`
 # entry point; `_LANGUAGE_ADAPTERS` and `parse_source` both derive from
 # these so registration and parse dispatch cannot disagree.
-# `.pyi` routes to the Python adapter so stub files keep their
-# established audit record (`skipped+GENERATED_FILENAME` from the
-# parser's suffix rule) instead of flipping to UNSUPPORTED_LANGUAGE
-# under the registry gate (dispatch spec, open question 3).
+# `.pyi` is Python declaration source, not evidence of generated content.
+# It shares normal Python parsing; explicit exclusion rules still apply.
 PYTHON_EXTENSIONS: Final[tuple[str, ...]] = (".py", ".pyi")
 JAVASCRIPT_EXTENSIONS: Final[tuple[str, ...]] = (".js", ".jsx", ".mjs", ".cjs")
 

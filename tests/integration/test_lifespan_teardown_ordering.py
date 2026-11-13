@@ -1,10 +1,7 @@
-"""Lifespan H3 closure — engine.dispose() runs even if provider.aclose() raises.
+"""Lifespan cleanup disposes the engine even when provider shutdown fails.
 
-Pins the spec's AsyncExitStack guarantee: every push_async_callback runs
-on teardown, LIFO order, even if a prior callback raises. Without this,
-a transient SDK error during rolling deploy could leak the engine's
-connection pool.
-"""
+AsyncExitStack callbacks run in LIFO order despite an earlier callback error,
+so provider-close failures cannot skip connection-pool cleanup."""
 
 from __future__ import annotations
 
@@ -23,32 +20,35 @@ class _SyntheticACloseError(RuntimeError):
     """Synthetic exception raised by the test's mock aclose."""
 
 
+@pytest.mark.usefixtures("github_app_env")
 async def test_engine_dispose_runs_when_provider_aclose_raises(
     noop_severity_policy_fingerprint_check: object,
     in_memory_checkpointer_factory: object,
+    make_stub_llm_provider: type,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """provider.aclose() raises during teardown; engine.dispose() still runs.
+    """Engine disposal follows a provider-close failure after successful startup."""
+    monkeypatch.setenv("OUTRIDER_GITHUB_CREDENTIAL_SOURCE", "env")
+    monkeypatch.setenv("OUTRIDER_SWEEP_DISABLED", "1")
 
-    AsyncExitStack pushes callbacks in order: engine.dispose first, then
-    provider.aclose. Teardown is LIFO: provider.aclose runs first, raises;
-    engine.dispose runs SECOND, even though aclose raised. The exception
-    propagates AFTER both callbacks have been attempted.
-    """
+    events: list[str] = []
     mock_engine = MagicMock()
-    mock_engine.dispose = AsyncMock(return_value=None)
+    mock_engine.dispose = AsyncMock(side_effect=lambda: events.append("engine dispose"))
     mock_engine.url.drivername = "postgresql+psycopg"
-    # Round-39 strict `is True` gate requires the exact bool, not
-    # MagicMock's truthy default. Pin to True so the lifespan gate
-    # passes; this test isn't testing the gate, it's testing teardown
-    # ordering on aclose failure.
+    # Satisfy the strict boolean gate so this case reaches teardown ordering.
     mock_engine.sync_engine.hide_parameters = True
 
-    mock_provider = MagicMock()
-    mock_provider.aclose = AsyncMock(side_effect=_SyntheticACloseError("injected"))
+    provider = make_stub_llm_provider()
+
+    def close_provider() -> None:
+        events.append("provider close")
+        raise _SyntheticACloseError("injected")
+
+    provider.aclose.side_effect = close_provider
 
     lifespan = build_lifespan(
         engine_factory=lambda: mock_engine,
-        provider_factory=lambda _persister, _model_config, _host, _reasoning: mock_provider,
+        provider_factory=lambda _persister, _model_config, _host, _reasoning: provider,
         severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,  # type: ignore[arg-type]
         checkpointer_factory=in_memory_checkpointer_factory,  # type: ignore[arg-type]
     )
@@ -56,30 +56,20 @@ async def test_engine_dispose_runs_when_provider_aclose_raises(
     app = FastAPI()
     with pytest.raises(_SyntheticACloseError):
         async with lifespan(app):
-            pass
+            events.append("lifespan entered")
 
-    # Both teardown callbacks ran, despite the raise.
-    mock_provider.aclose.assert_awaited_once()
+    provider.aclose.assert_awaited_once()
     mock_engine.dispose.assert_awaited_once()
+    assert events == ["lifespan entered", "provider close", "engine dispose"]
 
 
 async def test_lifespan_rejects_real_engine_without_hide_parameters(
     migrated_db: str,
 ) -> None:
-    """Round-4 regression: defeat MagicMock-masking of the M2 assertion.
+    """A real AsyncEngine without hide_parameters=True fails startup.
 
-    The existing `test_lifespan_rejects_engine_without_hide_parameters`
-    uses MagicMock; MagicMock returns truthy MagicMock by default for any
-    attribute access. That test verifies the assertion fires when an
-    explicit override sets `hide_parameters=False`, but doesn't verify
-    the assertion exercises the SAME attribute path a real SQLAlchemy
-    engine exposes.
-
-    This test constructs a REAL `AsyncEngine` via `create_async_engine`
-    (no `hide_parameters=True` — production defaults). The lifespan
-    assertion must fire. Together with the MagicMock test, both the
-    contract AND the SQLAlchemy attribute path are pinned.
-    """
+    This checks SQLAlchemy's actual attribute path independently of MagicMock defaults.
+    The constructed engine is rejected before opening a connection."""
     from sqlalchemy.ext.asyncio import create_async_engine
 
     real_engine_no_hide_params = create_async_engine(migrated_db)
@@ -114,19 +104,10 @@ async def test_lifespan_rejects_real_engine_without_hide_parameters(
 
 
 async def test_lifespan_rejects_engine_without_hide_parameters() -> None:
-    """M2 regression: lifespan body strict-checks
-    `engine.sync_engine.hide_parameters is True` on the constructed
-    engine. A test seam (or future extraction) that returns a real
-    engine without the setting must fail loud at lifespan entry rather
-    than silently regressing DECISIONS#016 logs-stay-metadata-only at
-    runtime.
+    """Reject an engine whose sync_engine.hide_parameters is False.
 
-    Constructs a real-shaped engine mock whose `hide_parameters` attribute
-    is False; asserts lifespan startup raises `RuntimeError` before
-    yielding. (Round-7 elevation from strippable `assert` to runtime
-    `RuntimeError` so the gate survives `python -O`; round-39 further
-    strengthened from bare truthy check to strict `is not True`.)
-    """
+    The runtime startup gate must enforce DECISIONS#016 before yielding, including
+    under python -O where an assert would be stripped."""
     mock_engine = MagicMock()
     mock_engine.dispose = AsyncMock(return_value=None)
     mock_engine.url.drivername = "postgresql+psycopg"
@@ -149,24 +130,14 @@ async def test_lifespan_rejects_engine_without_hide_parameters() -> None:
 
 
 async def test_lifespan_rejects_engine_with_truthy_non_bool_hide_parameters() -> None:
-    """Round-39 adversarial-modeler M3 fold: the `hide_parameters` gate
-    uses strict `is not True` (not bare falsy check). A test-injected
-    factory returning an engine where `sync_engine.hide_parameters =
-    "true"` (string, truthy but not the bool True) is rejected at
-    lifespan startup — SQLAlchemy's exception-string rendering checks
-    the boolean form, and non-bool truthy values produce undefined
-    redaction behavior depending on SA version.
+    """Reject truthy non-booleans at the engine redaction gate.
 
-    Production path (`create_async_engine(..., hide_parameters=True)`)
-    always sets a bool, so the production gate is unaffected; this test
-    closes a test-injection vector flagged by the round-39 adversarial
-    threat model.
-    """
+    The string "true" is not the bool True. Requiring the exact boolean keeps an
+    injected factory from bypassing the hide_parameters contract."""
     mock_engine = MagicMock()
     mock_engine.dispose = AsyncMock(return_value=None)
     mock_engine.url.drivername = "postgresql+psycopg"
-    # Truthy non-bool: the round-38 gate (bare `if not`) accepted this;
-    # the round-39 strengthened gate (`is not True`) rejects it.
+    # A truthy string must not satisfy the boolean redaction gate.
     mock_engine.sync_engine.hide_parameters = "true"
 
     mock_provider = MagicMock()
@@ -193,7 +164,7 @@ async def test_engine_dispose_runs_when_provider_constructor_fails(
     mock_engine = MagicMock()
     mock_engine.dispose = AsyncMock(return_value=None)
     mock_engine.url.drivername = "postgresql+psycopg"
-    # Round-39 strict `is True` gate requires the exact bool.
+    # The redaction gate requires the exact bool.
     mock_engine.sync_engine.hide_parameters = True
 
     def _failing_provider_factory(

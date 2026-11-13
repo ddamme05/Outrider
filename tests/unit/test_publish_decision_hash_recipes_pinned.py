@@ -1,39 +1,9 @@
-"""Golden-digest pins for the three publish decision-hash helpers.
+"""Check fixed publish-decision hashes for stored-row compatibility.
 
-Backs the append-only enum-value + hash-recipe contract declared in
-`DECISIONS.md` #023 "Append-only enum-value + hash-recipe contract"
-Consequence bullet. Per that contract:
-
-- The four publish StrEnums (`PublishRoutingReason`, `PublishEligibility`,
-  `PublishEligibilityReason`, `PublishAttemptOutcome`) have append-only
-  `.value` strings; existing values MUST NOT be renamed or removed.
-- The three canonical decision-hash helpers
-  (`compute_publish_routing_decision_hash`,
-  `compute_publish_eligibility_decision_hash`,
-  `compute_publish_attempt_content_hash`) have append-only recipes;
-  JSON encoding order, separators, and input-tuple shape MUST NOT change.
-
-Every `PublishRoutingEvent` / `PublishEligibilityEvent` / `PublishAttemptEvent`
-model-validator recomputes the hash at construction and rejects on mismatch.
-A silent rename of any `.value` string OR a re-ordering of the JSON encoding
-would cause EVERY historical row's `model_validate_json(...)` to fail at
-replay, with no version-stamp escape hatch. This file is the structural
-floor: if a contract violation lands, these tests fail at commit time,
-not at the next replay attempt against historical audit data.
-
-The fixtures cover at least one tuple per enum member's hash-input path
-(both branches of the optional-kind on routing; both branches of the
-optional-reason on eligibility; success and failed on attempt; the
-sorted-vs-empty branches of `sorted_finding_ids`). They are NOT a
-substitute for unit coverage of validator behavior; they are the
-recipe-pinning artifact specifically.
-
-If you are reading this because a test failed: the recipe changed.
-Either revert the recipe change OR — if the change is deliberate — add a
-`hash_recipe_version` field to the events (mirroring
-`PublishEligibilityEvent.policy_version`'s `ACTIVE_POLICY_VERSION`
-skip-for-historical guard) and bump it BEFORE updating these goldens.
-"""
+Enum values and canonical hash recipes are append-only (DECISIONS.md#023).
+Changing either can make historical events fail replay validation. A deliberate
+recipe change needs explicit event versioning before these expected values change;
+these fixtures do not replace validator tests."""
 
 from uuid import UUID
 
@@ -265,7 +235,8 @@ def test_publish_routing_reason_value_strings_pinned() -> None:
     assert PublishRoutingReason.UNCHANGED_REGION.value == "unchanged_region"
     assert PublishRoutingReason.NON_DIFFED_FILE.value == "non_diffed_file"
     assert PublishRoutingReason.COORDINATE_ERROR.value == "coordinate_error"
-    assert len(PublishRoutingReason) == 4
+    assert PublishRoutingReason.REMOVED_SOURCE.value == "removed_source"
+    assert len(PublishRoutingReason) == 5
 
 
 def test_publish_eligibility_value_strings_pinned() -> None:

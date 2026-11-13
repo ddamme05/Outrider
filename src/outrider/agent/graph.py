@@ -1,19 +1,14 @@
-# StateGraph(ReviewState) factory: seven LOGICAL nodes (DECISIONS.md#064).
-"""`StateGraph(ReviewState)` factory.
+"""Build the review workflow with its database, model and GitHub services.
 
-Seven LOGICAL nodes — intake, triage, analyze, trace, synthesize, hitl, publish —
-over nine physical vertices: analyze fans out into a planner, per-file `analyze_file`
-Send workers, and an `analyze_aggregate` fold. Audit vocabulary, state identity and
-replay grouping know only the seven (`DECISIONS.md#064`).
+build_graph checks dependencies, connects the review steps and compiles a graph
+that callers run with await graph.ainvoke(seed_state). Analysis schedules files
+separately and then combines their results into one round.
 
-Intake routes with `Command(goto=...)`, which is why this module deliberately has NO
-`add_edge("intake", ...)` and no `add_conditional_edges("intake", ...)`: under LangGraph
-1.1.6 a static edge fires ALONGSIDE the Command's dynamic edge, sending to both.
+Services are passed into the node functions, never saved in ReviewState
+(nodes-receive-deps-via-closure). Intake and analysis choose their next steps
+with Commands, so adding static outgoing edges would run extra steps.
 
-Every runtime dependency arrives as a keyword argument and is closed over in
-the node callables rather than stored in ReviewState
-(`nodes-receive-deps-via-closure`). All nodes are async, so the compiled graph is
-driven with `await graph.ainvoke(seed_state)`.
+The seven review-stage names remain the audit vocabulary (DECISIONS.md#064).
 """
 
 from __future__ import annotations
@@ -47,6 +42,7 @@ from outrider.anomaly import AnomalySink
 from outrider.ast_facts.base import ImportPathResolver
 from outrider.audit.sinks import (
     AnalyzeEventSink,
+    CandidateEventSink,
     FileExaminationSink,
     HITLEventSink,
     PhaseEventSink,
@@ -402,6 +398,12 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     import_path_resolver: ImportPathResolver,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
     analyze_max_concurrency: int = ANALYZE_MAX_CONCURRENCY,
+    supplemental_context_enabled: bool = True,
+    called_function_context_enabled: bool = False,
+    module_context_enabled: bool = False,
+    companion_context_enabled: bool = False,
+    import_reference_context_enabled: bool = False,
+    candidate_event_sink: CandidateEventSink | None = None,
     trivial_scope_filter_enabled: bool = False,
     analyze_observed_skip_enforced: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
@@ -426,6 +428,19 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     Returns a compiled `StateGraph(ReviewState)` ready for
     `await graph.ainvoke(seed_state)`.
     """
+    if companion_context_enabled and not supplemental_context_enabled:
+        raise ValueError("companion context requires supplemental context")
+    if (
+        sum(
+            (
+                module_context_enabled,
+                called_function_context_enabled,
+                import_reference_context_enabled,
+            )
+        )
+        > 1
+    ):
+        raise ValueError("optional import/module/called-function modes cannot be enabled together")
     _validate_provider_and_host_identity(
         provider=provider,
         model_config=model_config,
@@ -478,6 +493,8 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         publisher=publisher,
         import_path_resolver=import_path_resolver,
     )
+    if candidate_event_sink is None and isinstance(analyze_event_sink, CandidateEventSink):
+        candidate_event_sink = analyze_event_sink
 
     # Close over the per-tier model id, not the whole ModelConfig.
     triage_callable = functools.partial(
@@ -506,9 +523,16 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         phase_event_sink=phase_event_sink,
         file_examination_sink=file_examination_sink,
         analyze_event_sink=analyze_event_sink,
+        candidate_event_sink=candidate_event_sink,
         anomaly_sink=anomaly_sink,
         import_path_resolver=import_path_resolver,
         total_review_budget_tokens=total_review_budget_tokens,
+        supplemental_context_enabled=supplemental_context_enabled,
+        called_function_context_enabled=called_function_context_enabled,
+        module_context_enabled=module_context_enabled,
+        companion_context_enabled=companion_context_enabled,
+        import_reference_context_enabled=import_reference_context_enabled,
+        github_factory=github_factory,
         # Shadow default: the classifier audits would-exclude verdicts and excludes
         # nothing.
         trivial_scope_filter_enabled=trivial_scope_filter_enabled,
@@ -533,6 +557,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         phase_event_sink=phase_event_sink,
         file_examination_sink=file_examination_sink,
         analyze_event_sink=analyze_event_sink,
+        candidate_event_sink=candidate_event_sink,
         total_review_budget_tokens=total_review_budget_tokens,
         trivial_scope_filter_enabled=trivial_scope_filter_enabled,
         analyze_observed_skip_enforced=analyze_observed_skip_enforced,

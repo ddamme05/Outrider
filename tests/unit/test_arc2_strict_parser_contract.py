@@ -1,18 +1,8 @@
-"""Arc 2 — shape validity NEVER implies admission.
+"""Check that well-shaped fabricated proof is still rejected by the real parser.
 
-This is the file that keeps the arc honest about its own scope. The strict
-schema enforces SHAPE at the wire; it cannot establish proof AUTHENTICITY — that
-a `query_match_id` names a query that actually fired, or that a `trace_path`
-element was really walked. Authenticity stays where it lives, in
-`agent/nodes/analyze_parser.py` (step 4, `query_match_id_not_in_registry`).
-
-So a fabricated-but-well-shaped proof passing `jsonschema` and then being
-REJECTED by the real parser is the EXPECTED NEGATIVE CONTROL — confirmation the
-two layers do different jobs, not a failure. Only fabrication that SURVIVES the
-parser would be an authenticity escape.
-
-See `specs/2026-07-20-arc2-strict-schema-feasibility.md`.
-"""
+A schema can constrain proof fields without proving a query fired or a trace
+was followed. That verification remains a parser responsibility.
+See specs/2026-07-20-arc2-strict-schema-feasibility.md."""
 
 from __future__ import annotations
 
@@ -86,7 +76,7 @@ def _finding(**overrides: Any) -> dict[str, Any]:
         "trace_path": None,
         "title": "SQL built by concatenation",
         "description": "User input is concatenated into a SQL string.",
-        "evidence": "conn.execute(user_id)",
+        "evidence": _FILE_CONTENT.rstrip("\n"),
         "line_start": 1,
         "line_end": 2,
         "trace_candidates": [],
@@ -138,9 +128,7 @@ def test_fabricated_proof_is_rejected_by_real_parser() -> None:
 
 
 def test_shape_validity_and_admission_are_independent_layers() -> None:
-    """Both directions of the claim in one place, so the split cannot silently
-    collapse: shape-valid-but-unauthentic is rejected, and shape-valid-with-real
-    -proof is admitted. Same schema, opposite parser outcomes."""
+    """Shape-valid model OBSERVED rejects; an exact-source JUDGED claim admits."""
     fabricated = _finding(evidence_tier="observed", query_match_id=FABRICATED_QUERY_ID)
     authentic = _finding(evidence_tier="observed", query_match_id=AUTHENTIC_QUERY_ID)
 
@@ -148,7 +136,10 @@ def test_shape_validity_and_admission_are_independent_layers() -> None:
         VALIDATOR.validate({"findings": [body]})
 
     assert _parse(_body(fabricated)).admitted_findings == ()
-    assert len(_parse(_body(authentic)).admitted_findings) == 1
+    rejected = _parse(_body(authentic))
+    assert rejected.admitted_findings == ()
+    assert rejected.proposal_rejections[0].rejection_reason == "model_observed_not_supported"
+    assert len(_parse(_body(_finding())).admitted_findings) == 1
 
 
 def test_strict_response_parses_through_production_parser() -> None:
@@ -161,7 +152,7 @@ def test_strict_response_parses_through_production_parser() -> None:
     so if the two admitted differently the strict encoding would be changing
     behavior rather than constraining it.
     """
-    strict_body = _finding(evidence_tier="observed", query_match_id=AUTHENTIC_QUERY_ID)
+    strict_body = _finding()
     VALIDATOR.validate({"findings": [strict_body]})
 
     # The json_object equivalent: optional properties OMITTED rather than nulled.

@@ -1,17 +1,13 @@
-# Tests for policy/publish_eligibility.py per FUP-062 + DECISIONS.md #023.
-"""Pin the V1 publish eligibility gate.
+"""Check publish eligibility before a GitHub request can occur.
 
-Per DECISIONS.md #023 (two-layered fabricated-override defense):
-  - SCHEMA half: PublishEligibilityEvent._enforce_v1_no_overrides
-  - POLICY half: is_eligible_for_v1_publish (this module)
-
-The schema rejects the audit row; the gate must reject BEFORE the
-GitHub call so the fabricated-override never materializes.
-"""
+Fabricated severity overrides must be rejected by policy as well as event
+validation. See FUP-062 and DECISIONS.md#023."""
 
 from __future__ import annotations
 
 from uuid import uuid4
+
+import pytest
 
 from outrider.audit.events import (
     PublishEligibility,
@@ -34,6 +30,160 @@ from outrider.schemas.hitl import (
     PerFindingDecision,
     PerFindingOutcome,
 )
+from outrider.schemas.native_candidate import (
+    CandidateAssessmentRef,
+    CandidateCitationRef,
+    NativeCandidateRef,
+    native_candidate_id,
+)
+
+
+def _verification_ref(finding: ReviewFinding) -> NativeCandidateRef:
+    source_id = uuid4()
+    return NativeCandidateRef(
+        candidate_id=native_candidate_id(
+            review_id=finding.review_id,
+            source_exchange_event_id=source_id,
+            response_hash="c" * 64,
+            proposal_index=0,
+            file_path=finding.file_path,
+            pass_index=0,
+        ),
+        review_id=finding.review_id,
+        source_exchange_event_id=source_id,
+        response_hash="c" * 64,
+        proposal_index=0,
+        file_path=finding.file_path,
+        pass_index=0,
+        initial_disposition="admitted",
+        proposal_hash=finding.proposal_hash,
+        finding_id=finding.finding_id,
+        content_hash=finding.content_hash,
+        finding_type=finding.finding_type,
+        severity=finding.severity,
+        evidence_tier=finding.evidence_tier,
+        policy_version=finding.policy_version,
+    )
+
+
+def _verification_assessment(ref: NativeCandidateRef, **changes: object) -> CandidateAssessmentRef:
+    return CandidateAssessmentRef.model_validate(
+        {
+            "candidate_id": ref.candidate_id,
+            "attempt_id": uuid4(),
+            "assessment_exchange_event_id": uuid4(),
+            "status": "supports",
+            "outcome": "completed",
+            "policy_version": ACTIVE_POLICY_VERSION,
+            "reason_hash": "d" * 64,
+            "citations": (
+                CandidateCitationRef(
+                    snippet_id="e" * 64,
+                    file_path=ref.file_path,
+                    line_start=10,
+                    line_end=12,
+                    quote_hash="f" * 64,
+                ),
+            ),
+            **changes,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "changes,held",
+    [
+        ({}, False),
+        ({"status": "refutes"}, True),
+        ({"status": "uncertain"}, True),
+        (
+            {
+                "suggested_finding_type": FindingType.UNUSED_IMPORT,
+                "suggested_severity": FindingSeverity.INFO,
+            },
+            True,
+        ),
+        ({"policy_version": "9.0.0"}, True),
+        ({"status": "uncertain", "outcome": "interrupted", "citations": ()}, True),
+    ],
+)
+def test_assessment_hold_preserves_original_and_requires_human_decision(changes, held) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from outrider.policy.publish_eligibility import verification_hold_finding_ids
+
+    finding = _make_finding()
+    original = finding.model_dump(mode="json")
+    ref = _verification_ref(finding)
+    assessment = _verification_assessment(ref, **changes)
+    holds = verification_hold_finding_ids(
+        (finding,), (ref,), (assessment,), policy_version=ACTIVE_POLICY_VERSION
+    )
+    assert holds == ((finding.finding_id,) if held else ())
+    if not held:
+        return
+    assert (
+        is_eligible_for_v1_publish(
+            finding, hitl_request=None, hitl_decision=None, verification_hold=True
+        )[0]
+        is PublishEligibility.WITHHELD
+    )
+    now = datetime.now(UTC)
+    request = HITLRequest(
+        findings_requiring_approval=holds,
+        auto_post_findings=(),
+        verification_hold_finding_ids=holds,
+        created_at=now,
+        expires_at=now + timedelta(minutes=30),
+    )
+    assert (
+        is_eligible_for_v1_publish(finding, hitl_request=request, hitl_decision=None)[0]
+        is PublishEligibility.WITHHELD
+    )
+    for outcome in (
+        PerFindingOutcome.APPROVE,
+        PerFindingOutcome.REJECT,
+        PerFindingOutcome.SEVERITY_OVERRIDE,
+    ):
+        override = (
+            {"original_severity": finding.severity, "override_severity": FindingSeverity.INFO}
+            if outcome is PerFindingOutcome.SEVERITY_OVERRIDE
+            else {}
+        )
+        decision = HITLDecision(
+            reviewer_id="admin",
+            decided_at=now,
+            decisions=(
+                PerFindingDecision(
+                    finding_id=finding.finding_id,
+                    outcome=outcome,
+                    reason="checked source",
+                    **override,
+                ),
+            ),
+        )
+        eligibility, _ = is_eligible_for_v1_publish(
+            finding, hitl_request=request, hitl_decision=decision, verification_hold=True
+        )
+        assert (eligibility is PublishEligibility.ELIGIBLE) == (
+            outcome is PerFindingOutcome.APPROVE
+        )
+    assert finding.model_dump(mode="json") == original
+
+
+def test_later_support_cannot_clear_counterevidence_for_a_selected_duplicate() -> None:
+    from outrider.policy.publish_eligibility import verification_hold_finding_ids
+
+    original = _make_finding()
+    ref = _verification_ref(original)
+    selected_duplicate = original.model_copy(update={"finding_id": uuid4()})
+    holds = verification_hold_finding_ids(
+        (selected_duplicate,),
+        (ref,),
+        (_verification_assessment(ref, status="uncertain"), _verification_assessment(ref)),
+        policy_version=ACTIVE_POLICY_VERSION,
+    )
+    assert holds == (selected_duplicate.finding_id,)
 
 
 def _make_finding(

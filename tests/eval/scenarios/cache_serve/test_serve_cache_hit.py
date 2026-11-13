@@ -1,30 +1,17 @@
-"""Serve-mode eval scenario (FUP-176): re-review a file across TWO PRs; the second
-PR's analyze serves the finding from the first PR's cache row and flows it to publish.
+"""Check that a second review can reuse a finding cached by the first review.
 
-Two `CacheMode.SERVE` drives of TWO DISTINCT fixtures (two PRs that touch one file
-IDENTICALLY — NOT one fixture twice; `reviews` is UNIQUE on (repo_id, pr_number,
-head_sha), so the same PR head cannot be reviewed twice) against ONE eval DB:
-
-- **Drive 1** (PR #22, cache empty): analyze MISSES → calls the model → writes the
-  `analyze_file_cache` row (the write-on-miss happens in any cache mode).
-- **Drive 2** (PR #23, same file, cache populated by drive 1, a FRESH `review_id`):
-  analyze HITS → reconstructs + re-stamps the cached finding (zero analyze LLM call)
-  → the served finding flows through synthesize → HITL (LOW finding, no gate) → publish.
-
-This drives the serve path end-to-end through the real seven-node graph — the
-coverage FUP-177's unit tests (re-mint determinism, degrade guard) could not give:
-the served finding crossing every downstream deterministic gate, AND the full
-audit stream replaying equivalent. The fixture is the proven LOW-severity
-`missing_error_handling` PR (single file, non-gating, reaches publish).
-
-`run_review_persisting` runs against the caller-owned `eval_db` so the audit
-stream + the cache row survive BOTH drives (and the post-run replay). Asserting
-drive 2 serves and replays is exactly the readiness signal the `cache_mode=serve`
-flip waits on (the production flip itself is telemetry-gated — out of scope here).
-"""
+Run two distinct PRs with the same changed file against one test database.
+The first analysis calls the scripted model and writes the cache; the second
+serves the finding without an analysis call. Follow it through publication
+and replay the saved history. A derived BASE makes the change body-only;
+shared HEADs and scripted findings stay intact. This tests reuse, not a
+production cache-mode flip."""
 
 from __future__ import annotations
 
+import json
+from difflib import unified_diff
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sqlalchemy import text
@@ -51,6 +38,30 @@ _FIXTURE_COLD = "tests/eval/fixtures/mock_github/missing_error_handling.json"
 _FIXTURE_RESUBMIT = "tests/eval/fixtures/mock_github/missing_error_handling_resubmitted.json"
 
 
+def _write_cache_body_change_fixture(source_path: str, target_path: Path) -> Path:
+    """Derive a body-only change while preserving the original HEAD and findings."""
+    fixture = json.loads(Path(source_path).read_text(encoding="utf-8"))
+    (file,) = fixture["files"]
+    file["content_base"] = "import requests\n\n\ndef fetch_profile(user_id):\n    return {}\n"
+    diff_lines = tuple(
+        unified_diff(
+            file["content_base"].splitlines(keepends=True),
+            file["content_head"].splitlines(keepends=True),
+            fromfile=f"a/{file['path']}",
+            tofile=f"b/{file['path']}",
+        )
+    )
+    file["patch"] = "".join(diff_lines)
+    fixture["total_additions"] = file["additions"] = sum(
+        line.startswith("+") for line in diff_lines[2:]
+    )
+    fixture["total_deletions"] = file["deletions"] = sum(
+        line.startswith("-") for line in diff_lines[2:]
+    )
+    target_path.write_text(json.dumps(fixture, indent=2) + "\n", encoding="utf-8")
+    return target_path
+
+
 async def _count_events(
     session_factory: async_sessionmaker[AsyncSession],
     review_id: UUID,
@@ -71,19 +82,24 @@ async def _count_events(
 async def test_serve_cache_hit_skips_analyze_and_replays_equivalent(
     eval_db: str,
     eval_db_session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
 ) -> None:
     """Re-reviewing a shared file across two PRs under SERVE: drive 2 (PR #23)
     serves the analyze finding from drive 1's (PR #22) cache row (zero analyze LLM
     call), flows it to the report through publish, and replays equivalent — alongside
     drive 1, the cold miss that seeded the cache."""
     store = AnalyzeCacheStore(session_factory=eval_db_session_factory)
+    cold_fixture = _write_cache_body_change_fixture(_FIXTURE_COLD, tmp_path / "cold.json")
+    resubmitted_fixture = _write_cache_body_change_fixture(
+        _FIXTURE_RESUBMIT, tmp_path / "resubmitted.json"
+    )
 
     # Eval reviews use the cache (scoped to is_eval rows by the lookup predicate,
     # DECISIONS.md#046); eval_db is an isolated ephemeral DB so the only rows are
     # this scenario's. Drive 1 (PR #22): cache empty → analyze runs the model and
     # writes the row.
     first = await run_review_persisting(
-        _FIXTURE_COLD,
+        cold_fixture,
         db_url=eval_db,
         analyze_cache_store=store,
         cache_mode=CacheMode.SERVE,
@@ -92,7 +108,7 @@ async def test_serve_cache_hit_skips_analyze_and_replays_equivalent(
     # row (the lookup's self-hit exclusion keys on the CURRENT review, so the
     # cross-review hit is not suppressed).
     second = await run_review_persisting(
-        _FIXTURE_RESUBMIT,
+        resubmitted_fixture,
         db_url=eval_db,
         analyze_cache_store=store,
         cache_mode=CacheMode.SERVE,

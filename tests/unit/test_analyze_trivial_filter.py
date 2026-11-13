@@ -1,14 +1,8 @@
-# Per specs/2026-06-10-trivial-scope-filter.md — analyze-node wiring tests.
-"""Trivial-scope filter wiring through the analyze node.
+"""Check trivial-scope filtering through the analyze node.
 
-Pins the four behavior contracts the spec fixes at the node level:
-shadow mode classifies + audits without changing behavior; enforcing
-mode skips all-trivial files with `ALL_SCOPES_TRIVIAL` (no LLM call)
-and excludes trivial scopes from mixed files' prompts; the baseline
-cost gate wins precedence (`COST_BUDGET_EXHAUSTED`, no classification);
-and the span-filtered query-ID set feeds the prompt (the parser gets
-the same set by construction — one variable feeds both).
-"""
+Shadow mode only audits; enforcing mode skips trivial files or excludes trivial
+scopes. The budget check takes precedence and prompt query IDs match admission.
+See specs/2026-06-10-trivial-scope-filter.md."""
 
 from __future__ import annotations
 
@@ -331,8 +325,13 @@ async def test_enforcing_mixed_excludes_trivial_scope_from_prompt_and_queries() 
     [request] = provider.calls
     assert "beta" in request.user_prompt
     assert "def alpha" not in request.user_prompt  # excluded scope body gone
-    # context_summary stays "what the LLM saw": kept scope only.
-    assert [e.scope_unit_name for e in request.context_summary] == ["beta"]
+    # The excluded body stays absent; supplied module context is recorded separately.
+    assert [e.scope_unit_name for e in request.context_summary] == [
+        "beta",
+        "module declaration at line 1",
+    ]
+    assert request.context_summary[1].inclusion_reason == "same_file_context"
+    assert "import os" in request.user_prompt
     # Query-ID span filtering: import_statement fires only at module level
     # (outside every kept scope) and must not advertise; function_definition
     # matches inside beta and stays.
@@ -350,14 +349,14 @@ async def test_enforcing_mixed_excludes_trivial_scope_from_prompt_and_queries() 
 
 
 @pytest.mark.asyncio
-async def test_shadow_mode_mixed_keeps_full_prompt_and_query_ids() -> None:
-    """Shadow contrast for the mixed case: full prompt, full query set."""
+async def test_shadow_mode_mixed_keeps_scopes_and_filters_query_ids() -> None:
+    """Shadow keeps both scopes, but supplemental module text is not primary proof."""
     cf = _changed_file(path="src/mixed.py", head=_HEAD_MIXED, base=_BASE_MIXED, patch=_PATCH_MIXED)
     provider, _, analyze_sink = await _run(_state(cf), enabled=False)
 
     [request] = provider.calls
     assert "def alpha" in request.user_prompt
-    assert "python.import_statement" in request.user_prompt
+    assert "python.import_statement" not in request.user_prompt
     [event] = analyze_sink.scope_exclusions
     assert event.applied is False
     assert len(event.entries) == 2

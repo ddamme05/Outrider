@@ -1,26 +1,12 @@
-"""AuditPersister.emit_finding — findings-content co-insert edge cases.
+"""Check finding-content conflicts, retention, and installation scope.
 
-Pins the load-bearing branch logic of the findings-content writer
-(`specs/2026-05-30-findings-content-writer.md`): the no-resurrection guard,
-the analyze-time-immutable verify set (including the deliberate exclusion of
-later-node columns), the installation-scope cross-check, and is_eval threading.
+The writer must not recreate purged content or accept changes to stored analysis
+content. Later-node fields are excluded from that comparison; evaluation scope
+must agree. See specs/2026-05-30-findings-content-writer.md.
 
-The happy FULL-mode path is proven in `test_audit_replay.py
-::test_full_mode_through_production_persister` and end-to-end through the graph
-in `test_e2e_smoke.py`; this file pins the conflict / purge / mismatch edges.
-
-**Case A vs Case B.** `emit_finding(finding, *, is_eval)` mints a fresh
-`FindingEvent.event_id` (uuid4) on every call, so two calls for the same
-`ReviewFinding` always carry DIFFERENT event_ids. The audit INSERT therefore
-never conflicts on `event_id` → the writer always takes the Case-B branch
-(re-emit detected via a `finding_id` lookup), never Case A
-(`audit_row_already_existed`). Case A + its audit-payload-equality check are a
-defensive mirror of the `persist()` / `llm_call_content` path (where the event
-is built by the caller and its event_id is stable) and are unreachable through
-`emit_finding`'s public surface. The equivalent finding-side integrity
-guarantee is the Case-B verify set, exercised below by
-`test_reemit_with_drifted_stored_content_raises`.
-"""
+Each emit_finding call creates a new audit event ID, so retries through that
+method use the finding-ID comparison, not the existing-audit-event branch.
+The graph's successful write/replay path is in test_e2e_smoke.py."""
 
 from __future__ import annotations
 
@@ -29,19 +15,23 @@ from typing import TYPE_CHECKING
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from outrider.api.dashboard.findings import assemble_finding_views
 from outrider.audit.events import compute_finding_content_hash
 from outrider.audit.persister import (
     AuditPersisterFindingInstallationIdMismatchError,
     AuditPersisterIdempotencyConflict,
     AuditPersisterIsEvalMismatchError,
 )
+from outrider.audit.replay import AuditReplayer, _verify_full_finding
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import FindingSeverity, FindingType
 from outrider.schemas import ReviewDimension
 from outrider.schemas.review_finding import ReviewFinding
 
 if TYPE_CHECKING:
+    from typing import Literal
     from uuid import UUID
 
     from tests.integration.conftest import PersisterTestSetup
@@ -56,6 +46,7 @@ def _make_finding(
     installation_id: int,
     *,
     title: str = "SQL injection in query builder",
+    source_side: Literal["head", "base"] = "head",
 ) -> ReviewFinding:
     """Build an admitted `ReviewFinding` matching the seeded review/installation.
 
@@ -71,6 +62,7 @@ def _make_finding(
         severity=FindingSeverity.CRITICAL,
         evidence_tier=EvidenceTier.JUDGED,
         file_path=_FILE_PATH,
+        source_side=source_side,
         line_start=_LINE_START,
         line_end=_LINE_END,
         title=title,
@@ -81,6 +73,7 @@ def _make_finding(
             line_start=_LINE_START,
             line_end=_LINE_END,
             finding_type=FindingType.SQL_INJECTION,
+            source_side=source_side,
         ),
         proposal_hash=hashlib.sha256(b"proposal").hexdigest(),
     )
@@ -93,6 +86,53 @@ async def _count_findings(setup: PersisterTestSetup, finding_id: UUID) -> int:
             {"fid": finding_id},
         )
         return result.scalar_one()
+
+
+async def test_source_side_survives_content_audit_replay_api_and_retention(
+    persister_setup: PersisterTestSetup,
+) -> None:
+    setup = persister_setup
+    head = _make_finding(setup.review_id, setup.installation_id)
+    base = _make_finding(setup.review_id, setup.installation_id, source_side="base")
+    for finding in (head, base):
+        await setup.persister.emit_finding(finding, is_eval=False)
+    sessions = async_sessionmaker(setup.engine, expire_on_commit=False)
+    replayer = AuditReplayer(session_factory=sessions)
+    reconstructed = await replayer.reconstruct(setup.review_id)
+    assert {finding.event.source_side for finding in reconstructed.findings} == {"head", "base"}
+    for finding in reconstructed.findings:
+        assert finding.content is not None
+        assert finding.content.source_side == finding.event.source_side
+        _verify_full_finding(finding, {})
+    async with sessions() as session:
+        views = await assemble_finding_views(
+            session,
+            review_id=setup.review_id,
+            installation_id=setup.installation_id,
+            review_is_eval=False,
+        )
+    assert {view.source_side for view in views} == {"head", "base"}
+    assert head.content_hash != base.content_hash
+
+    async with setup.engine.begin() as conn:
+        await conn.execute(
+            text("DELETE FROM findings WHERE finding_id = :fid"), {"fid": base.finding_id}
+        )
+    reconstructed = await replayer.reconstruct(setup.review_id)
+    removed = next(
+        finding for finding in reconstructed.findings if finding.event.finding_id == base.finding_id
+    )
+    assert removed.content is None
+    assert removed.event.source_side == "base"
+    async with sessions() as session:
+        views = await assemble_finding_views(
+            session,
+            review_id=setup.review_id,
+            installation_id=setup.installation_id,
+            review_is_eval=False,
+        )
+    stub = next(view for view in views if view.finding_id == base.finding_id)
+    assert stub.content_redacted and stub.source_side == "base"
 
 
 async def _count_finding_events(setup: PersisterTestSetup, finding_id: UUID) -> int:

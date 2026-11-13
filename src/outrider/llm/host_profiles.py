@@ -1,17 +1,11 @@
-# Host profiles for the OpenAI-compatible provider, per DECISIONS.md#056.
-# `import openai` stays out of this module (re/hashlib/enum/pydantic + llm.base only),
-# so it is import-lint-clean under trust boundary #8.
-"""Host contracts for the OpenAI-compatible provider (`DECISIONS.md#056`).
+"""Describe model hosts' request parameters, pricing and privacy requirements.
 
-Frozen profiles specify transport, model names, JSON mode, token accounting,
-reasoning, and privacy provenance. A closed shaper registry translates the
-reasoning enum. The contract digest covers wire-affecting data and
-`SHAPER_CONTRACT_VERSION`; body changes require a version bump.
+HostProfile lets provider wrappers apply a host's supported behavior. Its
+contract digest records the configuration; behavior changes also require the
+declared version to change. The OpenAI profile is for research capture and is
+not admitted for production review.
 
-Baseten and Fireworks profiles are registered. The OpenAI profile also exists
-for research/eval construction, but `PRODUCTION_UNADMITTED_HOSTS` blocks it
-at the composition root. Registration alone does not grant production admission.
-Anthropic uses its native wrapper and shares per-node defaults here.
+See DECISIONS.md#056 and specs/2026-06-27-openai-compatible-providers.md.
 """
 
 from __future__ import annotations
@@ -29,32 +23,17 @@ from outrider.llm.base import LLMInvalidResponseError
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-# Bump on ANY shaper/accounting FUNCTION-body change (audit-7 #3). It is folded into
-# `profile_contract_digest`, so a behavior change to a shaper invalidates warm cache rows
-# even though no profile DATA field changed.
-# v2 (specs/2026-07-18-openai-native-host.md): the openai-native-host provider-boundary
-# extension — GPT-5.6's novel usage layout (cache writes as a distinct billed class →
-# read_usage widened to a 4-tuple), the JsonMode-aware kwargs builder branch
-# (JSON_OBJECT), message.refusal normalization, and three new digest-folded profile
-# fields (flat-rate ceiling, prompt_cache_key, requested_service_tier). Rotates every
-# profile's contract digest; GLM-host analyze cache rows re-key by design (#056).
-# v3: `token_limit_param` — the kwargs builder sends the completion-token ceiling under
-# a profile-declared parameter name. Wire-driven (#056 captured-evidence rule): the paid
-# probe's 13-row capture returned HTTP 400 "Unsupported parameter: 'max_tokens' ... Use
-# 'max_completion_tokens' instead" on every GPT-5.6 call; GLM hosts keep the verified
-# `max_tokens` wire via the field default.
-# v4: subtractive write accounting — the paid capture's usage envelope showed
-# `total_tokens == prompt + completion` (writes ride INSIDE prompt_tokens), so
-# `read_usage`'s writes-reported arm subtracts writes from input and rejects
-# `cached + writes > prompt`. WIRE-CONSISTENT, not billing-confirmed: the operator
-# billing adjudication is still owed (scorecard gate blocks until it lands; host is
-# no-ship regardless). Accounting-function change → digest rotates.
-SHAPER_CONTRACT_VERSION: Final[str] = "v4"
+# Bump on every shaper/accounting function-body change. The version participates
+# in profile_contract_digest, invalidating cached results even when profile data
+# stays the same (specs/2026-07-18-openai-native-host.md; #056).
+# Current write accounting subtracts cached reads and writes from prompt_tokens;
+# cached + writes must not exceed prompt. Wire consistency does not establish
+# billing correctness, and the OpenAI host remains unadmitted pending that proof.
+SHAPER_CONTRACT_VERSION: Final[str] = "v5"
 
 
 class ReasoningMechanism(StrEnum):
-    """How a host disables reasoning — the four observed wire shapes + a sentinel for
-    hosts with no documented off-switch."""
+    """The request's reasoning directive, including models without an off-switch."""
 
     CHAT_TEMPLATE_ARGS = (
         "chat_template_args"  # Baseten/Telnyx: extra_body.chat_template_args.enable_thinking=False
@@ -62,6 +41,7 @@ class ReasoningMechanism(StrEnum):
     REASONING_EFFORT_NONE = (
         "reasoning_effort_none"  # Fireworks/DeepInfra/OpenAI: top-level reasoning_effort="none"
     )
+    REASONING_EFFORT_LOW = "reasoning_effort_low"
     REASONING_ENABLED_FALSE = (
         "reasoning_enabled_false"  # Together: extra_body.reasoning={"enabled": False}
     )
@@ -112,6 +92,10 @@ def _shape_reasoning_effort_none(kwargs: dict[str, Any]) -> None:
     kwargs["reasoning_effort"] = "none"
 
 
+def _shape_reasoning_effort_low(kwargs: dict[str, Any]) -> None:
+    kwargs["reasoning_effort"] = "low"
+
+
 def _shape_reasoning_enabled_false(kwargs: dict[str, Any]) -> None:
     kwargs.setdefault("extra_body", {})["reasoning"] = {"enabled": False}
 
@@ -132,6 +116,7 @@ _SHAPER_REGISTRY: Final[Mapping[ReasoningMechanism, Callable[[dict[str, Any]], N
         {
             ReasoningMechanism.CHAT_TEMPLATE_ARGS: _shape_chat_template_args,
             ReasoningMechanism.REASONING_EFFORT_NONE: _shape_reasoning_effort_none,
+            ReasoningMechanism.REASONING_EFFORT_LOW: _shape_reasoning_effort_low,
             ReasoningMechanism.REASONING_ENABLED_FALSE: _shape_reasoning_enabled_false,
             ReasoningMechanism.THINKING_DISABLED: _shape_thinking_disabled,
             ReasoningMechanism.NONE: _shape_none,
@@ -265,9 +250,7 @@ class HostProfile(BaseModel):
     #     conservative byte bound and post-checks the billed count. None = no documented
     #     repricing boundary (every pre-5.6 host).
     flat_rate_input_ceiling_tokens: int | None = Field(default=None, gt=0)
-    # (2) prompt_cache_key: GPT-5.6+ requires the key for reliable cache matching; the
-    #     provider sends a stable key derived from (profile_contract_digest, prompt
-    #     VERSION) so the #042 stable-prefix packing keeps paying. ~15 RPM per key.
+    # (2) Optional cache partition, stable for each profile contract and prompt version.
     sends_prompt_cache_key: bool = False
     # (3) requested tier: sent verbatim on every request (host DATA, never a builder
     #     constant). Declaring it means an echo is EXPECTED — an absent echoed tier
@@ -276,6 +259,7 @@ class HostProfile(BaseModel):
     # (4) completion-token-ceiling kwarg name (SHAPER v3, wire-driven): GPT-5.6 rejects
     #     `max_tokens` outright; the default keeps every GLM host's verified wire.
     token_limit_param: TokenLimitParam = TokenLimitParam.MAX_TOKENS
+    sends_temperature: bool = True
 
     @property
     def profile_contract_digest(self) -> str:
@@ -293,6 +277,7 @@ class HostProfile(BaseModel):
                 str(self.sends_prompt_cache_key),
                 str(self.requested_service_tier),
                 self.token_limit_param.value,
+                str(self.sends_temperature),
                 SHAPER_CONTRACT_VERSION,
             )
         )
@@ -308,22 +293,59 @@ class HostProfile(BaseModel):
                 f"{self.model_slug_pattern!r}"
             )
 
-    def apply_reasoning_off(self, kwargs: dict[str, Any]) -> None:
-        """Mutate `kwargs` to disable reasoning per this host's mechanism."""
+    def apply_reasoning_settings(self, kwargs: dict[str, Any]) -> None:
+        """Apply the configured directive; some models require reasoning to stay on."""
         _SHAPER_REGISTRY[self.reasoning_mechanism](kwargs)
+
+    def for_models(self, models: tuple[str, ...]) -> HostProfile:
+        """Resolve one contract shared by all configured roles.
+
+        Completion events and analyze-cache identity carry one reasoning state
+        per provider. Reject role mixtures that would make that state ambiguous.
+        """
+        effective = self
+        for index, model in enumerate(models):
+            self.validate_model_slug(model)
+            candidate = self
+            if self.host_id == "baseten" and model in {
+                "zai-org/GLM-5.3",
+                "zai-org/GLM-5.3-Flash",
+            }:
+                # Baseten maps `none` to low on 5.3; enable_thinking=False can
+                # still return reasoning. Request low and audit it as on.
+                candidate = self.model_copy(
+                    update={"reasoning_mechanism": ReasoningMechanism.REASONING_EFFORT_LOW}
+                )
+            elif self.host_id == "fireworks" and model in {
+                "accounts/fireworks/models/glm-5p3",
+                "accounts/fireworks/models/glm-5p3-flash",
+            }:
+                # The host's model-specific off-switch map does not cover 5.3.
+                # Keep its default reasoning; do not inherit 5.2's `none` claim.
+                candidate = self.model_copy(update={"reasoning_mechanism": ReasoningMechanism.NONE})
+            elif self.host_id == "openai" and model == "gpt-6.1-sol":
+                # Sol has no `none` effort and rejects sampling with reasoning.
+                candidate = self.model_copy(
+                    update={
+                        "reasoning_mechanism": ReasoningMechanism.REASONING_EFFORT_LOW,
+                        "sends_temperature": False,
+                    }
+                )
+            if index and candidate.profile_contract_digest != effective.profile_contract_digest:
+                raise ValueError(
+                    f"host {self.host_id!r} models require incompatible request contracts; "
+                    "configure models with the same reasoning and sampling behavior"
+                )
+            effective = candidate
+        return effective
 
     @property
     def reasoning_forced_on(self) -> bool:
-        """True iff this host has no off-switch (`NONE`), so reasoning runs regardless of the
-        requested flag. This is the PROFILE's contribution to the triad's `reasoning_enabled`,
-        NOT the stamped value: per DECISIONS.md#056 `reasoning_enabled` is `profile +
-        OUTRIDER_LLM_REASONING`, so the provider/factory computes
-        `reasoning_enabled = requested or profile.reasoning_forced_on`. Stamping this
-        predicate directly would audit an operator-enabled run on an off-switch host as
-        `False` while reasoning is actually on. The mechanism is folded into
-        `profile_contract_digest`, so cache never colludes a forced-on host with an
-        off-switch host."""
-        return self.reasoning_mechanism is ReasoningMechanism.NONE
+        """Whether this contract keeps reasoning on even when the operator requests off."""
+        return self.reasoning_mechanism in {
+            ReasoningMechanism.NONE,
+            ReasoningMechanism.REASONING_EFFORT_LOW,
+        }
 
 
 # Baseten — byte-identical to the merged GLM spike (glm_provider.py constants + §8a).
@@ -331,7 +353,7 @@ BASETEN_PROFILE: Final[HostProfile] = HostProfile(
     host_id="baseten",
     base_url="https://inference.baseten.co/v1",
     api_key_env="BASETEN_API_KEY",
-    model_slug_pattern=r"^zai-org/GLM-\d+(\.\d+)?$",
+    model_slug_pattern=r"^zai-org/GLM-(\d+(\.\d+)?|5\.3-Flash)$",
     json_mode=JsonMode.SOFT_FENCED,
     token_accounting=TokenAccounting.PROMPT_INCLUDES_CACHED,
     reasoning_mechanism=ReasoningMechanism.CHAT_TEMPLATE_ARGS,
@@ -364,7 +386,7 @@ FIREWORKS_PROFILE: Final[HostProfile] = HostProfile(
     api_key_env="FIREWORKS_API_KEY",
     # Fireworks renders the model version's dot as `p` (glm-5p2). Anchor both segments so a
     # bare `zai-org/GLM-5.2` (Baseten's shape) can't cross-validate against this host.
-    model_slug_pattern=r"^accounts/fireworks/models/glm-\d+p\d+$",
+    model_slug_pattern=r"^accounts/fireworks/models/glm-(\d+p\d+|5p3-flash)$",
     json_mode=JsonMode.STRICT_JSON_SCHEMA,
     token_accounting=TokenAccounting.PROMPT_INCLUDES_CACHED,
     reasoning_mechanism=ReasoningMechanism.REASONING_EFFORT_NONE,
@@ -403,7 +425,7 @@ OPENAI_PROFILE: Final[HostProfile] = HostProfile(
     host_id="openai",
     base_url="https://api.openai.com/v1",
     api_key_env="OPENAI_API_KEY",
-    model_slug_pattern=r"^gpt-5\.6-(sol|terra|luna)$",
+    model_slug_pattern=r"^gpt-(5\.6-(sol|terra|luna)|6\.1-(sol|terra)|6-luna)$",
     json_mode=JsonMode.JSON_OBJECT,
     token_accounting=TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED,
     reasoning_mechanism=ReasoningMechanism.REASONING_EFFORT_NONE,
@@ -443,7 +465,7 @@ OPENAI_PROFILE: Final[HostProfile] = HostProfile(
 #      ReasoningMechanism, add the enum value + a shaper + a _SHAPER_REGISTRY entry + bump
 #      SHAPER_CONTRACT_VERSION. DECIDE the four optional digest-folded wire behaviors
 #      EXPLICITLY — never inherit them silently: flat_rate_input_ceiling_tokens (documented
-#      repricing boundary?), sends_prompt_cache_key (host needs a cache key?),
+#      repricing boundary?), sends_prompt_cache_key (use a cache partition?),
 #      requested_service_tier (tiered billing? declaring one makes the tier echo REQUIRED),
 #      and token_limit_param (which kwarg carries the completion ceiling — the GPT-5.6 wire
 #      400s on the `max_tokens` default, and a wrong inherit surfaces only on the first
@@ -504,12 +526,12 @@ _MODEL_FIELDS: Final[tuple[str, ...]] = (
 )
 _ANTHROPIC_DEFAULT_MODELS: Final[Mapping[str, str]] = MappingProxyType(
     {
-        "triage_model": "claude-haiku-4-5",
-        "analyze_model": "claude-sonnet-5",
-        "standard_analyze_model": "claude-haiku-4-5",
-        "synthesize_model": "claude-haiku-4-5",
-        "trace_model": "claude-haiku-4-5",
-        "patch_model": "claude-haiku-4-5",
+        "triage_model": "claude-haiku-5-5",
+        "analyze_model": "claude-sonnet-5-5",
+        "standard_analyze_model": "claude-haiku-5-5",
+        "synthesize_model": "claude-haiku-5-5",
+        "trace_model": "claude-haiku-5-5",
+        "patch_model": "claude-haiku-5-5",
     }
 )
 _BASETEN_DEFAULT_MODELS: Final[Mapping[str, str]] = MappingProxyType(
@@ -542,6 +564,21 @@ HOST_DEFAULT_MODELS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyType(
 )
 
 
+def validate_available_models(host: str, models: tuple[str, ...]) -> None:
+    """Reject known retired targets before live credentials or providers are needed.
+
+    Historical profile validation, request serialization and pricing remain
+    available for offline captures; they do not establish current availability.
+    """
+    if host == "fireworks" and "accounts/fireworks/models/glm-5p2" in models:
+        raise ValueError(
+            "Fireworks GLM-5.2 serverless is retired (2026-09-25). "
+            "Select Anthropic or Baseten, or qualify a current GLM-5.3 model before use. "
+            "On-demand deployments require a separate supported configuration. "
+            "See https://fireworks.ai/models/fireworks/glm-5p2."
+        )
+
+
 def resolve_host_profile(host_id: str) -> HostProfile:
     """Resolve a built-in OpenAI-compatible host profile. (Custom-from-env is arc 2; the
     native `anthropic` path is selected by string upstream, never resolved here.)"""
@@ -555,15 +592,17 @@ def resolve_host_profile(host_id: str) -> HostProfile:
 
 # The native Anthropic host's identity. Anthropic stays OUTSIDE the HostProfile registry
 # (#056, string-selected), so its identity lives here as constants, not a HostProfile.
-# Centralized so the provider's stamp AND the lifespan's build_graph completion-event
-# closure share ONE source (no drift — Codex guardrail). The digest is distinct from any
+# Centralized so the provider's stamp and lifespan's build_graph completion-event
+# closure share one source. The digest is distinct from any
 # HostProfile digest so cache + replay separate anthropic from GLM-host calls; computed
 # from a fixed string at load (self-documenting; a value change is an intentional bump).
 ANTHROPIC_PROFILE_ID: Final[str] = "anthropic"
 ANTHROPIC_CONTRACT_DIGEST: Final[str] = hashlib.sha256(b"outrider:anthropic-native:v1").hexdigest()
 
 
-def resolve_host_identity(host: str, *, reasoning: bool) -> tuple[str, bool, str]:
+def resolve_host_identity(
+    host: str, *, reasoning: bool, models: tuple[str, ...] | None = None
+) -> tuple[str, bool, str]:
     """The host-identity triad `(profile_id, reasoning_enabled, profile_contract_digest)`
     for a host (DECISIONS.md#056). The SINGLE source for both a provider's stamp and the
     lifespan's `build_graph` completion-event closure, so the two cannot drift —
@@ -582,6 +621,8 @@ def resolve_host_identity(host: str, *, reasoning: bool) -> tuple[str, bool, str
             )
         return (ANTHROPIC_PROFILE_ID, False, ANTHROPIC_CONTRACT_DIGEST)
     profile = resolve_host_profile(host)
+    if models is not None:
+        profile = profile.for_models(models)
     return (
         profile.host_id,
         reasoning or profile.reasoning_forced_on,

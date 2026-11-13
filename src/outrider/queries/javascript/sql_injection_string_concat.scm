@@ -1,12 +1,9 @@
-; SQL built by concatenation or template substitution at a query call site.
-; Anchored to MEMBER calls `.query(...)` / `.execute(...)` (pg/mysql `query`,
-; mysql2 `execute`) — the member anchor plus a string operand keeps a bare
-; `query(...)` helper or a no-literal `db.query(a + b)` from firing. The
-; concat alternation requires a string on either side of `+` (left-assoc
-; chains keep a string operand at the outermost node); template literals
-; require a substitution. `.exec` is deliberately NOT anchored here: it
-; collides with `child_process.exec` (command-injection's sink) and sqlite's
-; `.exec` is a JUDGED-covered recall gap.
+; Match SQL concatenation or template substitution in .query/.execute calls.
+;
+; Concatenation needs a string operand directly beside +; templates need a
+; substitution. Bare query helpers and .exec are excluded: .exec can be a
+; shell-command sink. Other SQL call forms still need model review.
+; The producer requires an allowed database-driver import in the file.
 (call_expression
   function: (member_expression
     property: (property_identifier) @_method)

@@ -1,14 +1,7 @@
-"""pricing.py rate table + PRICING_VERSION digest pinning (AC#19, partial).
+"""Check model rates, token-cost arithmetic, and the pricing-version digest.
 
-Covers:
-  - RATE_TABLE shape (every default ModelConfig model has an entry)
-  - ModelPricing carries all four required Decimal rates
-  - Each rate is non-negative (allows free-promo edge case per round-11 H3)
-  - Anthropic ratio sanity gates (cache-write > input > cache-read; output > input)
-  - compute_cost_usd four-class formula
-  - PRICING_VERSION digest pinning — bumping rates without bumping
-    PRICING_VERSION + EXPECTED_PRICING_DIGEST fails this test (AC#19 enforcement)
-"""
+Every configured default model needs nonnegative rates with valid cache ratios.
+Changing rates requires a matching pricing-version and expected-digest update."""
 
 import hashlib
 from decimal import Decimal
@@ -126,6 +119,8 @@ def test_min_cacheable_floors_match_anthropic_contract() -> None:
     assert min_cacheable_tokens("anthropic", "claude-sonnet-4-6") == 1024
     assert min_cacheable_tokens("anthropic", "claude-sonnet-5") == 1024
     assert min_cacheable_tokens("anthropic", "claude-haiku-4-5") == 4096
+    assert min_cacheable_tokens("anthropic", "claude-sonnet-5-5") == 512
+    assert min_cacheable_tokens("anthropic", "claude-haiku-5-5") == 512
 
 
 def test_min_cacheable_resolves_dated_pins() -> None:
@@ -302,6 +297,7 @@ EXPECTED_PRICING_DIGEST: dict[str, str] = {
     # (COST_UNADJUDICATED_PROFILE_IDS + the BILLING_PENDING reason folded into the digest)
     # until the SHAPER-v4 billing adjudication lands (FUP-247). Still unreleased (main=v6).
     "v7": "b0f7e1b3c1dfe405",
+    "v8": "3fcfe8367893f85f",
 }
 
 
@@ -530,10 +526,11 @@ def _long_cost(key: tuple[str, str]) -> Decimal:
 
 
 def test_every_gpt56_model_has_long_context_policy() -> None:
-    """All three 5.6 rows carry the 272K full-request repricing; no other key does."""
-    gpt56_keys = {k for k in RATE_TABLE if k[0] == "openai"}
-    assert gpt56_keys == set(LONG_CONTEXT_POLICY.keys())
-    for policy in LONG_CONTEXT_POLICY.values():
+    """Every priced OpenAI model carries its documented 272K full-request repricing."""
+    openai_keys = {k for k in RATE_TABLE if k[0] == "openai"}
+    assert openai_keys == {k for k in LONG_CONTEXT_POLICY if k[0] == "openai"}
+    for key in openai_keys:
+        policy = LONG_CONTEXT_POLICY[key]
         assert policy.threshold_tokens == 272_000
         assert (policy.in_mult, policy.cache_write_mult, policy.cache_read_mult) == (
             Decimal("2"),
@@ -727,3 +724,28 @@ def test_default_tier_context_prices_flat_across_response_derived_callers(
     assert compute_cost_usd("anthropic", "claude-haiku-4-5", **tokens) == compute_cost_usd(
         "anthropic", "claude-haiku-4-5", billed_prompt_tokens=2000, service_tier=None, **tokens
     )
+
+
+@pytest.mark.parametrize(
+    ("input_tokens", "cache_write_tokens", "cache_read_tokens", "expected"),
+    [
+        (100_000, 0, 0, "0.01005"),
+        (100_001, 0, 0, "0.0502505"),
+        (40_000, 30_000, 30_000, "0.00810"),
+        (40_000, 30_000, 30_001, "0.04050005"),
+        (0, 100_001, 0, "0.062750625"),
+        (0, 0, 100_001, "0.00525005"),
+    ],
+)
+def test_haiku55_threshold_counts_all_input_and_reprices_whole_request(
+    input_tokens: int, cache_write_tokens: int, cache_read_tokens: int, expected: str
+) -> None:
+    # Output is billed at the selected request rate, including an all-cache prompt.
+    assert compute_cost_usd(
+        "anthropic",
+        "claude-haiku-5-5-20261007",
+        input_tokens=input_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cache_read_tokens=cache_read_tokens,
+        output_tokens=100,
+    ) == Decimal(expected)

@@ -1,17 +1,11 @@
-# Worker-outcome wiring pins per specs/2026-07-05-parallel-analyze.md (3b-2c-1).
-"""Real-node wiring: outcomes constructed from actual branch data, and the
-FOLD-vs-SEQUENTIAL parity that justifies the fan-out cutover.
+"""Check worker outcomes from actual analysis branches and their aggregate result.
 
-These tests drive the REAL analyze node (the same harness as
-test_analyze_node.py) and assert (a) every pass-0 file yields a worker
-outcome whose source matches its sequential branch, (b) producer origin
-comes from real `produce_observed_findings` output through the real #054
-merge site (the reviewer's origin-truth acceptance gate, end-to-end), and
-(c) folding the state outcomes reproduces the sequential round and
-accounting — the cutover's parity contract.
-"""
+Verify branch labels and producer origin through real finding merges, then fold
+the outcomes and compare round data and counts with sequential analysis.
+See specs/2026-07-05-parallel-analyze.md and DECISIONS.md#054."""
 
 # ruff: noqa: F811  — the imported deps fixture is intentionally shadowed by test params
+
 from __future__ import annotations
 
 import json
@@ -81,17 +75,16 @@ async def test_ride_out_produces_observed_skip_outcome_with_real_producer_origin
     assert round_finding.content_hash == finding.content_hash
 
 
-# Deliberately vulnerable FIXTURE CONTENT (never executed): os.system is
-# the trigger for the python.command_injection_os_system producer query.
-_OS_SYSTEM_PY = b"""\
-import os
+# Parser fixture only: verify=False triggers the TLS-disabled producer.
+_TLS_DISABLED_PY = b"""\
+import requests
 
 def run(cmd):
-    os.system(cmd)
+    requests.get(cmd, verify=False)
 """
-_OS_SYSTEM_PATCH = (
+_TLS_DISABLED_PATCH = (
     "--- a/src/runner.py\n+++ b/src/runner.py\n"
-    "@@ -0,0 +1,4 @@\n+import os\n+\n+def run(cmd):\n+    os.system(cmd)\n"
+    "@@ -0,0 +1,4 @@\n+import requests\n+\n+def run(cmd):\n+    requests.get(cmd, verify=False)\n"
 )
 
 
@@ -99,13 +92,7 @@ _OS_SYSTEM_PATCH = (
 async def test_model_cited_observed_is_excluded_from_producer_list_end_to_end(
     deps: dict[str, Any],
 ) -> None:
-    """ORIGIN TRUTH through the REAL parser and #054 merge: the scripted
-    model cites a structural id (`python.function_definition` fires on
-    this file, so the citation admits as OBSERVED) while the real producer
-    fires `python.command_injection_os_system` on the same file. The
-    outcome's producer list must carry EXACTLY the producer's finding —
-    the model-cited OBSERVED finding is admitted but stays out, because
-    origin derives from the merge's object placement, never from tier."""
+    """Only the deterministic producer can establish OBSERVED evidence."""
     response_json = json.dumps(
         {
             "findings": [
@@ -116,7 +103,7 @@ async def test_model_cited_observed_is_excluded_from_producer_list_end_to_end(
                     "trace_path": None,
                     "title": "Model-cited structural OBSERVED",
                     "description": "A legitimate proposal citing a fired structural query.",
-                    "evidence": "def run(cmd):\n    os.system(cmd)",
+                    "evidence": "def run(cmd):\n    requests.get(cmd, verify=False)",
                     "line_start": 3,
                     "line_end": 4,
                     "trace_candidates": [],
@@ -127,8 +114,8 @@ async def test_model_cited_observed_is_excluded_from_producer_list_end_to_end(
     deps["provider"] = _StubLLMProvider(response_json)
     cf = _build_changed_file(
         path="src/runner.py",
-        content=_OS_SYSTEM_PY,
-        patch=_OS_SYSTEM_PATCH,
+        content=_TLS_DISABLED_PY,
+        patch=_TLS_DISABLED_PATCH,
         content_base="",
     )
     state = _build_review_state(
@@ -140,11 +127,11 @@ async def test_model_cited_observed_is_excluded_from_producer_list_end_to_end(
     (outcome,) = result["analyze_worker_outcomes"]
     assert outcome.source == "parser"
     by_query = {f.query_match_id: f for f in outcome.admitted_findings}
-    producer = by_query["python.command_injection_os_system"]
-    cited = by_query["python.function_definition"]
-    assert cited.evidence_tier is EvidenceTier.OBSERVED  # admitted as OBSERVED...
+    producer = by_query["python.tls_verify_disabled"]
+    assert "python.function_definition" not in by_query
     assert outcome.producer_observed_hashes == (producer.content_hash,)
-    assert cited.content_hash not in outcome.producer_observed_hashes  # ...but not producer-listed
+    [rejection] = deps["analyze_event_sink"].proposal_rejections
+    assert rejection.rejection_reason == "model_observed_not_supported"
 
 
 def _assert_fold_parity(result: dict[str, Any], deps: dict[str, Any]) -> Any:
@@ -249,15 +236,15 @@ async def test_every_pass_zero_file_yields_exactly_one_outcome(
     assert outcome.pass_index == 0
 
 
-# Deliberately vulnerable FIXTURE CONTENT (never executed): os.system fires
-# the command-injection producer at line 5; DES.new fires the weak-crypto
+# Deliberately vulnerable FIXTURE CONTENT (never executed): requests.get fires
+# the TLS-disabled producer at line 5; DES.new fires the weak-crypto
 # producer at line 8 — the two anchors the transcription scenario needs.
 _MIXED_VULN_PY = b"""\
-import os
+import requests
 from Crypto.Cipher import DES
 
 def run(cmd):
-    os.system(cmd)
+    requests.get(cmd, verify=False)
 
 def encrypt(key, data):
     cipher = DES.new(key, DES.MODE_ECB)
@@ -266,8 +253,8 @@ def encrypt(key, data):
 _MIXED_VULN_PATCH = (
     "--- a/src/mixed.py\n+++ b/src/mixed.py\n"
     "@@ -0,0 +1,9 @@\n"
-    "+import os\n+from Crypto.Cipher import DES\n+\n+def run(cmd):\n"
-    "+    os.system(cmd)\n+\n+def encrypt(key, data):\n"
+    "+import requests\n+from Crypto.Cipher import DES\n+\n+def run(cmd):\n"
+    "+    requests.get(cmd, verify=False)\n+\n+def encrypt(key, data):\n"
     "+    cipher = DES.new(key, DES.MODE_ECB)\n+    return cipher.encrypt(data)\n"
 )
 
@@ -303,9 +290,11 @@ def _mixed_vuln_response() -> str:
     return json.dumps(
         {
             "findings": [
-                # Same (path, span, type) as the producer's command_injection
+                # Same (path, span, type) as the producer's TLS finding
                 # → #054 prefer-OBSERVED evicts it → superseded = 1.
-                proposal("command_injection", 5, 5, "Shell exec", "Model saw it too.", []),
+                proposal(
+                    "tls_verify_disabled", 5, 5, "TLS check disabled", "Model saw it too.", []
+                ),
                 # More-specific type at the producer weak_crypto's EXACT span
                 # → #055 subsumption drops the OBSERVED, retains the record.
                 # Also carries the malformed trace candidate (path separator)
@@ -449,19 +438,18 @@ async def test_cap_drop_parity_with_low_cap(
 
 
 # Single-changed-line fixture for the #049 ENFORCED coverage skip: line 6
-# (the shell=True call, dead code — never executed fixture content) is the
+# (the verify=False call, dead code — never executed fixture content) is the
 # only added line, fully covered by the promoted skip_safe query. Mirrors
 # tests/eval/scenarios/observed_skip_safe/'s promotion fixture.
 _COVERED_PY = (
-    b"import subprocess\n\n\ndef run_it(cmd):\n"
-    b"    return cmd\n    subprocess.run(cmd, shell=True)\n"
+    b"import requests\n\n\ndef run_it(cmd):\n    return cmd\n    requests.get(cmd, verify=False)\n"
 )
 _COVERED_PATCH = (
     "--- a/src/vuln.py\n+++ b/src/vuln.py\n"
-    "@@ -1,5 +1,6 @@\n import subprocess\n \n \n def run_it(cmd):\n"
-    "     return cmd\n+    subprocess.run(cmd, shell=True)\n"
+    "@@ -1,5 +1,6 @@\n import requests\n \n \n def run_it(cmd):\n"
+    "     return cmd\n+    requests.get(cmd, verify=False)\n"
 )
-_COVERED_BASE = "import subprocess\n\n\ndef run_it(cmd):\n    return cmd\n"
+_COVERED_BASE = "import requests\n\n\ndef run_it(cmd):\n    return cmd\n"
 
 
 @pytest.mark.asyncio
@@ -477,7 +465,7 @@ async def test_enforced_coverage_skip_maps_to_observed_coverage_live(
     # Test-local promotion (the eval scenario's pattern): swap the module
     # attribute for a COPY; monkeypatch restores at teardown.
     promoted = dict(query_registry.OBSERVED_QUERIES)
-    promote_id = "python.command_injection_subprocess_shell"
+    promote_id = "python.tls_verify_disabled"
     promoted[promote_id] = promoted[promote_id].model_copy(
         update={"query_class": QueryClass.SKIP_SAFE}
     )

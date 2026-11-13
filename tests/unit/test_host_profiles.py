@@ -1,9 +1,7 @@
-"""Unit tests for `llm/host_profiles.py` (DECISIONS.md#056, arc 1a step 2).
+"""Check host profiles without SDK calls or network access.
 
-Pure — no SDK, no network. Covers: BASETEN_PROFILE reproduces the spike constants; the
-reasoning shapers; `read_usage` §8a fork (incl. the `unverified` fail-loud); the
-`profile_contract_digest`; slug validation; `HOST_DEFAULT_MODELS`; resolution.
-"""
+Cover configured defaults, reasoning options, token accounting, contract digests,
+slug validation, and profile lookup. See DECISIONS.md#056."""
 
 from __future__ import annotations
 
@@ -23,6 +21,7 @@ from outrider.llm.host_profiles import (
     TokenAccounting,
     TokenLimitParam,
     read_usage,
+    resolve_host_identity,
     resolve_host_profile,
 )
 
@@ -32,7 +31,7 @@ def test_baseten_profile_reproduces_the_spike_constants() -> None:
     assert p.host_id == "baseten"
     assert p.base_url == "https://inference.baseten.co/v1"
     assert p.api_key_env == "BASETEN_API_KEY"
-    assert p.model_slug_pattern == r"^zai-org/GLM-\d+(\.\d+)?$"
+    assert p.model_slug_pattern == r"^zai-org/GLM-(\d+(\.\d+)?|5\.3-Flash)$"
     assert p.json_mode is JsonMode.SOFT_FENCED  # Baseten shared API is soft (FUP-196).
     assert p.token_accounting is TokenAccounting.PROMPT_INCLUDES_CACHED  # §8a.
     assert p.reasoning_mechanism is ReasoningMechanism.CHAT_TEMPLATE_ARGS
@@ -60,7 +59,7 @@ def test_slug_validation_accepts_glm_rejects_claude() -> None:
 
 def test_reasoning_off_chat_template_args_matches_the_spike_shape() -> None:
     kwargs: dict[str, object] = {}
-    BASETEN_PROFILE.apply_reasoning_off(kwargs)
+    BASETEN_PROFILE.apply_reasoning_settings(kwargs)
     assert kwargs == {"extra_body": {"chat_template_args": {"enable_thinking": False}}}
 
 
@@ -68,6 +67,7 @@ def test_reasoning_off_chat_template_args_matches_the_spike_shape() -> None:
     ("mechanism", "expected"),
     [
         (ReasoningMechanism.REASONING_EFFORT_NONE, {"reasoning_effort": "none"}),
+        (ReasoningMechanism.REASONING_EFFORT_LOW, {"reasoning_effort": "low"}),
         (
             ReasoningMechanism.REASONING_ENABLED_FALSE,
             {"extra_body": {"reasoning": {"enabled": False}}},
@@ -81,7 +81,7 @@ def test_reasoning_shapers_each_produce_the_documented_wire_shape(
 ) -> None:
     profile = BASETEN_PROFILE.model_copy(update={"reasoning_mechanism": mechanism})
     kwargs: dict[str, object] = {}
-    profile.apply_reasoning_off(kwargs)
+    profile.apply_reasoning_settings(kwargs)
     assert kwargs == expected
 
 
@@ -164,12 +164,12 @@ def test_profile_contract_digest_is_deterministic_and_rotates_on_wire_change() -
 
 def test_host_default_models_anthropic_matches_canonical_tiers() -> None:
     assert HOST_DEFAULT_MODELS["anthropic"] == {
-        "triage_model": "claude-haiku-4-5",
-        "analyze_model": "claude-sonnet-5",
-        "standard_analyze_model": "claude-haiku-4-5",
-        "synthesize_model": "claude-haiku-4-5",
-        "trace_model": "claude-haiku-4-5",
-        "patch_model": "claude-haiku-4-5",
+        "triage_model": "claude-haiku-5-5",
+        "analyze_model": "claude-sonnet-5-5",
+        "standard_analyze_model": "claude-haiku-5-5",
+        "synthesize_model": "claude-haiku-5-5",
+        "trace_model": "claude-haiku-5-5",
+        "patch_model": "claude-haiku-5-5",
     }
     assert set(HOST_DEFAULT_MODELS["baseten"].values()) == {"zai-org/GLM-5.2"}
     assert set(HOST_DEFAULT_MODELS["fireworks"].values()) == {"accounts/fireworks/models/glm-5p2"}
@@ -184,6 +184,43 @@ def test_resolve_host_profile() -> None:
     assert set(HOST_PROFILES) == {"baseten", "fireworks", "openai"}
     with pytest.raises(ValueError, match="unknown OpenAI-compatible host 'deepinfra'"):
         resolve_host_profile("deepinfra")
+
+
+def test_retired_fireworks_target_fails_before_key_lookup_or_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from outrider.llm.config import ModelConfig
+
+    lifespan = importlib.import_module("outrider.api.lifespan")
+    credentials = MagicMock()
+    credentials.__getitem__.return_value = "test-key-not-used"
+    constructor = MagicMock()
+    monkeypatch.setattr(lifespan, "os", SimpleNamespace(environ=credentials))
+    monkeypatch.setattr(lifespan, "OpenAICompatibleProvider", constructor)
+    config = ModelConfig.for_host("fireworks")
+    with pytest.raises(ValueError, match="GLM-5.2 serverless is retired"):
+        lifespan._default_provider_factory(
+            persister=MagicMock(), model_config=config, host="fireworks", reasoning=False
+        )
+    credentials.__getitem__.assert_not_called()
+    constructor.assert_not_called()
+
+
+def test_retirement_guard_keeps_available_hosts_and_historical_contracts() -> None:
+    from outrider.llm.host_profiles import validate_available_models
+
+    validate_available_models("baseten", ("zai-org/GLM-5.2",))
+    validate_available_models("anthropic", ("claude-haiku-5-5",))
+    validate_available_models("fireworks", ("accounts/fireworks/models/glm-5p3-flash",))
+    # Retired service availability does not rewrite the old request contract.
+    legacy = FIREWORKS_PROFILE.for_models(("accounts/fireworks/models/glm-5p2",))
+    kwargs: dict[str, object] = {}
+    legacy.apply_reasoning_settings(kwargs)
+    assert kwargs == {"reasoning_effort": "none"}
 
 
 def test_fireworks_profile_is_wire_verified() -> None:
@@ -213,7 +250,7 @@ def test_fireworks_profile_is_wire_verified() -> None:
 def test_fireworks_reasoning_off_shapes_reasoning_effort_none() -> None:
     """The wire-verified shaper: extra reasoning_effort='none' key, accepted by Fireworks."""
     kwargs: dict[str, object] = {}
-    FIREWORKS_PROFILE.apply_reasoning_off(kwargs)
+    FIREWORKS_PROFILE.apply_reasoning_settings(kwargs)
     assert kwargs == {"reasoning_effort": "none"}
 
 
@@ -265,13 +302,17 @@ def test_fireworks_raw_wire_body_parses_and_omits_proof_fields() -> None:
     assert finding.trace_candidates == ()  # default; the model left it out
 
 
-def test_reasoning_forced_on_is_true_only_for_none_mechanism() -> None:
+def test_reasoning_forced_on_includes_mandatory_low_effort() -> None:
     # forced_on is the PROFILE's half of reasoning_enabled (provider OR-combines it with the
     # requested flag): an off-switch host is forced-on False; NONE is forced-on True. Stamping
     # forced_on alone would mis-audit an operator-enabled off-switch run as reasoning-off.
     assert BASETEN_PROFILE.reasoning_forced_on is False
     none_host = BASETEN_PROFILE.model_copy(update={"reasoning_mechanism": ReasoningMechanism.NONE})
     assert none_host.reasoning_forced_on is True
+    low_host = BASETEN_PROFILE.model_copy(
+        update={"reasoning_mechanism": ReasoningMechanism.REASONING_EFFORT_LOW}
+    )
+    assert low_host.reasoning_forced_on is True
 
 
 def test_profile_contract_digest_folds_in_shaper_contract_version(
@@ -359,9 +400,25 @@ def test_openai_slug_pattern_rejects_alias_and_foreign_slugs() -> None:
     """Explicit slugs only — the bare `gpt-5.6` alias routes to Sol server-side
     and would desync the request-side pricing key; each admitted slug is pinned
     individually (per-variant, not a union assertion)."""
-    for ok in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+    for ok in (
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-6.1-sol",
+        "gpt-6.1-terra",
+        "gpt-6-luna",
+    ):
         OPENAI_PROFILE.validate_model_slug(ok)
-    for bad in ("gpt-5.6", "gpt-5.5", "gpt-5.6-sol\n", "claude-sonnet-5", "gpt-5.6-mini"):
+    for bad in (
+        "gpt-5.6",
+        "gpt-5.5",
+        "gpt-5.6-sol\n",
+        "claude-sonnet-5",
+        "gpt-5.6-mini",
+        "gpt-6.1",
+        "gpt-6.1-luna",
+        "gpt-6-sol",
+    ):
         with pytest.raises(ValueError):
             OPENAI_PROFILE.validate_model_slug(bad)
 
@@ -386,9 +443,45 @@ def test_new_profile_fields_are_digest_folded() -> None:
         {"flat_rate_input_ceiling_tokens": 300_000},
         {"sends_prompt_cache_key": False},
         {"requested_service_tier": None},
+        {"sends_temperature": False},
     ):
         moved = OPENAI_PROFILE.model_copy(update=update)
         assert moved.profile_contract_digest != base, update
+
+
+def test_model_contract_separates_reasoning_cache_identity() -> None:
+    models = ("zai-org/GLM-5.3", "zai-org/GLM-5.3-Flash")
+    profile = BASETEN_PROFILE.for_models(models)
+    assert profile.reasoning_forced_on is True
+    assert profile.profile_contract_digest != BASETEN_PROFILE.profile_contract_digest
+    assert resolve_host_identity("baseten", reasoning=False, models=models) == (
+        "baseten",
+        True,
+        profile.profile_contract_digest,
+    )
+    assert resolve_host_identity("baseten", reasoning=False) == (
+        "baseten",
+        False,
+        BASETEN_PROFILE.profile_contract_digest,
+    )
+
+
+@pytest.mark.parametrize(
+    ("host", "models"),
+    [
+        ("baseten", ("zai-org/GLM-5.2", "zai-org/GLM-5.3-Flash")),
+        (
+            "fireworks",
+            ("accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/glm-5p3"),
+        ),
+        ("openai", ("gpt-6.1-sol", "gpt-6-luna")),
+    ],
+)
+def test_identity_rejects_role_mixtures_with_incompatible_contracts(
+    host: str, models: tuple[str, ...]
+) -> None:
+    with pytest.raises(ValueError, match="incompatible request contracts"):
+        resolve_host_identity(host, reasoning=False, models=models)
 
 
 def test_read_usage_writes_reported_arm() -> None:

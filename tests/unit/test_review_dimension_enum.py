@@ -22,8 +22,3 @@ def test_review_dimension_has_exact_5_values() -> None:
         f"diff: extra={actual - EXPECTED_DIMENSION_VALUES} "
         f"missing={EXPECTED_DIMENSION_VALUES - actual}"
     )
-
-
-def test_review_dimension_count_is_5() -> None:
-    """Per spec §7.3: exactly 5 dimensions."""
-    assert len(list(ReviewDimension)) == 5

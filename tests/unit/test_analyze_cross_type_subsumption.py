@@ -1,16 +1,8 @@
-# Per DECISIONS.md#055 — cross-type subsumption at the analyze node.
-"""Cross-type subsumption merge (node-level): a same-span JUDGED subsumer drops
-an admitted OBSERVED finding of a broader finding_type, the survivor stays JUDGED,
-the dropped query_match_id is retained in `AnalyzeCompletedEvent.subsumed_matches`,
-and the proposal-accounting equation stays balanced with no new term.
+"""Check cross-type finding suppression and accounting (DECISIONS.md#055).
 
-The producer fires OBSERVED `weak_crypto` on a `DES.new(...)` line (the shipped
-broken-cipher query); the scripted model emits JUDGED `weak_password_hash` on the
-SAME span. `weak_password_hash ⊐ weak_crypto` is the seed SUBSUMES edge, so the
-CRITICAL password-hash survives and the HIGH weak-crypto is suppressed. (DES is
-not literally password hashing — this exercises the MERGE mechanism with the only
-OBSERVED crypto query that ships today; the md5/sha1 OBSERVED query is the
-follow-on.)"""
+A same-span JUDGED weak-password-hash proposal replaces an OBSERVED weak-crypto
+finding. The survivor stays JUDGED and the suppressed match remains in audit
+counts. The DES input exercises merging, not actual password-hash detection."""
 
 from __future__ import annotations
 
@@ -121,6 +113,7 @@ class _AnalyzeSink:
     def __init__(self) -> None:
         self.findings: list[Any] = []
         self.completed: list[Any] = []
+        self.rejections: list[Any] = []
 
     async def emit_finding(  # noqa: ARG002
         self, finding: Any, *, is_eval: bool, phase_key: str | None = None
@@ -128,7 +121,7 @@ class _AnalyzeSink:
         self.findings.append(finding)
 
     async def emit_finding_proposal_rejected(self, event: Any) -> None:
-        raise AssertionError(f"unexpected proposal rejection: {event!r}")
+        self.rejections.append(event)
 
     async def emit_analyze_response_rejected(self, event: Any) -> None:  # noqa: ARG002
         return None
@@ -298,19 +291,8 @@ async def test_observed_weak_crypto_with_no_subsumer_survives() -> None:
 
 
 @pytest.mark.asyncio
-async def test_model_cited_observed_is_not_subsumed_and_does_not_crash() -> None:
-    """Regression (review HIGH): a MODEL-cited OBSERVED finding (the model claimed
-    `observed` citing a fired STRUCTURAL query id, which the parser admits without
-    binding finding_type to the query) rides the parser's n_findings_emitted, NOT
-    n_findings_observed. It must NOT be subsumed — only producer-origin OBSERVED
-    findings (query_match_id in OBSERVED_QUERY_IDS) are subsumable. Subsuming a
-    model-cited OBSERVED would decrement n_findings_observed below zero and crash
-    the pass via the Field(ge=0) validator."""
-    # Model emits OBSERVED weak_crypto citing `python.function_definition` (a
-    # structural query that fires on `def enc` — so it is in the admissible set),
-    # plus a same-span JUDGED weak_password_hash subsumer. The producer ALSO fires
-    # weak_crypto on line 5, so observed_findings is non-empty and the #055 block
-    # runs; #054 keeps the model-cited OBSERVED incumbent over the producer dup.
+async def test_model_observed_rejection_keeps_producer_subsumption_accounting_valid() -> None:
+    """Reject the model proof claim; subsume only the real producer finding."""
     model_observed_wc = {
         "finding_type": "weak_crypto",
         "evidence_tier": "observed",
@@ -325,13 +307,13 @@ async def test_model_cited_observed_is_not_subsumed_and_does_not_crash() -> None
     }
     sink = await _run(_ScriptedProvider([model_observed_wc, _wph_finding()]))
 
-    # No crash, and the model-cited OBSERVED survives (it is not producer-origin,
-    # so subsumption leaves it alone) alongside the JUDGED.
     tiers = {(f.finding_type, f.evidence_tier) for f in sink.findings}
-    assert (FindingType.WEAK_CRYPTO, EvidenceTier.OBSERVED) in tiers
+    assert (FindingType.WEAK_CRYPTO, EvidenceTier.OBSERVED) not in tiers
     assert (FindingType.WEAK_PASSWORD_HASH, EvidenceTier.JUDGED) in tiers
+    [rejection] = sink.rejections
+    assert rejection.rejection_reason == "model_observed_not_supported"
     [completed] = sink.completed
-    assert completed.subsumed_matches == ()
+    assert len(completed.subsumed_matches) == 1
     assert completed.n_findings_observed >= 0
     _assert_equation_balances(completed)
 

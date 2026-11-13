@@ -21,8 +21,8 @@ whole files are kept so grading has real surrounding context and the line number
 | Corpus path | Upstream path | Role |
 |-------------|---------------|------|
 | `src/lib/insecurity.ts` | `lib/insecurity.ts` | weak_crypto TP (`crypto.createHash('md5')`, L41); `createHmac('sha256')` L42 is a natural true-negative |
-| `src/routes/captcha.ts` | `routes/captcha.ts` | command_injection eval TP (`eval(expression)`, L22) |
-| `src/routes/userProfile.ts` | `routes/userProfile.ts` | command_injection eval TP (`eval(code)`, L61) |
+| `src/routes/captcha.ts` | `routes/captcha.ts` | Admitted eval signal (`eval(expression)`, L22). Decision #071 requires context before a finding. |
+| `src/routes/userProfile.ts` | `routes/userProfile.ts` | Admitted eval signal (`eval(code)`, L61). Decision #071 requires context before a finding. |
 | `src/routes/search.ts` | `routes/search.ts` | SQL injection (`models.sequelize.query(\`…${criteria}…\`)`, L23) — raw-matches, denied at admission (module_presence residual) |
 | `src/routes/login.ts` | `routes/login.ts` | SQL injection (`models.sequelize.query(\`…${email}…\`)`, L34) — same residual |
 | `src/lib/xml.ts` | `lib/xml.ts` | true-negative: `new Function(<literals>)` L12 (all-literal → not dynamic code) |

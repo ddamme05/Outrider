@@ -1,18 +1,8 @@
-"""Full-envelope wire golden for the native `openai` host (DECISIONS.md#056,
-openai-native-host spec).
+"""Check the native OpenAI analyze request and persisted accounting exactly.
 
-Freezes the COMPLETE `chat.completions.create` kwargs dict the production
-`OpenAICompatibleProvider(openai)` sends for an analyze-shaped request — not
-individual keys — so an added, dropped, or renamed kwarg (a stray `store`, a
-lost `prompt_cache_key`, a `response_format` shape change) fails the equality,
-not just the behaviors the per-key pins in `test_openai_compatible_provider.py`
-name. Also freezes the §8a writes-reported accounting split, the persisted
-`LLMCallEvent`'s pricing-context identity, and a LITERAL cost pin.
-
-The paid probe (`spikes/openai/probe.py`) builds its capture requests through
-the same `_build_sdk_kwargs`, so the wire this golden freezes is the wire the
-admission fixtures are captured on.
-"""
+Fixed expected values cover every request argument, token split, pricing context,
+and cost. The paid capture tool uses the same request builder.
+See DECISIONS.md#056 and specs/2026-07-18-openai-native-host.md."""
 
 from __future__ import annotations
 
@@ -24,13 +14,17 @@ import pytest
 from openai.resources.chat.completions.completions import AsyncCompletions
 from openai.types.chat import ChatCompletion, ChatCompletionMessage
 from openai.types.chat.chat_completion import Choice
-from openai.types.completion_usage import CompletionUsage, PromptTokensDetails
+from openai.types.completion_usage import (
+    CompletionTokensDetails,
+    CompletionUsage,
+    PromptTokensDetails,
+)
 from pydantic import SecretStr
 
 from outrider.audit.events import ContextManifestEntry, LLMCallEvent
 from outrider.llm.base import LLMRequest, LLMResponse
-from outrider.llm.host_profiles import OPENAI_PROFILE
-from outrider.llm.openai_compatible_provider import OpenAICompatibleProvider
+from outrider.llm.host_profiles import OPENAI_PROFILE, resolve_host_identity
+from outrider.llm.openai_compatible_provider import OpenAICompatibleProvider, _build_sdk_kwargs
 from outrider.llm.pricing import CostUnpricedReason
 from outrider.schemas.llm.analyze import ANALYZE_RESPONSE_SCHEMA_JSON
 
@@ -52,8 +46,8 @@ GOLDEN_KWARGS: dict[str, Any] = {
     ],
     "reasoning_effort": "none",
     "service_tier": "default",
-    # Digest prefix re-pinned for the SHAPER v4 subtractive-accounting rotation.
-    "prompt_cache_key": "outrider:d5bd42623af324b3:analyze@1.0.0",
+    # The contract digest rotates when supported request behavior changes.
+    "prompt_cache_key": "outrider:07554de94696bea1:analyze@1.0.0",
     "response_format": {"type": "json_object"},
 }
 # §8a writes-reported (SHAPER v4, capture-pinned): prompt(100) INCLUDES both
@@ -71,7 +65,7 @@ GOLDEN_RESPONSE_ACCOUNTING: dict[str, int] = {
 # $0.00189. openai cost is Unpriced(BILLING_PENDING) until FUP-247 confirms the equation, so
 # this value is a reference for the eventual adjudication, not a pinned expectation.
 GOLDEN_COST_USD: float = 0.00189
-GOLDEN_PRICING_VERSION = "v7"
+GOLDEN_PRICING_VERSION = "v8"
 
 _FIXED_REVIEW_ID = UUID("00000000-0000-0000-0000-0000000000ab")
 
@@ -182,5 +176,65 @@ async def test_openai_wire_golden_request_accounting_and_event() -> None:
     # openai cost is WITHHELD until the SHAPER-v4 billing adjudication lands (FUP-247):
     # the token split above is wire-consistent, but the $ is Unpriced(BILLING_PENDING),
     # NOT the (documented-only) `GOLDEN_COST_USD` that a subtractive-billing reading implies.
+    assert event.cost_usd is None
+    assert event.cost_unpriced_reason == CostUnpricedReason.BILLING_PENDING
+
+
+@pytest.mark.parametrize(
+    ("model", "effort", "cache_key", "reasoning"),
+    [
+        ("gpt-6.1-sol", "low", "outrider:449759b03c651d18:analyze@1.0.0", True),
+        ("gpt-6.1-terra", "none", "outrider:07554de94696bea1:analyze@1.0.0", False),
+        ("gpt-6-luna", "none", "outrider:07554de94696bea1:analyze@1.0.0", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_current_openai_models_request_and_reasoning_accounting(
+    model: str, effort: str, cache_key: str, reasoning: bool
+) -> None:
+    request = _golden_request().model_copy(update={"model": model})
+    expected = GOLDEN_KWARGS | {
+        "model": model,
+        "reasoning_effort": effort,
+        "prompt_cache_key": cache_key,
+    }
+    if reasoning:
+        del expected["temperature"]
+    assert _build_sdk_kwargs(request, profile=OPENAI_PROFILE) == expected
+    persister = _RecordingPersister()
+    provider = OpenAICompatibleProvider(
+        api_key=SecretStr("openai-test-key"),
+        profile=OPENAI_PROFILE,
+        persister=persister,
+        models=(model,),
+    )
+    completion = _gpt56_completion()
+    assert completion.usage is not None
+    completion.usage.completion_tokens_details = CompletionTokensDetails(
+        reasoning_tokens=40 if reasoning else 0
+    )
+    mock = AsyncMock(return_value=completion)
+    try:
+        with patch.object(AsyncCompletions, "create", mock):
+            response = await provider.complete(request)
+    finally:
+        await provider.aclose()
+    assert mock.call_args.kwargs == expected
+    assert (
+        response.input_tokens,
+        response.cache_read_tokens,
+        response.cache_write_tokens,
+        response.output_tokens,
+    ) == (50, 30, 20, 50)
+    event, _, persisted_response = persister.calls[0]
+    assert persisted_response is response
+    assert event.output_tokens == 50  # Reasoning is already included, never added or subtracted.
+    assert event.reasoning_enabled is reasoning
+    assert (
+        response.profile_id,
+        response.reasoning_enabled,
+        response.profile_contract_digest,
+    ) == resolve_host_identity("openai", reasoning=False, models=(model,))
+    assert event.profile_contract_digest == response.profile_contract_digest
     assert event.cost_usd is None
     assert event.cost_unpriced_reason == CostUnpricedReason.BILLING_PENDING

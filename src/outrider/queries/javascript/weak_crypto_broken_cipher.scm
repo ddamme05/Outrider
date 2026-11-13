@@ -1,15 +1,9 @@
-; Broken/legacy cipher construction (DES / 3DES / RC2 / RC4 / Blowfish)
-; anchored to the `createCipheriv` / legacy `createCipher` USE with a literal
-; OpenSSL algorithm name. The regex anchors the family prefix at a `-` or
-; end-of-string boundary, so `des-ede3-cbc` fires while `desx-cbc` does not;
-; case-insensitive to mirror OpenSSL's name lookup. Non-literal algorithm
-; names are a deliberate recall gap (JUDGED covers them).
+; Match createCipheriv/createCipher with a literal broken-cipher algorithm name.
 ;
-; Anchor-capture protocol (BindingRule mode="anchor_import"): the member arm
-; captures its receiver as @_recv; the producer admits a match only when
-; @_recv (else the bare @_fn) is bound by an import from the query's module
-; set. Nested receivers (`a.b.createCipheriv`) have no provable binding and
-; do not match (JUDGED covers them).
+; Recognize DES/3DES, RC2, RC4, and Blowfish prefixes, case-insensitively,
+; ending at a hyphen or the end of the name. The producer must bind @_recv or
+; @_fn to an allowed import. Nested receivers and nonliteral algorithm names
+; are not covered and need model review.
 (call_expression
   function: [
     (identifier) @_fn

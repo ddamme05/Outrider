@@ -1,17 +1,11 @@
-# See specs/2026-05-26-hitl-node.md
-"""Pause for human approval (HITL) when findings have CRITICAL/HIGH severity.
+"""Pause for high-severity findings and disputed investigation results.
 
-Read the deduplicated review report, using policy to split gated findings
-from those that can publish automatically. An empty gate passes through.
-Otherwise, save the request to audit, write the awaiting-approval snapshot
-atomically, optionally notify Slack, then interrupt the graph. On resume,
-validate and audit the decision before marking the review running again.
+The hitl node saves the approval request, optionally notifies Slack, and
+interrupts the workflow. On resume it validates and saves the decision.
+Reviews with nothing to approve continue immediately.
 
-LangGraph re-runs this body from the top on resume. Audit writes deduplicate
-by review identity (and decision content); status writes are conditional,
-and phase IDs are deterministic. Replaying an identical submission is safe.
-A conflicting decision raises into the dashboard endpoint's resume wrapper;
-`sweep/hitl_expiry.py::reclaim_stuck_hitl_states` owns stuck-state recovery.
+The node can rerun during resume, so repeated writes must be safe. Recovery of
+stuck approvals belongs to sweep/hitl_expiry.py. See specs/2026-05-26-hitl-node.md.
 """
 
 from __future__ import annotations
@@ -32,7 +26,11 @@ from outrider.policy.canonical import (
     compute_hitl_decision_content_hash,
     compute_phase_id,
 )
-from outrider.policy.publish_eligibility import is_hitl_gated_severity
+from outrider.policy.publish_eligibility import (
+    is_hitl_gated_severity,
+    verification_hold_finding_ids,
+)
+from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas.hitl import HITL_MAX_GATED_FINDINGS, HITLDecision, HITLRequest
 
 if TYPE_CHECKING:
@@ -51,11 +49,13 @@ logger = logging.getLogger(__name__)
 
 def _partition_findings(
     state: ReviewState,
+    *,
+    verification_holds: tuple[UUID, ...] = (),
 ) -> tuple[tuple[UUID, ...], tuple[UUID, ...]]:
     """Split the synthesized report into approval and automatic-publication IDs.
 
     Synthesize has already deduplicated findings and rejected conflicting
-    severities. Use policy's gated-severity rule and return sorted ID tuples.
+    severities. Verification holds add approval requirements without relabeling.
     """
     if state.review_report is None:
         msg = (
@@ -70,7 +70,7 @@ def _partition_findings(
     gated: set[UUID] = set()
     autopost: set[UUID] = set()
     for finding in state.review_report.findings:
-        if is_hitl_gated_severity(finding.severity):
+        if is_hitl_gated_severity(finding.severity) or finding.finding_id in verification_holds:
             gated.add(finding.finding_id)
         else:
             autopost.add(finding.finding_id)
@@ -79,7 +79,7 @@ def _partition_findings(
         raise ValueError(
             f"HITL gate exceeds the {HITL_MAX_GATED_FINDINGS}-finding cap: "
             f"{len(gated)} findings require approval. A PR producing this many "
-            f"CRITICAL/HIGH findings is past the point a human reviewer can "
+            f"findings requiring approval is past the point a human reviewer can "
             f"meaningfully approve per-finding; investigate before retrying."
         )
     return tuple(sorted(gated)), tuple(sorted(autopost))
@@ -93,6 +93,7 @@ def _build_request(
     created_at: datetime,
     expires_at: datetime,
     is_eval: bool,
+    verification_holds: tuple[UUID, ...] = (),
 ) -> tuple[HITLRequest, HITLRequestEvent]:
     """Build matching request and audit payloads.
 
@@ -101,6 +102,7 @@ def _build_request(
     request = HITLRequest(
         findings_requiring_approval=findings_requiring_approval,
         auto_post_findings=auto_post_findings,
+        verification_hold_finding_ids=verification_holds,
         created_at=created_at,
         expires_at=expires_at,
     )
@@ -110,6 +112,7 @@ def _build_request(
         is_eval=is_eval,
         findings_requiring_approval=findings_requiring_approval,
         auto_post_findings=auto_post_findings,
+        verification_hold_finding_ids=verification_holds,
         created_at=created_at,
         expires_at=expires_at,
     )
@@ -205,7 +208,17 @@ async def hitl(
         )
     )
 
-    findings_requiring_approval, auto_post_findings = _partition_findings(state)
+    verification_holds = verification_hold_finding_ids(
+        state.review_report.findings if state.review_report else (),
+        state.native_candidates,
+        state.candidate_assessments,
+        policy_version=(
+            state.triage_result.policy_version if state.triage_result else ACTIVE_POLICY_VERSION
+        ),
+    )
+    findings_requiring_approval, auto_post_findings = _partition_findings(
+        state, verification_holds=verification_holds
+    )
 
     if not findings_requiring_approval:
         await phase_event_sink.emit_phase(
@@ -230,6 +243,7 @@ async def hitl(
         created_at=created_at,
         expires_at=expires_at,
         is_eval=state.is_eval,
+        verification_holds=verification_holds,
     )
 
     # Use the persisted event: a replay may have returned the original request.
@@ -237,6 +251,7 @@ async def hitl(
     canonical_request = HITLRequest(
         findings_requiring_approval=persisted_request.findings_requiring_approval,
         auto_post_findings=persisted_request.auto_post_findings,
+        verification_hold_finding_ids=persisted_request.verification_hold_finding_ids,
         created_at=persisted_request.created_at,
         expires_at=persisted_request.expires_at,
     )

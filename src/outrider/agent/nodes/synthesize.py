@@ -18,7 +18,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from outrider.agent.nodes.finding_cap import cap_findings_by_severity
+from outrider.agent.nodes.finding_cap import _collapse_by_content_hash, cap_findings_by_severity
 from outrider.agent.nodes.patch_generation import generate_patches
 from outrider.anomaly import AnomalyRuleName, AnomalySeverity
 from outrider.audit.events import ReviewPhaseEvent, SynthesizeCompletedEvent
@@ -26,6 +26,7 @@ from outrider.llm.base import LLMRequest
 from outrider.llm.parsing import strip_outer_json_fence
 from outrider.llm.pricing import PRICING_VERSION
 from outrider.policy.canonical import compute_phase_id
+from outrider.policy.publish_eligibility import verification_hold_finding_ids
 from outrider.prompts import synthesize as synthesize_prompt
 from outrider.schemas.analysis_round import MAX_FINDINGS_HARD_CAP
 from outrider.schemas.review_report import (
@@ -147,7 +148,8 @@ async def _detect_and_report_divergence(
 
     Severity or policy-version disagreement is corruption. Try to report an
     anomaly, then raise even if the anomaly sink or logger fails. Keep the
-    lowest round index, then lowest finding ID, as the duplicate representative.
+    strongest admitted evidence as representative, with round index and finding
+    ID resolving equal-strength ties. Original findings are never rewritten.
     """
     by_hash: dict[str, list[tuple[int, ReviewFinding]]] = {}
     for round_index, analysis_round in enumerate(state.analysis_rounds):
@@ -194,7 +196,8 @@ async def _detect_and_report_divergence(
                 round_indices=round_indices_tuple,
             )
         entries.sort(key=lambda pair: (pair[0], str(pair[1].finding_id)))
-        kept[content_hash] = entries[0][1]
+        [representative] = _collapse_by_content_hash([entry[1] for entry in entries])
+        kept[content_hash] = representative
 
     return kept
 
@@ -300,6 +303,12 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     )
 
     _enforce_synthesize_input_invariants(state)
+    if state.triage_result is None:
+        raise FindingForgeryDetectedError(
+            "synthesize: triage_result missing past invariant gate "
+            "(_enforce_synthesize_input_invariants should have raised "
+            "at step 3 — step ordering is broken)"
+        )
     kept_by_hash = await _detect_and_report_divergence(
         state=state,
         anomaly_sink=anomaly_sink,
@@ -312,6 +321,12 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
         list(report_findings),
         soft_cap=MAX_FINDINGS_PER_REPORT,
         hard_cap=MAX_FINDINGS_HARD_CAP,
+        protected_finding_ids=verification_hold_finding_ids(
+            report_findings,
+            state.native_candidates,
+            state.candidate_assessments,
+            policy_version=state.triage_result.policy_version,
+        ),
     )
     n_findings_dropped_over_cap = len(report_dropped_findings)
     # Report gated overflow only after ReviewReport validates.
@@ -329,12 +344,7 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     )
 
     # The entry gate guarantees this; retain the check for type narrowing.
-    if state.triage_result is None:
-        raise FindingForgeryDetectedError(
-            "synthesize: triage_result missing past invariant gate "
-            "(_enforce_synthesize_input_invariants should have raised "
-            "at step 3 — step ordering is broken)"
-        )
+
     overall_risk = state.triage_result.overall_risk
 
     # Prompt metrics include patch work and exclude this summary call.
@@ -416,6 +426,7 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
             # Preserve the review-start policy snapshot for replay.
             policy_version=state.triage_result.policy_version,
             synthesize_model=synthesize_model,
+            selected_finding_ids=tuple(finding.finding_id for finding in review_report.findings),
             profile_id=profile_id,
             reasoning_enabled=reasoning_enabled,
             profile_contract_digest=profile_contract_digest,

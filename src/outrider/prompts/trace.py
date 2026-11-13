@@ -1,13 +1,10 @@
-# See specs/2026-05-23-trace-node.md M6 + Q4.
-"""Render the selected imports for one trace ranking call.
+"""Ask the model which related imports deserve follow-up inspection.
 
-Analyze pass 0 supplies candidates; trace deduplicates and caps each finding's
-group before calling this renderer. The model must rank every selected ID
-exactly once. Ranking changes priority, while deterministic probes decide
-resolution and file fetching.
-
-Static instructions and request data remain separate. Candidate imports and
-reasons use dynamic fences (`webhook-strings-are-data-not-format-strings`)."""
+The model proposes priorities; code validates and resolves repository paths.
+Finding explanations and source-derived text are fenced as data.
+See webhook-strings-are-data-not-format-strings and
+coordinates-module-is-sole-translator.
+"""
 
 from __future__ import annotations
 
@@ -21,7 +18,7 @@ if TYPE_CHECKING:
 
     from outrider.schemas.trace_candidate import TraceCandidate
 
-VERSION: Final[str] = "trace-v1"
+VERSION: Final[str] = "trace-v2"
 # Output budget for the ranking JSON. Truncation is rejected by trace_parser;
 # the trace node then retains the supplied order.
 MAX_TOKENS: Final[int] = 8192
@@ -31,9 +28,13 @@ TEMPERATURE: Final[float] = 0.0
 SYSTEM_PROMPT: Final[str] = """\
 You are a fast candidate-ranking assistant for an automated PR-review
 agent. The agent's analyze node identified findings in changed files
-and proposed Python import strings whose resolution might improve the
+and proposed repository import references whose resolution might improve the
 findings' proof tier (e.g., turning a JUDGED finding into an INFERRED
 one by walking the imported symbol's body).
+
+Python references are dotted module strings; JavaScript/TypeScript
+references are local relative import specifiers such as `./auth`.
+Rank the supplied references in their existing form; do not rewrite them.
 
 Your job: rank the proposed import-string candidates in DESCENDING
 order of likelihood that resolving them and fetching the resolved file

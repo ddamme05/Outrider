@@ -1,17 +1,10 @@
-"""severity_policies has v1.0.0 with the canonical SEVERITY_POLICY mapping.
+"""Check that the initial stored policy contains the canonical severity mapping.
 
-Backs ``severity-set-by-policy``: baseline severity comes from this
-mapping keyed by finding type, never from model output. The v1.0.0 row
-is seeded by the genesis migration (the seed is non-negotiable: without
-it every findings insert FK-fails on a fresh DB), and the policy JSON
-must be the spec §7.4 mapping verbatim.
+Findings require a valid stored policy, and severity comes from policy rather
+than model output. The initial version must remain unchanged for replay
+(``severity-set-by-policy``; ``severity-policy-versioned-for-replay``; spec §7.4)."""
 
-Closes the loop on the audit fix that changed the seed from `{}` to
-the canonical mapping. If a future migration accidentally edits v1.0.0
-in place (a `severity-policy-versioned-for-replay` violation), this
-test catches it before the schema reaches CI.
-"""
-
+import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -86,8 +79,7 @@ EXPECTED_V1_1_POLICY = {
 }
 
 # v1.2.0 extends v1.1.0 with seven contextual security types
-# (DECISIONS.md#053). The lifespan fingerprint binds the live SEVERITY_POLICY
-# to this row at ACTIVE_POLICY_VERSION=1.2.0.
+# (DECISIONS.md#053). This historical mapping must stay unchanged.
 EXPECTED_V1_2_POLICY = {
     **EXPECTED_V1_1_POLICY,
     "weak_crypto": "high",
@@ -124,25 +116,25 @@ async def test_v1_1_0_seeded_with_observed_tier_mapping(migrated_db: str) -> Non
         await engine.dispose()
 
 
-async def test_v1_2_0_seeded_with_active_mapping(migrated_db: str) -> None:
-    """v1.2.0 exists with the 22-entry active mapping (DECISIONS.md#053).
-
-    Additive over v1.1.0: the seven contextual security keys are appended;
-    the original fifteen are unchanged. Mirrors the v1.0.0 content check so
-    an accidental in-place edit (or a divergence from the live mapping that
-    would fail the lifespan fingerprint) is caught before CI.
-    """
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        ("1.2.0", EXPECTED_V1_2_POLICY),
+        ("1.3.0", {**EXPECTED_V1_2_POLICY, "correctness_bug": "medium"}),
+    ],
+)
+async def test_additive_policy_versions_preserve_historical_mapping(
+    migrated_db: str, version: str, expected: dict[str, str]
+) -> None:
+    """The new category lives in 1.3.0; the frozen 1.2.0 row stays unchanged."""
     engine = create_async_engine(migrated_db)
     try:
         async with engine.connect() as conn:
             policy_result = await conn.execute(
-                text("SELECT policy FROM severity_policies WHERE version = '1.2.0'")
+                text("SELECT policy FROM severity_policies WHERE version = :version"),
+                {"version": version},
             )
             policy = policy_result.scalar_one()
-            assert policy == EXPECTED_V1_2_POLICY, (
-                "v1.2.0 policy diverges from DECISIONS.md#053 / the live "
-                "SEVERITY_POLICY. A change ships as a new version row, never an "
-                "UPDATE to v1.2.0 (severity-policy-versioned-for-replay)."
-            )
+            assert policy == expected
     finally:
         await engine.dispose()

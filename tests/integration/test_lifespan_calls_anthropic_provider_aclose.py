@@ -1,9 +1,4 @@
-"""Lifespan FUP-011 closure — AnthropicProvider.aclose() called on shutdown.
-
-Pins the FUP-011 exit rule: AnthropicProvider.aclose() exists and is
-invoked from the FastAPI lifespan teardown. Verifies via a spy on the
-provider's aclose method.
-"""
+"""Check that application shutdown closes the Anthropic provider (FUP-011)."""
 
 from __future__ import annotations
 
@@ -249,14 +244,7 @@ async def test_complete_after_aclose_raises_loud() -> None:
 
 
 async def test_anthropic_provider_aclose_timeout_does_not_block_lifespan() -> None:
-    """L3 regression: aclose() with a hung SDK close releases via timeout
-    rather than blocking lifespan teardown indefinitely.
-
-    Simulates a slow close by patching `self._client.close` to await an
-    asyncio.Event that never fires within the timeout window. Asserts
-    `aclose()` returns successfully (via the wait_for TimeoutError path)
-    AND marks the provider as closed (no retry on next call).
-    """
+    """A timed-out close keeps one drain running across repeated close calls."""
     import asyncio
     from unittest.mock import patch
 
@@ -274,23 +262,32 @@ async def test_anthropic_provider_aclose_timeout_does_not_block_lifespan() -> No
         persister=_StubPersister(),  # type: ignore[arg-type]
     )
 
-    # Hung close: awaits an event that never fires.
-    never_fires = asyncio.Event()
+    release_close = asyncio.Event()
+    close_tasks: list[asyncio.Task[None]] = []
 
     async def _hung_close() -> None:
-        await never_fires.wait()
+        task = asyncio.current_task()
+        assert task is not None
+        close_tasks.append(task)
+        await release_close.wait()
 
-    # Override the timeout to a tiny value so the test runs fast — the
-    # default 10s would slow the suite. Patch the module-level constant.
-    with (
-        patch.object(provider._client, "close", new=_hung_close),
-        patch("outrider.llm.anthropic_provider._ACLOSE_TIMEOUT_SECONDS", 0.05),
-    ):
-        # Without the timeout guard, this would hang forever.
-        await asyncio.wait_for(provider.aclose(), timeout=2.0)
+    async with provider._client:
+        with (
+            patch.object(
+                provider._client, "close", new=AsyncMock(side_effect=_hung_close)
+            ) as mock_close,
+            patch("outrider.llm.anthropic_provider._ACLOSE_TIMEOUT_SECONDS", 0.05),
+        ):
+            try:
+                await asyncio.wait_for(provider.aclose(), timeout=2.0)
+                (first_close,) = close_tasks
+                await asyncio.wait_for(provider.aclose(), timeout=2.0)
+                mock_close.assert_called_once()
+                assert not first_close.done()
+            finally:
+                release_close.set()
+                await asyncio.wait_for(
+                    asyncio.gather(*close_tasks, return_exceptions=True), timeout=2.0
+                )
 
-    # Provider marked closed; next call is a no-op (no retry of the hung close).
-    await provider.aclose()
-    # Sanity: 10s default is the production value (regression in case a
-    # future refactor lowers it to something risky).
     assert _ACLOSE_TIMEOUT_SECONDS >= 5.0

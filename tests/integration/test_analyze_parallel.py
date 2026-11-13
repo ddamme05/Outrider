@@ -1,15 +1,7 @@
-# Parallel fan-out concurrency pins per specs/2026-07-05-parallel-analyze.md (increment 6).
-"""Genuinely CONCURRENT analyze workers through the real compiled graph.
+"""Check parallel file workers through the compiled review graph.
 
-The eval scenario (tests/eval/scenarios/parallel/) covers the real-Postgres
-end of increment 6 (persisted keyed streams, resume, cache writes); this
-file covers what needs a controllable provider: DETERMINISTIC overlap (a
-rendezvous barrier, not sleeps — the test deadlocks-and-fails rather than
-flakes if concurrency is broken), per-file attribution under that overlap,
-strict-hybrid verification over the full recorded stream, the
-stamp-omission failure on an otherwise-real stream, and the no-retry
-worker-failure policy.
-"""
+A rendezvous barrier proves workers overlap without timing-based sleeps.
+Check file attribution, phase events, missing worker stamps, and worker failures."""
 
 from __future__ import annotations
 
@@ -44,6 +36,7 @@ from outrider.audit.replay import (
 )
 from outrider.llm.anthropic_provider import _ANTHROPIC_CONTRACT_DIGEST, _ANTHROPIC_PROFILE_ID
 from outrider.llm.base import LLMRequest, LLMResponse
+from outrider.prompts.triage_schema import file_slot_ids
 from outrider.schemas import ReviewState
 from outrider.schemas.pr_context import ChangedFile, PRContext
 
@@ -55,7 +48,7 @@ _PATCH_TEMPLATE = "--- a/{path}\n+++ b/{path}\n@@ -0,0 +1,2 @@\n+def work(x):\n+
 def _triage_deep_over(paths: tuple[str, ...]) -> str:
     return json.dumps(
         {
-            "file_tiers": dict.fromkeys(paths, "deep"),
+            "file_tiers": dict.fromkeys(file_slot_ids(len(paths)), "deep"),
             "overall_risk": "medium",
             "relevant_dimensions": ["code_quality"],
             "reasoning": "test",

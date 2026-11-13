@@ -22,8 +22,10 @@ waits briefly for records to finish saving, then checks that the history reconst
 the expected result. The seven review stages use LangGraph;
 [How a review works](#how-a-review-works) walks through them.
 
-You supply your own model API keys. Anthropic is the default; Fireworks and Baseten
-also work through their OpenAI-compatible APIs, with GLM-5.2 tested. Beyond GitHub,
+You supply your own model API keys. Anthropic is the default; Baseten also supports
+GLM-5.2 through its OpenAI-compatible API. Fireworks support remains available,
+but its GLM-5.2 serverless endpoint has retired and a replacement has not completed
+the quality comparison. Beyond GitHub,
 source context, diffs, and PR titles go only to your chosen model provider. Optional
 Slack notifications contain limited fields; model-written titles may quote short
 code fragments. Outrider stores its data in your Postgres database.
@@ -67,7 +69,7 @@ share the application database. Set retention controls for that store yourself.
 
 **Prerequisites:** Git, Docker with Docker Compose, Python 3 (only for the
 secret-generation one-liners below), a GitHub account that can create a GitHub App,
-an Anthropic API key (or a Fireworks or Baseten key, see `OUTRIDER_LLM_HOST`), and an
+an Anthropic API key (or a Baseten key, see `OUTRIDER_LLM_HOST`), and an
 HTTPS-reachable public URL for webhooks.
 
 > [!IMPORTANT]
@@ -86,8 +88,8 @@ cp .env.example deploy/.env
 Edit `deploy/.env` (it is fully commented). Minimum for a first boot: `POSTGRES_USER` /
 `POSTGRES_PASSWORD` / `POSTGRES_DB`, `ANTHROPIC_API_KEY`, `OUTRIDER_ADMIN_API_KEY` (dashboard
 access key, a random secret), and `OUTRIDER_TRUNCATION_HMAC_SECRET` (a random secret, 32+
-chars). To use a GLM host instead of Anthropic, set `OUTRIDER_LLM_HOST=fireworks` plus
-`FIREWORKS_API_KEY` (or `baseten` plus `BASETEN_API_KEY`) in place of the Anthropic key.
+chars). To use GLM instead of Anthropic, set `OUTRIDER_LLM_HOST=baseten` plus
+`BASETEN_API_KEY` in place of the Anthropic key.
 
 Then add GitHub App credentials. For the recommended guided setup, set these in `deploy/.env`
 before launching — in this mode they are required at startup:
@@ -486,6 +488,15 @@ These rules govern findings and publication. The linked entries in
 The tables below come from result files stored in this repository. You can
 recompute every number from their JSON.
 
+The Anthropic defaults are Sonnet 5.5 for deep review and Haiku 5.5 for standard
+review, triage, summaries, trace ranking and suggested patches. The requested
+model refresh still needs fresh role-quality checks before release.
+
+The historical [2026-10-31 model comparison](tests/eval/baselines/model-refresh/2026-10-31.json)
+selected Haiku 5.5 only for trace ranking and suggested patches. Each selected
+role passed one fixed scenario three times. Those measurements remain unchanged,
+and the GLM comparison is incomplete. They do not establish a general quality ranking.
+
 ### Cross-provider baseline (tracked artifact)
 
 [`tests/eval/baselines/analyze-exemplars/analyze-v10+suite-v2.json`](tests/eval/baselines/analyze-exemplars/analyze-v10+suite-v2.json)
@@ -570,9 +581,11 @@ most-used settings:
 | `OUTRIDER_ADMIN_API_KEY` | yes | none | dashboard and approval-endpoint bearer token |
 | `OUTRIDER_TRUNCATION_HMAC_SECRET` | yes | none | authenticates truncation markers in sanitized output |
 | `ANTHROPIC_API_KEY` | with the default host | none | LLM provider key |
-| `OUTRIDER_LLM_HOST` | no | `anthropic` | `anthropic`, `fireworks`, or `baseten` ([#056](DECISIONS.md#056-openai-compatible-providers-via-a-host-qualified-hostprofile-registry)) |
-| `OUTRIDER_MODEL_ANALYZE_MODEL` | no | `claude-sonnet-5` | deep-tier analyze model |
-| `OUTRIDER_MODEL_STANDARD_ANALYZE_MODEL` | no | `claude-haiku-4-5` | standard-tier analyze model |
+| `OUTRIDER_LLM_HOST` | no | `anthropic` | `anthropic` or `baseten` for the tested defaults; Fireworks needs an evaluated replacement for its retired model ([#056](DECISIONS.md#056-openai-compatible-providers-via-a-host-qualified-hostprofile-registry)) |
+| `OUTRIDER_MODEL_ANALYZE_MODEL` | no | `claude-sonnet-5-5` | deep-tier analyze model |
+| `OUTRIDER_MODEL_STANDARD_ANALYZE_MODEL` | no | `claude-haiku-5-5` | standard-tier analyze model |
+| `OUTRIDER_MODEL_TRACE_MODEL` | no | `claude-haiku-5-5` | rank cross-file trace candidates |
+| `OUTRIDER_MODEL_PATCH_MODEL` | no | `claude-haiku-5-5` | generate suggested patches |
 | `OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS` | no | `200000` | pre-flight per-review token budget |
 | `OUTRIDER_MAX_CONCURRENT_REVIEWS` | no | `8` | per-process concurrent-review cap |
 | `OUTRIDER_HITL_TIMEOUT_ACTION` | no | `expire_only` | what happens when approval times out. The default never auto-posts |

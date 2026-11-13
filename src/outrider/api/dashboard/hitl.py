@@ -1,23 +1,16 @@
-"""Accept human approval and resume a paused review in a background task.
+"""Accept an approval decision and resume its paused review in the background.
 
-Read the approval request from `reviews.hitl_request`, saved atomically by
-the HITL node before it pauses. The node returns its state delta only after
-resume, so the pending request is not yet in the graph's `hitl_request` field.
-
-Validation order is auth -> review state -> finding decisions. It prevents
-unauthenticated callers from probing review state, and callers whose review
-is not awaiting approval from probing the gated finding set.
-
-The resume wrapper logs conflicting submissions; it logs and re-raises other
-failures. It leaves status changes to the node's sinks so a saved decision
-can still be retried. The `reclaim_stuck_hitl_states` sweep owns recovery of
-stuck approvals; the wrapper does not consult the graph checkpointer.
+Check authentication, review status and finding decisions in that order.
+The saved request in reviews.hitl_request defines what needs approval.
+The review node records decisions and changes status; the background wrapper
+reports failures and leaves stuck-state recovery to sweep/hitl_expiry.py.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 from uuid import UUID  # noqa: TC003  (runtime: Pydantic field type)
 
@@ -29,6 +22,7 @@ from outrider.api.dashboard.auth import require_admin_api_key
 from outrider.audit.persister import (
     AuditPersisterHITLDecisionNaturalKeyConflict,
 )
+from outrider.policy.publish_eligibility import is_hitl_gated_severity
 from outrider.policy.severity import FindingSeverity  # noqa: TC001  (runtime: Pydantic field type)
 from outrider.schemas.hitl import (
     HITLDecision,
@@ -254,13 +248,13 @@ def _assert_decisions_match_gate(
                 duplicates.append(str(fid))
             seen.add(fid)
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=HTTPStatus.UNPROCESSABLE_CONTENT.value,
             detail={"duplicate_finding_ids": sorted(duplicates)},
         )
 
     if submitted_ids != expected_ids:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=HTTPStatus.UNPROCESSABLE_CONTENT.value,
             detail={
                 "missing": sorted(str(u) for u in expected_ids - submitted_ids),
                 "extras": sorted(str(u) for u in submitted_ids - expected_ids),
@@ -311,6 +305,22 @@ def _assert_overrides_change_severity(
     domain-model construction, but that validation failure would surface as 500.
     This endpoint gate returns a client-facing 422 before construction.
     """
+    verification_only_overrides = sorted(
+        str(d.finding_id)
+        for d in payload.decisions
+        if d.outcome == PerFindingOutcome.SEVERITY_OVERRIDE
+        and d.finding_id in gated_finding_severities
+        and not is_hitl_gated_severity(gated_finding_severities[d.finding_id])
+    )
+    if verification_only_overrides:
+        raise HTTPException(
+            status_code=HTTPStatus.UNPROCESSABLE_CONTENT.value,
+            detail={
+                "error": "verification_hold_severity_override",
+                "finding_ids": verification_only_overrides,
+                "note": "Use approve, reject or suppress for a verification-held finding.",
+            },
+        )
     no_op_overrides = sorted(
         str(d.finding_id)
         for d in payload.decisions
@@ -320,7 +330,7 @@ def _assert_overrides_change_severity(
     )
     if no_op_overrides:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=HTTPStatus.UNPROCESSABLE_CONTENT.value,
             detail={
                 "error": "noop_severity_override",
                 "finding_ids": no_op_overrides,

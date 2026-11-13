@@ -1,46 +1,12 @@
-"""End-to-end smoke test: real graph run through publish, then replay-equivalent.
+"""Run a review through the compiled graph, publish it, and replay its stored audit.
 
-It drives the REAL compiled graph (built from the full seven-logical-node topology:
-intake -> triage -> analyze <-> trace -> synthesize -> hitl -> publish) with
-the REAL `AuditPersister` / `ReviewStatusPersister` / `AnomalyPersister` writing
-to a REAL Postgres (`migrated_db`), and fakes only at the two network
-boundaries -- a scripted LLM provider (no Anthropic call) and a fake GitHub
-(stub fetch client + recording publisher). A synthetic one-finding PR runs all
-the way THROUGH publish (the finding is MEDIUM, so the HITL gate does not
-interrupt; it lands on a changed diff line, so publish actually posts an inline
-comment instead of short-circuiting). The capstone then asserts the run
-produced a faithfully replayable audit stream:
-`AuditReplayer.assert_replay_equivalent(review_id)` passes and reconstruct
-classifies the review FULL.
+The graph and PostgreSQL persisters are real; GitHub and the LLM provider are
+scripted. A MEDIUM finding posts inline without interrupting for approval.
+Trace is present in the graph but not exercised because there are no candidates.
 
-This is the happy-path slice, NOT a literal exercise of all seven nodes. The
-nodes that actually run are intake, triage, analyze, synthesize, hitl, publish
-(asserted via phase coverage below). Two nodes are present in the compiled
-graph but NOT exercised by this fixture:
-  - **trace does not run** -- the analyze response carries no `trace_candidates`,
-    so `_analyze_router` skips the analyze<->trace loop. (A trace-exercising
-    end-to-end path is separate scope.)
-  - **hitl runs as a pass-through** -- the MEDIUM finding is sub-HIGH, so the
-    gate emits its phase bracket but does not `interrupt()`. The HITL
-    interrupt/resume path is covered by the hitl_resume scenario, not here.
-
-Why this complements `test_full_mode_through_production_persister`: that test
-drives the persister's methods directly; this one drives them THROUGH the graph,
-so it proves the node->sink wiring and the graph-driven audit stream, not just
-the persister in isolation.
-
-One deliberate seam:
-  - The scripted provider does NOT emit `LLMCallEvent` rows -- LLM-call
-    persistence lives inside `AnthropicProvider.complete()` (covered
-    separately), not in a graph sink. So the audit stream carries zero LLM
-    exchanges here and `llm_exchanges` is vacuously empty; FULL mode does not
-    require LLM content.
-
-The `findings` CONTENT row is written by the production writer during the
-graph's analyze node (`emit_finding` co-inserts the FindingEvent audit row and
-the findings content row in one transaction, FUP-111), so the run reconstructs
-FULL with finding content -- no raw-SQL content seed.
-"""
+Finding content is written by analysis, not seeded SQL. The scripted provider
+does not emit LLM-call events, so this proves graph-to-sink wiring and finding
+replay, not LLM exchange persistence or the approval interrupt/resume path."""
 
 from __future__ import annotations
 
@@ -323,7 +289,7 @@ class _StubImportPathResolver:
 def _triage_response() -> str:
     return json.dumps(
         {
-            "file_tiers": {_FILE_PATH: "deep"},
+            "file_tiers": {"file_1": "deep"},
             "overall_risk": "medium",
             "relevant_dimensions": ["security"],
             "reasoning": "smoke: deep-review the changed handler.",

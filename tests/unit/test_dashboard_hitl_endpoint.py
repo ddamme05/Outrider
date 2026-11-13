@@ -1,15 +1,7 @@
-"""Unit tests for the POST /reviews/{review_id}/decide endpoint.
+"""Check approval submissions through the dashboard endpoint.
 
-Covers the M12 step-order contract: auth -> state -> mismatch. Also
-pins the body-schema rejection rules (no `reviewer_id`, no
-`original_severity` in the payload — both are server-derived) and the
-failure-wrapper exit semantics.
-
-Integration-style: spins up a FastAPI TestClient with stub
-`review_status_reader`, stub `compiled_graph`, and a recorded
-`background_tasks.add_task` callable so we can assert the wrapper is
-enqueued with the right shape.
-"""
+Authentication precedes state and decision-mismatch checks. Reject client-supplied
+server fields and verify background resume scheduling with stub dependencies."""
 
 from __future__ import annotations
 
@@ -485,6 +477,50 @@ def test_override_equal_to_the_baseline_returns_422() -> None:
     assert detail["error"] == "noop_severity_override"
     assert detail["finding_ids"] == [str(_FINDING_A)]
     compiled_graph.ainvoke.assert_not_awaited()
+
+
+@pytest.mark.parametrize("outcome,expected", [("approve", 202), ("severity_override", 422)])
+@pytest.mark.asyncio
+async def test_verification_hold_allows_approval_but_not_nongated_severity_override(
+    outcome, expected
+):
+    from fastapi import BackgroundTasks, HTTPException, Request
+
+    from outrider.api.dashboard.hitl import HITLDecisionPayload, decide
+
+    now = datetime.now(UTC)
+    request = HITLRequest(
+        findings_requiring_approval=(_FINDING_A,),
+        auto_post_findings=(),
+        verification_hold_finding_ids=(_FINDING_A,),
+        created_at=now,
+        expires_at=now + timedelta(minutes=30),
+    )
+    pf = _make_preflight(hitl_request=request, gated_severities={_FINDING_A: FindingSeverity.LOW})
+    app = FastAPI()
+    app.state.review_status_reader = MagicMock(fetch_for_decide=AsyncMock(return_value=pf))
+    app.state.compiled_graph = MagicMock()
+    background = BackgroundTasks()
+    item = {"finding_id": str(_FINDING_A), "outcome": outcome, "reason": "checked source"}
+    if outcome == "severity_override":
+        item["override_severity"] = "info"
+    payload = HITLDecisionPayload.model_validate({"decisions": [item]})
+    kwargs = {
+        "review_id": uuid4(),
+        "payload": payload,
+        "request": Request({"type": "http", "app": app}),
+        "background_tasks": background,
+    }
+    if expected == 422:
+        with pytest.raises(HTTPException) as raised:
+            await decide(**kwargs)
+        assert raised.value.status_code == 422
+        assert raised.value.detail["error"] == "verification_hold_severity_override"
+        assert background.tasks == []
+    else:
+        response = await decide(**kwargs)
+        assert response.status == "resuming"
+        assert len(background.tasks) == 1
 
 
 def test_persister_severity_divergence_returns_500() -> None:
