@@ -409,10 +409,16 @@ def build_called_function_index(
 
 
 def called_function_context(
-    index: CalledFunctionIndex, *, file_path: str, changed_lines: frozenset[int]
+    index: CalledFunctionIndex,
+    *,
+    file_path: str,
+    changed_lines: frozenset[int],
+    priority_lines: frozenset[int] | None = None,
 ) -> tuple[CalledFunctionExcerpt, ...]:
     """Select at most two small, uniquely named callees of changed scopes.
 
+    Calls owned by changed leaf scopes take priority over enclosing-scope calls.
+    Separate priority lines exclude anchors added only for reference eligibility.
     Matches use a call's final name, not receiver or import resolution. Ambiguous
     names, test implementations and helpers already in primary scopes add nothing.
     """
@@ -424,9 +430,27 @@ def called_function_context(
         for scope in facts.scope_units
         if any(scope.line_start <= line <= scope.line_end for line in changed_lines)
     )
+    # A changed method also selects its enclosing class. Do not let calls in
+    # unchanged sibling methods consume the helper allowance first.
+    changed_leaf_scope_ids: set[str] = set()
+    lines_to_prioritize = changed_lines if priority_lines is None else priority_lines
+    for line in lines_to_prioritize:
+        containing_scopes = tuple(
+            scope for scope in primary_scopes if scope.line_start <= line <= scope.line_end
+        )
+        containing_parent_ids = {scope.parent_scope_id for scope in containing_scopes}
+        changed_leaf_scope_ids.update(
+            scope.unit_id
+            for scope in containing_scopes
+            if scope.unit_id not in containing_parent_ids
+        )
+    ordered_calls = sorted(
+        facts.call_sites,
+        key=lambda call: (call.enclosing_scope_id not in changed_leaf_scope_ids, call.line),
+    )
     references = []
     seen_names = set()
-    for call in facts.call_sites:
+    for call in ordered_calls:
         if not any(scope.line_start <= call.line <= scope.line_end for scope in primary_scopes):
             continue
         name = call.callee_name.rsplit(".", 1)[-1]

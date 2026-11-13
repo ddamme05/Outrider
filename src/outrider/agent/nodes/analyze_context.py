@@ -808,6 +808,7 @@ def prepare_review_context(
                 called_function_index,
                 file_path=file_path,
                 changed_lines=primary_changed_lines,
+                priority_lines=added_line_numbers(patched_file),
             )
             for reference in references:
                 excerpt = reference.excerpt

@@ -1,0 +1,68 @@
+{
+  "capture": "Native Outrider workflow run-001, November12 2026, original Sonnet5.5 answers",
+  "files": {
+    "LICENSE": {
+      "bytes": 190,
+      "sha256": "418d025e1284311f2690263e6efa6bf51585e5741818ece63e5862487e505bb9"
+    },
+    "LICENSE.APACHE2": {
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "LICENSE.MIT": {
+      "bytes": 1091,
+      "sha256": "faa301d72dcc023b432bd77dc08a773ca3449e5c27440b9d66eb46fb8500b430"
+    },
+    "trio-2938/effective-settings.json": {
+      "bytes": 803,
+      "sha256": "022dd7be98b04f9d3d1577367544f3691f50cda4094c861c68b3e08ddf3f6fbb"
+    },
+    "trio-2938/graph-state.json": {
+      "bytes": 441259,
+      "sha256": "750a0a2873bbecbe21b45ba059d81327a51dc8766ebd79eb0118fcdc6315dba3"
+    },
+    "trio-2938/logical/0002.request.json": {
+      "bytes": 38949,
+      "sha256": "affa8b5dd7201cd82f0a160caaa060ab306f1163016b068e2a7746b84e974710"
+    },
+    "trio-2938/logical/0002.response.json": {
+      "bytes": 561,
+      "sha256": "a00de747ae87a9722de2d69e808cbd8108180c145e920e6074644878e0b24d72"
+    },
+    "trio-2938/logical/0003.request.json": {
+      "bytes": 53440,
+      "sha256": "f30ae7af5fe3e802fa0412e1416d72974f3acf1878ebd03bf1fcf36833fee2bf"
+    },
+    "trio-2938/logical/0003.response.json": {
+      "bytes": 561,
+      "sha256": "3fdbb110e65a20167b3c790172c7b33517886dfa54df7f1c853dd8344ea6e407"
+    },
+    "trio-3394/effective-settings.json": {
+      "bytes": 803,
+      "sha256": "022dd7be98b04f9d3d1577367544f3691f50cda4094c861c68b3e08ddf3f6fbb"
+    },
+    "trio-3394/graph-state.json": {
+      "bytes": 491887,
+      "sha256": "cce0490a5ce0594dac7b07828d4228c0c5f7095fc6c0d4b7c2f894d7cf2cc773"
+    },
+    "trio-3394/logical/0002.request.json": {
+      "bytes": 37906,
+      "sha256": "c3d0cb98e2f847168efcdc5f42319495dbe1b98ac460b1724e7d1b8e60f385f9"
+    },
+    "trio-3394/logical/0002.response.json": {
+      "bytes": 561,
+      "sha256": "9d07f5103dbe80f32609ea08d6a1ed629883274a6d6c84a1850d1947a13bcb28"
+    },
+    "trio-3394/logical/0003.request.json": {
+      "bytes": 55070,
+      "sha256": "d2aad62496b239dda04c15a64c9b215d9ec2746947cd05658b6a9adf2586d1c7"
+    },
+    "trio-3394/logical/0003.response.json": {
+      "bytes": 561,
+      "sha256": "0eb09178c6767c570c98f128a0161797086f981f0472e182971bfd85efa7bfc7"
+    }
+  },
+  "raw_files_modified": false,
+  "schema": "recorded-trio-helper-selection-inputs-v1",
+  "source_repository": "https://github.com/python-trio/trio"
+}
