@@ -1,14 +1,11 @@
-# Agent-view endpoint per ROADMAP.md section 3 / S2 + FUP-154.
-"""Authenticated, read-only JSON for agents following one review.
+"""Give agents a read-only view of one saved review.
 
-The router uses a separate agent token; it cannot authorize dashboard decisions.
-It projects stored review, finding, decision and publication data without writing
-new audit events. Audit queries stay scoped to the review's `is_eval` value.
+The agent token cannot approve findings or authorize dashboard changes. The
+response includes stored findings and decisions, but omits generated patches
+that are not persisted and individual comment URLs that are not recorded.
+Queries keep production and evaluation records separate.
 
-V1 omits per-comment URLs and suggested fixes. Publication records a GitHub review
-ID, not individual comment URLs. Analyze persists findings before synthesis adds
-patches to graph state, so this endpoint does not project those generated patches.
-`schema_version` identifies the response contract (ROADMAP §3 / S2, FUP-154).
+See ROADMAP.md §3 / S2 and FUP-154.
 """
 
 from __future__ import annotations
@@ -22,7 +19,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict
 from sqlalchemy import select
 
 from outrider.api.dashboard.auth import require_agent_api_key
-from outrider.api.dashboard.reviews import _assemble_finding_views
+from outrider.api.dashboard.findings import assemble_finding_views
 from outrider.db.models.audit_events import AuditEvent
 from outrider.db.models.installations import InstallationRepository, active_repo_membership
 from outrider.db.models.reviews import Review
@@ -30,7 +27,7 @@ from outrider.db.models.reviews import Review
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from outrider.api.dashboard.reviews import FindingView
+    from outrider.api.dashboard.findings import FindingView
 
 
 class AgentReviewerDecision(BaseModel):
@@ -254,7 +251,7 @@ async def get_agent_view(request: Request, review_id: UUID) -> AgentReviewView:
             else set()
         )
 
-        finding_views = await _assemble_finding_views(
+        finding_views = await assemble_finding_views(
             session,
             review_id=review.id,
             installation_id=review.installation_id,

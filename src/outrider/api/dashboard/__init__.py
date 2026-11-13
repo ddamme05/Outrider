@@ -1,13 +1,9 @@
-"""Dashboard reads, human decisions, and scoped agent review data.
+"""Dashboard routes for reading reviews and submitting approval decisions.
 
-reviews.py reads queue, detail, findings, and audit replay; metrics.py aggregates
-that history; policy.py loads the stored severity version. hitl.py accepts one
-human decision and queues graph resume after auth, state, and mismatch checks.
-The lifespan supplies the durable graph and database dependencies.
-
-Admin bearer auth protects review reads and decisions. agent_view.py has a separate
-read-only key; meta.py exposes only public deployment flags. Vendor SDKs stay
-outside these routers.
+reviews.py serves review history; findings.py builds finding details; metrics.py
+serves totals. hitl.py validates decisions and queues review resume. Admin
+credentials protect these routes. agent_view.py uses a separate read-only key;
+meta.py exposes public deployment flags.
 """
 
 from outrider.api.dashboard.agent_view import router as agent_view_router
