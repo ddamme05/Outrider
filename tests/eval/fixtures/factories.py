@@ -1,41 +1,8 @@
-"""Pydantic-validated fixture factories for the eval harness.
+"""Build valid review, finding, trace and approval records for evaluation tests.
 
-Each factory's `.create(**overrides)` classmethod produces a schema-valid
-instance of its target type with `is_eval=True` set on every audit-event /
-review surface that carries the column (loud-failure pattern: a factory
-that omits the flag is a bug, caught by the `eval_db` fixture's teardown
-integrity gate in `tests/eval/conftest.py` — query-then-drop ordering,
-UNION ALL across all five `is_eval`-bearing tables per `docs/schema.md`
-"Eval isolation"). `ReviewFinding` is a cross-boundary type with no
-`is_eval` field; the flag lives on the corresponding row in `findings`,
-not on the cross-boundary type — see `FindingFactory` below.
-
-What each factory produces:
-
-  - `ReviewFactory.create()` → `dict[str, Any]` matching the `reviews`
-    table column shape. Caller inserts via SQLAlchemy ORM
-    (`Review(**factory_dict)`) or Core. The Review FK to `installations`
-    is the caller's responsibility — factories don't manage FK targets.
-  - `FindingFactory.create()` → `ReviewFinding` Pydantic instance with
-    `content_hash` computed via `compute_finding_content_hash()`.
-    `ReviewFinding` is a cross-boundary type with no `is_eval` field;
-    the eval-isolation flag lives on the corresponding row in `findings`,
-    not on the cross-boundary type.
-  - `FindingEventFactory.create()` → `FindingEvent` Pydantic instance
-    with canonical hash + `is_eval=True`.
-  - `TraceDecisionEventFactory.create()` → `TraceDecisionEvent` (frozen
-    + extra=forbid) with the three-rule cross-field validator satisfied
-    (resolution_status="resolved" + target_file equal to the single
-    `resolved_candidate_paths` entry, per #024 amendment to #017;
-    overrides can supply unresolved/ambiguous shapes).
-  - `HITLRequestEventFactory.create()` → `HITLRequestEvent` with
-    `is_eval=True`.
-  - `HITLDecisionEventFactory.create()` → `HITLDecisionEvent` with
-    `is_eval=True` and at least one `PerFindingDecision` in `decisions`.
-
-`PRContextFactory` is deferred to the webhook-receiver spec per the
-eval-harness spec's Input boundary held item.
-"""
+Factories set is_eval=True on records that carry it. FindingFactory returns
+a ReviewFinding; its eventual findings row carries the evaluation flag.
+Callers create referenced installation rows and own database insertion."""
 
 from datetime import UTC, datetime, timedelta
 from typing import Any

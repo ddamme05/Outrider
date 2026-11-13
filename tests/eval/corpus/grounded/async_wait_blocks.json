@@ -1,0 +1,25 @@
+{
+  "installation_id": 9000,
+  "owner": "examples",
+  "repo": "background-jobs",
+  "pr_number": 4,
+  "base_sha": "0000000000000000000000000000000000000000",
+  "head_sha": "1111111111111111111111111111111111111111",
+  "pr_title": "Background job pause",
+  "pr_body": "Pause a background job while other requests continue.",
+  "author": "developer",
+  "total_additions": 8,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "app/background.py",
+      "status": "added",
+      "additions": 8,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,8 @@\n+async def handle_request(events):\n+    \"\"\"Complete a background job without blocking other requests.\"\"\"\n+    import time\n+\n+    events.append(\"started\")\n+    time.sleep(0.01)\n+    events.append(\"finished\")\n+    return \"ok\"\n",
+      "content_base": null,
+      "content_head": "async def handle_request(events):\n    \"\"\"Complete a background job without blocking other requests.\"\"\"\n    import time\n\n    events.append(\"started\")\n    time.sleep(0.01)\n    events.append(\"finished\")\n    return \"ok\"\n"
+    }
+  ],
+  "llm_responses": {}
+}

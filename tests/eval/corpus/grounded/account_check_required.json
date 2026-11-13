@@ -1,0 +1,25 @@
+{
+  "installation_id": 9000,
+  "owner": "examples",
+  "repo": "account-service",
+  "pr_number": 6,
+  "base_sha": "0000000000000000000000000000000000000000",
+  "head_sha": "1111111111111111111111111111111111111111",
+  "pr_title": "Account request endpoint",
+  "pr_body": "Return an account record after checking credentials from the sign-in request.",
+  "author": "developer",
+  "total_additions": 9,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "app/account.py",
+      "status": "added",
+      "additions": 9,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,9 @@\n+def handle_request(request, credential_check, accounts):\n+    \"\"\"Return an HTTP status and account record for a sign-in request.\"\"\"\n+    username = request.get(\"username\")\n+    password = request.get(\"password\")\n+    if not isinstance(username, str) or not isinstance(password, str):\n+        return 400, None\n+    if credential_check(username, password):\n+        return 200, accounts[username]\n+    return 403, None\n",
+      "content_base": null,
+      "content_head": "def handle_request(request, credential_check, accounts):\n    \"\"\"Return an HTTP status and account record for a sign-in request.\"\"\"\n    username = request.get(\"username\")\n    password = request.get(\"password\")\n    if not isinstance(username, str) or not isinstance(password, str):\n        return 400, None\n    if credential_check(username, password):\n        return 200, accounts[username]\n    return 403, None\n"
+    }
+  ],
+  "llm_responses": {}
+}

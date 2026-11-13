@@ -1,0 +1,52 @@
+{
+  "schema": "pr-capture-v1",
+  "source": {
+    "repo": "Kludex/starlette",
+    "pr": 985,
+    "url": "https://github.com/Kludex/starlette/pull/985",
+    "base_sha": "85b9c2642b6b806c0d0c33e5418914893a5789f6",
+    "target_base_sha": "85b9c2642b6b806c0d0c33e5418914893a5789f6",
+    "head_sha": "a260a36c3c75225f7bb3debe21de6744d3b46cc6",
+    "merge_sha": "e611476cb7993024ef879ba3af697fa5e387ea9e",
+    "created_at": "2020-06-25T14:52:27Z",
+    "updated_at": "2020-07-20T12:38:19Z",
+    "merged_at": "2020-07-16T14:18:30Z",
+    "captured_at": "2026-10-31T22:47:38.747647+00:00"
+  },
+  "fixture_sha256": "5ecb2d9eb06388a9d0a6a4f192e1b63cec126354f5512b5b74a634d5581b8039",
+  "license": {
+    "path": "LICENSE.md",
+    "sha256": "dcb95677a02240243187e964f941847d19b17821cf99e5afae684fab328c19bf",
+    "commit": "a260a36c3c75225f7bb3debe21de6744d3b46cc6",
+    "url": "https://github.com/Kludex/starlette/blob/a260a36c3c75225f7bb3debe21de6744d3b46cc6/LICENSE.md",
+    "blob_sha": "d16a60ec5b9963ef86b35a52ac92227014618e6c"
+  },
+  "files": [
+    {
+      "path": "starlette/staticfiles.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "35b639aa2abe6e9d61282f1e97eb4cbf4eb6d4aeae580001dfd00a1da5f627b1",
+        "commit": "85b9c2642b6b806c0d0c33e5418914893a5789f6",
+        "url": "https://github.com/Kludex/starlette/blob/85b9c2642b6b806c0d0c33e5418914893a5789f6/starlette/staticfiles.py",
+        "blob_sha": "aaa53430ea3ad13234ff7912dd36715386d9ef19"
+      },
+      "head": {
+        "sha256": "b579adecd2cbc4ba903d401ae6eccbb9ba9c3824e2f18ee8d07faeacc2b0b7a4",
+        "commit": "a260a36c3c75225f7bb3debe21de6744d3b46cc6",
+        "url": "https://github.com/Kludex/starlette/blob/a260a36c3c75225f7bb3debe21de6744d3b46cc6/starlette/staticfiles.py",
+        "blob_sha": "4ea2f1b5ad6dd8e4400267bc0c920dc1bd8ec720"
+      }
+    }
+  ],
+  "context_files": [],
+  "raw_files": {
+    "fixture.json": "5ecb2d9eb06388a9d0a6a4f192e1b63cec126354f5512b5b74a634d5581b8039",
+    "LICENSE": "dcb95677a02240243187e964f941847d19b17821cf99e5afae684fab328c19bf",
+    "raw/pr.json": "4f3013faaf86b16857c6484fa1f8160ba13a34fb162e820cd58b0d44b3cdbc0f",
+    "raw/files.json": "ad5c710cc27ea91460993fbad14321937e19c676fa3ee6ce1b07d260785745cc",
+    "raw/compare.json": "fcf6b10cc45a067835e8e66ba17bbe2bb2ad8e52f083ce7ee93e637175e62dab"
+  },
+  "notes": "Parsed REST JSON, not HTTP wire capture. Complete UTF-8 source; no model answers or labels. Installation identity is an eval placeholder."
+}

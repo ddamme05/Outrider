@@ -1,0 +1,461 @@
+{
+  "url": "https://api.github.com/repos/dbt-labs/dbt-common/compare/e10b8aca2164c632cf0ab5fdbb16db0ec9176189...882ac14d320f8779fcb461c059371f7f7e63d848",
+  "html_url": "https://github.com/dbt-labs/dbt-common/compare/e10b8aca2164c632cf0ab5fdbb16db0ec9176189...882ac14d320f8779fcb461c059371f7f7e63d848",
+  "permalink_url": "https://github.com/dbt-labs/dbt-common/compare/dbt-labs:e10b8ac...dbt-labs:882ac14",
+  "diff_url": "https://github.com/dbt-labs/dbt-common/compare/e10b8aca2164c632cf0ab5fdbb16db0ec9176189...882ac14d320f8779fcb461c059371f7f7e63d848.diff",
+  "patch_url": "https://github.com/dbt-labs/dbt-common/compare/e10b8aca2164c632cf0ab5fdbb16db0ec9176189...882ac14d320f8779fcb461c059371f7f7e63d848.patch",
+  "base_commit": {
+    "sha": "e10b8aca2164c632cf0ab5fdbb16db0ec9176189",
+    "node_id": "C_kwDOK8ynxNoAKGUxMGI4YWNhMjE2NGM2MzJjZjBhYjVmZGJiMTZkYjBlYzkxNzYxODk",
+    "commit": {
+      "author": {
+        "name": "Emily Rockman",
+        "email": "ebuschang@gmail.com",
+        "date": "2026-02-26T01:53:00Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-02-26T01:53:00Z"
+      },
+      "message": "Fix hatch in CI (#354)\n\n* upgrade hatch in CI\n\npin virtualenv\n\nadd comment\n\n* fix core tests\n\n* use hatch install action",
+      "tree": {
+        "sha": "71351a23c944a301f25ece70fc32e64da406f1f7",
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/trees/71351a23c944a301f25ece70fc32e64da406f1f7"
+      },
+      "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/commits/e10b8aca2164c632cf0ab5fdbb16db0ec9176189",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJpn6d8CRC1aQ7uu5UhlAAACaMQAHDzY8RXRdyWhDo/Dc+QyWxq\nQ5dgPOhmKZlTSeuFSKNwRq1Ly3skgtniA4nvmQLAxMU+yfMhihSJpaHw/KobFZLY\n7at3Gi9pgkRtwEYRpF6hjtNR+seh92ii4qzFT7D74CoD1fSPbupwBXPU8VEr+AIz\nyEE5dCFvv3wpgpzf7p5nhXYlj/Ab9M+4Td/0Kf5UyiRJuZlkR1yaeO+XZhm9mwxu\nyQqs8HwYQQOygoRLQinSPL1FurIQedASj5wrBIrsmf6NFcNEAS3R0gdi8FUcCh7K\nuqhbygqtnMmQk8nejq7TIKalQqefALrP/eOodJdyKZ2eYkxMpzAaNS8fPhQw2FgZ\n9sUq1LGbFDkuRcMduHyKHubaP6x/xymx19L/SZ2HgZV3TmlSAcuabmkkSQ9LUj6K\n4SbpXpGBqy1zhnN0FroAKDUVXTnG/CnaXIGteQ4vioBD/UaBPO16FYC6hEkcsugL\nuPFa3wcABTX5UUToR1M7zzrU4sZ+TkApYM/8Huq58VrnZofKUmPifX3aBUw8yXho\nYAfBekBbchkrr/R/dNmfqoyrctfMfe+dEQmNNAN0aTJ/U5q3A2+5F4VrwewRZFIJ\nFEPI301NQrnk3InWL3sQogHfyoCdnVCzpJNzMSCDUBVdJg9HOCPOQ1n1JJDph6Ry\nvYJgn8SYh7rcl96kgbBL\n=gJnR\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 71351a23c944a301f25ece70fc32e64da406f1f7\nparent 9e2ffd03da3940cd3296b9b3aaa6d10a31074b83\nauthor Emily Rockman <ebuschang@gmail.com> 1772070780 -0500\ncommitter GitHub <noreply@github.com> 1772070780 -0500\n\nFix hatch in CI (#354)\n\n* upgrade hatch in CI\n\npin virtualenv\n\nadd comment\n\n* fix core tests\n\n* use hatch install action",
+        "verified_at": "2026-02-26T01:53:00Z"
+      }
+    },
+    "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/e10b8aca2164c632cf0ab5fdbb16db0ec9176189",
+    "html_url": "https://github.com/dbt-labs/dbt-common/commit/e10b8aca2164c632cf0ab5fdbb16db0ec9176189",
+    "comments_url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/e10b8aca2164c632cf0ab5fdbb16db0ec9176189/comments",
+    "author": {
+      "login": "emmyoop",
+      "id": 7070049,
+      "node_id": "MDQ6VXNlcjcwNzAwNDk=",
+      "avatar_url": "https://avatars.githubusercontent.com/u/7070049?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/emmyoop",
+      "html_url": "https://github.com/emmyoop",
+      "followers_url": "https://api.github.com/users/emmyoop/followers",
+      "following_url": "https://api.github.com/users/emmyoop/following{/other_user}",
+      "gists_url": "https://api.github.com/users/emmyoop/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/emmyoop/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/emmyoop/subscriptions",
+      "organizations_url": "https://api.github.com/users/emmyoop/orgs",
+      "repos_url": "https://api.github.com/users/emmyoop/repos",
+      "events_url": "https://api.github.com/users/emmyoop/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/emmyoop/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "9e2ffd03da3940cd3296b9b3aaa6d10a31074b83",
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/9e2ffd03da3940cd3296b9b3aaa6d10a31074b83",
+        "html_url": "https://github.com/dbt-labs/dbt-common/commit/9e2ffd03da3940cd3296b9b3aaa6d10a31074b83"
+      }
+    ]
+  },
+  "merge_base_commit": {
+    "sha": "e10b8aca2164c632cf0ab5fdbb16db0ec9176189",
+    "node_id": "C_kwDOK8ynxNoAKGUxMGI4YWNhMjE2NGM2MzJjZjBhYjVmZGJiMTZkYjBlYzkxNzYxODk",
+    "commit": {
+      "author": {
+        "name": "Emily Rockman",
+        "email": "ebuschang@gmail.com",
+        "date": "2026-02-26T01:53:00Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-02-26T01:53:00Z"
+      },
+      "message": "Fix hatch in CI (#354)\n\n* upgrade hatch in CI\n\npin virtualenv\n\nadd comment\n\n* fix core tests\n\n* use hatch install action",
+      "tree": {
+        "sha": "71351a23c944a301f25ece70fc32e64da406f1f7",
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/trees/71351a23c944a301f25ece70fc32e64da406f1f7"
+      },
+      "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/commits/e10b8aca2164c632cf0ab5fdbb16db0ec9176189",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJpn6d8CRC1aQ7uu5UhlAAACaMQAHDzY8RXRdyWhDo/Dc+QyWxq\nQ5dgPOhmKZlTSeuFSKNwRq1Ly3skgtniA4nvmQLAxMU+yfMhihSJpaHw/KobFZLY\n7at3Gi9pgkRtwEYRpF6hjtNR+seh92ii4qzFT7D74CoD1fSPbupwBXPU8VEr+AIz\nyEE5dCFvv3wpgpzf7p5nhXYlj/Ab9M+4Td/0Kf5UyiRJuZlkR1yaeO+XZhm9mwxu\nyQqs8HwYQQOygoRLQinSPL1FurIQedASj5wrBIrsmf6NFcNEAS3R0gdi8FUcCh7K\nuqhbygqtnMmQk8nejq7TIKalQqefALrP/eOodJdyKZ2eYkxMpzAaNS8fPhQw2FgZ\n9sUq1LGbFDkuRcMduHyKHubaP6x/xymx19L/SZ2HgZV3TmlSAcuabmkkSQ9LUj6K\n4SbpXpGBqy1zhnN0FroAKDUVXTnG/CnaXIGteQ4vioBD/UaBPO16FYC6hEkcsugL\nuPFa3wcABTX5UUToR1M7zzrU4sZ+TkApYM/8Huq58VrnZofKUmPifX3aBUw8yXho\nYAfBekBbchkrr/R/dNmfqoyrctfMfe+dEQmNNAN0aTJ/U5q3A2+5F4VrwewRZFIJ\nFEPI301NQrnk3InWL3sQogHfyoCdnVCzpJNzMSCDUBVdJg9HOCPOQ1n1JJDph6Ry\nvYJgn8SYh7rcl96kgbBL\n=gJnR\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 71351a23c944a301f25ece70fc32e64da406f1f7\nparent 9e2ffd03da3940cd3296b9b3aaa6d10a31074b83\nauthor Emily Rockman <ebuschang@gmail.com> 1772070780 -0500\ncommitter GitHub <noreply@github.com> 1772070780 -0500\n\nFix hatch in CI (#354)\n\n* upgrade hatch in CI\n\npin virtualenv\n\nadd comment\n\n* fix core tests\n\n* use hatch install action",
+        "verified_at": "2026-02-26T01:53:00Z"
+      }
+    },
+    "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/e10b8aca2164c632cf0ab5fdbb16db0ec9176189",
+    "html_url": "https://github.com/dbt-labs/dbt-common/commit/e10b8aca2164c632cf0ab5fdbb16db0ec9176189",
+    "comments_url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/e10b8aca2164c632cf0ab5fdbb16db0ec9176189/comments",
+    "author": {
+      "login": "emmyoop",
+      "id": 7070049,
+      "node_id": "MDQ6VXNlcjcwNzAwNDk=",
+      "avatar_url": "https://avatars.githubusercontent.com/u/7070049?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/emmyoop",
+      "html_url": "https://github.com/emmyoop",
+      "followers_url": "https://api.github.com/users/emmyoop/followers",
+      "following_url": "https://api.github.com/users/emmyoop/following{/other_user}",
+      "gists_url": "https://api.github.com/users/emmyoop/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/emmyoop/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/emmyoop/subscriptions",
+      "organizations_url": "https://api.github.com/users/emmyoop/orgs",
+      "repos_url": "https://api.github.com/users/emmyoop/repos",
+      "events_url": "https://api.github.com/users/emmyoop/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/emmyoop/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "9e2ffd03da3940cd3296b9b3aaa6d10a31074b83",
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/9e2ffd03da3940cd3296b9b3aaa6d10a31074b83",
+        "html_url": "https://github.com/dbt-labs/dbt-common/commit/9e2ffd03da3940cd3296b9b3aaa6d10a31074b83"
+      }
+    ]
+  },
+  "status": "ahead",
+  "ahead_by": 3,
+  "behind_by": 0,
+  "total_commits": 3,
+  "commits": [
+    {
+      "sha": "bd692d6b227e0e7798007a42587ca39a7cf534d4",
+      "node_id": "C_kwDOK8ynxNoAKGJkNjkyZDZiMjI3ZTBlNzc5ODAwN2E0MjU4N2NhMzlhN2NmNTM0ZDQ",
+      "commit": {
+        "author": {
+          "name": "Emily Rockman",
+          "email": "emily.rockman@dbtlabs.com",
+          "date": "2026-02-25T19:31:14Z"
+        },
+        "committer": {
+          "name": "Emily Rockman",
+          "email": "emily.rockman@dbtlabs.com",
+          "date": "2026-02-26T13:19:31Z"
+        },
+        "message": "Fix tar path traversal using commonpath instead of commonprefix",
+        "tree": {
+          "sha": "7bc2410ed2cdaec2970b3af71e07e33490ff0861",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/trees/7bc2410ed2cdaec2970b3af71e07e33490ff0861"
+        },
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/commits/bd692d6b227e0e7798007a42587ca39a7cf534d4",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/bd692d6b227e0e7798007a42587ca39a7cf534d4",
+      "html_url": "https://github.com/dbt-labs/dbt-common/commit/bd692d6b227e0e7798007a42587ca39a7cf534d4",
+      "comments_url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/bd692d6b227e0e7798007a42587ca39a7cf534d4/comments",
+      "author": {
+        "login": "emmyoop",
+        "id": 7070049,
+        "node_id": "MDQ6VXNlcjcwNzAwNDk=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/7070049?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/emmyoop",
+        "html_url": "https://github.com/emmyoop",
+        "followers_url": "https://api.github.com/users/emmyoop/followers",
+        "following_url": "https://api.github.com/users/emmyoop/following{/other_user}",
+        "gists_url": "https://api.github.com/users/emmyoop/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/emmyoop/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/emmyoop/subscriptions",
+        "organizations_url": "https://api.github.com/users/emmyoop/orgs",
+        "repos_url": "https://api.github.com/users/emmyoop/repos",
+        "events_url": "https://api.github.com/users/emmyoop/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/emmyoop/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "emmyoop",
+        "id": 7070049,
+        "node_id": "MDQ6VXNlcjcwNzAwNDk=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/7070049?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/emmyoop",
+        "html_url": "https://github.com/emmyoop",
+        "followers_url": "https://api.github.com/users/emmyoop/followers",
+        "following_url": "https://api.github.com/users/emmyoop/following{/other_user}",
+        "gists_url": "https://api.github.com/users/emmyoop/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/emmyoop/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/emmyoop/subscriptions",
+        "organizations_url": "https://api.github.com/users/emmyoop/orgs",
+        "repos_url": "https://api.github.com/users/emmyoop/repos",
+        "events_url": "https://api.github.com/users/emmyoop/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/emmyoop/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "e10b8aca2164c632cf0ab5fdbb16db0ec9176189",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/e10b8aca2164c632cf0ab5fdbb16db0ec9176189",
+          "html_url": "https://github.com/dbt-labs/dbt-common/commit/e10b8aca2164c632cf0ab5fdbb16db0ec9176189"
+        }
+      ]
+    },
+    {
+      "sha": "a01a1d0ee3d2f7ac58b0986736937213a14c03d5",
+      "node_id": "C_kwDOK8ynxNoAKGEwMWExZDBlZTNkMmY3YWM1OGIwOTg2NzM2OTM3MjEzYTE0YzAzZDU",
+      "commit": {
+        "author": {
+          "name": "Emily Rockman",
+          "email": "emily.rockman@dbtlabs.com",
+          "date": "2026-02-26T16:22:38Z"
+        },
+        "committer": {
+          "name": "Emily Rockman",
+          "email": "emily.rockman@dbtlabs.com",
+          "date": "2026-02-26T16:22:38Z"
+        },
+        "message": "lint",
+        "tree": {
+          "sha": "5ab4abfd70705eccba187fb330f28a7d1f89cb6c",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/trees/5ab4abfd70705eccba187fb330f28a7d1f89cb6c"
+        },
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/commits/a01a1d0ee3d2f7ac58b0986736937213a14c03d5",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/a01a1d0ee3d2f7ac58b0986736937213a14c03d5",
+      "html_url": "https://github.com/dbt-labs/dbt-common/commit/a01a1d0ee3d2f7ac58b0986736937213a14c03d5",
+      "comments_url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/a01a1d0ee3d2f7ac58b0986736937213a14c03d5/comments",
+      "author": {
+        "login": "emmyoop",
+        "id": 7070049,
+        "node_id": "MDQ6VXNlcjcwNzAwNDk=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/7070049?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/emmyoop",
+        "html_url": "https://github.com/emmyoop",
+        "followers_url": "https://api.github.com/users/emmyoop/followers",
+        "following_url": "https://api.github.com/users/emmyoop/following{/other_user}",
+        "gists_url": "https://api.github.com/users/emmyoop/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/emmyoop/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/emmyoop/subscriptions",
+        "organizations_url": "https://api.github.com/users/emmyoop/orgs",
+        "repos_url": "https://api.github.com/users/emmyoop/repos",
+        "events_url": "https://api.github.com/users/emmyoop/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/emmyoop/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "emmyoop",
+        "id": 7070049,
+        "node_id": "MDQ6VXNlcjcwNzAwNDk=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/7070049?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/emmyoop",
+        "html_url": "https://github.com/emmyoop",
+        "followers_url": "https://api.github.com/users/emmyoop/followers",
+        "following_url": "https://api.github.com/users/emmyoop/following{/other_user}",
+        "gists_url": "https://api.github.com/users/emmyoop/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/emmyoop/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/emmyoop/subscriptions",
+        "organizations_url": "https://api.github.com/users/emmyoop/orgs",
+        "repos_url": "https://api.github.com/users/emmyoop/repos",
+        "events_url": "https://api.github.com/users/emmyoop/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/emmyoop/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "bd692d6b227e0e7798007a42587ca39a7cf534d4",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/bd692d6b227e0e7798007a42587ca39a7cf534d4",
+          "html_url": "https://github.com/dbt-labs/dbt-common/commit/bd692d6b227e0e7798007a42587ca39a7cf534d4"
+        }
+      ]
+    },
+    {
+      "sha": "882ac14d320f8779fcb461c059371f7f7e63d848",
+      "node_id": "C_kwDOK8ynxNoAKDg4MmFjMTRkMzIwZjg3NzlmY2I0NjFjMDU5MzcxZjdmN2U2M2Q4NDg",
+      "commit": {
+        "author": {
+          "name": "Emily Rockman",
+          "email": "emily.rockman@dbtlabs.com",
+          "date": "2026-02-27T16:21:29Z"
+        },
+        "committer": {
+          "name": "Emily Rockman",
+          "email": "emily.rockman@dbtlabs.com",
+          "date": "2026-02-27T16:21:29Z"
+        },
+        "message": "fix test",
+        "tree": {
+          "sha": "e9a30890ad44c30d88a540a57218ef55f335fae0",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/trees/e9a30890ad44c30d88a540a57218ef55f335fae0"
+        },
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/commits/882ac14d320f8779fcb461c059371f7f7e63d848",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/882ac14d320f8779fcb461c059371f7f7e63d848",
+      "html_url": "https://github.com/dbt-labs/dbt-common/commit/882ac14d320f8779fcb461c059371f7f7e63d848",
+      "comments_url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/882ac14d320f8779fcb461c059371f7f7e63d848/comments",
+      "author": {
+        "login": "emmyoop",
+        "id": 7070049,
+        "node_id": "MDQ6VXNlcjcwNzAwNDk=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/7070049?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/emmyoop",
+        "html_url": "https://github.com/emmyoop",
+        "followers_url": "https://api.github.com/users/emmyoop/followers",
+        "following_url": "https://api.github.com/users/emmyoop/following{/other_user}",
+        "gists_url": "https://api.github.com/users/emmyoop/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/emmyoop/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/emmyoop/subscriptions",
+        "organizations_url": "https://api.github.com/users/emmyoop/orgs",
+        "repos_url": "https://api.github.com/users/emmyoop/repos",
+        "events_url": "https://api.github.com/users/emmyoop/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/emmyoop/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "emmyoop",
+        "id": 7070049,
+        "node_id": "MDQ6VXNlcjcwNzAwNDk=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/7070049?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/emmyoop",
+        "html_url": "https://github.com/emmyoop",
+        "followers_url": "https://api.github.com/users/emmyoop/followers",
+        "following_url": "https://api.github.com/users/emmyoop/following{/other_user}",
+        "gists_url": "https://api.github.com/users/emmyoop/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/emmyoop/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/emmyoop/subscriptions",
+        "organizations_url": "https://api.github.com/users/emmyoop/orgs",
+        "repos_url": "https://api.github.com/users/emmyoop/repos",
+        "events_url": "https://api.github.com/users/emmyoop/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/emmyoop/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "a01a1d0ee3d2f7ac58b0986736937213a14c03d5",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/a01a1d0ee3d2f7ac58b0986736937213a14c03d5",
+          "html_url": "https://github.com/dbt-labs/dbt-common/commit/a01a1d0ee3d2f7ac58b0986736937213a14c03d5"
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "sha": "88d9021b9eb49fc1c2e80793fcdb1794103ab99b",
+      "filename": ".changes/unreleased/Security-20260225-142955.yaml",
+      "status": "added",
+      "additions": 7,
+      "deletions": 0,
+      "changes": 7,
+      "blob_url": "https://github.com/dbt-labs/dbt-common/blob/882ac14d320f8779fcb461c059371f7f7e63d848/.changes%2Funreleased%2FSecurity-20260225-142955.yaml",
+      "raw_url": "https://github.com/dbt-labs/dbt-common/raw/882ac14d320f8779fcb461c059371f7f7e63d848/.changes%2Funreleased%2FSecurity-20260225-142955.yaml",
+      "contents_url": "https://api.github.com/repos/dbt-labs/dbt-common/contents/.changes%2Funreleased%2FSecurity-20260225-142955.yaml?ref=882ac14d320f8779fcb461c059371f7f7e63d848",
+      "patch": "@@ -0,0 +1,7 @@\n+kind: Security\n+body: Replace os.path.commonprefix() with os.path.commonpath() to preventpath traversal\n+  via sibling directories with matching prefixes.\n+time: 2026-02-25T14:29:55.922683-05:00\n+custom:\n+  Author: emmyoop\n+  PR: \"1\""
+    },
+    {
+      "sha": "37d88157c5526a414e748bc0fe913d61d661176c",
+      "filename": "dbt_common/clients/system.py",
+      "status": "modified",
+      "additions": 9,
+      "deletions": 3,
+      "changes": 12,
+      "blob_url": "https://github.com/dbt-labs/dbt-common/blob/882ac14d320f8779fcb461c059371f7f7e63d848/dbt_common%2Fclients%2Fsystem.py",
+      "raw_url": "https://github.com/dbt-labs/dbt-common/raw/882ac14d320f8779fcb461c059371f7f7e63d848/dbt_common%2Fclients%2Fsystem.py",
+      "contents_url": "https://api.github.com/repos/dbt-labs/dbt-common/contents/dbt_common%2Fclients%2Fsystem.py?ref=882ac14d320f8779fcb461c059371f7f7e63d848",
+      "patch": "@@ -620,14 +620,20 @@ def rename(from_path: str, to_path: str, force: bool = False) -> None:\n def safe_extract(tarball: tarfile.TarFile, path: str = \".\") -> None:\n     \"\"\"\n     Fix for CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')\n-    Solution copied from https://github.com/mindsdb/mindsdb/blob/main/mindsdb/utilities/fs.py\n+\n+    Uses os.path.commonpath() instead of commonprefix() to prevent path traversal\n+    via sibling directories with matching prefixes (CVE-2026-1703).\n     \"\"\"\n \n     def _is_within_directory(directory, target):\n         abs_directory = os.path.abspath(directory)\n         abs_target = os.path.abspath(target)\n-        prefix = os.path.commonprefix([abs_directory, abs_target])\n-        return prefix == abs_directory\n+        try:\n+            prefix = os.path.commonpath([abs_directory, abs_target])\n+            return prefix == abs_directory\n+        except ValueError:\n+            # Captures the case of different drives on Windows so it fails safely\n+            return False\n \n     # for py >= 3.12\n     if hasattr(tarfile, \"data_filter\"):"
+    },
+    {
+      "sha": "7814b5e48e40c0cff6cd14fe15eb81f68d9e924c",
+      "filename": "tests/unit/test_system_client.py",
+      "status": "modified",
+      "additions": 19,
+      "deletions": 0,
+      "changes": 19,
+      "blob_url": "https://github.com/dbt-labs/dbt-common/blob/882ac14d320f8779fcb461c059371f7f7e63d848/tests%2Funit%2Ftest_system_client.py",
+      "raw_url": "https://github.com/dbt-labs/dbt-common/raw/882ac14d320f8779fcb461c059371f7f7e63d848/tests%2Funit%2Ftest_system_client.py",
+      "contents_url": "https://api.github.com/repos/dbt-labs/dbt-common/contents/tests%2Funit%2Ftest_system_client.py?ref=882ac14d320f8779fcb461c059371f7f7e63d848",
+      "patch": "@@ -299,6 +299,25 @@ def test_untar_package_outside_directory(self) -> None:\n         with self.assertRaises(tarfile.OutsideDestinationError):\n             dbt_common.clients.system.untar_package(tar_file_full_path, self.tempdest)\n \n+    def test_untar_package_sibling_path_traversal(self) -> None:\n+        # A malicious tarball with a path that is a string prefix of the destination\n+        # but not actually within it (e.g., \"dest\" vs \"destevil\")\n+        with NamedTemporaryFile(\n+            prefix=\"my-package.2\", suffix=\".tar.gz\", dir=self.tempdir, delete=False\n+        ) as named_tar_file:\n+            tar_file_full_path = named_tar_file.name\n+            with NamedTemporaryFile(prefix=\"a\", suffix=\".txt\", dir=self.tempdir) as file_a:\n+                file_a.write(b\"malicious content\")\n+                # Create path that escapes to a sibling directory with matching prefix\n+                # e.g., extracting to \"/tmp/dest\" but writing to \"/tmp/destevil/file.txt\"\n+                sibling_path = \"../\" + os.path.basename(self.tempdest) + \"evil/malicious.txt\"\n+                with tarfile.open(fileobj=named_tar_file, mode=\"w:gz\") as tar:\n+                    tar.addfile(tarfile.TarInfo(sibling_path), open(file_a.name))\n+\n+        assert tarfile.is_tarfile(tar.name)\n+        with self.assertRaises(tarfile.OutsideDestinationError):\n+            dbt_common.clients.system.untar_package(tar_file_full_path, self.tempdest)\n+\n \n @pytest.mark.skipif(\n     sys.version_info < (3, 12), reason=\"Tests Python 3.12+ tarfile filter='data' path\""
+    }
+  ]
+}

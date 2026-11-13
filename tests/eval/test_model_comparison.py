@@ -1,15 +1,11 @@
-"""Tests for the model-tier comparison runner (tests/eval/model_comparison.py).
+"""Check model-comparison wiring with scripted providers and an optional paid run.
 
-Proves the END-TO-END machinery zero-spend: `run_analyze_under_model` runs a real
-analyze pass under an injected (scripted) provider, and `compare_models_on_scenario`
-grades both models + applies the gate — so a model that MISSES a finding the baseline
-caught is provably flagged. The real Sonnet-vs-Haiku run is the same code path with the
-`AnthropicProvider` injected, gated behind `OUTRIDER_EVAL_REAL_MODELS=1` (skipped in CI;
-that's the opt-in SPEND run that produces the actual flip evidence).
-"""
+Scripted responses prove the gate catches a missing expected finding. Real
+model evidence requires OUTRIDER_EVAL_REAL_MODELS=1 and provider credentials."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import UTC, datetime
@@ -35,6 +31,7 @@ from outrider.llm.base import (
 )
 from outrider.policy import FindingSeverity, FindingType, lookup_severity
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
+from outrider.prompts import analyze as analyze_prompt
 from outrider.schemas import ReviewState
 from outrider.schemas.pr_context import ChangedFile, PRContext
 from outrider.schemas.triage_result import ReviewDimension, ReviewTier, RiskLevel, TriageResult
@@ -42,6 +39,7 @@ from outrider.schemas.triage_result import ReviewDimension, ReviewTier, RiskLeve
 from .grading import ExpectedFinding, GradeResult, ModelComparison, grade
 from .model_comparison import (
     compare_models_on_scenario,
+    run_analyze_instrumented,
     run_analyze_under_model,
     state_from_eval_fixture,
 )
@@ -135,13 +133,8 @@ _JUDGED_TYPE_FIXTURES = (
     _INSECURE_RANDOMNESS_FIXTURE,
 )
 
-# Recall HOLD-OUTS — real SQLi across injection forms. Hold-out strength is PROMPT-VERSION-
-# RELATIVE: under analyze-v3 (the DECISIONS#041 evidence runs) all four were named-but-never-
-# exemplified. From analyze-v4 onward, SYSTEM_PROMPT_EXEMPLARS DEMONSTRATES f-string, `+`
-# concatenation, and ORM `raw(f"...")` as FLAG examples — for those forms these fixtures now
-# test guidance-following, not generalization; `str.format` remains the only never-exemplified
-# injection form (the residual generalization signal). The model MUST still flag all of these;
-# a miss means the parameterized-query remediation over-suppressed real SQLi.
+# SQL assembly regressions include shapes demonstrated by the prompt. Current
+# novelty claims belong only to the supplemental reviewed forms below.
 _SQLI_HOLDOUT_FSTRING_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_fstring.json"
 _SQLI_HOLDOUT_FORMAT_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_format.json"
 _SQLI_HOLDOUT_CONCAT_FIXTURE = "tests/eval/fixtures/mock_github/sqli_holdout_concat.json"
@@ -432,15 +425,8 @@ _REGRESSION_FIXTURES: tuple[str, ...] = (
     _PARAMETERIZED_QUERY_ORM_FIXTURE,
 )
 
-# Regression-track HOLD-OUTS — safe, correctly-parameterized queries: SQLAlchemy `text()` +
-# `:name` bind, sqlite3 `?` qmark, asyncpg `$1` positional. Hold-out strength is PROMPT-VERSION-
-# RELATIVE: under analyze-v3 (the DECISIONS#041 evidence runs) these styles were NEVER MENTIONED
-# (only `%s`/`%(name)s` shown) — the strongest anti-overfit signal. From analyze-v4 onward the
-# exemplars NAME `?`/`:name`/`$1` as binding styles and DEMONSTRATE the `:name` form, so for
-# future runs only `?` and `$1` remain demonstration-free (named-not-exemplified), and a CLEAN
-# verdict tests guidance-following more than generalization. The demonstrated idioms in
-# `_REGRESSION_FIXTURES` above have shapes the prompt exemplifies, so a CLEAN verdict there
-# proves the model follows guidance — NOT that it generalized.
+# Additional binding regressions. The prompt names these placeholder styles and
+# demonstrates SQLAlchemy text(); only the supplemental safe forms claim novelty.
 _PARAM_HOLDOUT_SQLALCHEMY_FIXTURE = (
     "tests/eval/fixtures/mock_github/safe_param_holdout_sqlalchemy.json"
 )
@@ -453,15 +439,98 @@ _REGRESSION_HOLDOUT_FIXTURES: tuple[str, ...] = (
 )
 
 
-def _judged_response_for(expected: ExpectedFinding) -> str:
-    """A scripted analyze response emitting one JUDGED finding matching `expected`.
+# These supplemental forms are reviewed separately from the frozen suite-v2 pools.
+_FRESH_RECALL_HOLDOUTS: dict[str, tuple[str, tuple[ExpectedFinding, ...]]] = {
+    "string.Template substitution": (
+        "tests/eval/fixtures/mock_github/sqli_unseen_template.json",
+        (
+            ExpectedFinding(
+                file_path="app/template_lookup.py",
+                line_start=8,
+                line_end=11,
+                finding_type=FindingType.SQL_INJECTION,
+                severity=lookup_severity(FindingType.SQL_INJECTION),
+            ),
+        ),
+    ),
+    "str.join assembly": (
+        "tests/eval/fixtures/mock_github/sqli_unseen_join.json",
+        (
+            ExpectedFinding(
+                file_path="app/join_lookup.py",
+                line_start=6,
+                line_end=9,
+                finding_type=FindingType.SQL_INJECTION,
+                severity=lookup_severity(FindingType.SQL_INJECTION),
+            ),
+        ),
+    ),
+}
+_FRESH_SAFE_HOLDOUTS: dict[str, tuple[str, int]] = {
+    "psycopg SQL composition with Literal": (
+        "tests/eval/fixtures/mock_github/safe_unseen_psycopg_composition.json",
+        11,
+    ),
+    "SQLAlchemy select/where expressions": (
+        "tests/eval/fixtures/mock_github/safe_unseen_sqlalchemy_expression.json",
+        9,
+    ),
+}
+_MODEL_RECALL_CASES = _GROUND_TRUTH_BY_FIXTURE | dict(_FRESH_RECALL_HOLDOUTS.values())
+_FRESH_SAFE_PATHS = tuple(path for path, _line in _FRESH_SAFE_HOLDOUTS.values())
 
-    JUDGED needs no `query_match_id` (the proof boundary's structural requirement is
-    OBSERVED/INFERRED only), so this stands in for "the model found the known
-    vulnerability" without depending on which tree-sitter queries fire — exactly what
-    the zero-spend wiring proof needs. Grading is evidence-tier-agnostic, so a JUDGED
-    stand-in matches ground truth the same as the fixture's own (sometimes OBSERVED)
-    response would."""
+# Manual novelty review of the forms above against the three clean pass-zero surfaces.
+_REVIEWED_HOLDOUT_PROMPT_DIGEST = "ef94c04d6f91c176bb3e63a50c7ed5a161cfd192a69bedb02283c1c5991264ca"
+_EVIDENCE_REPORT_DIR = Path("reports") / "model_comparison"
+
+
+def _holdout_preamble() -> str:
+    """Require two distinct forms per track and a current manual novelty review."""
+    recall_n = len(_FRESH_RECALL_HOLDOUTS)
+    safe_n = len(_FRESH_SAFE_HOLDOUTS)
+    if recall_n < 2 or safe_n < 2:
+        raise ValueError(
+            f"HOLDOUT POOL DEPLETED: recall={recall_n}, safe={safe_n}; each track needs "
+            "at least two distinct never-demonstrated forms. Review and replenish before running."
+        )
+    prompt_text = json.dumps(
+        [
+            analyze_prompt.SYSTEM_PROMPT_STABLE_PREFIX,
+            analyze_prompt.FILE_CONTEXT_TEMPLATE,
+            analyze_prompt.USER_TEMPLATE,
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    if hashlib.sha256(prompt_text.encode("utf-8")).hexdigest() != _REVIEWED_HOLDOUT_PROMPT_DIGEST:
+        raise ValueError(
+            "HOLDOUT NOVELTY REVIEW IS STALE: the clean pass-zero prompt changed. "
+            "Recheck each form against the worked examples, replenish demonstrated forms, "
+            "and record the reviewed digest before running."
+        )
+    return (
+        f"SUPPLEMENTAL HOLDOUTS: {recall_n} recall forms, {safe_n} safe forms; "
+        f"{2 * (recall_n + safe_n)} additional model calls.\n"
+        f"  recall: {', '.join(_FRESH_RECALL_HOLDOUTS)}\n"
+        f"  safe: {', '.join(_FRESH_SAFE_HOLDOUTS)}\n"
+        "Novelty is manually reviewed for this prompt, not inferred by this check. "
+        "These rows extend this report only; the frozen suite-v2 remains unchanged."
+    )
+
+
+def _judged_response_for(expected: ExpectedFinding, fixture_path: str) -> str:
+    """Script one expected finding with a quote from its actual captured source."""
+    state = state_from_eval_fixture(fixture_path)
+    source = next(
+        file.content_head
+        for file in state.pr_context.changed_files
+        if file.path == expected.file_path
+    )
+    assert source is not None
+    lines = source.splitlines()
+    assert 1 <= expected.line_start <= expected.line_end <= len(lines)
+    evidence = "\n".join(lines[expected.line_start - 1 : expected.line_end])
+    assert evidence.strip()
     return json.dumps(
         {
             "findings": [
@@ -472,7 +541,7 @@ def _judged_response_for(expected: ExpectedFinding) -> str:
                     "trace_path": None,
                     "title": "known vulnerability",
                     "description": "the finding the scenario is known to contain.",
-                    "evidence": "e",
+                    "evidence": evidence,
                     "line_start": expected.line_start,
                     "line_end": expected.line_end,
                     "trace_candidates": [],
@@ -518,13 +587,13 @@ def _sqli_fp_count(grade: GradeResult) -> int:
 
 def _regression_verdict(baseline_sqli_fp: int, candidate_sqli_fp: int) -> tuple[str, bool, str]:
     """Type-scoped regression verdict over sql_injection FP counts → (verdict_text, ok, label).
-    Three states: baseline sql_injection-fp>0 = the baseline itself over-flags a parameterized
+    Three states: baseline sql_injection-fp>0 = the baseline itself over-flags a safe
     query as SQLi, so the over-flag is NOT Haiku-specific (INCONCLUSIVE, ok=False); baseline=0
     AND candidate>0 = the #041 Haiku over-flag REPRODUCED (ok=False); both 0 = CLEAN (ok=True)."""
     if baseline_sqli_fp > 0:
         return (
             f"NON-DISCRIMINATING — baseline (Sonnet) itself emitted {baseline_sqli_fp} "
-            "sql_injection FP on a parameterized query; the over-flag is not Haiku-specific",
+            "sql_injection FP on a safe query; the over-flag is not Haiku-specific",
             False,
             "INCONCLUSIVE (baseline sql_injection-fp>0)",
         )
@@ -784,6 +853,43 @@ def _build_state() -> ReviewState:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("model_output", ["judged", "observed", "empty", "no-producer"])
+@pytest.mark.asyncio
+async def test_independent_producer_coverage_survives_model_collision(model_output: str) -> None:
+    """A model-owned OBSERVED match cannot erase the deterministic coverage floor."""
+    if model_output == "no-producer":
+        state = _build_state()
+        response = _MISSES_RESPONSE
+    else:
+        fixture_path = Path(_SQLI_HOLDOUT_FSTRING_FIXTURE)
+        fixture = json.loads(fixture_path.read_text())
+        state = state_from_eval_fixture(fixture_path)
+        payload = json.loads(fixture["llm_responses"]["analyze"][0])
+        if model_output == "observed":
+            payload["findings"][0].update(
+                evidence_tier="observed", query_match_id="python.function_definition"
+            )
+        response = _MISSES_RESPONSE if model_output == "empty" else json.dumps(payload)
+    provider = _ScriptedProvider(response)
+    result = await run_analyze_instrumented(
+        state,
+        provider=provider,
+        model="claude-haiku-4-5",
+        collect_producer_coverage=True,
+    )
+    assert len(provider.calls) == 1
+    assert result.response_rejections == 0
+    assert result.proposal_rejections == int(model_output == "observed")
+    assert result.producer_coverage_findings is not None
+    if model_output == "no-producer":
+        assert result.findings == result.producer_coverage_findings == ()
+    else:
+        expected = _GROUND_TRUTH_BY_FIXTURE[_SQLI_HOLDOUT_FSTRING_FIXTURE]
+        assert grade(result.producer_coverage_findings, expected).recall.value == 1
+        assert grade(result.findings, expected).recall.value == 1
+        assert len(result.producer_findings) == 1
+
+
 @pytest.mark.asyncio
 async def test_run_analyze_under_model_returns_findings() -> None:
     """A finding-emitting scripted run yields a ReviewFinding the grader can match; an
@@ -824,7 +930,10 @@ async def test_run_analyze_under_model_flags_rejected_structured_output() -> Non
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("fixture_path", _JUDGED_TYPE_FIXTURES)
+@pytest.mark.parametrize(
+    "fixture_path",
+    _JUDGED_TYPE_FIXTURES + tuple(path for path, _ in _FRESH_RECALL_HOLDOUTS.values()),
+)
 @pytest.mark.asyncio
 async def test_judged_fixture_has_no_observed_floor(fixture_path: str) -> None:
     """Each model-dependent recall fixture yields NOTHING from the OBSERVED structural producer
@@ -832,9 +941,11 @@ async def test_judged_fixture_has_no_observed_floor(fixture_path: str) -> None:
     backstop. Locks the JUDGED-only property the fixtures were authored for (forms the .scm
     queries deliberately don't match): if a future query broadens to match one, this fails by
     NAME, instead of surfacing as a confusing recall==0 in a type-named regression test."""
+    state = state_from_eval_fixture(fixture_path)
+    provider = _ScriptedProvider(_MISSES_RESPONSE)
     findings, n_rejected = await run_analyze_under_model(
-        state_from_eval_fixture(fixture_path),
-        provider=_ScriptedProvider(_MISSES_RESPONSE),
+        state,
+        provider=provider,
         model="claude-haiku-4-5",
     )
     assert findings == (), (
@@ -842,17 +953,27 @@ async def test_judged_fixture_has_no_observed_floor(fixture_path: str) -> None:
         "JUDGED-only, so its scorecard recall would be structural rather than model signal"
     )
     assert n_rejected == 0  # a valid-empty response, not a rejection
+    assert provider.calls
+    if fixture_path in dict(_FRESH_RECALL_HOLDOUTS.values()):
+        source = state.pr_context.changed_files[0].content_head
+        assert source is not None
+        for line in source.splitlines()[3:]:
+            if line.strip():
+                assert line.strip() in provider.calls[0].user_prompt
 
 
-@pytest.mark.parametrize("fixture_path", _JUDGED_TYPE_FIXTURES)
+@pytest.mark.parametrize(
+    "fixture_path",
+    _JUDGED_TYPE_FIXTURES + tuple(path for path, _ in _FRESH_RECALL_HOLDOUTS.values()),
+)
 def test_judged_fixture_scripted_analyze_matches_ground_truth(fixture_path: str) -> None:
-    """Each fixture's scripted analyze finding (documentation the scorecard itself does not
-    read — it runs the real provider) agrees with its `_GROUND_TRUTH_BY_FIXTURE` entry on type
-    + line, so the inert block can't silently drift from the ground truth a maintainer reads."""
+    """Keep each fixture's illustrative response consistent with its comparison labels.
+
+    Real comparisons use provider responses, not this scripted response."""
     with open(fixture_path, encoding="utf-8") as fh:
         scripted = json.loads(json.load(fh)["llm_responses"]["analyze"][0])["findings"]
     assert len(scripted) == 1, f"{fixture_path}: expected exactly one scripted analyze finding"
-    (expected,) = _GROUND_TRUTH_BY_FIXTURE[fixture_path]
+    (expected,) = _MODEL_RECALL_CASES[fixture_path]
     assert scripted[0]["finding_type"] == expected.finding_type.value
     assert scripted[0]["line_start"] == expected.line_start
     assert scripted[0]["line_end"] == expected.line_end
@@ -884,7 +1005,7 @@ async def test_diagnose_scenario_stability_recall_clean() -> None:
     result = await diagnose_scenario_stability(
         _SSRF_FIXTURE,
         expected=expected,
-        provider=_ScriptedProvider(_judged_response_for(expected[0])),
+        provider=_ScriptedProvider(_judged_response_for(expected[0], _SSRF_FIXTURE)),
         model="claude-haiku-4-5",
         capturing=_CapturingExchangePersister(),
         runs=3,
@@ -925,7 +1046,8 @@ async def test_diagnose_scenario_stability_safe_overflag() -> None:
             line_end=6,
             finding_type=FindingType.SSRF,
             severity=lookup_severity(FindingType.SSRF),
-        )
+        ),
+        _SSRF_FIXED_HOST_SAFE_FIXTURE,
     )
     result = await diagnose_scenario_stability(
         _SSRF_FIXED_HOST_SAFE_FIXTURE,
@@ -1076,7 +1198,8 @@ async def test_parameterized_query_candidate_overflag_fails_precision() -> None:
             line_end=5,
             finding_type=FindingType.SQL_INJECTION,
             severity=lookup_severity(FindingType.SQL_INJECTION),
-        )
+        ),
+        _PARAMETERIZED_QUERY_FIXTURE,
     )
     baseline = _ScriptedProvider(_MISSES_RESPONSE)  # Sonnet: clean
     candidate = _ScriptedProvider(overflag)  # Haiku: over-flags near the parameterized query
@@ -1110,7 +1233,8 @@ async def test_parameterized_overflag_on_the_call_is_vetoed_deterministically() 
             line_end=6,
             finding_type=FindingType.SQL_INJECTION,
             severity=lookup_severity(FindingType.SQL_INJECTION),
-        )
+        ),
+        _PARAMETERIZED_QUERY_FIXTURE,
     )
     baseline = _ScriptedProvider(_MISSES_RESPONSE)  # clean
     candidate = _ScriptedProvider(overflag)  # the on-call over-flag
@@ -1185,15 +1309,10 @@ async def test_regression_track_type_scoping_ignores_unrelated_baseline_overflag
 
 
 def test_holdout_sets_are_registered_and_disjoint() -> None:
-    """The anti-overfit hold-outs must be wired in and genuinely held out — guards against one
-    silently dropping from the real-model run, which would quietly weaken the generalization claim
-    back to "passes on the shapes the prompt demonstrates." Pins: (1) the regression hold-outs
-    (unseen placeholder styles) are disjoint from the DEMONSTRATED `_REGRESSION_FIXTURES`; (2) the
-    three recall hold-outs are registered as `sql_injection` in the recall ground truth; (3) every
-    hold-out fixture file exists on disk."""
-    # By property, not headcount (adding a hold-out must not break this; dropping a NAMED one must):
-    # the three placeholder-style hold-outs are wired, and the regression hold-out set is disjoint
-    # from BOTH the demonstrated set and the safe-code set (landing in either corrupts its verdict).
+    """Keep recall and safe fixtures distinct and discoverable by their intended runs.
+
+    Supplemental forms extend model comparisons without changing frozen pools."""
+    # Keep the declared binding regressions present and separate from safe-code scorecards.
     for fixture in (
         _PARAM_HOLDOUT_SQLALCHEMY_FIXTURE,
         _PARAM_HOLDOUT_SQLITE_FIXTURE,
@@ -1221,27 +1340,38 @@ def test_holdout_sets_are_registered_and_disjoint() -> None:
 
     for fixture in _REGRESSION_HOLDOUT_FIXTURES + sqli_holdouts:
         assert os.path.exists(fixture), fixture
+    fresh_recall = dict(_FRESH_RECALL_HOLDOUTS.values())
+    fresh_paths = (*fresh_recall, *_FRESH_SAFE_PATHS)
+    assert len(fresh_paths) == len(set(fresh_paths))
+    assert set(fresh_paths).isdisjoint(
+        (
+            *_GROUND_TRUTH_BY_FIXTURE,
+            *_SAFE_CODE_FIXTURES,
+            *_REGRESSION_FIXTURES,
+            *_REGRESSION_HOLDOUT_FIXTURES,
+        )
+    )
+    for path, expected in fresh_recall.items():
+        assert _MODEL_RECALL_CASES[path] == expected
+        assert expected[0].finding_type is FindingType.SQL_INJECTION
+    for path in fresh_paths:
+        assert Path(path).is_file()
+    assert "2 recall forms, 2 safe forms" in _holdout_preamble()
 
 
-@pytest.mark.parametrize("fixture_path", list(_GROUND_TRUTH_BY_FIXTURE))
+@pytest.mark.parametrize("fixture_path", list(_MODEL_RECALL_CASES))
 @pytest.mark.asyncio
 async def test_real_fixture_content_through_analyze_catches_regression(fixture_path: str) -> None:
-    """END-TO-END zero-spend over EACH recall fixture (all sixteen in `_GROUND_TRUTH_BY_FIXTURE` —
-    SQLi, auth-bypass, missing-error-handling, N+1, path-traversal, missing-input-validation,
-    four held-out SQLi forms: f-string / str.format / concatenation / ORM raw() f-string, plus
-    six JUDGED-only rows: ssrf / weak-password-hash / command-injection (subprocess + indirect
-    eval) / weak-crypto / insecure-randomness):
-    a scripted "Sonnet" that returns the known finding scores recall 1.0; a scripted "Haiku"
-    that misses it scores 0.0 and FAILS the gate. The STATE is the real vulnerable code (built
-    by state_from_eval_fixture); only the provider is faked — so the real run differs only by
-    swapping in the AnthropicProvider. Parametrized over every fixture so analyze accepting a
-    finding at each known line (e.g. views.py:5) is verified for all of them. A JUDGED stand-in
-    needs no tree-sitter query."""
-    ground_truth = _GROUND_TRUTH_BY_FIXTURE[fixture_path]
+    """Check every recall fixture through real analysis with scripted found/missed responses.
+
+    Admission must preserve the declared finding type and span. An empty model
+    must lose recall unless that fixture has an explicit OBSERVED backstop.
+    Supplemental holdouts have no structural backstop, so they measure the model."""
+    ground_truth = _MODEL_RECALL_CASES[fixture_path]
     cmp = await compare_models_on_scenario(
         state_from_eval_fixture(fixture_path),
         ground_truth,
-        baseline_provider=_ScriptedProvider(_judged_response_for(ground_truth[0])),
+        baseline_provider=_ScriptedProvider(_judged_response_for(ground_truth[0], fixture_path)),
         baseline_model="claude-sonnet-4-6",
         candidate_provider=_ScriptedProvider(_MISSES_RESPONSE),
         candidate_model="claude-haiku-4-5",
@@ -1262,7 +1392,7 @@ async def test_real_fixture_content_through_analyze_catches_regression(fixture_p
         assert cmp.passes is False  # the gate catches the recall regression
 
 
-@pytest.mark.parametrize("fixture_path", _SAFE_CODE_FIXTURES)
+@pytest.mark.parametrize("fixture_path", _SAFE_CODE_FIXTURES + _FRESH_SAFE_PATHS)
 @pytest.mark.asyncio
 async def test_safe_fixture_reaches_the_model_and_yields_no_findings(fixture_path: str) -> None:
     """The FP instrument is only meaningful if the safe code is ACTUALLY REVIEWED: a fixture
@@ -1272,8 +1402,9 @@ async def test_safe_fixture_reaches_the_model_and_yields_no_findings(fixture_pat
     least once (a skipped file makes no LLM call), the scripted clean response parsed
     (a rejected response would also zero-out findings vacuously), and no findings survived."""
     provider = _ScriptedProvider(_MISSES_RESPONSE)
+    state = state_from_eval_fixture(fixture_path)
     findings, n_rejected = await run_analyze_under_model(
-        state_from_eval_fixture(fixture_path), provider=provider, model="claude-sonnet-4-6"
+        state, provider=provider, model="claude-sonnet-4-6"
     )
     assert provider.calls, (
         f"{fixture_path}: analyze never called the model — the file was skipped, so its "
@@ -1281,6 +1412,94 @@ async def test_safe_fixture_reaches_the_model_and_yields_no_findings(fixture_pat
     )
     assert n_rejected == 0  # the clean response actually parsed; rejection would mask findings
     assert findings == ()  # and the genuine outcome on safe code is zero findings
+    if fixture_path in _FRESH_SAFE_PATHS:
+        source = state.pr_context.changed_files[0].content_head
+        assert source is not None
+        for line in source.splitlines()[3:]:
+            if line.strip():
+                assert line.strip() in provider.calls[0].user_prompt
+
+
+@pytest.mark.parametrize("fixture_path,line", _FRESH_SAFE_HOLDOUTS.values())
+@pytest.mark.asyncio
+async def test_fresh_safe_holdout_keeps_model_overflag_visible(
+    fixture_path: str, line: int
+) -> None:
+    """SQL construction is safe, but the parser must not hide a model's false positive."""
+    baseline = _ScriptedProvider(_MISSES_RESPONSE)
+    candidate = _ScriptedProvider(_judged_response_with([(FindingType.SQL_INJECTION, line, line)]))
+    result = await compare_models_on_scenario(
+        state_from_eval_fixture(fixture_path),
+        (),
+        baseline_provider=baseline,
+        baseline_model="claude-sonnet-4-6",
+        candidate_provider=candidate,
+        candidate_model="claude-haiku-4-5",
+    )
+    assert baseline.calls and candidate.calls
+    assert result.candidate_n_rejected == 0
+    assert _sqli_fp_count(result.baseline) == 0
+    assert _sqli_fp_count(result.candidate) == 1
+    assert _regression_verdict(0, 1)[1] is False
+
+
+@pytest.mark.parametrize(
+    "changed",
+    ["SYSTEM_PROMPT_STABLE_PREFIX", "FILE_CONTEXT_TEMPLATE", "USER_TEMPLATE", "recall", "safe"],
+)
+@pytest.mark.asyncio
+async def test_unreviewed_or_depleted_holdouts_stop_before_model_calls(
+    changed: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if changed in {"recall", "safe"}:
+        name = "_FRESH_RECALL_HOLDOUTS" if changed == "recall" else "_FRESH_SAFE_HOLDOUTS"
+        pool = globals()[name]
+        monkeypatch.setitem(globals(), name, dict(list(pool.items())[:1]))
+        error = "HOLDOUT POOL DEPLETED"
+    else:
+        monkeypatch.setattr(
+            analyze_prompt, changed, getattr(analyze_prompt, changed) + "\nnew guidance"
+        )
+        error = "HOLDOUT NOVELTY REVIEW IS STALE"
+    provider = _ScriptedProvider(_MISSES_RESPONSE)
+    with pytest.raises(ValueError, match=error):
+        await _run_real_analyze_evidence(
+            provider=provider,
+            baseline_model="claude-sonnet-4-6",
+            candidate_model="claude-haiku-4-5",
+        )
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_real_evidence_path_runs_and_labels_supplemental_holdouts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setitem(globals(), "_MODEL_RECALL_CASES", dict(_FRESH_RECALL_HOLDOUTS.values()))
+    for name in ("_SAFE_CODE_FIXTURES", "_REGRESSION_FIXTURES", "_REGRESSION_HOLDOUT_FIXTURES"):
+        monkeypatch.setitem(globals(), name, ())
+    monkeypatch.setitem(globals(), "_EVIDENCE_REPORT_DIR", tmp_path)
+    provider = _ScriptedProvider(_MISSES_RESPONSE)
+    await _run_real_analyze_evidence(
+        provider=provider, baseline_model="claude-sonnet-4-6", candidate_model="claude-haiku-4-5"
+    )
+    expected_paths = {
+        expected[0].file_path for _path, expected in _FRESH_RECALL_HOLDOUTS.values()
+    } | {
+        state_from_eval_fixture(path).pr_context.changed_files[0].path for path in _FRESH_SAFE_PATHS
+    }
+    assert len(provider.calls) == 8
+    for path in expected_paths:
+        assert sum(path in request.user_prompt for request in provider.calls) == 2
+    reports = list(tmp_path.glob("*.md"))
+    assert len(reports) == 1
+    report = reports[0].read_text()
+    assert "2 recall forms, 2 safe forms; 8 additional model calls" in report
+    assert "holdout-recall" in report and "holdout-safe" in report
+    for path in (*dict(_FRESH_RECALL_HOLDOUTS.values()), *_FRESH_SAFE_PATHS):
+        assert path in report
 
 
 # ---------------------------------------------------------------------------
@@ -1564,27 +1783,17 @@ async def _run_real_analyze_evidence(
     candidate_model: str,
     token_recorder: _TokenRecordingExchangePersister | None = None,
 ) -> None:
-    """Drive the analyze node under `baseline_model` and `candidate_model` over the recall /
-    precision / regression-track fixture corpus, printing a per-scenario report and a
-    REPORT-ONLY gate summary. Shared by the two opt-in real-model evidence tests (the
-    STANDARD->Haiku flip run and the Sonnet 5 migration run); the mechanics are
-    model-agnostic, so each caller supplies its own baseline/candidate and owns the
-    rationale in its docstring. Does NOT close the provider — the caller owns provider
-    lifecycle (wrap the call in `try: ... finally: await provider.aclose()`).
+    """Compare the models on recall, precision and SQL false-positive fixtures.
 
-    When `token_recorder` is passed (it MUST be the same object as the provider's
-    `persister`), the run appends a MEASURED per-model OUTPUT-token sizing block (FUP-207)
-    to the report — otherwise the token half is skipped and behavior is unchanged.
-
-    (fixture, dimension, ok, fail_label): fail_label distinguishes WHY a non-ok verdict is
-    non-ok in the end summary — a regression scenario is "INCONCLUSIVE" (the baseline emitted a
-    sql_injection FP itself) vs "REPRODUCED" (only the candidate did); recall/precision use plain
-    "FAILED". Empty label for green verdicts (never printed). A scenario whose provider call
-    dies (timeout, rate limit, 5xx) records "ERRORED — rerun" and the run CONTINUES — one
-    transient API failure must not discard the rest of a paid evidence run (a 30s TTFT spike
-    cost a full run on 2026-06-10)."""
+    Validate the supplemental holdout review before calls and report its rows
+    separately. Results are report-only; pytest success means collection finished.
+    Retryable provider failures become errored rows; terminal failures propagate.
+    The caller owns provider cleanup. If supplied, token_recorder must be the
+    provider's persister so output-token attribution matches these calls."""
+    preamble = _holdout_preamble()
+    print(preamble)  # noqa: T201 — prospective coverage before model calls
     gate_results: list[tuple[str, str, bool, str]] = []
-    report_chunks: list[str] = []  # per-scenario texts + summary, persisted to reports/ below
+    report_chunks: list[str] = [preamble]
     emitted: dict[tuple[str, str], int] = {}  # (fixture, model) -> emitted-finding count (FUP-207)
 
     async def _compare_or_errored(
@@ -1616,15 +1825,20 @@ async def _run_real_analyze_evidence(
         return cmp
 
     # RECALL dimension — gate on recall_held + baseline_valid; FP advisory (see caller docstring).
-    for fixture_path, ground_truth in _GROUND_TRUTH_BY_FIXTURE.items():
-        cmp = await _compare_or_errored(fixture_path, ground_truth, "recall")
+    for fixture_path, ground_truth in _MODEL_RECALL_CASES.items():
+        dimension = (
+            "holdout-recall" if fixture_path in dict(_FRESH_RECALL_HOLDOUTS.values()) else "recall"
+        )
+        cmp = await _compare_or_errored(fixture_path, ground_truth, dimension)
         if cmp is None:
             continue
         report_chunks.append(
-            _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
+            _print_scenario_report(
+                f"{dimension}: {fixture_path}", cmp, baseline_model, candidate_model
+            )
         )
         gate_results.append(
-            (fixture_path, "recall", cmp.recall_held and cmp.baseline_valid, "FAILED")
+            (fixture_path, dimension, cmp.recall_held and cmp.baseline_valid, "FAILED")
         )
         assert cmp.baseline is not None  # the run completed
     # PRECISION dimension — safe code, empty ground truth so ANY finding is a real FP;
@@ -1638,19 +1852,17 @@ async def _run_real_analyze_evidence(
         )
         gate_results.append((fixture_path, "precision", cmp.fp_bounded, "FAILED"))
         assert cmp.baseline is not None  # the run completed
-    # REGRESSION-TRACK dimension — TYPE-SCOPED to sql_injection FPs (`_sqli_fp_count`), read
-    # with an ABSOLUTE baseline-clean gate. The caveat is type-specific (DECISIONS#041: a model
-    # mislabels a parameterized query as SQLi), so an unrelated baseline over-flag must NOT
-    # blind the track. `_regression_verdict` carries the 3-state logic (INCONCLUSIVE /
-    # REPRODUCED / clean). Runs over the DEMONSTRATED idioms (`_REGRESSION_FIXTURES`) AND the
-    # HOLD-OUTS (`_REGRESSION_HOLDOUT_FIXTURES`, placeholder styles the prompt never shows) —
-    # CLEAN on the hold-outs is the anti-overfit evidence. The fixture path names the set.
-    for fixture_path in _REGRESSION_FIXTURES + _REGRESSION_HOLDOUT_FIXTURES:
-        cmp = await _compare_or_errored(fixture_path, (), "regression")
+    # Count SQL false positives absolutely: a baseline overflag is inconclusive.
+    # Supplemental safe forms keep model overflags visible instead of relying on a veto.
+    for fixture_path in _REGRESSION_FIXTURES + _REGRESSION_HOLDOUT_FIXTURES + _FRESH_SAFE_PATHS:
+        dimension = "holdout-safe" if fixture_path in _FRESH_SAFE_PATHS else "regression"
+        cmp = await _compare_or_errored(fixture_path, (), dimension)
         if cmp is None:
             continue
         report_chunks.append(
-            _print_scenario_report(fixture_path, cmp, baseline_model, candidate_model)
+            _print_scenario_report(
+                f"{dimension}: {fixture_path}", cmp, baseline_model, candidate_model
+            )
         )
         verdict, ok, fail_label = _regression_verdict(
             _sqli_fp_count(cmp.baseline), _sqli_fp_count(cmp.candidate)
@@ -1658,7 +1870,7 @@ async def _run_real_analyze_evidence(
         verdict_line = f"  REGRESSION-TRACK verdict: {verdict}"
         print(verdict_line)  # noqa: T201 — operator diagnostic
         report_chunks.append(verdict_line)
-        gate_results.append((fixture_path, "regression", ok, fail_label))
+        gate_results.append((fixture_path, dimension, ok, fail_label))
         assert cmp.baseline is not None  # the run completed
     # REPORT-ONLY summary — pytest "passed" means the run completed, NOT the gate verdict.
     # Each non-green line carries its own label (recall/precision -> "FAILED"; regression ->
@@ -1691,7 +1903,7 @@ async def _run_real_analyze_evidence(
     # otherwise lost to pytest capture. Overwrites the latest run per model pair; a pinned run can
     # be copied to a dated reports/model_comparison/*.md.
     report_body = "\n".join(report_chunks).lstrip("\n")
-    out_dir = Path("reports") / "model_comparison"
+    out_dir = _EVIDENCE_REPORT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     slug = f"{baseline_model}_vs_{candidate_model}".replace("/", "-")
     out_path = out_dir / f"{slug}.md"
@@ -1714,47 +1926,16 @@ async def _run_real_analyze_evidence(
 )
 @pytest.mark.asyncio
 async def test_real_model_comparison_evidence() -> None:
-    """OPT-IN, real API spend — the evidence REPORT for the STANDARD->Haiku flip decision.
+    """Compare the configured DEEP baseline with Haiku using optional paid calls.
 
-    REPORT-ONLY, BY DESIGN: this asserts only that the run COMPLETED. So pytest "passed"
-    means "the run executed", NOT "the gate passed" — the per-scenario gate verdict is in
-    the printed output and the end summary, and the human adjudicates. It does not hard-fail
-    because model output is nondeterministic; a hard pytest fail would red on that noise.
+    Recall needs a valid baseline and no candidate recall loss. Safe-code rows
+    compare false positives relatively; SQL regression rows require a clean
+    baseline and candidate. Supplemental recall/safe holdouts add eight calls
+    after checking their manual novelty review.
 
-    THREE DIMENSIONS, measured on the fixtures each is valid for:
-    - RECALL, over known-vulnerability fixtures (`_GROUND_TRUTH_BY_FIXTURE`): does the
-      candidate catch the known finding? Gated on `recall_held` + `baseline_valid`. FP is
-      ADVISORY here, NOT gated: a real run showed the "extras" on vulnerable files are
-      usually LEGITIMATE second findings the single-entry ground truth didn't encode (an
-      unvalidated-input finding alongside the SQLi), so fp on a vulnerable file is an
-      unreliable over-flag signal. Read the printed extra detail, don't gate on it. The set now
-      also carries three HOLD-OUT SQLi forms (f-string / `str.format` / `+` concatenation;
-      named-but-unexemplified under analyze-v3, with f-string and `+` now DEMONSTRATED
-      by the exemplars from analyze-v4 onward — see the recall hold-out comment) — a
-      recall MISS there means the parameterized-query remediation over-suppressed real SQLi.
-    - PRECISION, over safe-code fixtures (`_SAFE_CODE_FIXTURES`, no real finding): does the
-      candidate over-flag clean code MORE than the baseline? Gated on `fp_bounded` (a RELATIVE
-      bound — fine where a shared over-flag is acceptable, e.g. eval()-in-test).
-    - REGRESSION-TRACK, over `_REGRESSION_FIXTURES` (DEMONSTRATED idioms — shapes the prompt
-      exemplifies) AND `_REGRESSION_HOLDOUT_FIXTURES` (HOLD-OUT placeholder styles it never shows:
-      SQLAlchemy `:name`, sqlite `?`, asyncpg `$1`), TYPE-SCOPED to sql_injection FPs via
-      `_sqli_fp_count` and read with an ABSOLUTE baseline-clean gate: baseline sql_injection-fp>0 is
-      non-discriminating; baseline=0 AND candidate>0 is the DECISIONS#041 caveat reproduced. CLEAN
-      on the HOLD-OUTS is the anti-overfit evidence — the model applied the rule to a shape it was
-      never shown, not just the demonstrated ones. Scoping to sql_injection keeps an unrelated
-      baseline over-flag from forcing INCONCLUSIVE; the relative `fp_bounded` gate alone would let a
-      SHARED over-flag pass, hence the baseline-clean check.
-
-    Run the analyze node under Sonnet (baseline — the DEEP model + the pre-flip STANDARD
-    model) and Haiku (candidate — now the shipped STANDARD default, DECISIONS#041) per
-    scenario; bounded at 2 analyze calls/scenario over
-    small files. CI never runs this.
-
-    Recall is TYPE-EXACT: a match requires the same `finding_type` AND policy severity (plus
-    file + line window). A candidate that SEES the vulnerability but labels it a different
-    type scores as a miss — so on a recall drop, read the `missed`/`extra` detail to tell a
-    true regression from a classification disagreement before acting on the flip.
-    """
+    This runs analysis only, not the full graph. Pytest success means collection
+    finished; the operator reads and adjudicates the report. Requires resolved
+    provider credentials and OUTRIDER_EVAL_REAL_MODELS=1. No CI spend."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         pytest.skip("ANTHROPIC_API_KEY is required for the real-model comparison")
@@ -1807,25 +1988,13 @@ async def test_real_model_comparison_evidence() -> None:
 )
 @pytest.mark.asyncio
 async def test_real_sonnet5_migration_evidence() -> None:
-    """OPT-IN, real API spend — the evidence REPORT for the Sonnet 4.6 -> Sonnet 5 DEEP-tier
-    analyze migration (feat/sonnet-5-migration): did the new default HOLD or IMPROVE analyze
-    quality versus the prior default?
+    """Compare Sonnet 4.6 and Sonnet 5 analysis with optional paid calls.
 
-    REPORT-ONLY and ANALYZE-NODE-ONLY, same contract as `test_real_model_comparison_evidence`:
-    pytest "passed" means the run COMPLETED, not that the gate passed; the per-scenario verdicts
-    print and the human adjudicates. This drives ONLY the analyze node over the curated fixture
-    corpus — it does NOT exercise triage/trace/synthesize/hitl/publish on the real model, nor the
-    full 7-node graph. It is a migration-risk probe, not a full-graph quality gate.
-
-    baseline = claude-sonnet-4-6 (the prior DEEP default); candidate = ModelConfig.analyze_model
-    (the shipped default, now claude-sonnet-5). Both are priced in `pricing.py` (v5 retains the
-    4.6 rate). Same three dimensions and deterministic scoring as the Haiku-flip evidence test
-    (recall / safe-code precision / sql_injection regression-track). Read recall, safe-code FP,
-    severity accuracy, and per-type regression to decide the merge:
-    - matches/beats 4.6 on recall AND no new safe-code FPs -> the default flip is validated;
-    - loses only on a narrow stochastic row -> diagnose that row before blocking;
-    - regresses a core finding type OR over-flags safe code -> keep the plumbing, hold the flip.
-    """
+    The shared evidence path reports recall, safe-code and SQL regression results,
+    including the supplemental holdouts and their eight additional calls.
+    This does not evaluate other review stages or prove production-wide quality.
+    Pytest success means collection finished; the operator adjudicates results.
+    Requires resolved provider credentials and OUTRIDER_EVAL_REAL_MODELS=1."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         pytest.skip("ANTHROPIC_API_KEY is required for the real-model comparison")

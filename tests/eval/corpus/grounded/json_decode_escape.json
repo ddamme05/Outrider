@@ -1,0 +1,25 @@
+{
+  "installation_id": 9000,
+  "owner": "examples",
+  "repo": "account-service",
+  "pr_number": 3,
+  "base_sha": "0000000000000000000000000000000000000000",
+  "head_sha": "1111111111111111111111111111111111111111",
+  "pr_title": "JSON request endpoint",
+  "pr_body": "Decode JSON request bodies and return an HTTP status with the parsed payload.",
+  "author": "developer",
+  "total_additions": 9,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "app/request.py",
+      "status": "added",
+      "additions": 9,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,9 @@\n+def handle_request(request):\n+    \"\"\"Decode the request body into an HTTP status and JSON payload.\"\"\"\n+    import json\n+\n+    try:\n+        payload = json.loads(request[\"body\"])\n+    except UnicodeDecodeError:\n+        return 400, None\n+    return 200, payload\n",
+      "content_base": null,
+      "content_head": "def handle_request(request):\n    \"\"\"Decode the request body into an HTTP status and JSON payload.\"\"\"\n    import json\n\n    try:\n        payload = json.loads(request[\"body\"])\n    except UnicodeDecodeError:\n        return 400, None\n    return 200, payload\n"
+    }
+  ],
+  "llm_responses": {}
+}

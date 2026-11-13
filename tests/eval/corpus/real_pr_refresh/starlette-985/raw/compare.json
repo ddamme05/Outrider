@@ -1,0 +1,576 @@
+{
+  "url": "https://api.github.com/repos/Kludex/starlette/compare/85b9c2642b6b806c0d0c33e5418914893a5789f6...a260a36c3c75225f7bb3debe21de6744d3b46cc6",
+  "html_url": "https://github.com/Kludex/starlette/compare/85b9c2642b6b806c0d0c33e5418914893a5789f6...a260a36c3c75225f7bb3debe21de6744d3b46cc6",
+  "permalink_url": "https://github.com/Kludex/starlette/compare/Kludex:85b9c26...Kludex:a260a36",
+  "diff_url": "https://github.com/Kludex/starlette/compare/85b9c2642b6b806c0d0c33e5418914893a5789f6...a260a36c3c75225f7bb3debe21de6744d3b46cc6.diff",
+  "patch_url": "https://github.com/Kludex/starlette/compare/85b9c2642b6b806c0d0c33e5418914893a5789f6...a260a36c3c75225f7bb3debe21de6744d3b46cc6.patch",
+  "base_commit": {
+    "sha": "85b9c2642b6b806c0d0c33e5418914893a5789f6",
+    "node_id": "MDY6Q29tbWl0MTM4NTk3MzcyOjg1YjljMjY0MmI2YjgwNmMwZDBjMzNlNTQxODkxNDg5M2E1Nzg5ZjY=",
+    "commit": {
+      "author": {
+        "name": "子休",
+        "email": "AberSheeran@qq.com",
+        "date": "2020-07-15T18:27:17Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2020-07-15T18:27:17Z"
+      },
+      "message": "fix wsgi PATH_INFO encoding (#998)\n\n* fix wsgi PATH_INFO encoding\r\n\r\n* encode root_path\r\n\r\n* wsgi middleware: Add test for PATH_INFO & SCRIPT_NAME encoding\r\n\r\nCo-authored-by: Jamie Hewland <jhewland@gmail.com>",
+      "tree": {
+        "sha": "5132ecc145fd93baa936d259981fd3294bcb5817",
+        "url": "https://api.github.com/repos/Kludex/starlette/git/trees/5132ecc145fd93baa936d259981fd3294bcb5817"
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/git/commits/85b9c2642b6b806c0d0c33e5418914893a5789f6",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsBcBAABCAAQBQJfD0qFCRBK7hj4Ov3rIwAAdHIIAANopvXPSl41aWKzaWJSaiot\ne/8s1jAsnssQX55s/MLyaX1xcFRuQY6AtZhRzQSEhB1kJEK+J+zODxYMsxqMjqzC\nGGLbcx7eEi5v1aZiz+TFBc26DmvMRwZbHTQtuBK3rcWRC4ZrG6+6QZjgYbzwxZU8\nRoI9sqDh0beaIeTEtgKPc0MiVEwNmnrL2YS0eXNEfbwjzIPlXVVVCSeC9Fug0/Dv\nSUfJXHAgGfR77vsVLO+6zpDM+HlQSRigDmsW66hWlhfW3j+Aw296qai8+ZefmyqR\nEn/VGcge2+En8h1IT7+EQGG3JD+LmzcCEkht1XOjKDs5kOtprOP515n0YS16Zyw=\n=1el0\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 5132ecc145fd93baa936d259981fd3294bcb5817\nparent 14139c28866eb55f35cda5a2b12df9d2b0502d1a\nauthor 子休 <AberSheeran@qq.com> 1594837637 +0800\ncommitter GitHub <noreply@github.com> 1594837637 +0200\n\nfix wsgi PATH_INFO encoding (#998)\n\n* fix wsgi PATH_INFO encoding\r\n\r\n* encode root_path\r\n\r\n* wsgi middleware: Add test for PATH_INFO & SCRIPT_NAME encoding\r\n\r\nCo-authored-by: Jamie Hewland <jhewland@gmail.com>",
+        "verified_at": "2024-01-16T19:59:59Z"
+      }
+    },
+    "url": "https://api.github.com/repos/Kludex/starlette/commits/85b9c2642b6b806c0d0c33e5418914893a5789f6",
+    "html_url": "https://github.com/Kludex/starlette/commit/85b9c2642b6b806c0d0c33e5418914893a5789f6",
+    "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/85b9c2642b6b806c0d0c33e5418914893a5789f6/comments",
+    "author": null,
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "14139c28866eb55f35cda5a2b12df9d2b0502d1a",
+        "url": "https://api.github.com/repos/Kludex/starlette/commits/14139c28866eb55f35cda5a2b12df9d2b0502d1a",
+        "html_url": "https://github.com/Kludex/starlette/commit/14139c28866eb55f35cda5a2b12df9d2b0502d1a"
+      }
+    ]
+  },
+  "merge_base_commit": {
+    "sha": "85b9c2642b6b806c0d0c33e5418914893a5789f6",
+    "node_id": "MDY6Q29tbWl0MTM4NTk3MzcyOjg1YjljMjY0MmI2YjgwNmMwZDBjMzNlNTQxODkxNDg5M2E1Nzg5ZjY=",
+    "commit": {
+      "author": {
+        "name": "子休",
+        "email": "AberSheeran@qq.com",
+        "date": "2020-07-15T18:27:17Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2020-07-15T18:27:17Z"
+      },
+      "message": "fix wsgi PATH_INFO encoding (#998)\n\n* fix wsgi PATH_INFO encoding\r\n\r\n* encode root_path\r\n\r\n* wsgi middleware: Add test for PATH_INFO & SCRIPT_NAME encoding\r\n\r\nCo-authored-by: Jamie Hewland <jhewland@gmail.com>",
+      "tree": {
+        "sha": "5132ecc145fd93baa936d259981fd3294bcb5817",
+        "url": "https://api.github.com/repos/Kludex/starlette/git/trees/5132ecc145fd93baa936d259981fd3294bcb5817"
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/git/commits/85b9c2642b6b806c0d0c33e5418914893a5789f6",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsBcBAABCAAQBQJfD0qFCRBK7hj4Ov3rIwAAdHIIAANopvXPSl41aWKzaWJSaiot\ne/8s1jAsnssQX55s/MLyaX1xcFRuQY6AtZhRzQSEhB1kJEK+J+zODxYMsxqMjqzC\nGGLbcx7eEi5v1aZiz+TFBc26DmvMRwZbHTQtuBK3rcWRC4ZrG6+6QZjgYbzwxZU8\nRoI9sqDh0beaIeTEtgKPc0MiVEwNmnrL2YS0eXNEfbwjzIPlXVVVCSeC9Fug0/Dv\nSUfJXHAgGfR77vsVLO+6zpDM+HlQSRigDmsW66hWlhfW3j+Aw296qai8+ZefmyqR\nEn/VGcge2+En8h1IT7+EQGG3JD+LmzcCEkht1XOjKDs5kOtprOP515n0YS16Zyw=\n=1el0\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 5132ecc145fd93baa936d259981fd3294bcb5817\nparent 14139c28866eb55f35cda5a2b12df9d2b0502d1a\nauthor 子休 <AberSheeran@qq.com> 1594837637 +0800\ncommitter GitHub <noreply@github.com> 1594837637 +0200\n\nfix wsgi PATH_INFO encoding (#998)\n\n* fix wsgi PATH_INFO encoding\r\n\r\n* encode root_path\r\n\r\n* wsgi middleware: Add test for PATH_INFO & SCRIPT_NAME encoding\r\n\r\nCo-authored-by: Jamie Hewland <jhewland@gmail.com>",
+        "verified_at": "2024-01-16T19:59:59Z"
+      }
+    },
+    "url": "https://api.github.com/repos/Kludex/starlette/commits/85b9c2642b6b806c0d0c33e5418914893a5789f6",
+    "html_url": "https://github.com/Kludex/starlette/commit/85b9c2642b6b806c0d0c33e5418914893a5789f6",
+    "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/85b9c2642b6b806c0d0c33e5418914893a5789f6/comments",
+    "author": null,
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "14139c28866eb55f35cda5a2b12df9d2b0502d1a",
+        "url": "https://api.github.com/repos/Kludex/starlette/commits/14139c28866eb55f35cda5a2b12df9d2b0502d1a",
+        "html_url": "https://github.com/Kludex/starlette/commit/14139c28866eb55f35cda5a2b12df9d2b0502d1a"
+      }
+    ]
+  },
+  "status": "ahead",
+  "ahead_by": 5,
+  "behind_by": 0,
+  "total_commits": 5,
+  "commits": [
+    {
+      "sha": "cbb452dbb42360971b7d7c408aca8d54f66043fb",
+      "node_id": "MDY6Q29tbWl0MTM4NTk3MzcyOmNiYjQ1MmRiYjQyMzYwOTcxYjdkN2M0MDhhY2E4ZDU0ZjY2MDQzZmI=",
+      "commit": {
+        "author": {
+          "name": "Tom Christie",
+          "email": "tom@tomchristie.com",
+          "date": "2020-06-25T14:52:05Z"
+        },
+        "committer": {
+          "name": "Tom Christie",
+          "email": "tom@tomchristie.com",
+          "date": "2020-06-25T14:52:05Z"
+        },
+        "message": "More robust path-traversal check in StaticFiles app",
+        "tree": {
+          "sha": "ff3270989ab1dea871fcfc4b2735261a8b650d7d",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/ff3270989ab1dea871fcfc4b2735261a8b650d7d"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/cbb452dbb42360971b7d7c408aca8d54f66043fb",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/cbb452dbb42360971b7d7c408aca8d54f66043fb",
+      "html_url": "https://github.com/Kludex/starlette/commit/cbb452dbb42360971b7d7c408aca8d54f66043fb",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/cbb452dbb42360971b7d7c408aca8d54f66043fb/comments",
+      "author": {
+        "login": "lovelydinosaur",
+        "id": 647359,
+        "node_id": "MDQ6VXNlcjY0NzM1OQ==",
+        "avatar_url": "https://avatars.githubusercontent.com/u/647359?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/lovelydinosaur",
+        "html_url": "https://github.com/lovelydinosaur",
+        "followers_url": "https://api.github.com/users/lovelydinosaur/followers",
+        "following_url": "https://api.github.com/users/lovelydinosaur/following{/other_user}",
+        "gists_url": "https://api.github.com/users/lovelydinosaur/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/lovelydinosaur/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/lovelydinosaur/subscriptions",
+        "organizations_url": "https://api.github.com/users/lovelydinosaur/orgs",
+        "repos_url": "https://api.github.com/users/lovelydinosaur/repos",
+        "events_url": "https://api.github.com/users/lovelydinosaur/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/lovelydinosaur/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "lovelydinosaur",
+        "id": 647359,
+        "node_id": "MDQ6VXNlcjY0NzM1OQ==",
+        "avatar_url": "https://avatars.githubusercontent.com/u/647359?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/lovelydinosaur",
+        "html_url": "https://github.com/lovelydinosaur",
+        "followers_url": "https://api.github.com/users/lovelydinosaur/followers",
+        "following_url": "https://api.github.com/users/lovelydinosaur/following{/other_user}",
+        "gists_url": "https://api.github.com/users/lovelydinosaur/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/lovelydinosaur/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/lovelydinosaur/subscriptions",
+        "organizations_url": "https://api.github.com/users/lovelydinosaur/orgs",
+        "repos_url": "https://api.github.com/users/lovelydinosaur/repos",
+        "events_url": "https://api.github.com/users/lovelydinosaur/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/lovelydinosaur/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "4e2f301426d47cbe2bf3c5854e1a2276b9635a9e",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/4e2f301426d47cbe2bf3c5854e1a2276b9635a9e",
+          "html_url": "https://github.com/Kludex/starlette/commit/4e2f301426d47cbe2bf3c5854e1a2276b9635a9e"
+        }
+      ]
+    },
+    {
+      "sha": "22bc624bf7cf8d12ccb282c836ea23268207be09",
+      "node_id": "MDY6Q29tbWl0MTM4NTk3MzcyOjIyYmM2MjRiZjdjZjhkMTJjY2IyODJjODM2ZWEyMzI2ODIwN2JlMDk=",
+      "commit": {
+        "author": {
+          "name": "Tom Christie",
+          "email": "tom@tomchristie.com",
+          "date": "2020-06-29T11:36:21Z"
+        },
+        "committer": {
+          "name": "GitHub",
+          "email": "noreply@github.com",
+          "date": "2020-06-29T11:36:21Z"
+        },
+        "message": "Merge branch 'master' into staticfiles-traversal",
+        "tree": {
+          "sha": "0f890225e41df325020925ba6c015188cb7e8683",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/0f890225e41df325020925ba6c015188cb7e8683"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/22bc624bf7cf8d12ccb282c836ea23268207be09",
+        "comment_count": 0,
+        "verification": {
+          "verified": true,
+          "reason": "valid",
+          "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsBcBAABCAAQBQJe+dI1CRBK7hj4Ov3rIwAAdHIIAKlyATOP36hbZr7fuyF5FfAW\nXjpmaCUgSyjORwQQ3rwuHABUgRkmaR+N29o4Xu6NM1FBKjClUjmW9V6JnN+ZoW06\nC8sfTe+hr+rJ5rYYpSgYVOZT+118hRiY6Eq3RxpQKkGO9KQ39m0Yo3iIqF+hwlsl\nWaE7+VTD7gae3lZOG1c8Aek2/Rd47JfZPOuTHAiKB4o0yMshrLaLhnpkRr4SgKnK\ntNFPMm7jY5yMTDGNbM1m18vkRXhns/D635oAnohhUmERdeY53/xRG82ETvlqR/o3\nvUXtf9T0vH/jvro98kWOhSmHCmnHBVuQkpDevER+ovsQSBXno2IHg3aM+aZdJHQ=\n=1yRn\n-----END PGP SIGNATURE-----\n",
+          "payload": "tree 0f890225e41df325020925ba6c015188cb7e8683\nparent cbb452dbb42360971b7d7c408aca8d54f66043fb\nparent 349cc73763e66f48dff3be7e87b4a9f354911664\nauthor Tom Christie <tom@tomchristie.com> 1593430581 +0100\ncommitter GitHub <noreply@github.com> 1593430581 +0100\n\nMerge branch 'master' into staticfiles-traversal",
+          "verified_at": "2024-01-16T19:59:59Z"
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/22bc624bf7cf8d12ccb282c836ea23268207be09",
+      "html_url": "https://github.com/Kludex/starlette/commit/22bc624bf7cf8d12ccb282c836ea23268207be09",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/22bc624bf7cf8d12ccb282c836ea23268207be09/comments",
+      "author": {
+        "login": "lovelydinosaur",
+        "id": 647359,
+        "node_id": "MDQ6VXNlcjY0NzM1OQ==",
+        "avatar_url": "https://avatars.githubusercontent.com/u/647359?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/lovelydinosaur",
+        "html_url": "https://github.com/lovelydinosaur",
+        "followers_url": "https://api.github.com/users/lovelydinosaur/followers",
+        "following_url": "https://api.github.com/users/lovelydinosaur/following{/other_user}",
+        "gists_url": "https://api.github.com/users/lovelydinosaur/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/lovelydinosaur/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/lovelydinosaur/subscriptions",
+        "organizations_url": "https://api.github.com/users/lovelydinosaur/orgs",
+        "repos_url": "https://api.github.com/users/lovelydinosaur/repos",
+        "events_url": "https://api.github.com/users/lovelydinosaur/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/lovelydinosaur/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "web-flow",
+        "id": 19864447,
+        "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+        "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/web-flow",
+        "html_url": "https://github.com/web-flow",
+        "followers_url": "https://api.github.com/users/web-flow/followers",
+        "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+        "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+        "organizations_url": "https://api.github.com/users/web-flow/orgs",
+        "repos_url": "https://api.github.com/users/web-flow/repos",
+        "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/web-flow/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "cbb452dbb42360971b7d7c408aca8d54f66043fb",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/cbb452dbb42360971b7d7c408aca8d54f66043fb",
+          "html_url": "https://github.com/Kludex/starlette/commit/cbb452dbb42360971b7d7c408aca8d54f66043fb"
+        },
+        {
+          "sha": "349cc73763e66f48dff3be7e87b4a9f354911664",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/349cc73763e66f48dff3be7e87b4a9f354911664",
+          "html_url": "https://github.com/Kludex/starlette/commit/349cc73763e66f48dff3be7e87b4a9f354911664"
+        }
+      ]
+    },
+    {
+      "sha": "8bded74cf692724157bb79e025cc177a2bea525b",
+      "node_id": "MDY6Q29tbWl0MTM4NTk3MzcyOjhiZGVkNzRjZjY5MjcyNDE1N2JiNzllMDI1Y2MxNzdhMmJlYTUyNWI=",
+      "commit": {
+        "author": {
+          "name": "Tom Christie",
+          "email": "tom@tomchristie.com",
+          "date": "2020-06-29T11:54:37Z"
+        },
+        "committer": {
+          "name": "Tom Christie",
+          "email": "tom@tomchristie.com",
+          "date": "2020-06-29T11:54:37Z"
+        },
+        "message": "Linting",
+        "tree": {
+          "sha": "6ba3072709993a8524c8a90fa386119d6966a55c",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/6ba3072709993a8524c8a90fa386119d6966a55c"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/8bded74cf692724157bb79e025cc177a2bea525b",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/8bded74cf692724157bb79e025cc177a2bea525b",
+      "html_url": "https://github.com/Kludex/starlette/commit/8bded74cf692724157bb79e025cc177a2bea525b",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/8bded74cf692724157bb79e025cc177a2bea525b/comments",
+      "author": {
+        "login": "lovelydinosaur",
+        "id": 647359,
+        "node_id": "MDQ6VXNlcjY0NzM1OQ==",
+        "avatar_url": "https://avatars.githubusercontent.com/u/647359?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/lovelydinosaur",
+        "html_url": "https://github.com/lovelydinosaur",
+        "followers_url": "https://api.github.com/users/lovelydinosaur/followers",
+        "following_url": "https://api.github.com/users/lovelydinosaur/following{/other_user}",
+        "gists_url": "https://api.github.com/users/lovelydinosaur/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/lovelydinosaur/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/lovelydinosaur/subscriptions",
+        "organizations_url": "https://api.github.com/users/lovelydinosaur/orgs",
+        "repos_url": "https://api.github.com/users/lovelydinosaur/repos",
+        "events_url": "https://api.github.com/users/lovelydinosaur/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/lovelydinosaur/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "lovelydinosaur",
+        "id": 647359,
+        "node_id": "MDQ6VXNlcjY0NzM1OQ==",
+        "avatar_url": "https://avatars.githubusercontent.com/u/647359?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/lovelydinosaur",
+        "html_url": "https://github.com/lovelydinosaur",
+        "followers_url": "https://api.github.com/users/lovelydinosaur/followers",
+        "following_url": "https://api.github.com/users/lovelydinosaur/following{/other_user}",
+        "gists_url": "https://api.github.com/users/lovelydinosaur/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/lovelydinosaur/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/lovelydinosaur/subscriptions",
+        "organizations_url": "https://api.github.com/users/lovelydinosaur/orgs",
+        "repos_url": "https://api.github.com/users/lovelydinosaur/repos",
+        "events_url": "https://api.github.com/users/lovelydinosaur/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/lovelydinosaur/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "22bc624bf7cf8d12ccb282c836ea23268207be09",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/22bc624bf7cf8d12ccb282c836ea23268207be09",
+          "html_url": "https://github.com/Kludex/starlette/commit/22bc624bf7cf8d12ccb282c836ea23268207be09"
+        }
+      ]
+    },
+    {
+      "sha": "b07436a961e02d52d54168e149c90fe6cd7e0002",
+      "node_id": "MDY6Q29tbWl0MTM4NTk3MzcyOmIwNzQzNmE5NjFlMDJkNTJkNTQxNjhlMTQ5YzkwZmU2Y2Q3ZTAwMDI=",
+      "commit": {
+        "author": {
+          "name": "Tom Christie",
+          "email": "tom@tomchristie.com",
+          "date": "2020-06-30T10:33:27Z"
+        },
+        "committer": {
+          "name": "GitHub",
+          "email": "noreply@github.com",
+          "date": "2020-06-30T10:33:27Z"
+        },
+        "message": "Merge branch 'master' into staticfiles-traversal",
+        "tree": {
+          "sha": "3afc1b3d998a7464267052e83c00ef754a6fb060",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/3afc1b3d998a7464267052e83c00ef754a6fb060"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/b07436a961e02d52d54168e149c90fe6cd7e0002",
+        "comment_count": 0,
+        "verification": {
+          "verified": true,
+          "reason": "valid",
+          "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsBcBAABCAAQBQJe+xT3CRBK7hj4Ov3rIwAAdHIIAEGy7DWi4q1rsZ6Gh7u0/nFp\nlSmgDMfftKU8xEosVRLMNVuIBoVjs3GwCHnVicjBR6nCfZ8UIWRnx0S1vjhrYRll\nORN6SIpP/hGQmPCHnRZ0bRtTEJldVm6WzanDG7Z2rad3hXq3eaSFuxsfDua5aWgN\na3Zck19mMeWtb6/S0rYWfp4qULHEUXzRMM0n6qALZsh0OZ2BffuGrm3PQf7lJ8Di\nScSoHtFWUp/tYnYt1nG27vOg75XCHTECWvmNQHKu6V4+xmVR4To7SqWB7xlwwzuP\nHAI+b0FGZGnmEbD6RyL1vZY+NMb2fkdP3qsfNo6pl1ZLMfc812aJL6LMXfA2G0c=\n=HGFy\n-----END PGP SIGNATURE-----\n",
+          "payload": "tree 3afc1b3d998a7464267052e83c00ef754a6fb060\nparent 8bded74cf692724157bb79e025cc177a2bea525b\nparent ced8c350c459f22381ae00064e204b4620aa3d58\nauthor Tom Christie <tom@tomchristie.com> 1593513207 +0100\ncommitter GitHub <noreply@github.com> 1593513207 +0100\n\nMerge branch 'master' into staticfiles-traversal",
+          "verified_at": "2024-01-16T19:59:59Z"
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/b07436a961e02d52d54168e149c90fe6cd7e0002",
+      "html_url": "https://github.com/Kludex/starlette/commit/b07436a961e02d52d54168e149c90fe6cd7e0002",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/b07436a961e02d52d54168e149c90fe6cd7e0002/comments",
+      "author": {
+        "login": "lovelydinosaur",
+        "id": 647359,
+        "node_id": "MDQ6VXNlcjY0NzM1OQ==",
+        "avatar_url": "https://avatars.githubusercontent.com/u/647359?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/lovelydinosaur",
+        "html_url": "https://github.com/lovelydinosaur",
+        "followers_url": "https://api.github.com/users/lovelydinosaur/followers",
+        "following_url": "https://api.github.com/users/lovelydinosaur/following{/other_user}",
+        "gists_url": "https://api.github.com/users/lovelydinosaur/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/lovelydinosaur/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/lovelydinosaur/subscriptions",
+        "organizations_url": "https://api.github.com/users/lovelydinosaur/orgs",
+        "repos_url": "https://api.github.com/users/lovelydinosaur/repos",
+        "events_url": "https://api.github.com/users/lovelydinosaur/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/lovelydinosaur/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "web-flow",
+        "id": 19864447,
+        "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+        "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/web-flow",
+        "html_url": "https://github.com/web-flow",
+        "followers_url": "https://api.github.com/users/web-flow/followers",
+        "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+        "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+        "organizations_url": "https://api.github.com/users/web-flow/orgs",
+        "repos_url": "https://api.github.com/users/web-flow/repos",
+        "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/web-flow/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "8bded74cf692724157bb79e025cc177a2bea525b",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/8bded74cf692724157bb79e025cc177a2bea525b",
+          "html_url": "https://github.com/Kludex/starlette/commit/8bded74cf692724157bb79e025cc177a2bea525b"
+        },
+        {
+          "sha": "ced8c350c459f22381ae00064e204b4620aa3d58",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/ced8c350c459f22381ae00064e204b4620aa3d58",
+          "html_url": "https://github.com/Kludex/starlette/commit/ced8c350c459f22381ae00064e204b4620aa3d58"
+        }
+      ]
+    },
+    {
+      "sha": "a260a36c3c75225f7bb3debe21de6744d3b46cc6",
+      "node_id": "MDY6Q29tbWl0MTM4NTk3MzcyOmEyNjBhMzZjM2M3NTIyNWY3YmIzZGViZTIxZGU2NzQ0ZDNiNDZjYzY=",
+      "commit": {
+        "author": {
+          "name": "Tom Christie",
+          "email": "tom@tomchristie.com",
+          "date": "2020-07-16T14:12:41Z"
+        },
+        "committer": {
+          "name": "GitHub",
+          "email": "noreply@github.com",
+          "date": "2020-07-16T14:12:41Z"
+        },
+        "message": "Merge branch 'master' into staticfiles-traversal",
+        "tree": {
+          "sha": "cc5ab3fe75c63fa976446c69291aa7391d40ecd4",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/cc5ab3fe75c63fa976446c69291aa7391d40ecd4"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/a260a36c3c75225f7bb3debe21de6744d3b46cc6",
+        "comment_count": 0,
+        "verification": {
+          "verified": true,
+          "reason": "valid",
+          "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsBcBAABCAAQBQJfEGBZCRBK7hj4Ov3rIwAAdHIIACNbEvhoG8LrXV07Ta/15tBO\n1X+r1WcgHXELzEYGk+r0cDXM2/jwHO3xpQIKRIP48P1ed89V+G19cIGrym6go7Xp\n5fQNnjDyeDyVsWO0hi40RgCtEUHNvyCsiuiglfOm+moVm9LaDuoNoEOjFEpDUsNM\n0sPyCfKV/J3P49I5wp/NMhZgUeE0+sPGGRSRS+qvY2OXDPB9S0YLSvHzNsI8eyCI\nK649fU8LrO0Std7rdAbeWaZKs88R7LUrKTFe4/JzTYMzx2TqLyEUBnne/1tbvOda\nE5a+g+FyPYS9zRA6u1r229mawQ5Zhv1d5tl0mDKOTJyvcdWrQvcZ7Z1IyfBZhpU=\n=rKjk\n-----END PGP SIGNATURE-----\n",
+          "payload": "tree cc5ab3fe75c63fa976446c69291aa7391d40ecd4\nparent b07436a961e02d52d54168e149c90fe6cd7e0002\nparent 85b9c2642b6b806c0d0c33e5418914893a5789f6\nauthor Tom Christie <tom@tomchristie.com> 1594908761 +0100\ncommitter GitHub <noreply@github.com> 1594908761 +0100\n\nMerge branch 'master' into staticfiles-traversal",
+          "verified_at": "2024-01-16T19:59:59Z"
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/a260a36c3c75225f7bb3debe21de6744d3b46cc6",
+      "html_url": "https://github.com/Kludex/starlette/commit/a260a36c3c75225f7bb3debe21de6744d3b46cc6",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/a260a36c3c75225f7bb3debe21de6744d3b46cc6/comments",
+      "author": {
+        "login": "lovelydinosaur",
+        "id": 647359,
+        "node_id": "MDQ6VXNlcjY0NzM1OQ==",
+        "avatar_url": "https://avatars.githubusercontent.com/u/647359?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/lovelydinosaur",
+        "html_url": "https://github.com/lovelydinosaur",
+        "followers_url": "https://api.github.com/users/lovelydinosaur/followers",
+        "following_url": "https://api.github.com/users/lovelydinosaur/following{/other_user}",
+        "gists_url": "https://api.github.com/users/lovelydinosaur/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/lovelydinosaur/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/lovelydinosaur/subscriptions",
+        "organizations_url": "https://api.github.com/users/lovelydinosaur/orgs",
+        "repos_url": "https://api.github.com/users/lovelydinosaur/repos",
+        "events_url": "https://api.github.com/users/lovelydinosaur/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/lovelydinosaur/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "web-flow",
+        "id": 19864447,
+        "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+        "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/web-flow",
+        "html_url": "https://github.com/web-flow",
+        "followers_url": "https://api.github.com/users/web-flow/followers",
+        "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+        "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+        "organizations_url": "https://api.github.com/users/web-flow/orgs",
+        "repos_url": "https://api.github.com/users/web-flow/repos",
+        "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/web-flow/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "b07436a961e02d52d54168e149c90fe6cd7e0002",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/b07436a961e02d52d54168e149c90fe6cd7e0002",
+          "html_url": "https://github.com/Kludex/starlette/commit/b07436a961e02d52d54168e149c90fe6cd7e0002"
+        },
+        {
+          "sha": "85b9c2642b6b806c0d0c33e5418914893a5789f6",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/85b9c2642b6b806c0d0c33e5418914893a5789f6",
+          "html_url": "https://github.com/Kludex/starlette/commit/85b9c2642b6b806c0d0c33e5418914893a5789f6"
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "sha": "4ea2f1b5ad6dd8e4400267bc0c920dc1bd8ec720",
+      "filename": "starlette/staticfiles.py",
+      "status": "modified",
+      "additions": 6,
+      "deletions": 6,
+      "changes": 12,
+      "blob_url": "https://github.com/Kludex/starlette/blob/a260a36c3c75225f7bb3debe21de6744d3b46cc6/starlette%2Fstaticfiles.py",
+      "raw_url": "https://github.com/Kludex/starlette/raw/a260a36c3c75225f7bb3debe21de6744d3b46cc6/starlette%2Fstaticfiles.py",
+      "contents_url": "https://api.github.com/repos/Kludex/starlette/contents/starlette%2Fstaticfiles.py?ref=a260a36c3c75225f7bb3debe21de6744d3b46cc6",
+      "patch": "@@ -107,12 +107,6 @@ async def get_response(self, path: str, scope: Scope) -> Response:\n         if scope[\"method\"] not in (\"GET\", \"HEAD\"):\n             return PlainTextResponse(\"Method Not Allowed\", status_code=405)\n \n-        if path.startswith(\"..\"):\n-            # Most clients will normalize the path, so we shouldn't normally\n-            # get this, but don't allow misbehaving clients to break out of\n-            # the static files directory.\n-            return PlainTextResponse(\"Not Found\", status_code=404)\n-\n         full_path, stat_result = await self.lookup_path(path)\n \n         if stat_result and stat.S_ISREG(stat_result.st_mode):\n@@ -147,6 +141,12 @@ async def lookup_path(\n     ) -> typing.Tuple[str, typing.Optional[os.stat_result]]:\n         for directory in self.all_directories:\n             full_path = os.path.join(directory, path)\n+            if (\n+                os.path.commonprefix([os.path.realpath(full_path), directory])\n+                != directory\n+            ):\n+                # Don't allow misbehaving clients to break out of the static files directory.\n+                continue\n             try:\n                 stat_result = await aio_stat(full_path)\n                 return (full_path, stat_result)"
+    }
+  ]
+}
