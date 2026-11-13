@@ -5,13 +5,14 @@
 [Review contract and JSON fields](REVIEW_CONTRACT.md) ·
 [Seeded read-only demo](https://outrider-review.duckdns.org/#token=demo_0d4890832aa14a0c0b3d64cb38bae952) (keyless, read-only, six seeded reviews)
 
-Outrider reviews GitHub pull requests on your own server. Its goal is to make
-security and correctness checks part of everyday development. It can post a GitHub
-review with inline comments and suggested fixes. It supports Python, JavaScript, TypeScript,
-and TSX. Usually, when the code parses without errors, the model sees complete code
-sections, such as functions or classes, affected by additions or deletions and
-the matching parts of the diff. Changes outside those sections receive bounded
-current-source regions. Supported configuration files receive text review.
+Outrider reviews GitHub pull requests on your own server. It puts security and
+correctness checks in the normal pull request workflow. It can post inline
+comments and suggested fixes for Python, JavaScript, TypeScript and TSX.
+
+When code parses without errors, the model usually sees complete functions or
+classes affected by additions or deletions, plus the matching diff. Changes
+outside those sections receive bounded current-source regions. Supported
+configuration files receive text review.
 
 Whole-file removals receive a bounded review of the removed BASE source and any
 available captured importer references. Removal findings require human approval
@@ -56,7 +57,7 @@ share the application database. Set retention controls for that store yourself.
 > [!IMPORTANT]
 > Outrider is under active development. The core GitHub review workflow is implemented, tested,
 > and has driven real pull requests end-to-end on sandbox repositories. It has no production
-> users yet, and configuration surfaces and APIs may still change before a stable release. Read
+> users yet, and settings and APIs may still change before a stable release. Read
 > [What Outrider is not](#what-outrider-is-not) before forming expectations.
 
 ## Table of contents

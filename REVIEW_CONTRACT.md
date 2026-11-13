@@ -2,8 +2,8 @@
 
 Outrider selects code from a GitHub pull request, collects model proposals and
 structural findings, and prepares accepted findings for human approval and GitHub
-publication. This reference describes the current implementation, including the
-optional checker that judges whether a warning still applies after a fix attempt.
+publication. This reference describes the current implementation, including
+optional follow-up assessments of saved model warnings.
 
 Read the [workflow](#review-flow) for responsibilities, the
 [issue catalog](#issue-catalog) for accepted categories, and the
@@ -34,9 +34,10 @@ measurement. Passing validation does not prove a bug.
 | Human approval | Reviewer approves, rejects, suppresses, or explicitly overrides severity. | Enforces the approval partition and records the decision and reviewer. |
 | Publish | None. | Applies approval rules, chooses comment placement, sanitizes output, and posts an eligible GitHub review. Approved BASE removal findings go into a labeled review-body section. V1 posts `COMMENT`, not a GitHub approval or request for changes. |
 
-The analyzer checks whether previously supported public calls now fail, including
-valid non-default argument combinations. A concrete trigger can follow from the
-supplied signatures and before/after code without a repository call site. Unknown
+The analyzer is instructed to check whether previously supported public calls now
+fail, including valid non-default argument combinations. A concrete trigger can
+follow from the supplied signatures and before/after code without a repository
+call site. Unknown
 contracts and inputs already rejected before the change do not establish a bug.
 
 There are three different objects to follow through this flow:

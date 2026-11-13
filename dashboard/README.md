@@ -38,10 +38,10 @@ decision sends the same request. [demo.ts](src/lib/demo.ts) requires confirmatio
 that the server is in production mode before the page enables submission.
 
 Saved warnings load only when expanded, with pagination and manual refresh.
-Their [read API](../src/outrider/api/dashboard/candidates.py) follows the original
-exchange's installation, evaluation scope and retention expiry. Expired content
-leaves a metadata-only stub. Unknown categories have no assigned policy priority
-and cannot be approved from this panel. An accepted finding disputed by a
+Their [read API](../src/outrider/api/dashboard/candidates.py) uses the original
+exchange's installation, evaluation scope and retention expiry. When content
+expires, only its metadata remains. Unknown categories have no assigned policy
+priority and cannot be approved from this panel. An accepted finding disputed by a
 follow-up check joins the ordinary approval queue even at low priority; these
 verification holds allow approve, reject or suppress, without a severity override.
 Findings about whole-file removals also require approval. Their **Removed BASE**
