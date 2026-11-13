@@ -1,23 +1,18 @@
-# See DECISIONS.md#065-authorization-is-a-live-github-check-the-local-install-db-is-a-cache
-# See DECISIONS.md#067 (session-scoped advisory lock exception to sweep-jobs-use-advisory-locks)
-"""Refresh the local installation cache from GitHub's authoritative list.
+"""Refresh local installation state from GitHub before retention cleanup.
 
-Missed deletion webhooks leave installs that need tombstoning; reinstalls
-need live confirmation before clearing a tombstone (`DECISIONS.md#065/#012`).
-`list_installation_ids` raises on failed/partial fetches, so those failures
-never reconcile against an empty-by-error list.
+Only confirmed results mark an installation deleted or restore it. Failed or
+partial fetches leave local state unchanged. A session lock covers the network
+work without holding a database transaction; purge uses only a successful
+reconciliation result.
 
-A dedicated connection holds the session-scoped `RECONCILE_LOCK_ID` across
-the network call (`#067`), without an open transaction during that call.
-The two cache updates share a separate short transaction. The runner permits
-installation purge only after a successful reconcile in the same tick.
+See DECISIONS.md#012, #065, #067 and sweep-jobs-use-advisory-locks.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final
 
 from sqlalchemy import text, update
@@ -25,6 +20,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from outrider.db.models.installations import Installation
 from outrider.github.authz import list_installation_ids
+from outrider.github.installation_policy import (
+    INSTALLATION_TOMBSTONE_GRACE as _TOMBSTONE_GRACE,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
@@ -36,12 +34,6 @@ logger = logging.getLogger(__name__)
 # SESSION-scoped advisory lock id for the reconcile janitor (`#067`) — distinct from the
 # transaction-scoped `SWEEP_LOCK_ID` (0x4F55545244520001) used by the time-based sweeps.
 RECONCILE_LOCK_ID: Final[int] = 0x4F55545244520002
-
-# `#012` tombstone grace window. Duplicated from
-# `api/webhooks/installation_events._TOMBSTONE_GRACE` (the webhook `deleted` handler) to avoid a
-# sweep→webhook layering dependency; the two MUST stay equal. FUP-226 unifies both into a single
-# `pydantic-settings` value, retiring this duplication.
-_TOMBSTONE_GRACE: Final[timedelta] = timedelta(days=30)
 
 
 @dataclass(frozen=True)

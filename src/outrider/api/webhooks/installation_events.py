@@ -1,28 +1,27 @@
-# See DECISIONS.md#065-authorization-is-a-live-github-check-the-local-install-db-is-a-cache
-"""Maintain local installation hints and retention state from signed webhooks.
+"""Update local installation records from verified GitHub events.
 
-The router verifies and parses the delivery, then supplies a session and owns
-the transaction. Handlers allowlist actions and make unknown actions a 2xx
-no-op. These tables provide display state and an early webhook filter; live
-GitHub checks remain the authorization authority (DECISIONS.md#065).
+Handlers use the router's transaction and ignore unknown actions. These records
+support display and an early webhook check; live GitHub checks still decide
+access. Created-event retries never clear deletion markers. Reconciliation can
+restore an installation only after GitHub confirms it exists.
 
-A created event preserves existing tombstones: an old redelivery must not cancel
-an uninstall purge (DECISIONS.md#012). sweep/reconcile_installations.py restores
-only installations confirmed live by GitHub. The all-to-selected repository
-transition remains a reconciliation follow-up (FUP-227); the grace period's
-configuration follow-up is FUP-226. See specs/2026-07-06-b2-installation-lifecycle.md.
+See DECISIONS.md#065, #012 and specs/2026-07-06-b2-installation-lifecycle.md.
+Repository-selection reconciliation and configurable grace remain FUP-227/FUP-226.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from outrider.db.models.installations import Installation, InstallationRepository
+from outrider.github.installation_policy import (
+    INSTALLATION_TOMBSTONE_GRACE as _TOMBSTONE_GRACE,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,13 +34,6 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
-
-# `#012` grace window: how long after an uninstall (`installation.deleted`) before the
-# hard-delete purge runs. `#012` makes this an operator-tunable config default (captured in
-# ITERATION_LOG, not the decision text); 30 days is an accidental-uninstall recovery window,
-# privacy-favoring (shorter than the 90-day content retention). FUP-226 tracks moving it to
-# `pydantic-settings` so operators can override without a code change (per `#012`).
-_TOMBSTONE_GRACE: Final[timedelta] = timedelta(days=30)
 
 # Handler-side action allowlists (unknown -> 2xx no-op; see module docstring).
 _INSTALLATION_ACTIONS: Final[frozenset[str]] = frozenset(
@@ -119,16 +111,15 @@ async def _upsert_installation(
     inst: WebhookInstallationDetail,
     repositories: tuple[InstallationRepositoryRef, ...],
 ) -> None:
-    """Upsert the `installations` cache row on `created`. Does NOT touch the tombstone: per the
-    spec's round-12 restore finding, a redelivered OLD `created` (from before an uninstall) is
-    indistinguishable from a real reinstall, so blindly clearing `tombstoned_at` would silently
-    CANCEL a legitimate `#012` retention purge. Restore is therefore deferred to the janitor's
-    LIVE App-JWT-confirmed path (clears the tombstone only for installs GitHub still lists). A
-    FRESH install inserts with `tombstoned_at = NULL` (column default); an EXISTING tombstone is
-    left untouched here (the non-lifecycle fields are still refreshed).
+    """Refresh installation hints while preserving any existing tombstone.
 
-    For a `selected` install, seed `installation_repositories` from the payload's granted repos
-    (`all` never enumerates the unbounded list — the gate reads the install itself)."""
+    A stale created-event redelivery cannot be distinguished from reinstalling.
+    Clearing its tombstone could cancel a #012 retention purge, so restoration
+    requires the janitor's live GitHub confirmation. New rows use the NULL default.
+
+    Seed selected-install membership from the granted repositories. All-repository
+    installs need no unbounded enumeration; the membership gate reads the install.
+    """
     values: dict[str, Any] = {
         "installation_id": inst.id,
         "app_slug": inst.app_slug,
@@ -142,10 +133,7 @@ async def _upsert_installation(
     stmt = pg_insert(Installation).values(**values)
     stmt = stmt.on_conflict_do_update(
         index_elements=[Installation.installation_id],
-        # Refresh the non-lifecycle cache fields only. `tombstoned_at` / `purge_after_at` are
-        # deliberately NOT in the set: a `created` must not clear a tombstone (that is the
-        # janitor's live-confirmed restore — see docstring), or a stale redelivered `created`
-        # would cancel a retention purge.
+        # Omit tombstoned_at and purge_after_at: only live reconciliation may restore.
         set_={
             "app_slug": stmt.excluded.app_slug,
             "account_id": stmt.excluded.account_id,
