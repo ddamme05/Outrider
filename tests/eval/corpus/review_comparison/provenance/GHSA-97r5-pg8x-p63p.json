@@ -1,0 +1,119 @@
+{
+  "ghsa_id": "GHSA-97r5-pg8x-p63p",
+  "cve_id": "CVE-2026-46715",
+  "url": "https://api.github.com/repos/pallets-eco/flask-security/security-advisories/GHSA-97r5-pg8x-p63p",
+  "html_url": "https://github.com/pallets-eco/flask-security/security/advisories/GHSA-97r5-pg8x-p63p",
+  "summary": "Flask-Security-Too OAuth reauthentication freshness bypass via cross-   user OAuth identity acceptance",
+  "description": " ### Summary\r\n\r\n  Flask-Security-Too 5.8.0's OAuth reauthentication flow can mark a\r\n  session as fresh after verifying an OAuth account that belongs to a\r\n  different user.\r\n\r\n  If an attacker can operate an already-authenticated but stale victim\r\n  session, they can complete OAuth verification using their own OAuth\r\n  identity. The victim session is then treated as recently\r\n  reauthenticated, allowing freshness-protected account actions to\r\n  proceed. I reproduced this against the built-in `/change-username`\r\n  route.\r\n\r\n  ### Details\r\n\r\n  The issue is in the OAuth verification callback.\r\n\r\n  `_oauth_response_common()` resolves the OAuth provider identity to a\r\n  Flask-Security user:\r\n\r\n  - `flask_security/oauth_glue.py:101-108`\r\n\r\n  `oauth_verify_response()` then accepts any resolved user and updates\r\n  the current session freshness timestamp:\r\n\r\n  - `flask_security/oauth_glue.py:182-214`\r\n  - `flask_security/oauth_glue.py:201-204`\r\n\r\n  The missing check is that the OAuth-resolved user must match the\r\n  current authenticated session user. In the failing case:\r\n\r\n  - current session user: `victim@example.com`\r\n  - OAuth verified user: `attacker@example.com`\r\n  - session marked fresh: yes\r\n\r\n  So the attacker is not logging in as the victim, but they are\r\n  satisfying the victim session's reauthentication requirement with a\r\n  different account.\r\n\r\n  ### PoC\r\n\r\n  Tested version:\r\n\r\n  - `Flask-Security-Too 5.8.0`\r\n  - tag `5.8.0`\r\n  - commit `08288dff6907e413d848a16aaf43fc2c2b2a3b72`\r\n\r\n  I used a minimal Flask app with:\r\n\r\n  ```python\r\n  SECURITY_OAUTH_ENABLE = True\r\n  SECURITY_OAUTH_BUILTIN_PROVIDERS = [\"github\"]\r\n  SECURITY_FRESHNESS = timedelta(seconds=1)\r\n  SECURITY_FRESHNESS_GRACE_PERIOD = timedelta(seconds=0)\r\n  SECURITY_USERNAME_ENABLE = True\r\n  SECURITY_CHANGE_USERNAME = True\r\n\r\n  The OAuth provider was replaced with a localhost mock provider\r\n  returning attacker@example.com. This avoids hitting a live third-party\r\n  provider while still exercising Flask-Security-Too's real OAuth\r\n  verification handler.\r\n\r\n  Reproduction steps:\r\n\r\n  1. Log in as victim@example.com.\r\n  2. Wait until the session is no longer fresh.\r\n  3. Confirm POST /change-username is blocked with 401 and\r\n     reauth_required=true.\r\n  4. Start OAuth verification with POST /login/oauth-verify-start/\r\n     github.\r\n  5. Complete the callback with an OAuth identity for\r\n     attacker@example.com.\r\n  6. Confirm the session is still for victim@example.com, but fs_paa has\r\n     been updated.\r\n  7. Retry POST /change-username.\r\n  8. The victim user's username is changed successfully.\r\n\r\n  Observed result:\r\n\r\n  {\r\n    \"pre_bypass_status\": 401,\r\n    \"pre_bypass_reauth_required\": true,\r\n    \"attacker_identity\": \"attacker@example.com\",\r\n    \"oauth_verify_response_status\": 302,\r\n    \"post_bypass_change_username_status\": 200,\r\n    \"final_email\": \"victim@example.com\",\r\n    \"final_username\": \"victimowned1777878574\",\r\n    \"direct_impact_verified\": true\r\n  }\r\n\r\n  Note: CSRF was disabled in the local harness only to keep the test\r\n  focused on the reauthentication check. This is not a CSRF bypass\r\n  report.\r\n\r\n  This bypasses Flask-Security-Too's freshness/reauthentication\r\n  boundary.\r\n\r\n  Applications using OAuth verification together with freshness-\r\n  protected account operations may allow a stale victim session to be\r\n  refreshed using a different user's OAuth account. In my test, this\r\n  allowed the victim account's username to be changed through Flask-\r\n  Security-Too's built-in /change-username route.\r\n\r\n  A likely fix is to reject OAuth verification unless the resolved OAuth\r\n  user matches current_user before updating session[\"fs_paa\"].",
+  "severity": "medium",
+  "author": null,
+  "publisher": {
+    "login": "jwag956",
+    "id": 1002831,
+    "node_id": "MDQ6VXNlcjEwMDI4MzE=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/1002831?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/jwag956",
+    "html_url": "https://github.com/jwag956",
+    "followers_url": "https://api.github.com/users/jwag956/followers",
+    "following_url": "https://api.github.com/users/jwag956/following{/other_user}",
+    "gists_url": "https://api.github.com/users/jwag956/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/jwag956/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/jwag956/subscriptions",
+    "organizations_url": "https://api.github.com/users/jwag956/orgs",
+    "repos_url": "https://api.github.com/users/jwag956/repos",
+    "events_url": "https://api.github.com/users/jwag956/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/jwag956/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "identifiers": [
+    {
+      "value": "GHSA-97r5-pg8x-p63p",
+      "type": "GHSA"
+    },
+    {
+      "value": "CVE-2026-46715",
+      "type": "CVE"
+    }
+  ],
+  "state": "published",
+  "created_at": null,
+  "updated_at": "2026-05-21T19:03:13Z",
+  "published_at": "2026-05-17T02:47:08Z",
+  "closed_at": null,
+  "withdrawn_at": null,
+  "submission": null,
+  "vulnerabilities": [
+    {
+      "package": {
+        "ecosystem": "pip",
+        "name": "Flask-Security-Too"
+      },
+      "vulnerable_version_range": ">= 5.8.0",
+      "patched_versions": "5.8.1",
+      "vulnerable_functions": []
+    }
+  ],
+  "cvss_severities": {
+    "cvss_v3": {
+      "vector_string": null,
+      "score": null
+    },
+    "cvss_v4": {
+      "vector_string": null,
+      "score": null
+    }
+  },
+  "cwes": [
+    {
+      "cwe_id": "CWE-287",
+      "name": "Improper Authentication"
+    }
+  ],
+  "cwe_ids": [
+    "CWE-287"
+  ],
+  "credits": [
+    {
+      "login": "0xHunSec",
+      "type": "reporter"
+    }
+  ],
+  "credits_detailed": [
+    {
+      "user": {
+        "login": "0xHunSec",
+        "id": 39668014,
+        "node_id": "MDQ6VXNlcjM5NjY4MDE0",
+        "avatar_url": "https://avatars.githubusercontent.com/u/39668014?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/0xHunSec",
+        "html_url": "https://github.com/0xHunSec",
+        "followers_url": "https://api.github.com/users/0xHunSec/followers",
+        "following_url": "https://api.github.com/users/0xHunSec/following{/other_user}",
+        "gists_url": "https://api.github.com/users/0xHunSec/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/0xHunSec/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/0xHunSec/subscriptions",
+        "organizations_url": "https://api.github.com/users/0xHunSec/orgs",
+        "repos_url": "https://api.github.com/users/0xHunSec/repos",
+        "events_url": "https://api.github.com/users/0xHunSec/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/0xHunSec/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "type": "reporter",
+      "state": "accepted"
+    }
+  ],
+  "collaborating_users": null,
+  "collaborating_teams": null,
+  "private_fork": null,
+  "comments": 2,
+  "cvss": {
+    "vector_string": null,
+    "score": null
+  }
+}

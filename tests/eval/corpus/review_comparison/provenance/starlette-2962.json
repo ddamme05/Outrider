@@ -1,0 +1,199 @@
+{
+  "head_commit": {
+    "sha": "50ae503979834a125b5a98e91781d30b17cd7b31",
+    "node_id": "C_kwDOCELT_NoAKDUwYWU1MDM5Nzk4MzRhMTI1YjVhOThlOTE3ODFkMzBiMTdjZDdiMzE",
+    "commit": {
+      "author": {
+        "name": "Marcelo Trylesinski",
+        "email": "marcelotryle@gmail.com",
+        "date": "2025-07-20T13:25:13Z"
+      },
+      "committer": {
+        "name": "Marcelo Trylesinski",
+        "email": "marcelotryle@gmail.com",
+        "date": "2025-07-20T13:25:13Z"
+      },
+      "message": "modify opinionated changes",
+      "tree": {
+        "sha": "fcf30a658518f017bd570f9d857c571529316787",
+        "url": "https://api.github.com/repos/Kludex/starlette/git/trees/fcf30a658518f017bd570f9d857c571529316787"
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/git/commits/50ae503979834a125b5a98e91781d30b17cd7b31",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null,
+        "verified_at": null
+      }
+    },
+    "url": "https://api.github.com/repos/Kludex/starlette/commits/50ae503979834a125b5a98e91781d30b17cd7b31",
+    "html_url": "https://github.com/Kludex/starlette/commit/50ae503979834a125b5a98e91781d30b17cd7b31",
+    "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/50ae503979834a125b5a98e91781d30b17cd7b31/comments",
+    "author": {
+      "login": "Kludex",
+      "id": 7353520,
+      "node_id": "MDQ6VXNlcjczNTM1MjA=",
+      "avatar_url": "https://avatars.githubusercontent.com/u/7353520?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/Kludex",
+      "html_url": "https://github.com/Kludex",
+      "followers_url": "https://api.github.com/users/Kludex/followers",
+      "following_url": "https://api.github.com/users/Kludex/following{/other_user}",
+      "gists_url": "https://api.github.com/users/Kludex/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/Kludex/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/Kludex/subscriptions",
+      "organizations_url": "https://api.github.com/users/Kludex/orgs",
+      "repos_url": "https://api.github.com/users/Kludex/repos",
+      "events_url": "https://api.github.com/users/Kludex/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/Kludex/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "Kludex",
+      "id": 7353520,
+      "node_id": "MDQ6VXNlcjczNTM1MjA=",
+      "avatar_url": "https://avatars.githubusercontent.com/u/7353520?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/Kludex",
+      "html_url": "https://github.com/Kludex",
+      "followers_url": "https://api.github.com/users/Kludex/followers",
+      "following_url": "https://api.github.com/users/Kludex/following{/other_user}",
+      "gists_url": "https://api.github.com/users/Kludex/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/Kludex/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/Kludex/subscriptions",
+      "organizations_url": "https://api.github.com/users/Kludex/orgs",
+      "repos_url": "https://api.github.com/users/Kludex/repos",
+      "events_url": "https://api.github.com/users/Kludex/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/Kludex/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "f1fee10953ab123215c72b3af6b02610f18ec261",
+        "url": "https://api.github.com/repos/Kludex/starlette/commits/f1fee10953ab123215c72b3af6b02610f18ec261",
+        "html_url": "https://github.com/Kludex/starlette/commit/f1fee10953ab123215c72b3af6b02610f18ec261"
+      }
+    ],
+    "stats": {
+      "total": 64,
+      "additions": 36,
+      "deletions": 28
+    },
+    "files": [
+      {
+        "sha": "38eabec52743cb04dde53b17fdc19fe074a12841",
+        "filename": "starlette/datastructures.py",
+        "status": "modified",
+        "additions": 2,
+        "deletions": 3,
+        "changes": 5,
+        "blob_url": "https://github.com/Kludex/starlette/blob/50ae503979834a125b5a98e91781d30b17cd7b31/starlette%2Fdatastructures.py",
+        "raw_url": "https://github.com/Kludex/starlette/raw/50ae503979834a125b5a98e91781d30b17cd7b31/starlette%2Fdatastructures.py",
+        "contents_url": "https://api.github.com/repos/Kludex/starlette/contents/starlette%2Fdatastructures.py?ref=50ae503979834a125b5a98e91781d30b17cd7b31",
+        "patch": "@@ -428,9 +428,8 @@ def __init__(\n         self.size = size\n         self.headers = headers or Headers()\n \n-        # Capture max size from SpooledTemporaryFile if one is provided. This\n-        # slightly speeds up future checks. Note 0 means unlimited mirroring\n-        # SpooledTemporaryFile's __init__\n+        # Capture max size from SpooledTemporaryFile if one is provided. This slightly speeds up future checks.\n+        # Note 0 means unlimited mirroring SpooledTemporaryFile's __init__\n         self._max_mem_size = getattr(self.file, \"_max_size\", 0)\n \n     @property"
+      },
+      {
+        "sha": "58f6a0c738814e00a7e095c0ce9346773c1c5df6",
+        "filename": "tests/test_formparsers.py",
+        "status": "modified",
+        "additions": 34,
+        "deletions": 25,
+        "changes": 59,
+        "blob_url": "https://github.com/Kludex/starlette/blob/50ae503979834a125b5a98e91781d30b17cd7b31/tests%2Ftest_formparsers.py",
+        "raw_url": "https://github.com/Kludex/starlette/raw/50ae503979834a125b5a98e91781d30b17cd7b31/tests%2Ftest_formparsers.py",
+        "contents_url": "https://api.github.com/repos/Kludex/starlette/contents/tests%2Ftest_formparsers.py?ref=50ae503979834a125b5a98e91781d30b17cd7b31",
+        "patch": "@@ -2,11 +2,12 @@\n \n import os\n import threading\n+from collections.abc import Generator\n from contextlib import AbstractContextManager, nullcontext as does_not_raise\n from io import BytesIO\n from pathlib import Path\n from tempfile import SpooledTemporaryFile\n-from typing import Any\n+from typing import Any, ClassVar\n from unittest import mock\n \n import pytest\n@@ -109,8 +110,10 @@ async def app_read_body(scope: Scope, receive: Receive, send: Send) -> None:\n \n \n async def app_monitor_thread(scope: Scope, receive: Receive, send: Send) -> None:\n-    \"\"\"Helper app to monitor what thread the app was called on. This can later\n-    be used to validate thread/event loop operations\"\"\"\n+    \"\"\"Helper app to monitor what thread the app was called on.\n+\n+    This can later be used to validate thread/event loop operations.\n+    \"\"\"\n     request = Request(scope, receive)\n \n     # Make sure we parse the form\n@@ -322,38 +325,44 @@ def test_multipart_request_mixed_files_and_data(tmpdir: Path, test_client_factor\n \n \n class ThreadTrackingSpooledTemporaryFile(SpooledTemporaryFile[bytes]):\n-    \"\"\"Helper class to track which threads performed the rollover operation. This is\n-    not threadsafe/multi-test safe\"\"\"\n+    \"\"\"Helper class to track which threads performed the rollover operation.\n+\n+    This is not threadsafe/multi-test safe.\n+    \"\"\"\n \n-    rollover_threads: set[int | None] = set()\n+    rollover_threads: ClassVar[set[int | None]] = set()\n \n     def rollover(self) -> None:\n         ThreadTrackingSpooledTemporaryFile.rollover_threads.add(threading.current_thread().ident)\n         super().rollover()\n \n \n-def test_multipart_request_large_file(tmpdir: Path, test_client_factory: TestClientFactory) -> None:\n-    \"\"\"Test that Spooled file rollovers happen in background threads\"\"\"\n-    data = BytesIO(b\" \" * MultiPartParser.spool_max_size * 2)\n+@pytest.fixture\n+def mock_spooled_temporary_file() -> Generator[None]:\n+    try:\n+        with mock.patch(\"starlette.formparsers.SpooledTemporaryFile\", ThreadTrackingSpooledTemporaryFile):\n+            yield\n+    finally:\n+        ThreadTrackingSpooledTemporaryFile.rollover_threads.clear()\n \n-    # Mock the formparser to use our monitoring class\n-    ThreadTrackingSpooledTemporaryFile.rollover_threads.clear()\n-    with mock.patch(\"starlette.formparsers.SpooledTemporaryFile\", ThreadTrackingSpooledTemporaryFile):\n-        client = test_client_factory(app_monitor_thread)\n-        response = client.post(\n-            \"/\",\n-            files=[(\"test_large\", data)],\n-        )\n-        assert response.status_code == 200\n \n-        # Parse the event thread id from the API response and ensure we have one\n-        app_thread_ident = response.json().get(\"thread_ident\")\n-        assert app_thread_ident\n+def test_multipart_request_large_file_rollover_in_background_thread(\n+    mock_spooled_temporary_file: None, test_client_factory: TestClientFactory\n+) -> None:\n+    \"\"\"Test that Spooled file rollovers happen in background threads.\"\"\"\n+    data = BytesIO(b\" \" * (MultiPartParser.spool_max_size + 1))\n+\n+    client = test_client_factory(app_monitor_thread)\n+    response = client.post(\"/\", files=[(\"test_large\", data)])\n+    assert response.status_code == 200\n+\n+    # Parse the event thread id from the API response and ensure we have one\n+    app_thread_ident = response.json().get(\"thread_ident\")\n+    assert app_thread_ident is not None\n \n-        # Ensure the app thread was not the same as the rollover one and that a rollover thread\n-        # exists\n-        assert app_thread_ident not in ThreadTrackingSpooledTemporaryFile.rollover_threads\n-        assert len(ThreadTrackingSpooledTemporaryFile.rollover_threads) > 0\n+    # Ensure the app thread was not the same as the rollover one and that a rollover thread exists\n+    assert app_thread_ident not in ThreadTrackingSpooledTemporaryFile.rollover_threads\n+    assert len(ThreadTrackingSpooledTemporaryFile.rollover_threads) == 1\n \n \n def test_multipart_request_with_charset_for_filename(tmpdir: Path, test_client_factory: TestClientFactory) -> None:"
+      }
+    ]
+  },
+  "selected_file_last_touch": [
+    {
+      "sha": "50ae503979834a125b5a98e91781d30b17cd7b31",
+      "node_id": "C_kwDOCELT_NoAKDUwYWU1MDM5Nzk4MzRhMTI1YjVhOThlOTE3ODFkMzBiMTdjZDdiMzE",
+      "commit": {
+        "author": {
+          "name": "Marcelo Trylesinski",
+          "email": "marcelotryle@gmail.com",
+          "date": "2025-07-20T13:25:13Z"
+        },
+        "committer": {
+          "name": "Marcelo Trylesinski",
+          "email": "marcelotryle@gmail.com",
+          "date": "2025-07-20T13:25:13Z"
+        },
+        "message": "modify opinionated changes",
+        "tree": {
+          "sha": "fcf30a658518f017bd570f9d857c571529316787",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/fcf30a658518f017bd570f9d857c571529316787"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/50ae503979834a125b5a98e91781d30b17cd7b31",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/50ae503979834a125b5a98e91781d30b17cd7b31",
+      "html_url": "https://github.com/Kludex/starlette/commit/50ae503979834a125b5a98e91781d30b17cd7b31",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/50ae503979834a125b5a98e91781d30b17cd7b31/comments",
+      "author": {
+        "login": "Kludex",
+        "id": 7353520,
+        "node_id": "MDQ6VXNlcjczNTM1MjA=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/7353520?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/Kludex",
+        "html_url": "https://github.com/Kludex",
+        "followers_url": "https://api.github.com/users/Kludex/followers",
+        "following_url": "https://api.github.com/users/Kludex/following{/other_user}",
+        "gists_url": "https://api.github.com/users/Kludex/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/Kludex/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/Kludex/subscriptions",
+        "organizations_url": "https://api.github.com/users/Kludex/orgs",
+        "repos_url": "https://api.github.com/users/Kludex/repos",
+        "events_url": "https://api.github.com/users/Kludex/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/Kludex/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "Kludex",
+        "id": 7353520,
+        "node_id": "MDQ6VXNlcjczNTM1MjA=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/7353520?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/Kludex",
+        "html_url": "https://github.com/Kludex",
+        "followers_url": "https://api.github.com/users/Kludex/followers",
+        "following_url": "https://api.github.com/users/Kludex/following{/other_user}",
+        "gists_url": "https://api.github.com/users/Kludex/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/Kludex/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/Kludex/subscriptions",
+        "organizations_url": "https://api.github.com/users/Kludex/orgs",
+        "repos_url": "https://api.github.com/users/Kludex/repos",
+        "events_url": "https://api.github.com/users/Kludex/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/Kludex/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "f1fee10953ab123215c72b3af6b02610f18ec261",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/f1fee10953ab123215c72b3af6b02610f18ec261",
+          "html_url": "https://github.com/Kludex/starlette/commit/f1fee10953ab123215c72b3af6b02610f18ec261"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,205 @@
+{
+  "schema": "review-comparison-v1",
+  "dataset_id": "review-comparison-development-v1",
+  "exposure": "development-exposed",
+  "held_out": false,
+  "selection": "Two public bug/fix families chosen from official PR/advisory source before any model response generation for this dataset.",
+  "beyond_diff_context": "Not captured: unchanged repository files, deployment settings and historical dependencies are not supplied automatically. Captures retain every changed UTF-8 file at immutable base/head commits, original patches, metadata and license.",
+  "labels": "Independent actual-source execution, not model-produced labels. Policy enum/severity describe the mechanism; the auth advisory severity itself is Moderate and is not being relabeled as an upstream Critical rating.",
+  "cues": "Original PR titles, bodies, source comments, tests, security-fix descriptions and GHSA/CVE references remain authentic and may disclose the defect/fix. Public historical examples can overlap model training; this is exposed development data, not held-out generalization evidence.",
+  "splitting": "Keep each provenance_family and repository together when constructing future held-out splits.",
+  "cases": [
+    {
+      "id": "starlette-933",
+      "fixture": "tests/eval/corpus/review_comparison/starlette-933/fixture.json",
+      "fixture_sha256": "15a27ca657bcdb2089a8f6c2ec26f3057bd72e8e471ad10e252cf6e005dce054",
+      "receipt": "tests/eval/corpus/review_comparison/starlette-933/receipt.json",
+      "receipt_sha256": "7c23389ee22145ce12ab0dadf9602a14185e2ade1aa59652df59b3bb7545f5e8",
+      "analysis_file": "starlette/datastructures.py",
+      "expected": [
+        {
+          "file_path": "starlette/datastructures.py",
+          "finding_type": "blocking_call_in_async",
+          "line_start": 443,
+          "line_end": 443,
+          "severity": "medium"
+        }
+      ],
+      "scoped_counterparts": [],
+      "context_status": "supported",
+      "context_reason": "A write crossing SpooledTemporaryFile max_size performs disk rollover on the event-loop thread. Supported against complete captured source plus the independent local oracle; visibility in each comparison arm must be assessed separately.",
+      "provenance_family": "starlette-upload-rollover",
+      "source_provenance": {
+        "repo": "Kludex/starlette",
+        "pr": 933,
+        "url": "https://github.com/Kludex/starlette/pull/933",
+        "base_sha": "152a05ac3ddba5456ee05fb81d0f2ea3eaf17c2b",
+        "target_base_sha": "152a05ac3ddba5456ee05fb81d0f2ea3eaf17c2b",
+        "head_sha": "f638a61dcbf9207c284c326868ef911996d34a21",
+        "merge_sha": "97257515f8806b8cc519d9850ecadd783b3008f9",
+        "created_at": "2020-05-06T02:43:44Z",
+        "updated_at": "2020-05-06T13:52:27Z",
+        "merged_at": "2020-05-06T13:52:26Z",
+        "captured_at": "2026-11-01T01:47:19.189008+00:00"
+      },
+      "head_commit_date": "2020-05-06T10:07:36Z",
+      "selected_file_last_touch_sha": "f638a61dcbf9207c284c326868ef911996d34a21",
+      "selected_file_last_touch_date": "2020-05-06T10:07:36Z",
+      "provenance": "tests/eval/corpus/review_comparison/provenance/starlette-933.json",
+      "provenance_sha256": "6b09b886104185dd06ebd1338b44987af49df1a17886e17985da302e8a98c872",
+      "official_advisory": "https://github.com/Kludex/starlette/security/advisories/GHSA-2c2j-9gv5-cj73",
+      "oracle_scope": "Executes the complete captured datastructures module with Python tempfile and installed Starlette/AnyIO thread-pool helper. Measures thread identity, not HTTP load or a denial-of-service rate; 4-byte spool threshold exercises the same conditional as larger uploads.",
+      "required_source_ranges": [
+        [
+          441,
+          445
+        ]
+      ],
+      "scope_limit": "No whole-PR clean assertion. Counterpart labels apply only to the named repaired mechanism; other warnings require independent adjudication."
+    },
+    {
+      "id": "starlette-2962",
+      "fixture": "tests/eval/corpus/review_comparison/starlette-2962/fixture.json",
+      "fixture_sha256": "aa9f56b9433f16db395037b3aa8655f7a03fd8615dab5a6123f3e4cc38ac65d9",
+      "receipt": "tests/eval/corpus/review_comparison/starlette-2962/receipt.json",
+      "receipt_sha256": "666375efbe74d34396ac7cf8245ee373f9006415d58a03fb4bd61a4849511ae9",
+      "analysis_file": "starlette/datastructures.py",
+      "expected": [],
+      "scoped_counterparts": [
+        {
+          "file_path": "starlette/datastructures.py",
+          "finding_type": "blocking_call_in_async",
+          "line_start": 454,
+          "line_end": 462,
+          "reason": "The same threshold-crossing write delegates rollover to a worker thread; this labels only that mechanism."
+        }
+      ],
+      "context_status": "supported",
+      "context_reason": "The same threshold-crossing write delegates rollover to a worker thread; this labels only that mechanism. Supported against complete captured source plus the independent local oracle; visibility in each comparison arm must be assessed separately.",
+      "provenance_family": "starlette-upload-rollover",
+      "source_provenance": {
+        "repo": "Kludex/starlette",
+        "pr": 2962,
+        "url": "https://github.com/Kludex/starlette/pull/2962",
+        "base_sha": "540ff5f076468eb69f827e76cb020e21fb39b3ca",
+        "target_base_sha": "540ff5f076468eb69f827e76cb020e21fb39b3ca",
+        "head_sha": "50ae503979834a125b5a98e91781d30b17cd7b31",
+        "merge_sha": "9f7ec2eb512fcc3fe90b43cb9dd9e1d08696bec1",
+        "created_at": "2025-07-10T14:23:42Z",
+        "updated_at": "2025-07-20T22:55:36Z",
+        "merged_at": "2025-07-20T17:24:02Z",
+        "captured_at": "2026-11-01T01:47:18.238998+00:00"
+      },
+      "head_commit_date": "2025-07-20T13:25:13Z",
+      "selected_file_last_touch_sha": "50ae503979834a125b5a98e91781d30b17cd7b31",
+      "selected_file_last_touch_date": "2025-07-20T13:25:13Z",
+      "provenance": "tests/eval/corpus/review_comparison/provenance/starlette-2962.json",
+      "provenance_sha256": "91bdb06ed8ffd1ab9f58b7fae421e2c4cb61bdd9fb72e0f569a4ac6d620a4bad",
+      "official_advisory": "https://github.com/Kludex/starlette/security/advisories/GHSA-2c2j-9gv5-cj73",
+      "oracle_scope": "Executes the complete captured datastructures module with Python tempfile and installed Starlette/AnyIO thread-pool helper. Measures thread identity, not HTTP load or a denial-of-service rate; 4-byte spool threshold exercises the same conditional as larger uploads.",
+      "required_source_ranges": [
+        [
+          454,
+          462
+        ]
+      ],
+      "scope_limit": "No whole-PR clean assertion. Counterpart labels apply only to the named repaired mechanism; other warnings require independent adjudication."
+    },
+    {
+      "id": "flask-security-1183",
+      "fixture": "tests/eval/corpus/review_comparison/flask-security-1183/fixture.json",
+      "fixture_sha256": "aa1903d914f9e4e0083180f9104786f2cd4cb372e353353f220a62af48d6e0a9",
+      "receipt": "tests/eval/corpus/review_comparison/flask-security-1183/receipt.json",
+      "receipt_sha256": "b0038cd055bb3ecbd74667e1fabdabd5b6509914390f16c1bc623090336f7d3a",
+      "analysis_file": "flask_security/oauth_glue.py",
+      "expected": [
+        {
+          "file_path": "flask_security/oauth_glue.py",
+          "finding_type": "auth_bypass",
+          "line_start": 195,
+          "line_end": 197,
+          "severity": "critical"
+        }
+      ],
+      "scoped_counterparts": [],
+      "context_status": "supported",
+      "context_reason": "A valid OAuth identity from another account refreshes the current victim session without an identity equality check. Supported against complete captured source plus the independent local oracle; visibility in each comparison arm must be assessed separately.",
+      "provenance_family": "flask-security-oauth-identity",
+      "source_provenance": {
+        "repo": "pallets-eco/flask-security",
+        "pr": 1183,
+        "url": "https://github.com/pallets-eco/flask-security/pull/1183",
+        "base_sha": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "target_base_sha": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "head_sha": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "merge_sha": "82575494312957332f9361cb8711af04d44a7a09",
+        "created_at": "2026-03-05T02:33:12Z",
+        "updated_at": "2026-04-14T02:00:57Z",
+        "merged_at": "2026-03-06T14:55:45Z",
+        "captured_at": "2026-11-01T01:47:32.045991+00:00"
+      },
+      "head_commit_date": "2026-03-05T02:31:44Z",
+      "selected_file_last_touch_sha": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+      "selected_file_last_touch_date": "2026-03-05T02:31:44Z",
+      "provenance": "tests/eval/corpus/review_comparison/provenance/flask-security-1183.json",
+      "provenance_sha256": "443c03f90eef85e93ea286dbfb709114a4a7327d05ec4e39bd5970feac49b00c",
+      "official_advisory": "https://github.com/pallets-eco/flask-security/security/advisories/GHSA-97r5-pg8x-p63p",
+      "oracle_scope": "Executes the exact captured callback and identity-resolver bodies with explicit OAuth transport/token/identity callback, datastore, identity-mapper, session, redirect/config, clock and current-user facades. No Flask server, authentication middleware, CSRF, real datastore, OAuth network exchange or protected-account endpoint is exercised.",
+      "required_source_ranges": [
+        [
+          175,
+          215
+        ]
+      ],
+      "scope_limit": "No whole-PR clean assertion. Counterpart labels apply only to the named repaired mechanism; other warnings require independent adjudication."
+    },
+    {
+      "id": "flask-security-1216",
+      "fixture": "tests/eval/corpus/review_comparison/flask-security-1216/fixture.json",
+      "fixture_sha256": "4f3defac19f6e3e05d41dd66eed7aca743c0094d0d1f76e5f3387816aea80983",
+      "receipt": "tests/eval/corpus/review_comparison/flask-security-1216/receipt.json",
+      "receipt_sha256": "60a7770cc683276ff291d63e7a2b310ee36607d9e0b6db4b8f2ce239652089a2",
+      "analysis_file": "flask_security/oauth_glue.py",
+      "expected": [],
+      "scoped_counterparts": [
+        {
+          "file_path": "flask_security/oauth_glue.py",
+          "finding_type": "auth_bypass",
+          "line_start": 191,
+          "line_end": 231,
+          "reason": "The callback refreshes only when the resolved OAuth user matches current_user.email; this labels only cross-user freshness."
+        }
+      ],
+      "context_status": "supported",
+      "context_reason": "The callback refreshes only when the resolved OAuth user matches current_user.email; this labels only cross-user freshness. Supported against complete captured source plus the independent local oracle; visibility in each comparison arm must be assessed separately.",
+      "provenance_family": "flask-security-oauth-identity",
+      "source_provenance": {
+        "repo": "pallets-eco/flask-security",
+        "pr": 1216,
+        "url": "https://github.com/pallets-eco/flask-security/pull/1216",
+        "base_sha": "92af5c51db7184bf9b27d0c9466c88f7e8249e99",
+        "target_base_sha": "92af5c51db7184bf9b27d0c9466c88f7e8249e99",
+        "head_sha": "be0e4ae56bf722e8a14e04bc1357dc9a209d7477",
+        "merge_sha": "24d5e347ef0c8ae6ff3a1acfa0423f0c93665183",
+        "created_at": "2026-05-17T03:05:00Z",
+        "updated_at": "2026-06-28T04:07:29Z",
+        "merged_at": "2026-05-18T03:20:30Z",
+        "captured_at": "2026-11-01T01:47:17.941980+00:00"
+      },
+      "head_commit_date": "2026-05-17T03:03:52Z",
+      "selected_file_last_touch_sha": "be0e4ae56bf722e8a14e04bc1357dc9a209d7477",
+      "selected_file_last_touch_date": "2026-05-17T03:03:52Z",
+      "provenance": "tests/eval/corpus/review_comparison/provenance/flask-security-1216.json",
+      "provenance_sha256": "cbbdba707d3e3d379a17586e50d770561ce66178043561070b061092ff03fc42",
+      "official_advisory": "https://github.com/pallets-eco/flask-security/security/advisories/GHSA-97r5-pg8x-p63p",
+      "oracle_scope": "Executes the exact captured callback and identity-resolver bodies with explicit OAuth transport/token/identity callback, datastore, identity-mapper, session, redirect/config, clock and current-user facades. No Flask server, authentication middleware, CSRF, real datastore, OAuth network exchange or protected-account endpoint is exercised.",
+      "required_source_ranges": [
+        [
+          191,
+          231
+        ]
+      ],
+      "scope_limit": "No whole-PR clean assertion. Counterpart labels apply only to the named repaired mechanism; other warnings require independent adjudication."
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "schema": "pr-capture-v1",
+  "source": {
+    "repo": "pallets-eco/flask-security",
+    "pr": 1216,
+    "url": "https://github.com/pallets-eco/flask-security/pull/1216",
+    "base_sha": "92af5c51db7184bf9b27d0c9466c88f7e8249e99",
+    "target_base_sha": "92af5c51db7184bf9b27d0c9466c88f7e8249e99",
+    "head_sha": "be0e4ae56bf722e8a14e04bc1357dc9a209d7477",
+    "merge_sha": "24d5e347ef0c8ae6ff3a1acfa0423f0c93665183",
+    "created_at": "2026-05-17T03:05:00Z",
+    "updated_at": "2026-06-28T04:07:29Z",
+    "merged_at": "2026-05-18T03:20:30Z",
+    "captured_at": "2026-11-01T01:47:17.941980+00:00"
+  },
+  "fixture_sha256": "4f3defac19f6e3e05d41dd66eed7aca743c0094d0d1f76e5f3387816aea80983",
+  "license": {
+    "path": "LICENSE.txt",
+    "sha256": "a7a0e4f8c5a261b49208f8b34a2854a087d2ce1df24f09f470854595ba2f85fa",
+    "commit": "be0e4ae56bf722e8a14e04bc1357dc9a209d7477",
+    "url": "https://github.com/pallets-eco/flask-security/blob/be0e4ae56bf722e8a14e04bc1357dc9a209d7477/LICENSE.txt",
+    "blob_sha": "1fb62fcee9908bf93c97233a727f07856ec653bb"
+  },
+  "files": [
+    {
+      "path": "CHANGES.rst",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "1890f82d569245d73a4658030878d58afa60d376e885e3931a8e5500e8626136",
+        "commit": "92af5c51db7184bf9b27d0c9466c88f7e8249e99",
+        "url": "https://github.com/pallets-eco/flask-security/blob/92af5c51db7184bf9b27d0c9466c88f7e8249e99/CHANGES.rst",
+        "blob_sha": "dd42c6f2271f3bfee61b49c5f061bb8f9d9dd38f"
+      },
+      "head": {
+        "sha256": "4264936edb654fadc82758667c66a3b00b265a80d9b1f9d17b0f5cb57cf7e832",
+        "commit": "be0e4ae56bf722e8a14e04bc1357dc9a209d7477",
+        "url": "https://github.com/pallets-eco/flask-security/blob/be0e4ae56bf722e8a14e04bc1357dc9a209d7477/CHANGES.rst",
+        "blob_sha": "8c75db9519e0067d529c740dadbd2e9798686bf6"
+      }
+    },
+    {
+      "path": "flask_security/oauth_glue.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "544817be9dd7310130de8ed172535b612a8ef1ec51c3bc2f606f6b9f96a9e21b",
+        "commit": "92af5c51db7184bf9b27d0c9466c88f7e8249e99",
+        "url": "https://github.com/pallets-eco/flask-security/blob/92af5c51db7184bf9b27d0c9466c88f7e8249e99/flask_security/oauth_glue.py",
+        "blob_sha": "6e860961cfb3a0f3fdea8d0b8a4d5e2e703e866d"
+      },
+      "head": {
+        "sha256": "4ee14191205464db178434c0c25c937d14959bf71918d6937be7d351d242e5ba",
+        "commit": "be0e4ae56bf722e8a14e04bc1357dc9a209d7477",
+        "url": "https://github.com/pallets-eco/flask-security/blob/be0e4ae56bf722e8a14e04bc1357dc9a209d7477/flask_security/oauth_glue.py",
+        "blob_sha": "9e6943c47fb3e26c42e0572e1aa01e20ca45c8c4"
+      }
+    },
+    {
+      "path": "tests/test_oauthglue.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "d1b09ac0e32dd37b5056dd933353ef2212791d7d58c7a18c924e846d569c54b3",
+        "commit": "92af5c51db7184bf9b27d0c9466c88f7e8249e99",
+        "url": "https://github.com/pallets-eco/flask-security/blob/92af5c51db7184bf9b27d0c9466c88f7e8249e99/tests/test_oauthglue.py",
+        "blob_sha": "7162e3e3e5c5e6d36c3d3c1f9e07c223a91a5b9d"
+      },
+      "head": {
+        "sha256": "86f52f3984ec3397e6ede034e60b52faf259df0dafed7d65ce2a35835350f82e",
+        "commit": "be0e4ae56bf722e8a14e04bc1357dc9a209d7477",
+        "url": "https://github.com/pallets-eco/flask-security/blob/be0e4ae56bf722e8a14e04bc1357dc9a209d7477/tests/test_oauthglue.py",
+        "blob_sha": "e89cba5b47217dde8b596f98c548760ed3720526"
+      }
+    }
+  ],
+  "context_files": [],
+  "raw_files": {
+    "fixture.json": "4f3defac19f6e3e05d41dd66eed7aca743c0094d0d1f76e5f3387816aea80983",
+    "LICENSE": "a7a0e4f8c5a261b49208f8b34a2854a087d2ce1df24f09f470854595ba2f85fa",
+    "raw/pr.json": "6328f13de8e0936880c908064927546418c08bc40507833b4d6ca1f0dd720b90",
+    "raw/files.json": "b5432d8d4b632efb1e1d86b74d6d89e05fb9ee8752fff7480d46359435c5db33",
+    "raw/compare.json": "70b75759caad19e7054a289ba36baf130e77a918a12c09a6b0a88f000921ab53"
+  },
+  "notes": "Parsed REST JSON, not HTTP wire capture. Complete UTF-8 source; no model answers or labels. Installation identity is an eval placeholder."
+}

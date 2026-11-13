@@ -1,0 +1,392 @@
+{
+  "schema": "pr-capture-v1",
+  "source": {
+    "repo": "pallets-eco/flask-security",
+    "pr": 1183,
+    "url": "https://github.com/pallets-eco/flask-security/pull/1183",
+    "base_sha": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+    "target_base_sha": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+    "head_sha": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+    "merge_sha": "82575494312957332f9361cb8711af04d44a7a09",
+    "created_at": "2026-03-05T02:33:12Z",
+    "updated_at": "2026-04-14T02:00:57Z",
+    "merged_at": "2026-03-06T14:55:45Z",
+    "captured_at": "2026-11-01T01:47:32.045991+00:00"
+  },
+  "fixture_sha256": "aa1903d914f9e4e0083180f9104786f2cd4cb372e353353f220a62af48d6e0a9",
+  "license": {
+    "path": "LICENSE.txt",
+    "sha256": "a7a0e4f8c5a261b49208f8b34a2854a087d2ce1df24f09f470854595ba2f85fa",
+    "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+    "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/LICENSE.txt",
+    "blob_sha": "1fb62fcee9908bf93c97233a727f07856ec653bb"
+  },
+  "files": [
+    {
+      "path": "CHANGES.rst",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "00c78118447b97d9b8631fc1897c64b05bb2d917c537b96e8df5c02653f46c85",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/CHANGES.rst",
+        "blob_sha": "dfae8b3e0631d4bba29ad575111e61383ab2e24f"
+      },
+      "head": {
+        "sha256": "d0ec4d591eed4d4be561225c565379b0caa0869bfbf216b57c51748627758209",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/CHANGES.rst",
+        "blob_sha": "65442673b6ee883c0386594ab39271da5e8d66b5"
+      }
+    },
+    {
+      "path": "docs/configuration.rst",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "fadf78f5df3864b878d958c05e4661ec9dd6a3e227e4f19a1e94e5075ec24946",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/docs/configuration.rst",
+        "blob_sha": "8dba1170d770be0c25ec5d0105d2b7e57a856111"
+      },
+      "head": {
+        "sha256": "d11d37e46a296d7da06da4e006aec03782406e67282a5973cbca4c06811cd9dd",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs/configuration.rst",
+        "blob_sha": "91e1763f33aed13d43e97cca5dd7052d603389fd"
+      }
+    },
+    {
+      "path": "docs/customizing.rst",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "33c6d70a278b615c3b201dc4bd1188b033a48e4bdcf6bd62ab38155cfe24cc0f",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/docs/customizing.rst",
+        "blob_sha": "f56f8c3d9ddad06bf992cda80ff76571d281f282"
+      },
+      "head": {
+        "sha256": "cea854d4c86bf41c3f46f59ca425ac98e2a8a1734f4b7fb646baf75fd73fb036",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs/customizing.rst",
+        "blob_sha": "3a6b7cba59b96f76c6758f7ef5f56b47b1547b42"
+      }
+    },
+    {
+      "path": "docs/features.rst",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "26dd28a4167c7a7d5478045a6ffa60f37785953bb6327d36e114bbb5df3e90e9",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/docs/features.rst",
+        "blob_sha": "6637519f3b9d40b890ee5c8f153d850aff578829"
+      },
+      "head": {
+        "sha256": "174bc6d81b814c4d8938e53ac1b6624b2cd732b1bf7c264774617603e6bd1468",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs/features.rst",
+        "blob_sha": "5e4746abc494d388d106461fdd503e518fc079fc"
+      }
+    },
+    {
+      "path": "docs/index.rst",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "0aa21bab8523eac579566d899253970eecc9b771eed0520812645d011a93d9bc",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/docs/index.rst",
+        "blob_sha": "f10e9a882c8535aef699886823246532efa8383e"
+      },
+      "head": {
+        "sha256": "3a5d3720d188674449b29cd2d571c64fafdcd5b7e9fde388b3f3313dd982fd1b",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs/index.rst",
+        "blob_sha": "4889a3289116f0c9a9fd2073d66b787e25670560"
+      }
+    },
+    {
+      "path": "docs/openapi.yaml",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "b3ffb08a9c78500e713c805c1406f1e8ec85f34597b52f0ad2e9b74eeba556a6",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/docs/openapi.yaml",
+        "blob_sha": "5abaf1cd35cb1762ffef66a4243d181290904656"
+      },
+      "head": {
+        "sha256": "c687885139daabd7f65a09b2620ec074495ad6ec5da9a205a4144b7edd6edceb",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs/openapi.yaml",
+        "blob_sha": "429d471b75ed85d6e80ee42a25b820f7156be665"
+      }
+    },
+    {
+      "path": "docs/patterns.rst",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "091805c257b787988a6fcf94d9caa5ed9fdb7159bbac8f17b13b3412b9cb0419",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/docs/patterns.rst",
+        "blob_sha": "6bada70cb869e26c9f1f76496aa32374bbb48b8f"
+      },
+      "head": {
+        "sha256": "98ba4cde46d1c8df071c17a556aee49012aa08805a3f5339559131529af27455",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs/patterns.rst",
+        "blob_sha": "5718e3f1d3b577fcdffd7b3ea541c0582c3e68a8"
+      }
+    },
+    {
+      "path": "docs/spa.rst",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "cbbf75d75a4db2cee1c8637eaa896dc652d99ee83e306e8c9e3e85a4da982ecc",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/docs/spa.rst",
+        "blob_sha": "68de3369c9832c6862fd4cc7e12944abb6160226"
+      },
+      "head": {
+        "sha256": "89f88ba5412606c526e85db945b9f9de061d9f734f96d088c47d9e539174b41b",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs/spa.rst",
+        "blob_sha": "02eb45e21eec1942fe79e7eddacc4f5e8732e254"
+      }
+    },
+    {
+      "path": "docs/two_factor_configurations.rst",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "2f62357c9bcdeac288a3e9f728c4d8fb475be71fe97dbc2054666165a5f89af3",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/docs/two_factor_configurations.rst",
+        "blob_sha": "ddfb994d353e7939854440f027888a5cf6272cfd"
+      },
+      "head": {
+        "sha256": "ac55410eb5640166c8eaacc606b1e6a59a27785854893a62f15dc3a44d474ef4",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs/two_factor_configurations.rst",
+        "blob_sha": "9569d800772be164225ca542fa27b9c87383bb08"
+      }
+    },
+    {
+      "path": "examples/oauth/server/app.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "1d5b4e7d6e37d6450da923a04323ce8e3e3ebdf337fe5f5bac081934d0f6b142",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/examples/oauth/server/app.py",
+        "blob_sha": "6dd7181c76b5394450a0fceb0e474d5a6c2fd0af"
+      },
+      "head": {
+        "sha256": "56a50c3c3932cece4c3d14e6b324c0e808bf90c1c7ed568f5c791771d1a2c233",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/examples/oauth/server/app.py",
+        "blob_sha": "3e6dad904eb8e1ad774c5311b938d627a8015ad7"
+      }
+    },
+    {
+      "path": "flask_security/core.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "3c29e9cab2ea1c1668e0cb2d9e029c065e8fe37e9549bc025f80ced91c6a2558",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/flask_security/core.py",
+        "blob_sha": "53511eae8e86cf82201d856625163c23425d7be9"
+      },
+      "head": {
+        "sha256": "74cbd9eb75631e1053b16029827814377b05a292c9e6a1de7a86a237f91aab0d",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security/core.py",
+        "blob_sha": "19f672911912139c14973ae75e2926325e97f673"
+      }
+    },
+    {
+      "path": "flask_security/decorators.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "8f1fc40c203179ef8490301c383a4159b904739393ccb3ee88b9099156fb10a2",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/flask_security/decorators.py",
+        "blob_sha": "139b9155aadf218cfbdcafdbfb97d40f7865877f"
+      },
+      "head": {
+        "sha256": "e5095c1aa6d429532a04801ab7fd266d145c888b3b8288fd108b471e7209e60b",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security/decorators.py",
+        "blob_sha": "82e61cfa50e2b6dd80b4ebdcfc35cb40343cbf07"
+      }
+    },
+    {
+      "path": "flask_security/oauth_glue.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "3090d6b29b2b05a86df54281f75a9cdfae2497429a2a96e846e0255a91ff6114",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/flask_security/oauth_glue.py",
+        "blob_sha": "e423359a9d979fb72b8efdb07819a51dd8bcec92"
+      },
+      "head": {
+        "sha256": "a84681b233b113d38d9ccf41b81f798f03439da9cb7548354b8a7d48de7ac924",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security/oauth_glue.py",
+        "blob_sha": "08b7d8b55033054d9b437ee4b7627b37cab2d361"
+      }
+    },
+    {
+      "path": "flask_security/oauth_provider.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "293ae92de49663c1bdda2f57e0f835a42819a3a41c207871ed230bad2ed4ced8",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/flask_security/oauth_provider.py",
+        "blob_sha": "883b5c6090e1ed552124d109df67a1b360eaf12d"
+      },
+      "head": {
+        "sha256": "f1284143db9a58cc99d5bde71afa1704cea57dbb06bcbd1e023192c738510cb8",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security/oauth_provider.py",
+        "blob_sha": "c0b02064b5ae1453b5d7af62ed293b6f1e36f0fa"
+      }
+    },
+    {
+      "path": "flask_security/templates/security/us_verify.html",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "8fcc7c74ee2b400a010af21981e21e6e91afe79db6ab1fd8a8e5b9976711f67d",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/flask_security/templates/security/us_verify.html",
+        "blob_sha": "4c604238b9bcdab09deb5aeffacd2e62465d8c4b"
+      },
+      "head": {
+        "sha256": "19687ab1e2f28e4fc45abc6663fb7d7e0aea542a5c7710a8186e35cf290521ad",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security/templates/security/us_verify.html",
+        "blob_sha": "85e8b57ceb99e1eb8cacaa0daa19e41c46faa3a1"
+      }
+    },
+    {
+      "path": "flask_security/templates/security/verify.html",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "81cee1202e775d466240720863a1b3a750a1949547c47170ed35bc89468f49c2",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/flask_security/templates/security/verify.html",
+        "blob_sha": "cd58a6598958d066845b3d938fe14d764262065c"
+      },
+      "head": {
+        "sha256": "2c8e756a4524d88e9e26017d68d9a0001458a405a727d32b22dc41eec3b1af69",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security/templates/security/verify.html",
+        "blob_sha": "d5e2448800395d26051e87df2ed4f573b63f7088"
+      }
+    },
+    {
+      "path": "flask_security/unified_signin.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "617c79ab38ded8e23e3414726025dc4defc2064a0755949ecd5a20b1a191fb9b",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/flask_security/unified_signin.py",
+        "blob_sha": "89c9dc0dcbcd8ad77f1c67698a403776ab4142be"
+      },
+      "head": {
+        "sha256": "5c740ef772fc45f694b5a97f00cfd1d4ee35a8194d975a32839c57b1bf94bb27",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security/unified_signin.py",
+        "blob_sha": "825ecfa3bf5bb9796974e38bccc3f96acfe3379f"
+      }
+    },
+    {
+      "path": "flask_security/views.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "3dd28e36ddcdb39180b29054f251d2b9d1aa95fa01c2069e1813a338ccb0d17f",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/flask_security/views.py",
+        "blob_sha": "e2b5b1562591305fbd602da5854890cf21724ecb"
+      },
+      "head": {
+        "sha256": "7122a93a88e1fb311896ad6764bdbe095f3612badd9876315fe5ae9e10cd4999",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security/views.py",
+        "blob_sha": "68917d9cf78b3657921eaeb998bc0f8440c7a290"
+      }
+    },
+    {
+      "path": "tests/test_misc.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "c57da5af585c1e9528ddc2749dfcbd7a9dd0819252edf35abcc0d75d990afe84",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/tests/test_misc.py",
+        "blob_sha": "efa112c135d21dcb9b63c6b0eeb5bf2f60ceabd5"
+      },
+      "head": {
+        "sha256": "383c7caa0c81062b5cf8c59a9ec92805c483378de17a53eff02cba4b7c0c58a7",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/tests/test_misc.py",
+        "blob_sha": "f106fe62a9352330f4e35b37d83d91d2054f18f2"
+      }
+    },
+    {
+      "path": "tests/test_oauthglue.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "a362d97d80a3a561ba7d9e8ba98766d3252064701723f82ba196f6ef6ceb729a",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/tests/test_oauthglue.py",
+        "blob_sha": "e724f2a60d27eeed0a93549f013ddef8c38631e6"
+      },
+      "head": {
+        "sha256": "e17bfba84788717c426646a5018ac6752575865e2f0b2216dd01f1f9f8cd9d73",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/tests/test_oauthglue.py",
+        "blob_sha": "06ef549169543db3a2a59977e310b2cbd434a860"
+      }
+    },
+    {
+      "path": "tests/test_unified_signin.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "7278c076c0a43d63b0f3cdf7dc0d90659c53400c0ab376687b2bbf8ae9b33c52",
+        "commit": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://github.com/pallets-eco/flask-security/blob/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19/tests/test_unified_signin.py",
+        "blob_sha": "89b401b2a2d1a97f400d7744dac9ef7bd6aef1a6"
+      },
+      "head": {
+        "sha256": "62a2293bcbb90fa0b386b55fc1052e79e53bc29d75cd41368c0bb148daa5e5da",
+        "commit": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/tests/test_unified_signin.py",
+        "blob_sha": "8e4e825ad38c7dc1ab88707f22bc28a47a5cd485"
+      }
+    }
+  ],
+  "context_files": [],
+  "raw_files": {
+    "fixture.json": "aa1903d914f9e4e0083180f9104786f2cd4cb372e353353f220a62af48d6e0a9",
+    "LICENSE": "a7a0e4f8c5a261b49208f8b34a2854a087d2ce1df24f09f470854595ba2f85fa",
+    "raw/pr.json": "e0a627f48b3711daceddcc3c099c61a2df679a5090f405154f42ff77c1d1ce0a",
+    "raw/files.json": "fc241856f0fc1d8472da5720fef0e74bb2032d7f9576d7030e49ae0123ef6329",
+    "raw/compare.json": "b5a79c1cf5b5315d7aedf5c859dde1740d8b96914819c725b018b868b48d77bf"
+  },
+  "notes": "Parsed REST JSON, not HTTP wire capture. Complete UTF-8 source; no model answers or labels. Installation identity is an eval placeholder."
+}

@@ -1,0 +1,31 @@
+{
+  "schema": "saved-review-regression-v1",
+  "use": "Offline admission/scorer regression; not a model-quality or billing estimate.",
+  "role": "A real body-level quote with a one-line location offset; the supplied context does not establish missing tests.",
+  "fixture": "tests/eval/fixtures/mock_github/missing_test_shipping_rates.json",
+  "fixture_sha256": "50e486763ff33caf1dd069ebc4758125b75a64f9fdb6ee288ec72c138680d892",
+  "provenance": {
+    "source_exchange": "reports/model-refresh/20261031T180339Z-28b42c6b1dc7/calls/000024.exchange.json",
+    "source_exchange_sha256": "fae519e7814873c6fe01bf0f5dc3799361d8f728d425712c0c37e0d086fb8de8",
+    "captured_at": "2026-10-31T18:04:40.467168Z",
+    "prompt_version": "analyze-v10",
+    "system_prompt_sha256": "4520a00624438556a969fc7b28e051119ad0eb55d92d744c7c5900e82374e4d4",
+    "request_sha256": "19231490be09013556a72addfd364891d8dbec8d4e5dc82b7145b2fb641c6df6",
+    "response_kind": "Normalized LLMResponse; raw provider wire was not retained."
+  },
+  "response": {
+    "text": "{\"findings\":[{\"finding_type\":\"missing_test\",\"evidence_tier\":\"judged\",\"query_match_id\":null,\"trace_path\":null,\"title\":\"New tiered shipping pricing logic added without tests\",\"description\":\"shipping_cost introduces branching pricing logic: weight tiers at 2kg and 10kg, express and remote surcharges, and a ValueError for non-positive weight. The PR adds no test covering tier boundaries (2, 10), the surcharges, or the invalid-weight path. Add parametrized tests for boundary weights and flag combinations.\",\"evidence\":\"    if weight_kg <= 2:\\n        cost = 4.99\\n    elif weight_kg <= 10:\\n        cost = 4.99 + (weight_kg - 2) * 1.25\\n    else:\\n        cost = 14.99 + (weight_kg - 10) * 0.80\",\"line_start\":9,\"line_end\":14,\"trace_candidates\":[]}]}",
+    "model": "claude-sonnet-5-5",
+    "input_tokens": 700,
+    "output_tokens": 314,
+    "cache_read_tokens": 10872,
+    "cache_write_tokens": 0,
+    "finish_reason": "end_turn",
+    "latency_ms": 3173,
+    "profile_id": "anthropic",
+    "reasoning_enabled": false,
+    "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+    "billed_prompt_tokens": null,
+    "service_tier_actual": null
+  }
+}
