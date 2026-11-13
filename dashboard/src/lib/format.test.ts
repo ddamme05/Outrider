@@ -29,7 +29,7 @@ describe("unionDurationMs", () => {
     expect(unionDurationMs([span(0, 3000), span(3000, 7000)])).toBe(7000);
   });
 
-  test("multi-pass: trace gap between analyze passes is EXCLUDED (finding 1)", () => {
+  test("multi-pass: trace gap between analyze passes is excluded", () => {
     // Analyze covers 0–5s and 20–23s; the 15s trace gap is excluded.
     const pass0 = [span(0, 5000), span(1000, 4000)];
     const pass1 = [span(20000, 23000), span(20500, 22000)];
@@ -70,7 +70,7 @@ describe("expiresLabel", () => {
     expect(expiresLabel(inMs(3 * 60 * 60_000))).toBe("expires in 3h");
   });
 
-  test("days tier under a year (was an awkward bare-hours label before)", () => {
+  test("days tier under a year", () => {
     expect(expiresLabel(inMs(7 * 24 * 60 * 60_000))).toBe("expires in 7d");
   });
 

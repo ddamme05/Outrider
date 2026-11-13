@@ -1,8 +1,6 @@
-// Slack OAuth start (DECISIONS.md#051 / #052). Request JSON from /slack/install
-// instead of following its browser redirect. Raw fetch preserves the typed
-// recovery errors used by ConnectSlack; api/client.ts supplies the normal
-// schema-based query client. Attach the admin token, clear it on 401, and
-// validate the response before handing navigation to the Slack origin guard.
+// Start Slack setup and check the returned authorization URL (DECISIONS.md#051 / #052).
+// Ask /slack/install for JSON so ConnectSlack can display specific recovery errors.
+// Attach the admin token, clear rejected tokens, and check responses before navigation.
 
 import { clearToken, getToken } from "../auth/token";
 

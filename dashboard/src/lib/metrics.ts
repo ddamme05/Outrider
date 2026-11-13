@@ -1,6 +1,6 @@
-// Derive analytics labels, deltas, and series statistics from API aggregates.
-// These pure helpers preserve missing-data and zero-value distinctions
-// (DECISIONS#039); components own rendering.
+// Compute chart labels, changes over time and statistics from API results.
+// Missing values and zero remain distinct (DECISIONS#039); components display the results.
+
 import type { components } from "../api/schema";
 
 export type MetricsResponse = components["schemas"]["DashboardMetricsResponse"];

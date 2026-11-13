@@ -2,18 +2,32 @@
 
 **Get started:** [Production setup](#production-setup) ·
 [Follow one review in source](#follow-one-review-in-source) ·
+[Review contract and JSON fields](REVIEW_CONTRACT.md) ·
 [Seeded read-only demo](https://outrider-review.duckdns.org/#token=demo_0d4890832aa14a0c0b3d64cb38bae952) (keyless, read-only, six seeded reviews)
 
-Outrider reviews GitHub pull requests on your own server. It can post a GitHub review
-with inline comments and suggested fixes. It supports Python, JavaScript, TypeScript,
+Outrider reviews GitHub pull requests on your own server. Its goal is to make
+security and correctness checks part of everyday development. It can post a GitHub
+review with inline comments and suggested fixes. It supports Python, JavaScript, TypeScript,
 and TSX. Usually, when the code parses without errors, the model sees complete code
-sections, such as functions or classes, containing added lines and the matching
-parts of the diff.
+sections, such as functions or classes, affected by additions or deletions and
+the matching parts of the diff. Changes outside those sections receive bounded
+current-source regions. Supported configuration files receive text review.
+
+Whole-file removals receive a bounded review of the removed BASE source and any
+available captured importer references. Removal findings require human approval
+and appear in a labeled section of the GitHub review body, without inline comments
+or replacement suggestions on deleted lines. Missing callers remain unknown.
 
 The model chooses how closely to review each file and proposes issues and fixes.
 Outrider assigns severity from a versioned policy, checks the evidence, and chooses
 where comments can appear. Critical and high-severity findings require your approval
 in the dashboard before they reach GitHub.
+
+The dashboard's **Saved model warnings** panel also shows individual proposals
+that failed validation, need classification, or were held back by finding limits.
+These are original claims to inspect, not additional verified findings. Optional
+follow-up checks append assessments; disputed accepted findings require approval.
+The checks remain off by default while their quality and cost are evaluated.
 
 The saved review history records completed model exchanges, files examined,
 cross-file checks, findings, human decisions, and comment placement. These audit
@@ -319,7 +333,8 @@ so the workflow contains more steps than this stage-level diagram shows.
    files do not. Oversized pull requests are skipped deterministically during intake, before
    triage runs.
 3. **analyze** reviews each selected file. When code parses without errors,
-   tree-sitter, a code parser, usually selects the code sections containing added lines.
+   tree-sitter, a code parser, selects affected sections, including surviving
+   sections whose guards or other statements were removed.
    Deep-tier files go to the stronger model and standard-tier files to the cheaper
    one. Outrider checks the token budget before each call.
    That split is the Anthropic default, and a GLM host serves both tiers with one model. A
@@ -404,7 +419,7 @@ flowchart TD
     LANG -->|"yes"| TS["Tree-sitter parses<br/>the complete file locally"]
 
     TS --> OUT{"Parser and<br/>degradation outcome"}
-    OUT -->|"clean scopes"| SELECT["Select scopes containing added lines<br/>run structural checks locally"]
+    OUT -->|"clean scopes"| SELECT["Select affected scopes and bounded regions<br/>run structural checks locally"]
     OUT -->|"parse errors in changed regions"| DEG["Degraded path<br/>(model proposals admit as judged)"]
     OUT -->|"vendored, oversized, or no changed scopes<br/>and no eligible module-level match"| ASKIP
     SELECT --> BUD{"Pre-flight budget<br/>admits the call?"}
@@ -451,10 +466,10 @@ tree-sitter parsing, the structural checks, coordinate validation, and suggested
 all need the authoritative source. For modified and renamed files, both the base and head
 versions are retained in review state.
 
-When code parses without errors, Outrider usually selects the code sections
-containing added lines and sends their complete bodies with the matching diff
-sections. The model sees
-the surrounding logic without unrelated parts of the file.
+When code parses without errors, Outrider selects affected sections and sends
+their complete bodies with matching diffs. Deletions can select surviving
+sections through their base-source owner. Bounded HEAD regions cover changes
+outside functions or classes, without sending unrelated parts of the file.
 
 If changed code cannot be parsed, Outrider sends only size-limited diff sections.
 Findings from that path count as model judgment, without structural proof.
@@ -477,13 +492,17 @@ These rules govern findings and publication. The linked entries in
 
 | Guarantee | Mechanism |
 |---|---|
-| Outrider assigns severity | The model chooses one of 22 `FindingType` values. A versioned policy table sets severity. Model responses cannot supply a severity field (`extra="forbid"`), the table cannot change at runtime, and past reviews use their original policy version during replay. |
+| Outrider assigns severity | The model proposes one of 23 `FindingType` values. A versioned policy table sets severity. Model responses cannot supply a severity field (`extra="forbid"`), the table cannot change at runtime, and past reviews use their original policy version during replay. |
 | Evidence claims need supporting records | Every finding has an evidence tier: `observed` (a structural check matched, with its query id), `inferred` (a recorded trace path), or `judged` (model judgment). An observed finding must supply an id. Analyze checks that the referenced query ran and matched; replay checks that the query exists in the registry. |
 | High-risk findings require a human | Critical and high findings pause the saved review. It resumes only after an explicit decision for each finding (dashboard `POST /reviews/{id}/decide`). A timed-out approval expires without posting. |
 | Saved history can reconstruct a review | The `audit_events` table is append-only: database triggers block UPDATE and DELETE, checked by an integration test. A background job replays each eligible completed production review; evaluation runs are excluded. It checks event structure, evidence references, and content hashes. Running stored queries again against the evidence is planned work. |
 | External libraries stay in specific modules | `anthropic` and `openai` import only under `llm/`, `githubkit` under `github/` and the webhook receiver, `tree_sitter` under `ast_facts/` and the query catalog (`queries/`), `slack_sdk` under `notify/`. CI checks those import locations ([#038](DECISIONS.md#038-the-cipre-commit-import-lint-is-the-deterministic-trust-boundary-floor-fup-005), [`scripts/check_import_boundaries.py`](scripts/check_import_boundaries.py)). Reviewing or replacing a library stays within a few modules. |
 
 ## Evaluation
+
+The eval guide explains how to compare system prompts and test whether added
+context improves review results. [Prompt comparison](tests/eval/README.md#compare-system-prompts) ·
+[Workflow comparison](tests/eval/README.md#compare-the-workflow-with-direct-review)
 
 The tables below come from result files stored in this repository. You can
 recompute every number from their JSON.
@@ -563,11 +582,11 @@ internally measured result, unlike the tables above, which are recomputable from
 
 ### The offline tiers
 
-The structural evaluation tests (currently 186, collected by
-`uv run pytest tests/eval/scenarios/structural --is-eval`) check code parsing and
-comment-location translation with no model calls or network access. Every paid test
-case first goes through the real analyze checks offline. Cases that would be skipped
-or rejected do not reach a paid run.
+The structural evaluation tests check code parsing and comment-location translation
+with no model calls or network access. Run them with
+`uv run pytest tests/eval/scenarios/structural --is-eval`. Every paid test case first
+goes through the real analyze checks offline. Cases that would be skipped or rejected
+do not reach a paid run.
 
 ## Configuration
 
@@ -587,6 +606,7 @@ most-used settings:
 | `OUTRIDER_MODEL_TRACE_MODEL` | no | `claude-haiku-5-5` | rank cross-file trace candidates |
 | `OUTRIDER_MODEL_PATCH_MODEL` | no | `claude-haiku-5-5` | generate suggested patches |
 | `OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS` | no | `200000` | pre-flight per-review token budget |
+| `OUTRIDER_ANALYZE_COMPANION_CONTEXT_ENABLED` | no | `false` | add bounded matching functions from captured Python declaration/implementation siblings using spare context capacity; quality qualification remains limited |
 | `OUTRIDER_MAX_CONCURRENT_REVIEWS` | no | `8` | per-process concurrent-review cap |
 | `OUTRIDER_HITL_TIMEOUT_ACTION` | no | `expire_only` | what happens when approval times out. The default never auto-posts |
 | `OUTRIDER_AUDIT_LLM_CONTENT_RETENTION_TTL` | no | `P90D` | How long to keep model-exchange content, as an ISO-8601 duration. Separate settings cover findings and reviews |
@@ -603,10 +623,12 @@ yet read by any code.
 
 **What leaves your infrastructure.** The full privacy statement below describes
 what Outrider sends and stores. Its terms are recorded in
-[#015](DECISIONS.md#015-zdr-is-an-operator-attestation-not-a-runtime-opt-in) and
-[#016](DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only).
+[#015](DECISIONS.md#015-zdr-is-an-operator-attestation-not-a-runtime-opt-in),
+[#016](DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only), and
+[#073](DECISIONS.md#073-summary-prompts-contain-findings-and-risk).
 
-<!-- Privacy wording is fixed by #015/#016. Changes require a superseding decision. -->
+<!-- Privacy wording follows #015/#016, with synthesis egress narrowed by #073.
+     Further changes require a superseding decision. -->
 
 <details>
 <summary>Read the full privacy statement</summary>
@@ -678,16 +700,15 @@ penetration tested.
 - **Cost per review at full coverage is unmeasured.** Internal sandbox runs (not a tracked
   artifact) came in around $0.10 to $0.12, but they ran under a token budget that skipped
   files. Treat any composed full-coverage figure as a model, not a measurement.
-- **Python changes outside functions and classes can escape model review.** A diff
-  touching only imports or
-  module constants is skipped unless a structural query matches, so a hardcoded secret added in
-  a constants-only diff is not reviewed today. This gap is tracked and was found by our
-  evaluation tests.
-- **Deletion-only changes can escape model review.** Code sections are selected by added lines. An
-  otherwise reviewable file whose diff contains only deletions can receive no analyze call at
-  all, and in a mixed file a deletion-only scope can be omitted even while another scope gets
-  the file reviewed. Deleting an authorization check is one
-  example. This is related to the gap for code outside functions and classes.
+- **Review coverage is bounded.** Eligible deletion-only edits can select surviving
+  code sections; changes outside functions receive bounded current-source regions.
+  Whole-file removals use validated nonempty BASE source. Intake, source, language,
+  triage and funding limits can still exclude material. See the
+  [coverage contract](REVIEW_CONTRACT.md#coverage-and-defaults).
+- **Related code can be missing.** Default references use bounded excerpts from
+  captured changed files, including some declarations, callers, parent classes and
+  tests. They do not search every repository caller or unchanged test. Omitted
+  context remains unknown, and a quiet review does not establish that code is safe.
 - **Two cost optimizations only measure by default** (a filter for trivial code
   sections and an analyze cache keyed by file content). They record what they would
   skip or reuse without changing the review. No savings are claimed.

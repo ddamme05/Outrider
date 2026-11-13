@@ -1,5 +1,6 @@
-// Display evidence-tier counts and their proof artifacts. The API chooses
-// representative findings (DECISIONS#039); each track shows its share of that total.
+// Show finding counts and percentage shares by evidence tier.
+// The note names each tier's proof field or interpretation (DECISIONS#039).
+
 import { TIER_ORDER } from "../lib/metrics";
 
 const TIER_PROOF: Record<string, string> = {

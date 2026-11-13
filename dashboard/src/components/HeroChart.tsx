@@ -1,6 +1,7 @@
-// Overview's cost/review chart: select a series, scale its buckets, then render
-// SVG marks, keyboard-accessible tooltips, and totals. Empty and incomplete
-// series retain their actual values and limits (DECISIONS#039).
+// Overview chart for review counts and costs, with line and bar views,
+// keyboard-accessible values and totals. Incomplete costs remain marked as
+// lower bounds (DECISIONS#039).
+
 import { useState } from "react";
 
 import {

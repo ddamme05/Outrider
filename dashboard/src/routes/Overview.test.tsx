@@ -273,10 +273,8 @@ test("rail empty state when nothing awaits", async () => {
 });
 
 test("rail fails CLOSED when an approval-queue query errors — no false 'all clear'", async () => {
-  // Metrics succeed (analytics render), but the awaiting_approval query 500s before
-  // it ever resolved. The rail must NOT collapse to the empty state — that would
-  // tell the operator nothing awaits when we simply couldn't check, hiding a review
-  // potentially blocked at the high/critical gate.
+  // A failed approval lookup must show uncertainty, even when analytics load:
+  // an empty state would hide reviews that may still need a decision.
   server.use(
     http.get("http://localhost/api/metrics", () => HttpResponse.json(metrics())),
     http.get("http://localhost/api/metrics/replay", () => HttpResponse.json(replay())),

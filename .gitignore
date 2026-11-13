@@ -8,8 +8,11 @@ generated/
 antigua/
 HANDOFF.md
 
-# --- Local docs (ignored now; track when public) ---
+# --- Local docs and the public generated catalog ---
 docs/
+!/docs/
+/docs/*
+!/docs/review-contract.json
 
 # --- Dashboard design mockups (local-only HTML explorations) ---
 dashboard-mockups/

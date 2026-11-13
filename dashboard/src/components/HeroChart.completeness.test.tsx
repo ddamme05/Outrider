@@ -1,7 +1,5 @@
-// Completeness rendering in the hero chart + sparkline (openai-native-host arc):
-// an incomplete cost bucket is a LOWER BOUND — the value gets a ≥ bound, the
-// bucket gets a dashed marker, and the peak DAY is suppressed (the largest
-// known subtotal need not belong to the true peak bucket).
+// Incomplete cost buckets show a lower bound and dashed marker. Their known
+// subtotals cannot identify the peak day, so the chart suppresses that label.
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 

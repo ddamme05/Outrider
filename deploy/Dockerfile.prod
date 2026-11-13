@@ -1,17 +1,7 @@
-# See DECISIONS.md#069 — the V1 production self-host artifact: ONE Outrider application
-# image. Stage 1 compiles the dashboard SPA with Vite; stage 2 is the FastAPI app with the
-# built dist/ baked in, served by the app itself (OUTRIDER_SERVE_SPA=1). PostgreSQL is
-# external (a compose service or a managed instance), never baked into this image.
-#
-# Distinct from deploy/Dockerfile (the keyless read-only DEMO app, which bakes NO dashboard
-# and is fronted by deploy/Dockerfile.web's Caddy). This file is the production reference.
+# Build the production image with the API and compiled dashboard together
+# (DECISIONS.md#069). PostgreSQL runs separately. Demo images use Dockerfile
+# and Dockerfile.web instead. Dependency versions below are pinned.
 
-# Base images + the uv installer are pinned to EXACT versions (not :latest) for reproducible
-# builds. Version tags, not @sha256 digests, on purpose: operators build this image themselves
-# on varied hardware, and a single digest would lock one arch (amd64 vs arm64) and break
-# cross-arch builds. Bump these deliberately.
-#
-# ── Stage 1: build the dashboard SPA ────────────────────────────────────────
 FROM node:24.18.0-slim AS dashboard-build
 WORKDIR /dashboard
 COPY dashboard/package.json dashboard/package-lock.json ./
