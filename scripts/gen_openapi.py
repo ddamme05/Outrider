@@ -1,20 +1,12 @@
 #!/usr/bin/env python
-"""Regenerate `dashboard/openapi.json` + `dashboard/src/api/schema.d.ts` from the FastAPI app.
+"""Regenerate the dashboard's API schema files (FUP-200).
 
-The single, deterministic regen target for the dashboard API contract (FUP-200). Run it after ANY
-change to a FastAPI route or a response / audit-event model the dashboard surfaces:
-
-    uv run python scripts/gen_openapi.py
-
-It builds the PRODUCTION app (`create_app(demo_mode=False)` — the full route surface: webhooks +
-mutations + slack, matching what the dashboard talks to), dumps `app.openapi()` to
-`dashboard/openapi.json` with stable formatting (indent=2, `ensure_ascii`, trailing newline —
-byte-for-byte reproducible for a fixed code version), then regenerates the TypeScript types via the
-dashboard's `npm run gen:types` (openapi-typescript).
-
-Before this target existed there was no scripted way to regenerate, so the checked-in `openapi.json`
-silently drifted from `events.py` / the route surface (FUP-200). Running this in CI (or before
-committing an audit-event field / route change) keeps the source↔mirror sync from drifting again.
+Run uv run python scripts/gen_openapi.py after changing API routes or exposed
+models. It constructs the production app, writes dashboard/openapi.json, and
+runs npm's gen:types to update dashboard/src/api/schema.d.ts.
+If the npm subprocess fails to start or exits with an error, the command
+restores both files. Generation runs offline with the installed dashboard
+npm dependencies.
 """
 
 from __future__ import annotations
@@ -70,7 +62,7 @@ def main() -> int:
         # Fixed command (npm resolved via shutil.which), no untrusted input — build-script
         # subprocess, not a GitHub-input path (the §5 shell-exec boundary is src/outrider/ only).
         subprocess.run([npm, "run", "gen:types"], cwd=_REPO / "dashboard", check=True)  # noqa: S603
-    except subprocess.CalledProcessError as exc:
+    except (OSError, subprocess.CalledProcessError) as exc:
         _restore(_OPENAPI, openapi_backup)
         _restore(_SCHEMA_DTS, schema_backup)
         print(
