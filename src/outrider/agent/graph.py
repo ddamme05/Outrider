@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from outrider.agent.candidate_store import CandidateStore
 from outrider.agent.nodes.analyze import (
     ANALYZE_MAX_CONCURRENCY,
     DEFAULT_REVIEW_BUDGET_TOKENS,
@@ -403,6 +404,8 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     module_context_enabled: bool = False,
     companion_context_enabled: bool = False,
     import_reference_context_enabled: bool = False,
+    candidate_checks_enabled: bool = False,
+    candidate_store: CandidateStore | None = None,
     candidate_event_sink: CandidateEventSink | None = None,
     trivial_scope_filter_enabled: bool = False,
     analyze_observed_skip_enforced: bool = False,
@@ -495,6 +498,11 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     )
     if candidate_event_sink is None and isinstance(analyze_event_sink, CandidateEventSink):
         candidate_event_sink = analyze_event_sink
+    if candidate_checks_enabled:
+        if candidate_event_sink is None:
+            raise BuildGraphError("candidate checks require a candidate event writer")
+        if candidate_store is None:
+            candidate_store = CandidateStore(db_factory)
 
     # Close over the per-tier model id, not the whole ModelConfig.
     triage_callable = functools.partial(
@@ -597,6 +605,10 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         phase_event_sink=phase_event_sink,
         trace_sink=trace_sink,
         github_factory=github_factory,
+        candidate_checks_enabled=candidate_checks_enabled,
+        candidate_store=candidate_store,
+        candidate_event_sink=candidate_event_sink,
+        import_path_resolver=import_path_resolver,
     )
     hitl_callable = functools.partial(
         hitl,
@@ -643,7 +655,10 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     builder.add_edge("analyze_file", "analyze_aggregate")
     # The adaptive loop hangs off the AGGREGATE, not the planner, because that is
     # where a pass-0 round merges.
-    builder.add_conditional_edges("analyze_aggregate", _analyze_router)
+    builder.add_conditional_edges(
+        "analyze_aggregate",
+        functools.partial(_analyze_router, candidate_checks_enabled=candidate_checks_enabled),
+    )
     builder.add_conditional_edges("trace", _trace_router)
     builder.add_edge("synthesize", "hitl")
     # A static edge is correct here: the node body's `interrupt(...)` is what pauses
@@ -653,7 +668,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     return builder.compile(checkpointer=checkpointer)
 
 
-def _analyze_router(state: ReviewState) -> str:
+def _analyze_router(state: ReviewState, *, candidate_checks_enabled: bool = False) -> str:
     """Route the aggregate's output: trace if round 1 has candidates, else synthesize.
 
     Attached to "analyze_aggregate" (the pass-0 round merges when the
@@ -667,7 +682,9 @@ def _analyze_router(state: ReviewState) -> str:
     by severity (empty gate-set passes through to publish without an
     interrupt).
     """
-    if len(state.analysis_rounds) == 1 and state.trace_candidates:
+    if len(state.analysis_rounds) == 1 and (
+        state.trace_candidates or (candidate_checks_enabled and state.native_candidates)
+    ):
         return "trace"
     return "synthesize"
 

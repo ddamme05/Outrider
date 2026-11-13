@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router";
 
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
+import { CandidatePanel } from "../components/CandidatePanel";
 import { FindingCard } from "../components/FindingCard";
 import { PipelineStrip } from "../components/PipelineStrip";
 import { PolicyModal } from "../components/PolicyModal";
@@ -277,6 +278,8 @@ export function ReviewDetail() {
           )}
         </div>
       </div>
+
+      <CandidatePanel reviewId={review.id} />
 
       <div className="panel">
         <div className="panel-h">

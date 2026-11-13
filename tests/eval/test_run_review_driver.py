@@ -1,31 +1,27 @@
-"""Driver meta-test: `run_review` drives the real graph from a fixture.
+"""Check that the fixture driver runs a review through the real graph to publication.
 
-The harness-internal proof for the eval graph driver, analogous to
-`tests/integration/test_e2e_smoke.py` but fixture-driven and returning an
-`EvalRunResult`. It reuses the smoke test's CI-proven scenario (a modified file
-that adds a function; one MEDIUM finding → no HITL gate → publish runs) so that
-"does `run_review` reproduce the proven end-to-end outcome" is the only thing
-under test, not the scenario shape.
-
-Integration-tier: needs `--is-eval` (sets `OUTRIDER_IS_EVAL=1`) + a running
-`postgres-test` container (`run_review` carves its own ephemeral DB off
-`TEST_DATABASE_URL`; it does NOT use the `eval_db` fixture). The fail-closed
-guard test needs neither and runs anywhere.
-"""
+Responses and external services are substituted. The graph case requires
+--is-eval and postgres-test; the driver creates its own isolated database.
+The unsafe-database rejection check runs without a database."""
 
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from outrider.agent import run_review
+from outrider.agent import eval_driver, run_review
 from outrider.agent.eval_driver import EvalRunResult
 from outrider.eval_support import EvalModeNotEnabledError
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from uuid import UUID
+
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
+    from outrider.llm.base import LLMExchangePersister, LLMRequest, LLMResponse
 
 _FILE = "src/handler.py"
 _BASE = "def existing():\n    return 1\n"
@@ -125,8 +121,17 @@ def test_run_review_drives_graph_and_returns_result(tmp_path: Path) -> None:
     """
     fixture_path = _write_fixture(tmp_path, _smoke_fixture())
 
-    result = run_review(fixture_path)
+    diagnostics: list[dict[str, Any]] = []
+    result = run_review(fixture_path, diagnostic_events=diagnostics)
 
+    assert diagnostics
+    assert all(row["kind"] == "persisted-audit-event" for row in diagnostics)
+    assert all(row["review_id"] == str(result.review_id) and row["is_eval"] for row in diagnostics)
+    assert "llm_call" not in {row["event_type"] for row in diagnostics}
+    assert "analyze_completed" in {row["event_type"] for row in diagnostics}
+    assert [(row["timestamp"], row["event_id"]) for row in diagnostics] == sorted(
+        (row["timestamp"], row["event_id"]) for row in diagnostics
+    )
     assert isinstance(result, EvalRunResult)
     # MEDIUM finding -> no HITL gate -> publish ran.
     assert result.hitl_gated is False
@@ -151,3 +156,116 @@ def test_run_review_drives_graph_and_returns_result(tmp_path: Path) -> None:
     assert metrics.total_input_tokens == 100 * metrics.llm_calls_made
     assert metrics.total_output_tokens == 50 * metrics.llm_calls_made
     assert metrics.total_cost_usd is not None and metrics.total_cost_usd > 0
+
+
+def test_failed_review_retains_partial_diagnostics_and_original_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _smoke_fixture()
+    fixture_path = _write_fixture(tmp_path, fixture)
+    failure = RuntimeError("injected provider failure")
+    diagnostics: list[dict[str, Any]] = []
+    verified_gates: list[bool] = []
+    original_gate = eval_driver._run_is_eval_gate
+    original_export = eval_driver._export_review_diagnostics
+
+    def provider_factory(persister: LLMExchangePersister):
+        scripted = eval_driver._FixtureScriptedProvider(
+            fixture["llm_responses"],
+            persister=persister,
+            triage_paths=tuple(file["path"] for file in fixture["files"]),
+        )
+
+        class FailingProvider:
+            async def complete(self, request: LLMRequest) -> LLMResponse:
+                if request.node_id == "analyze":
+                    raise failure
+                return await scripted.complete(request)
+
+            async def aclose(self) -> None:
+                await scripted.aclose()
+
+        return FailingProvider()
+
+    async def verified_gate(engine: AsyncEngine) -> None:
+        await original_gate(engine)
+        verified_gates.append(True)
+
+    async def export_then_fail(
+        engine: AsyncEngine, review_id: UUID, output: list[dict[str, Any]]
+    ) -> None:
+        await original_export(engine, review_id, output)
+        raise RuntimeError("postgresql://fake-user:fake-password@localhost/fake-db")
+
+    monkeypatch.setattr(eval_driver, "_run_is_eval_gate", verified_gate)
+    monkeypatch.setattr(eval_driver, "_export_review_diagnostics", export_then_fail)
+    with pytest.raises(RuntimeError) as raised:
+        run_review(fixture_path, provider_factory=provider_factory, diagnostic_events=diagnostics)
+
+    assert raised.value is failure
+    assert verified_gates == [True]
+    persisted = [row for row in diagnostics if row["kind"] == "persisted-audit-event"]
+    assert persisted and all(row["is_eval"] for row in persisted)
+    assert len({row["review_id"] for row in persisted}) == 1
+    assert "file_examination" in {row["event_type"] for row in persisted}
+    assert "llm_call" not in {row["event_type"] for row in persisted}
+    assert "analyze_completed" not in {row["event_type"] for row in persisted}
+    phases = [
+        row["payload"]["marker"]
+        for row in persisted
+        if row["event_type"] == "review_phase" and row["phase_key"] == f"file:{_FILE}#0"
+    ]
+    assert phases == ["start"]
+    assert diagnostics[-1] == {
+        "kind": "diagnostic-export-error",
+        "review_id": persisted[0]["review_id"],
+        "error_type": "RuntimeError",
+    }
+    assert "fake-password" not in json.dumps(diagnostics)
+
+
+def test_diagnostic_export_excludes_same_review_non_eval_metadata(tmp_path: Path) -> None:
+    from outrider.audit.events import ReviewPhaseEvent
+    from outrider.eval_support import EvalIsolationViolationError
+
+    fixture = _smoke_fixture()
+    fixture_path = _write_fixture(tmp_path, fixture)
+    diagnostics: list[dict[str, Any]] = []
+    injected: list[ReviewPhaseEvent] = []
+
+    def provider_factory(persister):
+        scripted = eval_driver._FixtureScriptedProvider(
+            fixture["llm_responses"],
+            persister=persister,
+            triage_paths=tuple(file["path"] for file in fixture["files"]),
+        )
+
+        class ContaminatingProvider:
+            async def complete(self, request: LLMRequest) -> LLMResponse:
+                if not injected:
+                    event = ReviewPhaseEvent(
+                        review_id=request.review_id,
+                        phase_id="non-eval-export-control",
+                        node_id="triage",
+                        marker="start",
+                        phase_key="non-eval-export-control",
+                        is_eval=False,
+                    )
+                    await persister.emit_phase(event)
+                    injected.append(event)
+                return await scripted.complete(request)
+
+            async def aclose(self) -> None:
+                await scripted.aclose()
+
+        return ContaminatingProvider()
+
+    with pytest.raises(EvalIsolationViolationError, match="is_eval discipline violation"):
+        run_review(fixture_path, provider_factory=provider_factory, diagnostic_events=diagnostics)
+
+    assert len(injected) == 1
+    assert diagnostics and all(row["kind"] == "persisted-audit-event" for row in diagnostics)
+    assert all(row["review_id"] == str(injected[0].review_id) for row in diagnostics)
+    assert all(row["is_eval"] is True for row in diagnostics)
+    assert str(injected[0].event_id) not in {row["event_id"] for row in diagnostics}
+    assert "non-eval-export-control" not in json.dumps(diagnostics)

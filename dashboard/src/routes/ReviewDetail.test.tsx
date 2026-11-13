@@ -187,14 +187,11 @@ test("renders a finding with humanized severity pill, type, dimension, and desti
   const sevPill = document.querySelector(".sev-pill");
   expect(sevPill).toHaveTextContent("High");
   expect(sevPill?.className).toContain("sev-high");
-  // Type + dimension are humanized in the .ft-tag chip (typeLabel / dimensionLabel). The title,
-  // now promoted to its own .f-title, ALSO reads "SQL injection", so scope the type check to the tag.
+  // The title repeats the type label; scope this check to the type/dimension chip.
   const tag = document.querySelector(".ft-tag");
   expect(tag).toHaveTextContent("SQL injection");
   expect(tag).toHaveTextContent("Security");
-  // Wire value "inline_comment" is HUMANIZED for display (destLabel → "Inline comment") AND drives
-  // the variant class off the lowercase key — regression guard for the uppercase-key bug that left
-  // the destination tag unstyled (colorless) despite valid data.
+  // The display label and CSS class use different forms of the wire value.
   const dest = screen.getByText("Inline comment");
   expect(dest.className).toContain("dest-inline");
 });
@@ -251,8 +248,7 @@ test("shows the failure reason when not replay-equivalent", async () => {
   });
   // Hero badge reflects the negative verdict at a glance.
   expect(await screen.findByText("not replay-equivalent")).toBeInTheDocument();
-  // The reason surfaces inline in the audit feed's banner (phase grouping suppressed, FUP-125) —
-  // no tab to click now; the playable reconstruction moved to its own Replay page.
+  // The audit banner explains why phase grouping is unavailable (FUP-125).
   expect(await screen.findByText("finding_count mismatch: 5 vs 4")).toBeInTheDocument();
 });
 
@@ -410,25 +406,18 @@ test("pipeline node cards derive per-node model and cost from the verified phase
     }),
   });
   await screen.findAllByText(/SQL injection/); // render-wait; humanized label may repeat (title + type chip)
-  // Per-node costs derived from the phases, shown on the pipeline node cards. Scope to
-  // `.pn-stat` — the always-shown audit feed also surfaces these costs in its event-row
-  // summaries, so an unscoped getByText(/\$0.27/) would now match in two places.
+  // Scope to pipeline cards because the audit feed repeats these costs.
   const pnStats = Array.from(document.querySelectorAll(".pn-stat")).map((e) => e.textContent ?? "");
   expect(pnStats.some((s) => /\$0\.27/.test(s))).toBe(true);
   expect(pnStats.some((s) => /\$0\.01/.test(s))).toBe(true);
-  // model prettified from claude-sonnet-4-5 → Sonnet on the two active pipeline node cards
-  // (triage + analyze). Scope to `.pn-model`: the audit feed now prettifies too (both surfaces
-  // share prettyModel), so an unscoped "Sonnet" text count would also match the feed rows.
+  // Count model labels on the two active cards, excluding audit-feed labels.
   const pnModels = Array.from(document.querySelectorAll(".pn-model")).map((e) => e.textContent ?? "");
   expect(pnModels.filter((m) => m === "Sonnet").length).toBe(2);
 });
 
 test("completed review fails CLOSED when the verified phases are unavailable — no fabricated audit facts", async () => {
-  // A completed review whose verdict is non-equivalent → the server suppresses phases
-  // (the FUP-125 gate), AND whose raw /events count stream 500s. Node states are
-  // status-backed (completed → done) but per-node stats + the event count must NOT be
-  // asserted from thin air: never "0 audit events", never hitl "passed" / publish
-  // "posted" without the verified reconstruction. Regression for the fail-open bug.
+  // Missing verified phases (FUP-125) and a failed event read must leave audit
+  // facts unknown, even when the review's status is completed.
   server.use(
     http.get("http://localhost/api/policy/:version", ({ params }) =>
       HttpResponse.json({ version: params.version, entries: [] }),
@@ -509,4 +498,152 @@ test("awaiting review with no gate snapshot shows 'paused' without a fabricated 
   expect(screen.queryByText(/paused · 0 findings/)).toBeNull();
   expect(screen.queryByText(/0 critical\/high/)).toBeNull();
   expect(screen.getByText("paused")).toBeInTheDocument();
+});
+
+test.each([false, true])("saved warnings load on demand and honor expiry=%s", async (expired) => {
+  const user = userEvent.setup();
+  let reads = 0;
+  server.use(http.get(`${BASE}/candidates`, () => {
+    reads += 1;
+    return HttpResponse.json({
+      review_id: "r1", total: 1, limit: 20, offset: 0,
+      candidates: [{
+        candidate: { candidate_id: "c1", file_path: "account.py", severity: null, source_side: "base" },
+        draft_disposition: "needs_classification",
+        original: expired ? null : {
+          title: "<script>original warning</script>",
+          description: "The account identifier is inconsistent.",
+          finding_type: "identity_mixup", evidence: "user.id", line_start: 8, line_end: 8,
+        },
+        raw_preview: null, preview_truncated: false, content_redacted: expired,
+        assessment: { status: "uncertain", outcome: "completed", suggested_finding_type: null },
+        assessment_reason: expired ? null : "The caller context is missing.",
+        assessment_content_redacted: expired,
+      }],
+    });
+  }));
+  mount();
+  const expand = await screen.findByRole("button", { name: "Show saved warnings" });
+  expect(reads).toBe(0);
+  await user.click(expand);
+  expect(await screen.findByText(/Needs classification/)).toBeInTheDocument();
+  expect(screen.getByText(/Removed BASE \(absent from HEAD\)/)).toBeInTheDocument();
+  expect(reads).toBe(1);
+  if (expired) {
+    expect(screen.getByText("Original content is no longer available.")).toBeInTheDocument();
+    expect(screen.queryByText("<script>original warning</script>")).toBeNull();
+  } else {
+    expect(screen.getByText("<script>original warning</script>")).toBeInTheDocument();
+    expect(screen.getByText("The caller context is missing.")).toBeInTheDocument();
+    expect(document.querySelector("script")).toBeNull();
+  }
+});
+
+test("saved checks distinguish current uncertainty from PR relevance", async () => {
+  const user = userEvent.setup();
+  server.use(http.get(`${BASE}/candidates`, () => HttpResponse.json({
+    review_id: "r1", total: 1, limit: 20, offset: 0,
+    candidates: [{
+      candidate: { candidate_id: "c1", file_path: "account.py", severity: null },
+      draft_disposition: "needs_classification",
+      original: {
+        title: "Existing account concern", description: "The account constraint is unknown.",
+        finding_type: "identity_mixup", evidence: "user.email", line_start: 8, line_end: 8,
+      },
+      raw_preview: null, preview_truncated: false, content_redacted: false,
+      assessment: {
+        status: "refutes", outcome: "completed", suggested_finding_type: null,
+        head_assessment: "uncertain", change_assessment: "unrelated_preexisting",
+      },
+      assessment_reason: "The change does not affect this existing concern.",
+      assessment_content_redacted: false,
+    }],
+  })));
+  mount();
+  await user.click(await screen.findByRole("button", { name: "Show saved warnings" }));
+  expect(await screen.findByText("Existing account concern")).toBeInTheDocument();
+  expect(screen.getByText("Follow-up check: refutes · completed")).toBeInTheDocument();
+  expect(screen.getByText(
+    "Local bug: uncertain · PR relation: existing concern unrelated to this change.",
+  )).toBeInTheDocument();
+  expect(screen.queryByText(/Claimed impact:/)).toBeNull();
+});
+
+test.each([
+  ["uncertain", "uncertain", "unproved"],
+  ["not_claimed", "supports", "no broader impact claimed"],
+])("saved checks show claimed impact separately: %s", async (impact, status, label) => {
+  const user = userEvent.setup();
+  server.use(http.get(`${BASE}/candidates`, () => HttpResponse.json({
+    review_id: "r1", total: 1, limit: 20, offset: 0,
+    candidates: [{
+      candidate: { candidate_id: "c1", file_path: "app/request.py", severity: "low" },
+      draft_disposition: "included_in_draft",
+      original: {
+        title: "Large integer response", description: "An oversized integer raises ValueError.",
+        finding_type: "missing_error_handling", evidence: "json.loads(body)",
+        line_start: 8, line_end: 8,
+      },
+      raw_preview: null, preview_truncated: false, content_redacted: false,
+      assessment: {
+        status, outcome: "completed", suggested_finding_type: null,
+        head_assessment: "supports", impact_assessment: impact,
+        change_assessment: "introduced_or_worsened",
+      },
+      assessment_reason: "The local exception is supported; the caller response is not shown.",
+      assessment_content_redacted: false,
+    }],
+  })));
+  mount();
+  await user.click(await screen.findByRole("button", { name: "Show saved warnings" }));
+  expect(await screen.findByText("Large integer response")).toBeInTheDocument();
+  expect(screen.getByText(
+    `Local bug: supported · Claimed impact: ${label} · PR relation: introduced or worsened by this change.`,
+  )).toBeInTheDocument();
+  expect(screen.getByText("Proposed repair: not assessed.")).toBeInTheDocument();
+});
+
+test("saved checks separate a supported bug from a refuted repair", async () => {
+  const user = userEvent.setup();
+  const originalClaim = "A cookie can shadow hasOwnProperty. Use Object.create(null) for the map.";
+  server.use(http.get(`${BASE}/candidates`, () => HttpResponse.json({
+    review_id: "r1", total: 1, limit: 20, offset: 0,
+    candidates: [{
+      candidate: { candidate_id: "c1", file_path: "cookies.js", severity: "medium" },
+      draft_disposition: "included_in_draft",
+      original: {
+        title: "Cookie shadows an object method", description: originalClaim,
+        finding_type: "missing_error_handling", evidence: "cookies.hasOwnProperty(name)",
+        line_start: 8, line_end: 8,
+      },
+      raw_preview: null, preview_truncated: false, content_redacted: false,
+      assessment: {
+        status: "uncertain", outcome: "completed", suggested_finding_type: null,
+        head_assessment: "supports", impact_assessment: "not_claimed",
+        change_assessment: "introduced_or_worsened", repair_assessment: "refutes",
+      },
+      assessment_reason: "A null-prototype map still cannot call hasOwnProperty directly.",
+      assessment_content_redacted: false,
+    }],
+  })));
+  mount();
+  await user.click(await screen.findByRole("button", { name: "Show saved warnings" }));
+  expect(await screen.findByText(originalClaim)).toBeInTheDocument();
+  expect(screen.getByText("Follow-up check: uncertain · completed")).toBeInTheDocument();
+  expect(screen.getByText(
+    "Local bug: supported · Claimed impact: no broader impact claimed · PR relation: introduced or worsened by this change.",
+  )).toBeInTheDocument();
+  expect(screen.getByText("Proposed repair: refuted.")).toBeInTheDocument();
+});
+
+test("a low priority finding held for verification can be decided without a severity override", async () => {
+  const user = userEvent.setup();
+  mount({
+    detail: detail({ findings_requiring_approval: ["f1"] }),
+    findings: [finding({ severity: "low", eligibility_reason: "hitl_required_node_absent" })],
+  });
+  const approve = await screen.findByRole("button", { name: "approve" });
+  expect(screen.queryByRole("button", { name: "severity_override" })).toBeNull();
+  await user.click(approve);
+  expect(approve).toHaveAttribute("aria-pressed", "true");
 });

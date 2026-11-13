@@ -20,6 +20,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict
 from sqlalchemy import func, select
 
 from outrider.api.dashboard.auth import require_admin_api_key
+from outrider.api.dashboard.candidates import router as candidates_router
 from outrider.api.dashboard.findings import (
     GLOBAL_SWEEP_INSTALLATION_ID,
     assemble_finding_views,
@@ -315,6 +316,7 @@ router = APIRouter(
     tags=["dashboard"],
     dependencies=[Depends(require_admin_api_key)],
 )
+router.include_router(candidates_router)
 
 
 async def _aggregate_metrics(

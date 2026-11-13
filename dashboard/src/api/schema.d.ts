@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/api/reviews/{review_id}/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Candidates
+         * @description Read one page of original occurrences, including unqualified warnings.
+         */
+        get: operations["list_candidates_api_reviews__review_id__candidates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/reviews": {
         parameters: {
             query?: never;
@@ -1126,6 +1146,58 @@ export interface components {
             /** Text Hash */
             text_hash: string;
         };
+        /** CandidateText */
+        CandidateText: {
+            /** Title */
+            title: string;
+            /** Description */
+            description: string;
+            /** Evidence */
+            evidence: string;
+            /** Finding Type */
+            finding_type?: string | null;
+            /** Line Start */
+            line_start: number;
+            /** Line End */
+            line_end: number;
+        };
+        /** CandidateView */
+        CandidateView: {
+            candidate: components["schemas"]["NativeCandidateView"];
+            /**
+             * Draft Disposition
+             * @enum {string}
+             */
+            draft_disposition: "included_in_draft" | "selected_in_analysis" | "duplicate" | "held_by_limit" | "needs_classification" | "unqualified" | "malformed" | "not_recorded";
+            original: components["schemas"]["CandidateText"] | null;
+            /** Raw Preview */
+            raw_preview: string | null;
+            /** Preview Truncated */
+            preview_truncated: boolean;
+            /** Content Redacted */
+            content_redacted: boolean;
+            assessment: components["schemas"]["CandidateAssessmentRef"] | null;
+            /** Assessment Reason */
+            assessment_reason: string | null;
+            /** Assessment Content Redacted */
+            assessment_content_redacted: boolean;
+        };
+        /** CandidatesResponse */
+        CandidatesResponse: {
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Candidates */
+            candidates: components["schemas"]["CandidateView"][];
+        };
         /**
          * ContextManifestEntry
          * @description One included source range in a recorded model call.
@@ -1897,6 +1969,56 @@ export interface components {
         };
         /** NativeCandidateRef */
         NativeCandidateRef: {
+            /** Candidate Id */
+            candidate_id: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * Source Exchange Event Id
+             * Format: uuid
+             */
+            source_exchange_event_id: string;
+            /** Response Hash */
+            response_hash: string;
+            /** Proposal Index */
+            proposal_index: number;
+            /** File Path */
+            file_path: string;
+            /**
+             * Source Side
+             * @default head
+             * @enum {string}
+             */
+            source_side: "head" | "base";
+            /** Pass Index */
+            pass_index: number;
+            /**
+             * Initial Disposition
+             * @enum {string}
+             */
+            initial_disposition: "admitted" | "rejected" | "malformed";
+            /** Rejection Reason */
+            rejection_reason?: ("raw_proposal_invalid" | "query_match_id_not_in_registry" | "trace_path_not_admissible" | "finding_type_not_in_enum" | "evidence_tier_not_in_enum" | "span_outside_scope_unit" | "span_outside_file" | "span_outside_degraded_context" | "sql_injection_on_parameterized_call" | "schema_construction_failed" | "evidence_quote_invalid" | "model_observed_not_supported") | null;
+            /** Proposal Hash */
+            proposal_hash?: string | null;
+            /** Finding Id */
+            finding_id?: string | null;
+            /** Content Hash */
+            content_hash?: string | null;
+            finding_type?: components["schemas"]["FindingType"] | null;
+            severity?: components["schemas"]["FindingSeverity"] | null;
+            evidence_tier?: components["schemas"]["EvidenceTier"] | null;
+            /** Policy Version */
+            policy_version?: string | null;
+        };
+        /**
+         * NativeCandidateView
+         * @description Show the source side explicitly without changing durable reference bytes.
+         */
+        NativeCandidateView: {
             /** Candidate Id */
             candidate_id: string;
             /**
@@ -3543,6 +3665,40 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_candidates_api_reviews__review_id__candidates_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                review_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidatesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_reviews_api_reviews_get: {
         parameters: {
             query?: {

@@ -6,6 +6,73 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/reviews/{review_id}/candidates": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "List Candidates",
+        "description": "Read one page of original occurrences, including unqualified warnings.",
+        "operationId": "list_candidates_api_reviews__review_id__candidates_get",
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Review Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidatesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/reviews": {
       "get": {
         "tags": [
@@ -2212,6 +2279,186 @@
         ],
         "title": "CandidateSnippetRef"
       },
+      "CandidateText": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Description"
+          },
+          "evidence": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Evidence"
+          },
+          "finding_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finding Type"
+          },
+          "line_start": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line Start"
+          },
+          "line_end": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line End"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "description",
+          "evidence",
+          "line_start",
+          "line_end"
+        ],
+        "title": "CandidateText"
+      },
+      "CandidateView": {
+        "properties": {
+          "candidate": {
+            "$ref": "#/components/schemas/NativeCandidateView"
+          },
+          "draft_disposition": {
+            "type": "string",
+            "enum": [
+              "included_in_draft",
+              "selected_in_analysis",
+              "duplicate",
+              "held_by_limit",
+              "needs_classification",
+              "unqualified",
+              "malformed",
+              "not_recorded"
+            ],
+            "title": "Draft Disposition"
+          },
+          "original": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CandidateText"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "raw_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Preview"
+          },
+          "preview_truncated": {
+            "type": "boolean",
+            "title": "Preview Truncated"
+          },
+          "content_redacted": {
+            "type": "boolean",
+            "title": "Content Redacted"
+          },
+          "assessment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CandidateAssessmentRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assessment_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assessment Reason"
+          },
+          "assessment_content_redacted": {
+            "type": "boolean",
+            "title": "Assessment Content Redacted"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "candidate",
+          "draft_disposition",
+          "original",
+          "raw_preview",
+          "preview_truncated",
+          "content_redacted",
+          "assessment",
+          "assessment_reason",
+          "assessment_content_redacted"
+        ],
+        "title": "CandidateView"
+      },
+      "CandidatesResponse": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateView"
+            },
+            "type": "array",
+            "title": "Candidates"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "total",
+          "limit",
+          "offset",
+          "candidates"
+        ],
+        "title": "CandidatesResponse"
+      },
       "ContextManifestEntry": {
         "properties": {
           "file_path": {
@@ -3908,6 +4155,181 @@
           "initial_disposition"
         ],
         "title": "NativeCandidateRef"
+      },
+      "NativeCandidateView": {
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Candidate Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "source_exchange_event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Exchange Event Id"
+          },
+          "response_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Response Hash"
+          },
+          "proposal_index": {
+            "type": "integer",
+            "maximum": 49.0,
+            "minimum": 0.0,
+            "title": "Proposal Index"
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "source_side": {
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Source Side",
+            "default": "head"
+          },
+          "pass_index": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Pass Index"
+          },
+          "initial_disposition": {
+            "type": "string",
+            "enum": [
+              "admitted",
+              "rejected",
+              "malformed"
+            ],
+            "title": "Initial Disposition"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "raw_proposal_invalid",
+                  "query_match_id_not_in_registry",
+                  "trace_path_not_admissible",
+                  "finding_type_not_in_enum",
+                  "evidence_tier_not_in_enum",
+                  "span_outside_scope_unit",
+                  "span_outside_file",
+                  "span_outside_degraded_context",
+                  "sql_injection_on_parameterized_call",
+                  "schema_construction_failed",
+                  "evidence_quote_invalid",
+                  "model_observed_not_supported"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
+          "proposal_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Hash"
+          },
+          "finding_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finding Id"
+          },
+          "content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
+          "finding_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingSeverity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence_tier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceTier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "review_id",
+          "source_exchange_event_id",
+          "response_hash",
+          "proposal_index",
+          "file_path",
+          "pass_index",
+          "initial_disposition"
+        ],
+        "title": "NativeCandidateView",
+        "description": "Show the source side explicitly without changing durable reference bytes."
       },
       "ObservedSkipChangedRegion": {
         "properties": {

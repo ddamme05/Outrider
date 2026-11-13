@@ -1,12 +1,8 @@
-"""Integration tests for the dashboard read-API (`api/dashboard/reviews.py`).
+"""Check the read-only dashboard review API.
 
-Covers the increment-1 hard contract from `specs/2026-05-31-dashboard-v1.md`:
-auth (401), `is_eval` default-exclude, the per-metric source contract
-(LLM aggregates summed from `llm_call` rows; file/wall-clock read from
-`synthesize_completed`; null-not-zero when synthesize never emitted), the
-"never read `reviews.*` metric columns" guarantee (seeded with garbage to
-prove it), status filtering, 404, and read-only (no mutation).
-"""
+Metrics come from audit events, not reviews metric columns: absent synthesis
+metrics stay null. Cover authentication, evaluation exclusion, filters, and 404s.
+See specs/2026-05-31-dashboard-v1.md."""
 
 from __future__ import annotations
 
@@ -171,6 +167,148 @@ async def test_list_excludes_eval_by_default(
     assert returned == {str(ids["a"]), str(ids["b"])}
     assert str(ids["c"]) not in returned
     assert body["total"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content_state", ["retained", "expired", "wrong_eval"])
+async def test_candidate_route_retains_unknown_warnings_and_respects_content_scope(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine], content_state: str
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from httpx import ASGITransport, AsyncClient
+
+    from outrider.agent.native_candidates import candidate_event_id, collect_native_candidates
+    from outrider.agent.nodes.analyze_parser import parse_analyze_response
+    from outrider.audit.events import LLMCallEvent, NativeCandidateEvent
+    from outrider.db.models.audit_events import AuditEvent
+    from outrider.db.models.llm_call_content import LLMCallContent
+    from outrider.llm.base import LLMResponse
+    from outrider.llm.host_profiles import ANTHROPIC_CONTRACT_DIGEST
+    from outrider.llm.pricing import PRICING_VERSION
+    from outrider.policy.severity import ACTIVE_POLICY_VERSION
+
+    client, ids, engine = dashboard_client
+    review_id = ids["b"]
+    now = datetime.now(UTC)
+    source = "def load(user):\n    return user.name\n"
+    response = LLMResponse(
+        text=json.dumps(
+            {
+                "findings": [
+                    {
+                        "finding_type": "identity_mixup",
+                        "evidence_tier": "judged",
+                        "title": "Wrong account selected",
+                        "description": "An account identity can be mixed up.",
+                        "evidence": "return user.name",
+                        "line_start": 2,
+                        "line_end": 2,
+                    }
+                ]
+            }
+        ),
+        model="claude-haiku-5-5",
+        input_tokens=0,
+        output_tokens=0,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        finish_reason="end_turn",
+        latency_ms=0,
+        exchange_event_id=uuid4(),
+        exchange_recorded_at=now,
+    )
+    parsed = parse_analyze_response(
+        response.text,
+        review_id=review_id,
+        installation_id=_INSTALLATION_ID,
+        file_path="app.py",
+        file_content=source,
+        file_byte_length=len(source.encode()),
+        included_scope_units=(),
+        query_match_id_set=frozenset(),
+        degraded_mode=False,
+        active_policy_version=ACTIVE_POLICY_VERSION,
+    )
+    [candidate] = collect_native_candidates(
+        response, parsed, review_id=review_id, file_path="app.py", pass_index=0
+    )
+    call = LLMCallEvent(
+        event_id=response.exchange_event_id,
+        review_id=review_id,
+        timestamp=now,
+        is_eval=False,
+        model=response.model,
+        node_id="analyze",
+        input_tokens=0,
+        output_tokens=0,
+        cached_tokens=0,
+        cost_usd=0,
+        pricing_version=PRICING_VERSION,
+        latency_ms=0,
+        prompt_hash="a" * 64,
+        system_prompt_hash="b" * 64,
+        cache_hit=False,
+        context_summary=(),
+        prompt_template_version="scripted-source-v1",
+        degraded_mode=False,
+        profile_id="anthropic",
+        reasoning_enabled=False,
+        profile_contract_digest=ANTHROPIC_CONTRACT_DIGEST,
+    )
+    captured = NativeCandidateEvent(
+        event_id=candidate_event_id(candidate.candidate_id),
+        review_id=review_id,
+        timestamp=now,
+        is_eval=False,
+        candidate=candidate,
+    )
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session, session.begin():
+        for event in (call, captured):
+            session.add(
+                AuditEvent(
+                    event_id=event.event_id,
+                    review_id=review_id,
+                    event_type=event.event_type,
+                    timestamp=event.timestamp,
+                    is_eval=False,
+                    payload=event.model_dump(mode="json", exclude={"sequence_number"}),
+                )
+            )
+        await session.flush()
+        session.add(
+            LLMCallContent(
+                event_id=call.event_id,
+                installation_id=_INSTALLATION_ID,
+                prompt=source,
+                completion=response.text,
+                is_eval=content_state == "wrong_eval",
+                retention_expires_at=now + timedelta(days=-1 if content_state == "expired" else 1),
+            )
+        )
+    async with AsyncClient(
+        transport=ASGITransport(app=client.app, raise_app_exceptions=False), base_url="http://test"
+    ) as reader:
+        route = f"/api/reviews/{review_id}/candidates"
+        assert (await reader.get(route)).status_code == 401
+        result = await reader.get(route, headers=_AUTH)
+        if content_state == "wrong_eval":
+            assert result.status_code == 500
+            assert "Wrong account selected" not in result.text
+            return
+        assert result.status_code == 200
+        data = result.json()
+        assert data["total"] == 1
+        [view] = data["candidates"]
+        assert view["draft_disposition"] == "needs_classification"
+        assert view["candidate"]["severity"] is None
+        assert view["content_redacted"] == (content_state == "expired")
+        if content_state == "retained":
+            assert view["original"]["title"] == "Wrong account selected"
+        else:
+            assert view["original"] is None and view["raw_preview"] is None
+            assert "Wrong account selected" not in result.text
 
 
 @pytest.mark.asyncio
@@ -509,6 +647,170 @@ async def _insert_finding_event(
 
 
 @pytest.mark.asyncio
+async def test_list_reuses_completion_read_with_unchanged_response(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """A populated include-eval page needs one completion read per review."""
+    client, ids, engine = dashboard_client
+    async with engine.begin() as conn:
+        await _insert_finding_event(conn, review_id=ids["a"], severity="high", content_hash=_HASH_A)
+        await _insert_finding_event(conn, review_id=ids["a"], severity="high", content_hash=_HASH_A)
+        await _insert_finding_event(
+            conn, review_id=ids["a"], severity="critical", content_hash=_HASH_B
+        )
+        await _insert_finding_event(conn, review_id=ids["b"], severity="high", content_hash=_HASH_A)
+
+    statements: list[tuple[str, dict[str, Any]]] = []
+
+    def record_statement(
+        _conn: Any,
+        _cursor: Any,
+        statement: str,
+        parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        statements.append((" ".join(statement.lower().split()), dict(parameters)))
+
+    event.listen(engine.sync_engine, "before_cursor_execute", record_statement)
+    try:
+        resp = client.get("/api/reviews?include_eval=true&limit=200", headers=_AUTH)
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", record_statement)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert (body["total"], body["limit"], body["offset"]) == (3, 200, 0)
+    assert body["status_counts"] == {
+        "running": 1,
+        "awaiting_approval": 0,
+        "awaiting_approval_expired": 0,
+        "completed": 2,
+        "failed": 0,
+        "skipped": 0,
+    }
+    items = {item["id"]: item for item in body["reviews"]}
+    assert set(items) == {str(rid) for rid in ids.values()}
+    expected_metrics = {
+        "a": {
+            "llm_calls_made": 2,
+            "total_input_tokens": 300,
+            "total_output_tokens": 100,
+            "total_cost_usd": 0.05,
+            "unpriced_call_count": 0,
+            "cost_complete": True,
+            "files_examined": 5,
+            "files_traced_beyond_diff": 2,
+            "wall_clock_seconds": 42.5,
+        },
+        "b": {
+            "llm_calls_made": 1,
+            "total_input_tokens": 10,
+            "total_output_tokens": 5,
+            "total_cost_usd": 0.001,
+            "unpriced_call_count": 0,
+            "cost_complete": True,
+            "files_examined": None,
+            "files_traced_beyond_diff": None,
+            "wall_clock_seconds": None,
+        },
+        "c": {
+            "llm_calls_made": 0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_cost_usd": 0.0,
+            "unpriced_call_count": 0,
+            "cost_complete": True,
+            "files_examined": None,
+            "files_traced_beyond_diff": None,
+            "wall_clock_seconds": None,
+        },
+    }
+    for name, metrics in expected_metrics.items():
+        assert items[str(ids[name])]["metrics"] == metrics
+    assert items[str(ids["a"])]["severity_counts"] == {
+        "critical": 1,
+        "high": 1,
+        "medium": 0,
+        "low": 0,
+        "info": 0,
+    }
+    assert items[str(ids["b"])]["severity_counts"] is None
+    assert items[str(ids["c"])]["severity_counts"] is None
+    assert {rid: item["is_eval"] for rid, item in items.items()} == {
+        str(ids["a"]): False,
+        str(ids["b"]): False,
+        str(ids["c"]): True,
+    }
+
+    # Count physical reads after response checks so baseline failure identifies
+    # the duplicate lookup while preserving the supported response contract.
+    selects = [(sql, params) for sql, params in statements if sql.startswith(("select ", "with "))]
+    assert len(selects) == len(statements), statements
+    assert len(selects) <= 10, f"Review list issued {len(selects)} SELECTs; budget is 10"
+    completion_reads = [
+        (sql, params)
+        for sql, params in selects
+        if "from audit_events" in sql and "synthesize_completed" in params.values()
+    ]
+    for rid, item in items.items():
+        review_reads = [
+            sql
+            for sql, params in completion_reads
+            if rid in {str(value) for value in params.values()}
+        ]
+        assert len(review_reads) == 1, (rid, review_reads)
+        eval_value = "true" if item["is_eval"] else "false"
+        assert f"audit_events.is_eval = {eval_value}" in review_reads[0]
+
+
+@pytest.mark.asyncio
+async def test_json_null_completion_preserves_pending_metrics_and_severity(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    """Authored data compatibility control, not a recorded producer failure."""
+    client, ids, engine = dashboard_client
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO audit_events "
+                "(event_id, review_id, event_type, timestamp, is_eval, payload) "
+                "VALUES (:eid, :rid, 'synthesize_completed', NOW(), true, 'null'::jsonb)"
+            ),
+            {"eid": uuid4(), "rid": ids["c"]},
+        )
+        await _insert_finding_event(
+            conn, review_id=ids["c"], severity="high", content_hash=_HASH_A, is_eval=True
+        )
+
+    resp = client.get("/api/reviews?include_eval=true&limit=200", headers=_AUTH)
+    assert resp.status_code == 200
+    item = next(row for row in resp.json()["reviews"] if row["id"] == str(ids["c"]))
+    expected_metrics = {
+        "llm_calls_made": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "unpriced_call_count": 0,
+        "cost_complete": True,
+        "files_examined": None,
+        "files_traced_beyond_diff": None,
+        "wall_clock_seconds": None,
+    }
+    assert item["metrics"] == expected_metrics
+    assert item["severity_counts"] == {
+        "critical": 0,
+        "high": 1,
+        "medium": 0,
+        "low": 0,
+        "info": 0,
+    }
+    detail = client.get(f"/api/reviews/{ids['c']}", headers=_AUTH)
+    assert detail.status_code == 200
+    assert detail.json()["metrics"] == expected_metrics
+
+
+@pytest.mark.asyncio
 async def test_list_repo_full_name_join_with_fallback(
     dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
 ) -> None:
@@ -716,167 +1018,3 @@ async def test_status_counts_real_filter_independent_and_scoped(
         "/api/reviews", params={"repo_id": 750, "include_eval": "true"}, headers=_AUTH
     ).json()["status_counts"]
     assert sum(sc_eval.values()) == 6
-
-
-@pytest.mark.asyncio
-async def test_list_reuses_completion_read_with_unchanged_response(
-    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
-) -> None:
-    """A populated include-eval page needs one completion read per review."""
-    client, ids, engine = dashboard_client
-    async with engine.begin() as conn:
-        await _insert_finding_event(conn, review_id=ids["a"], severity="high", content_hash=_HASH_A)
-        await _insert_finding_event(conn, review_id=ids["a"], severity="high", content_hash=_HASH_A)
-        await _insert_finding_event(
-            conn, review_id=ids["a"], severity="critical", content_hash=_HASH_B
-        )
-        await _insert_finding_event(conn, review_id=ids["b"], severity="high", content_hash=_HASH_A)
-
-    statements: list[tuple[str, dict[str, Any]]] = []
-
-    def record_statement(
-        _conn: Any,
-        _cursor: Any,
-        statement: str,
-        parameters: Any,
-        _context: Any,
-        _executemany: bool,
-    ) -> None:
-        statements.append((" ".join(statement.lower().split()), dict(parameters)))
-
-    event.listen(engine.sync_engine, "before_cursor_execute", record_statement)
-    try:
-        resp = client.get("/api/reviews?include_eval=true&limit=200", headers=_AUTH)
-    finally:
-        event.remove(engine.sync_engine, "before_cursor_execute", record_statement)
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert (body["total"], body["limit"], body["offset"]) == (3, 200, 0)
-    assert body["status_counts"] == {
-        "running": 1,
-        "awaiting_approval": 0,
-        "awaiting_approval_expired": 0,
-        "completed": 2,
-        "failed": 0,
-        "skipped": 0,
-    }
-    items = {item["id"]: item for item in body["reviews"]}
-    assert set(items) == {str(rid) for rid in ids.values()}
-    expected_metrics = {
-        "a": {
-            "llm_calls_made": 2,
-            "total_input_tokens": 300,
-            "total_output_tokens": 100,
-            "total_cost_usd": 0.05,
-            "unpriced_call_count": 0,
-            "cost_complete": True,
-            "files_examined": 5,
-            "files_traced_beyond_diff": 2,
-            "wall_clock_seconds": 42.5,
-        },
-        "b": {
-            "llm_calls_made": 1,
-            "total_input_tokens": 10,
-            "total_output_tokens": 5,
-            "total_cost_usd": 0.001,
-            "unpriced_call_count": 0,
-            "cost_complete": True,
-            "files_examined": None,
-            "files_traced_beyond_diff": None,
-            "wall_clock_seconds": None,
-        },
-        "c": {
-            "llm_calls_made": 0,
-            "total_input_tokens": 0,
-            "total_output_tokens": 0,
-            "total_cost_usd": 0.0,
-            "unpriced_call_count": 0,
-            "cost_complete": True,
-            "files_examined": None,
-            "files_traced_beyond_diff": None,
-            "wall_clock_seconds": None,
-        },
-    }
-    for name, metrics in expected_metrics.items():
-        assert items[str(ids[name])]["metrics"] == metrics
-    assert items[str(ids["a"])]["severity_counts"] == {
-        "critical": 1,
-        "high": 1,
-        "medium": 0,
-        "low": 0,
-        "info": 0,
-    }
-    assert items[str(ids["b"])]["severity_counts"] is None
-    assert items[str(ids["c"])]["severity_counts"] is None
-    assert {rid: item["is_eval"] for rid, item in items.items()} == {
-        str(ids["a"]): False,
-        str(ids["b"]): False,
-        str(ids["c"]): True,
-    }
-
-    # Count physical reads after response checks so baseline failure identifies
-    # the duplicate lookup while preserving the supported response contract.
-    selects = [(sql, params) for sql, params in statements if sql.startswith(("select ", "with "))]
-    assert len(selects) == len(statements), statements
-    assert len(selects) <= 10, f"Review list issued {len(selects)} SELECTs; budget is 10"
-    completion_reads = [
-        (sql, params)
-        for sql, params in selects
-        if "from audit_events" in sql and "synthesize_completed" in params.values()
-    ]
-    for rid, item in items.items():
-        review_reads = [
-            sql
-            for sql, params in completion_reads
-            if rid in {str(value) for value in params.values()}
-        ]
-        assert len(review_reads) == 1, (rid, review_reads)
-        eval_value = "true" if item["is_eval"] else "false"
-        assert f"audit_events.is_eval = {eval_value}" in review_reads[0]
-
-
-@pytest.mark.asyncio
-async def test_json_null_completion_preserves_pending_metrics_and_severity(
-    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
-) -> None:
-    """Authored data compatibility control, not a recorded producer failure."""
-    client, ids, engine = dashboard_client
-    async with engine.begin() as conn:
-        await conn.execute(
-            text(
-                "INSERT INTO audit_events "
-                "(event_id, review_id, event_type, timestamp, is_eval, payload) "
-                "VALUES (:eid, :rid, 'synthesize_completed', NOW(), true, 'null'::jsonb)"
-            ),
-            {"eid": uuid4(), "rid": ids["c"]},
-        )
-        await _insert_finding_event(
-            conn, review_id=ids["c"], severity="high", content_hash=_HASH_A, is_eval=True
-        )
-
-    resp = client.get("/api/reviews?include_eval=true&limit=200", headers=_AUTH)
-    assert resp.status_code == 200
-    item = next(row for row in resp.json()["reviews"] if row["id"] == str(ids["c"]))
-    expected_metrics = {
-        "llm_calls_made": 0,
-        "total_input_tokens": 0,
-        "total_output_tokens": 0,
-        "total_cost_usd": 0.0,
-        "unpriced_call_count": 0,
-        "cost_complete": True,
-        "files_examined": None,
-        "files_traced_beyond_diff": None,
-        "wall_clock_seconds": None,
-    }
-    assert item["metrics"] == expected_metrics
-    assert item["severity_counts"] == {
-        "critical": 0,
-        "high": 1,
-        "medium": 0,
-        "low": 0,
-        "info": 0,
-    }
-    detail = client.get(f"/api/reviews/{ids['c']}", headers=_AUTH)
-    assert detail.status_code == 200
-    assert detail.json()["metrics"] == expected_metrics
