@@ -1,16 +1,7 @@
-"""Structural eval scenario: OBSERVED-tier query precision (Cost Lever 3).
+"""Check security queries against positive examples and safe lookalikes.
 
-Per specs/2026-06-14-observed-query-library-v1.md: each seed OBSERVED
-security query MUST fire on a positive fixture and must NOT fire on a
-negative one. LLM-free — runs `queries.registry.match` directly (the
-structural layer), validating the `query_match_id` + match behavior
-without any model call.
-
-The queries are signal_only structural approximations (they augment the
-LLM, never skip it), so the fixtures pin the load-bearing precision
-contract: the positive forms the producer relies on, and the lookalike
-negatives that must NOT produce a false OBSERVED finding.
-"""
+Run structural matching without model calls. These queries add evidence;
+they do not skip model review."""
 
 from __future__ import annotations
 
@@ -156,6 +147,59 @@ def test_observed_query_precision(query_id: str, positive: str, negative: str) -
     neg = registry.match(query_id, negative.encode())
     assert len(pos) >= 1, f"{query_id} should match its positive fixture, got {len(pos)}"
     assert len(neg) == 0, f"{query_id} must NOT match its negative fixture, got {len(neg)}"
+
+
+@pytest.mark.parametrize("assignment", (False, True), ids=("expression", "assignment"))
+def test_blocking_call_ignores_unrelated_methods(assignment: bool) -> None:
+    """Container operations and arbitrary method names do not prove blocking I/O."""
+    calls = (
+        'options.get("limit")',
+        'items.append("value")',
+        "items.pop()",
+        "payload.decode()",
+        'client.fetch("value")',
+        'client.worker.get("value")',
+        "client.worker.sleep(0.1)",
+        'client.worker.open("value")',
+    )
+    prefix = "value = " if assignment else ""
+    body = "".join(f"    {prefix}{call}\n" for call in calls)
+    source = "async def render(options, items, payload, client):\n" + body
+
+    assert registry.match("python.blocking_call_in_async", source.encode()) == ()
+
+
+@pytest.mark.parametrize("assignment", (False, True), ids=("expression", "assignment"))
+def test_blocking_call_preserves_intended_calls_and_locations(assignment: bool) -> None:
+    """Match each intended call in async code, with exact bounds and no sync decoys."""
+    calls = (
+        "time.sleep(0.1)",
+        "requests.get(url)",
+        "requests.post(url)",
+        "requests.put(url)",
+        "requests.delete(url)",
+        "requests.head(url)",
+        "requests.patch(url)",
+        'requests.request("GET", url)',
+        "open(path)",
+    )
+    prefix = "value = " if assignment else ""
+    body = "".join(f"    {prefix}{call}\n" for call in calls)
+    source = (
+        "import time\nimport requests\n\n"
+        "async def fetch(url, path):\n" + body + "\ndef sync_fetch(url, path):\n" + body
+    ).encode()
+
+    matches = registry.match("python.blocking_call_in_async", source)
+    actual = [
+        (
+            source[match.byte_start : match.byte_end].decode(),
+            source[: match.byte_start].count(b"\n") + 1,
+            source[: match.byte_end].count(b"\n") + 1,
+        )
+        for match in matches
+    ]
+    assert actual == [(call, line, line) for line, call in enumerate(calls, start=5)]
 
 
 # yaml: the `#not-match? @_args "SafeLoader"` predicate must MATCH unsafe/absent
