@@ -25,8 +25,8 @@ Open `/reviews`, choose a review, and follow one finding through these files.
 | `/reviews`: [Reviews](src/routes/Reviews.tsx) | Apply shared filters, list reviews, and open one. |
 | `/reviews/:reviewId`: [ReviewDetail](src/routes/ReviewDetail.tsx) | Load status, findings, and recorded events; show progress and collect decisions. |
 | Finding: [FindingCard](src/components/FindingCard.tsx) | Read evidence, severity, fix suggestions, and where the finding would be posted. |
-| Approval: [DecisionControls](src/components/DecisionControls.tsx), [hitl.ts](src/lib/hitl.ts) | Edit and check a decision, then build its request. ReviewDetail submits it; the backend checks it and queues the saved review to resume. |
-| `/reviews/:reviewId/replay`: [ReplayReconstruct](src/routes/ReplayReconstruct.tsx) | Play the saved timeline through [ReplayFeed](src/components/ReplayFeed.tsx). Playback makes no new model or GitHub calls. |
+| Approval: [DecisionControls](src/components/DecisionControls.tsx), [hitl.ts](src/lib/hitl.ts), [useReviewApproval](src/routes/useReviewApproval.ts) | Edit and validate decisions, submit them, and track the review while it resumes. The hook keeps the accepted request for retries. |
+| `/reviews/:reviewId/replay`: [ReplayReconstruct](src/routes/ReplayReconstruct.tsx) | Load the saved timeline and render it through [ReplayFeed](src/components/ReplayFeed.tsx). [useReplayPlayback](src/routes/useReplayPlayback.ts) controls when events appear and follows the playhead. Playback makes no new model or GitHub calls. |
 
 ReviewDetail refreshes status and recorded events every two seconds. Findings load
 separately; reload the page to fetch updated finding details. The server's saved
