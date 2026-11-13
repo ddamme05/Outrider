@@ -31,8 +31,9 @@ class _InjectedScriptedProvider(_FixtureScriptedProvider):
         *,
         persister: LLMExchangePersister,
         fail_on_close: bool = False,
+        triage_paths: tuple[str, ...] | None = None,
     ) -> None:
-        super().__init__(responses, persister=persister)
+        super().__init__(responses, persister=persister, triage_paths=triage_paths)
         self.calls: list[LLMRequest] = []
         self.close_calls = 0
         self.fail_on_close = fail_on_close
@@ -58,10 +59,13 @@ def _fixture_without_responses(tmp_path: Path) -> tuple[Path, dict[str, list[str
 
 def test_run_review_injected_provider_drives_trace_and_closes(tmp_path: Path) -> None:
     fixture_path, responses = _fixture_without_responses(tmp_path)
+    triage_paths = tuple(file["path"] for file in json.loads(fixture_path.read_bytes())["files"])
     providers: list[_InjectedScriptedProvider] = []
 
     def factory(persister: LLMExchangePersister) -> _InjectedScriptedProvider:
-        provider = _InjectedScriptedProvider(responses, persister=persister)
+        provider = _InjectedScriptedProvider(
+            responses, persister=persister, triage_paths=triage_paths
+        )
         providers.append(provider)
         return provider
 
@@ -122,13 +126,16 @@ def test_run_review_disposes_engine_and_drops_database_when_provider_close_raise
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fixture_path, responses = _fixture_without_responses(tmp_path)
+    triage_paths = tuple(file["path"] for file in json.loads(fixture_path.read_bytes())["files"])
     providers: list[_InjectedScriptedProvider] = []
     engines: list[AsyncEngine] = []
     disposed: list[AsyncEngine] = []
     original_dispose = AsyncEngine.dispose
 
     def factory(persister: LLMExchangePersister) -> _InjectedScriptedProvider:
-        provider = _InjectedScriptedProvider(responses, persister=persister, fail_on_close=True)
+        provider = _InjectedScriptedProvider(
+            responses, persister=persister, fail_on_close=True, triage_paths=triage_paths
+        )
         providers.append(provider)
         return provider
 

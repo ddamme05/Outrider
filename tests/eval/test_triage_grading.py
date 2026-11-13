@@ -1,13 +1,8 @@
-"""Tests for deterministic triage-tier grading (tests/eval/triage_grading.py).
+"""Check triage grading and its scripted-provider runner.
 
-Pins the analysis-floor safety rubric: an expected-analyzed file (DEEP or
-STANDARD) the candidate pushes below the floor (SKIM/SKIP) counts as
-`n_dropped_from_analysis` and fails the gate — the case the initial DEEP-only
-framing missed. Also covers the softer DEEP->STANDARD downgrade, over-tiering,
-dimension recall/precision, under-risking, the asymmetric `compare_triage` gate,
-and the runner end-to-end through the real triage node via scripted providers
-(zero-spend, no audit events — the scripted provider does not persist).
-"""
+Catch files incorrectly dropped from analysis, unsafe risk downgrades and
+dimension losses; track extra review work separately. No model spend or
+persisted audit events are involved."""
 
 from __future__ import annotations
 
@@ -200,7 +195,7 @@ def test_compare_triage_deep_downgrade_does_not_fail_gate() -> None:
 
 _TRIAGE_DEEP = json.dumps(
     {
-        "file_tiers": {"src/example.py": "deep"},
+        "file_tiers": {"file_1": "deep"},
         "overall_risk": "high",
         "relevant_dimensions": ["security"],
         "reasoning": "deep-review the changed function",
@@ -208,7 +203,7 @@ _TRIAGE_DEEP = json.dumps(
 )
 _TRIAGE_SKIM = json.dumps(
     {
-        "file_tiers": {"src/example.py": "skim"},
+        "file_tiers": {"file_1": "skim"},
         "overall_risk": "high",
         "relevant_dimensions": ["security"],
         "reasoning": "skim only",

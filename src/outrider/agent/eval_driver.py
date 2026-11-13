@@ -95,6 +95,7 @@ from outrider.eval_support import (
 )
 from outrider.github.authz import LiveAuthOutcome, LiveAuthResult
 from outrider.llm.config import ModelConfig
+from outrider.prompts.triage_schema import file_slot_ids
 from outrider.schemas.hitl import (
     HITLDecision,
     HITLRequest,
@@ -389,11 +390,13 @@ class _FixtureScriptedProvider:
         probe: CostProbe | None = None,
         host: str | None = None,
         analyze_responses_by_path: dict[str, str] | None = None,
+        triage_paths: tuple[str, ...] | None = None,
     ) -> None:
         self._responses = responses
         self._counts: dict[str, int] = {}
         self._persister = persister
         self._probe = probe
+        self._triage_paths = triage_paths
         # Concurrency-safe pass-0 analyze scripting (increment 6): responses
         # keyed by file path, served via the worker's LLMRequest.phase_key —
         # completion order can't misattribute them. None = index-keyed legacy.
@@ -460,6 +463,20 @@ class _FixtureScriptedProvider:
                     f"this node). Add the response to the fixture's llm_responses."
                 ) from exc
             self._counts[node] = idx + 1
+        if node == "triage" and request.prompt_template_version == "triage-v3":
+            if self._triage_paths is None:
+                raise EvalDriverError("triage-v3 fixtures require ordered triage_paths")
+            payload = json.loads(text_out)
+            tiers = payload["file_tiers"]
+            if set(tiers) != set(self._triage_paths):
+                raise EvalDriverError("scripted triage paths do not match triage_paths")
+            payload["file_tiers"] = {
+                slot: tiers[path]
+                for slot, path in zip(
+                    file_slot_ids(len(self._triage_paths)), self._triage_paths, strict=True
+                )
+            }
+            text_out = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
         # Token counts: fixed sentinels for correctness runs; REAL prompt-derived
         # counts when a CostProbe is attached (zero-spend cost measurement). The
         # graph has ALREADY rendered the real system+user prompts by this point, so
@@ -982,6 +999,7 @@ async def _drive(
                 probe=probe,
                 host=host,
                 analyze_responses_by_path=fixture.analyze_responses_by_path,
+                triage_paths=tuple(file.path for file in fixture.files),
             )
         else:
             owned_provider = provider_factory(persister)
@@ -1316,6 +1334,7 @@ async def run_review_with_resume(
             persister=persister,
             host=host,
             analyze_responses_by_path=fixture.analyze_responses_by_path,
+            triage_paths=tuple(file.path for file in fixture.files),
         )
 
         # First graph/checkpointer: drive to the interrupt, then close the saver.
