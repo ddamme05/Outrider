@@ -1,13 +1,11 @@
-"""Build a review report from findings, suggested patches, and a summary.
+"""Combine findings, suggested fixes and a model-written review summary.
 
-Validate the triage policy snapshot, reject conflicting duplicate findings,
-and cap the report before patch and summary calls. Prompt metrics exclude
-the summary call; final metrics include it.
+synthesize checks policy consistency, rejects conflicting duplicates and limits
+findings before requesting fixes or a summary. It records the finished report's
+measured totals, including the summary call.
 
-Display text is normalized, while the audit hash binds to the raw response.
-Completion uses event-id idempotency. Full prose replay requires retained
-LLM content; the hash supports metadata-only replay after content expires.
-See specs/2026-05-28-synthesize-node.md for the persistence contract.
+The summary's audit hash uses the raw response even when display text is cleaned.
+See specs/2026-05-28-synthesize-node.md.
 """
 
 from __future__ import annotations
@@ -303,6 +301,7 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     )
 
     _enforce_synthesize_input_invariants(state)
+    # The entry gate guarantees this; retain the check for type narrowing.
     if state.triage_result is None:
         raise FindingForgeryDetectedError(
             "synthesize: triage_result missing past invariant gate "
@@ -333,7 +332,7 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     report_gated_overflow = len(capped_findings) > MAX_FINDINGS_PER_REPORT
     report_findings = tuple(capped_findings)
 
-    # Include patch work in the prompt metrics and completion snapshot.
+    # Generate patches before the summary and final metric snapshot.
     report_findings = await generate_patches(
         report_findings,
         state,
@@ -343,20 +342,11 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
         max_suggestions=max_suggestions,
     )
 
-    # The entry gate guarantees this; retain the check for type narrowing.
-
     overall_risk = state.triage_result.overall_risk
 
-    # Prompt metrics include patch work and exclude this summary call.
-    prompt_metrics = await _snapshot_review_metrics(
-        state=state,
-        synthesize_event_sink=synthesize_event_sink,
-        started_at=started_at,
-    )
     prompt_parts = synthesize_prompt.render(
         overall_risk=overall_risk,
         findings=report_findings,
-        metrics=prompt_metrics,
     )
 
     request = LLMRequest(
@@ -414,6 +404,7 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
             summary_content_hash=summary_content_hash,
             overall_risk=overall_risk,
             n_findings=len(report_findings),
+            selected_finding_ids=tuple(finding.finding_id for finding in review_report.findings),
             n_findings_dropped_over_cap=n_findings_dropped_over_cap,
             files_examined=final_metrics.files_examined,
             files_traced_beyond_diff=final_metrics.files_traced_beyond_diff,
@@ -426,7 +417,6 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
             # Preserve the review-start policy snapshot for replay.
             policy_version=state.triage_result.policy_version,
             synthesize_model=synthesize_model,
-            selected_finding_ids=tuple(finding.finding_id for finding in review_report.findings),
             profile_id=profile_id,
             reasoning_enabled=reasoning_enabled,
             profile_contract_digest=profile_contract_digest,

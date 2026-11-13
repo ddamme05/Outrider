@@ -1,22 +1,8 @@
-# See specs/2026-05-28-synthesize-node.md §Audit append-only.
-"""SynthesizeCompletedEvent shape + validator + discriminator tests.
+"""Check synthesis event validation and replay routing.
 
-Pins:
-- Discriminator routing through `AuditEventAdapter` (`event_type` ==
-  `"synthesize_completed"`) — sibling to the analyze-completed routing
-  test at `tests/unit/test_analyze_audit_events.py:310`.
-- `Optional[int]` / `Optional[float]` accept None on LLM-aggregate
-  fields (kept nullable for append-only historical-row read-compat per
-  #030; populated from the audit stream going forward per FUP-093).
-- `summary_content_hash` matches SHA-256 pattern at the schema layer.
-- `overall_risk` accepts the canonical RiskLevel ladder.
-- frozen=True + extra="forbid" (the AuditEventBase contract).
-
-Companion to `test_analyze_audit_events.py` — same shape/style, mirror
-for the synthesize event so a future schema-shape regression on the
-new event surfaces in the unit tier rather than at replay/integration
-time.
-"""
+Cover summary hashes, risk levels, immutable fields, and nullable metrics retained
+for stored-row compatibility. See specs/2026-05-28-synthesize-node.md,
+DECISIONS.md#030, and FUP-093."""
 
 from __future__ import annotations
 

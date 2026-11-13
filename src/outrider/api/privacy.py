@@ -1,17 +1,11 @@
-# See DECISIONS.md#013-llmprivacy-contract-anthropic-egress-retention-zdr
-# See DECISIONS.md#015-zdr-is-an-operator-attestation-not-a-runtime-opt-in
-# See DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only
-"""Render the public privacy disclosure for the configured deployment.
+"""Serve the public privacy page for the configured model provider.
 
-The existing clauses implement DECISIONS.md#013 point 6, #015 point 5, and #016
-point 6; changing their facts requires the recorded supersession process.
-This module selects and escapes those clauses without authoring new terms.
+Select and escape approved disclosure text without changing its terms. The
+page stays public so people can read it before installing or signing in.
+Unknown providers show a notice instead of another provider's terms.
 
-Neutral clauses always render. Anthropic terms use the provider's shared ZDR
-attestation parser; other recognized hosts use HostPrivacy provenance
-(DECISIONS.md#056). Unknown hosts show a notice, never Anthropic's terms.
-GET /privacy stays public in production and demo mode so users can read it
-before installing the App or entering dashboard credentials.
+Disclosure changes follow DECISIONS.md#013, #015, #016 and #073. Provider selection
+follows DECISIONS.md#056.
 """
 
 from __future__ import annotations
@@ -44,7 +38,7 @@ _NEUTRAL_CLAUSES: tuple[tuple[str, str], ...] = (
         "candidate identifiers, import strings, and reasons, scope bodies from uniquely "
         "resolved related files, finding identifiers, metadata, titles, descriptions, "
         "and evidence, target source lines used for suggested fixes, and the risk "
-        "classification and metrics used to generate the final summary. Outrider does "
+        "classification used to generate the final summary. Outrider does "
         "not currently send the PR body, author login, commit messages, or branch "
         "names; adding any of these requires a new privacy-contract amendment. Complete "
         "eligible file content is fetched and checkpointed locally. Outrider does not "

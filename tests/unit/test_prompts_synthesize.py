@@ -1,11 +1,7 @@
-"""prompts/synthesize.py contract pins (mechanics, not prose quality).
+"""Check synthesis prompt versions, output surfaces, and severity instructions.
 
-Minimal sibling of `test_prompts_analyze.py` — added with the DECISIONS#043
-flip to pin the branch's mechanically-regressible surfaces: the provenance
-VERSION, the corrected output-surface claim (V1's only summary surface is
-the dashboard, not the GitHub review body — FUP-149 tracks that surface),
-and the severity-discipline constraint the prompt must keep stating.
-"""
+These checks cover prompt mechanics, not prose quality. The summary surface is
+the dashboard. See DECISIONS.md#043 and FUP-149."""
 
 from __future__ import annotations
 
@@ -18,13 +14,9 @@ from outrider.prompts.synthesize import (
 )
 
 
-def test_version_is_named_synthesize_v3() -> None:
-    """VERSION flows to LLMRequest.prompt_template_version. The v3 bump
-    (2026-06-10) removed the unsatisfiable auto-publish/HITL instruction
-    and forbade pipeline-behavior claims; v2 (same day) corrected the
-    output-surface claim. Replay attributes a prompt row to the contract
-    it was emitted under."""
-    assert VERSION == "synthesize-v3"
+def test_version_is_named_synthesize_v5() -> None:
+    """Attribute the findings-and-risk input contract to its prompt version."""
+    assert VERSION == "synthesize-v5"
 
 
 def test_system_prompt_does_not_claim_a_github_surface() -> None:

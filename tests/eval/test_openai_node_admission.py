@@ -1,57 +1,15 @@
-"""Triage + synthesize admission instruments for the openai host (openai-native-host spec).
+"""Collect paid OpenAI-versus-Anthropic evidence for triage and review summaries.
 
-The spec's per-node admission gates ("Gates before any production-shaped use")
-require node-specific OpenAI-candidate evidence before Luna serves a default:
-analyze has the two-column scorecard, trace + patch have their fixture-graded
-instruments, and this file carries the two PAID runners those left open —
-triage and synthesize. Each runs the env-selected candidate (Luna default,
-field-specific Terra swap) against the APPROVED Anthropic Haiku baseline (the
-ModelConfig FIELD default — the single model authority) through the real node
-path:
+Run real node paths after checking the candidate's verified wire capture.
+Triage checks routing, risk and dimensions without dropping reviewed files.
+Summary checks catch missing important findings and invented metadata, but
+passing those checks does not establish prose quality or grant admission.
+The operator's summary verdict remains pending until manually adjudicated.
 
-  - TRIAGE — `build_triage_scorecard` over the shared hand-authored ground
-    truth (`_triage_admission_specs`, single-sourced with the historical
-    Claude flip instrument), the real triage node + parser, graded by
-    `compare_triage` into `TriageScorecardRow`s. The GPT candidate validates
-    through the builder's host-aware seam (`triage_preflight` with
-    `_openai_candidate_validator`: native slug gate + pricing coverage —
-    the seam's default Anthropic `ModelConfig` validator rejects every GPT
-    slug), run BEFORE either provider is constructed. Frozen predicate
-    (fully deterministic — a real grader): every row baseline-valid with the
-    gate held (tier/risk/dimension) and ZERO candidate drops from analysis
-    anywhere.
-  - SYNTHESIZE — the real synthesize prompt (VERSION-stamped) over the six
-    representative finding sets from the historical comparison; pairs are
-    printed AND persisted for the operator. AUTOMATED FLOORS — the
-    machine-checkable half of the spec's frozen predicate, deliberately
-    incomplete (an invented finding CLAIM that names no path clears them):
-    zero rejected/empty candidate responses, no material (critical/high)
-    finding omitted (the finding's file basename appears in the summary), no
-    invented finding/proof metadata (no path-like token outside the
-    findings' file set, no query-match/64-hex proof tokens in prose). A
-    floor FAIL makes admission impossible; a floor PASS is NOT admission —
-    the operator adjudicates the prose, and the artifact persists
-    `operator_verdict: "pending"`.
-
-Both runners REFUSE before any spend unless the candidate is declared in the
-VERIFIED capture's `full_matrix_models` — triage and synthesize have no
-dedicated probe rows, so the model-level wire gate is the full matrix
-(envelope/cold/warm/refusal), and a Terra swap therefore inherits the paid
-wire probe before any instrument rerun. Both are REPORT-ONLY: pytest green
-means the run COMPLETED. Triage's predicate verdict is printed whole (it has
-a real grader); synthesize prints its automated floors plus OPERATOR
-ADJUDICATION REQUIRED. In both cases the FINAL admission verdict is recorded
-only in the spec's Actual Outcome. A predicate/floor FAIL swaps THAT field to
-Terra (`OUTRIDER_TRIAGE_CANDIDATE` / `OUTRIDER_SYNTHESIZE_CANDIDATE`, no code
-edit) and reruns that instrument — never a silent fallback.
-
-Run (keys resolve from .env via 1Password):
-  OUTRIDER_EVAL_REAL_MODELS=1 op run --env-file=.env -- \
-    uv run pytest tests/eval/test_openai_node_admission.py --is-eval -v -s
-
-Cost: triage 5 scenarios x (baseline + candidate) = 10 calls; synthesize
-6 scenarios x (baseline + candidate) = 12 calls.
-"""
+These runners report results: pytest success means collection completed.
+Record admission in the spec's Actual Outcome. Candidate swaps are explicit
+and need matching wire evidence; there is no silent fallback. Paid runs need
+OUTRIDER_EVAL_REAL_MODELS=1 and credentials through op run."""
 
 from __future__ import annotations
 
@@ -96,7 +54,7 @@ from .test_openai_scorecard import (
 )
 from .test_runner import _TRIAGE_EXPECTED, _build_state, _CountingProvider
 from .test_scorecard import _triage_admission_specs
-from .test_synthesize_summary_comparison import _finding, _metrics, _scenarios
+from .test_synthesize_summary_comparison import _finding, _scenarios
 from .test_triage_grading import _TRIAGE_DEEP
 
 _NODE_INSTRUMENT_CANDIDATES = (_LUNA, _TERRA)
@@ -432,7 +390,7 @@ async def test_summary_or_rejected_classes() -> None:
     """Zero-spend pin for the rejected-response classifier: provider failure
     and empty prose are REJECTED classes; non-empty prose passes through
     stripped."""
-    parts = render(overall_risk=RiskLevel.LOW, findings=(), metrics=_metrics())
+    parts = render(overall_risk=RiskLevel.LOW, findings=())
 
     class _Ok:
         async def complete(self, request: LLMRequest) -> Any:  # noqa: ARG002
@@ -673,7 +631,7 @@ async def test_gpt56_synthesize_admission() -> None:
 
     async def _drive(baseline: object, candidate_provider: object) -> None:
         for name, risk, findings in scenarios:
-            parts = render(overall_risk=risk, findings=findings, metrics=_metrics())
+            parts = render(overall_risk=risk, findings=findings)
             print(  # noqa: T201
                 f"\n{'=' * 72}\nSCENARIO: {name} ({len(findings)} findings, risk={risk.value})"
             )

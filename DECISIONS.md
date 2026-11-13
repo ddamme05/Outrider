@@ -1891,3 +1891,36 @@ default-model behavior and API equivalence remain unproved.
 **Consequences.** This adds bounded source visibility, not runtime call resolution, a new finding location or a quality guarantee. Inherited allocation behavior and dynamic bindings remain uncertain. Prompt, schema, model, severity policy, trace and physical call count remain unchanged. Existing name-only caller matches keep their prior limitations.
 
 **Referenced from.** `src/outrider/ast_facts/review_context.py`, `src/outrider/agent/nodes/analyze_context.py`, `src/outrider/agent/nodes/analyze.py`, `REVIEW_CONTRACT.md`.
+
+
+## 073. Summary prompts contain findings and risk
+
+**Status:** Accepted for local development, 2026-11-09.
+
+**Context.** Summary prose should describe accepted findings and upstream risk.
+Operational counts remain authoritative report fields, but do not establish
+source coverage or whether more tracing was needed.
+
+**Decision.** The synthesis prompt receives only capped accepted finding details
+and upstream risk. Review metrics stay in the deterministic report and audit
+event. One bounded summary call per review remains. The final metrics query
+follows the completed call; the pre-call query and metric prompt fields are
+removed. Findings, severity policy, metric schemas and historical records keep
+their existing contracts.
+
+This supersedes only the synthesis-metrics egress category in the 2026-07-16
+amendments to #013 and #015. The public privacy statement drops "and metrics"
+after "risk classification". All other egress categories, explicitly unsent
+fields, retention terms and ZDR behavior remain unchanged. #016's local content
+storage and metadata-only audit rules are unchanged.
+
+**Consequences.** Prompt version v5 identifies the reduced input. The canonical
+privacy text and its mirror checks reflect the narrower egress. Model-output
+accuracy still needs separate evaluation; removing input fields does not prove
+that future summaries avoid unsupported coverage claims.
+
+**Referenced from.** `src/outrider/prompts/synthesize.py`,
+`src/outrider/agent/nodes/synthesize.py`, `docs/spec.md`,
+`specs/2026-05-28-synthesize-node.md`,
+`specs/2026-06-03-review-metrics-llm-aggregates.md`, `README.md`,
+`src/outrider/api/privacy.py`, `tests/unit/test_privacy_content.py`.
