@@ -1,20 +1,9 @@
-"""OUTRIDER_LLM_HOST=openai composition-root hard refusal — Arc 0 (openai-native-host).
+"""Check that production startup refuses the unadmitted OpenAI host.
 
-The `openai` HostProfile is wire-implemented and evaluable, but it CANNOT satisfy the
-pre-ship refusal-normalization gate in json_object mode: its refusal probes return
-completed empty-result envelopes (`message.refusal=null`) indistinguishable from a clean
-zero-vulnerability review, so no refusal discriminator has been demonstrated (spec Actual
-Outcome; DECISIONS.md#056). A `WIRE-PENDING` label/comment is not enforcement — so the
-production composition root
-(`api/lifespan.py`) HARD-REFUSES `OUTRIDER_LLM_HOST=openai` before any key lookup or
-provider construction. The eval harness and paid probe build the provider DIRECTLY and
-bypass this seam, so they stay usable; this is a production-selection gate only.
-
-The first two boot the real lifespan with the DEFAULT factory (no stub), so a regression
-that re-opens production OpenAI selection fails here instead of in production; the third
-intentionally uses the `provider_factory=` injection seam with a spy to prove ZERO
-construction calls (the gate precedes construction, not just assignment).
-"""
+The check must precede key lookup and provider construction, including injected
+factories. Evaluation tools may still construct the provider directly. Refusal
+normalization has not met the production admission gate; see DECISIONS.md#056
+and specs/2026-07-18-openai-native-host.md."""
 
 from __future__ import annotations
 

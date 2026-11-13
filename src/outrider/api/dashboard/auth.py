@@ -1,8 +1,9 @@
-"""Authenticate dashboard admin and read-only agent scopes with separate keys.
+"""Check separate bearer keys for dashboard admins and read-only agents.
 
-Compare bearer-token bytes with hmac.compare_digest. Authentication precedes
-review-state inspection on /decide (M12: auth → state → mismatch), so rejected
-callers cannot enumerate review state. See docs/trust-boundaries.md §5.
+Use hmac.compare_digest for token comparison. Decision routes authenticate
+before inspecting review state so unauthorized callers cannot probe it.
+
+See docs/trust-boundaries.md §5.
 """
 
 from __future__ import annotations

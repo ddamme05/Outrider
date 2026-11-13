@@ -1,15 +1,9 @@
-"""openai-native-host persistence (specs/2026-07-18-openai-native-host.md).
+"""Check OpenAI failure outcomes persisted before an error is raised.
 
-DB-backed coverage the spec names: (1) persist-before-raise outcomes land the
-`LLMCallEvent` + `llm_call_content` rows atomically with the CORRECT shape —
-a costable tier mismatch carries the policy cost, an unpriceable echo carries
-`cost_usd=NULL` + the typed reason, round-tripped through the JSONB payload;
-(2) the fresh-insert guard REJECTS an incomplete OpenAI pricing context or a
-cost/reason pair diverging from the canonical outcome, rolling the fresh row
-back; (3) a PRE-FIELD historical row (keys absent) re-emitted post-upgrade
-(keys null) passes the absent≡null comparator normalization as an idempotent
-no-op — the checkpoint-resume-across-deploy case.
-"""
+Audit and content rows must agree on pricing context, cost, and unpriceable
+reasons; invalid fresh rows roll back. Retried stored rows from before these
+fields existed still compare absent fields as null.
+See specs/2026-07-18-openai-native-host.md."""
 
 from __future__ import annotations
 

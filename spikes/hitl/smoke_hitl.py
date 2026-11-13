@@ -1,35 +1,13 @@
 # Mock-mode HITL interrupt + resume round-trip smoke.
-"""End-to-end smoke for the HITL node's interrupt + resume durability story.
+"""Check the human-approval node's pause and resume flow in memory.
 
-V1 mock mode (default; no external deps): build a minimal graph that
-wires only the `hitl` node between START and END, drive it with an
-`InMemorySaver` checkpointer, seed a state with a CRITICAL finding,
-ainvoke → expect `__interrupt__` key in the return dict (NOT a raised
-exception per langgraph 1.1.6 semantics), then ainvoke
-`Command(resume=...)` with the same thread_id → expect the state
-delta to carry `hitl_request` + `hitl_decision`. Verify the recording
-sinks captured exactly:
-  - phase events: 2 start + 1 end (same phase_id across interrupt/resume —
-    the body re-runs from the top on resume per langgraph 1.1.6 "node
-    restarts from the beginning" semantic, so `emit_phase(start)` fires
-    twice; `emit_phase(end)` fires once on the resume-side success exit)
-  - HITLRequestEvent: one emit BEFORE interrupt
-  - HITLDecisionEvent: one emit AFTER resume
-  - ReviewStatusSink: mark_awaiting_approval BEFORE interrupt;
-    mark_running AFTER resume
+The default mock run builds a small LangGraph with only hitl, a memory
+checkpointer and recording sinks. A CRITICAL finding pauses for a decision;
+resuming the same thread must preserve state and record the request before the
+pause and the decision afterward. This does not test recovery after process loss.
 
-This proves the load-bearing properties the unit tests can't reach
-without a real checkpointer:
-  1. `interrupt(...)` actually persists state via the checkpointer
-  2. `Command(resume=...)` actually rehydrates the body at the
-     interrupt point with the resume value as the interrupt's return
-  3. The state delta lands correctly in the final graph state
-  4. The audit-first emit order survives the checkpoint round-trip
-
-Live mode (`--apply`) is deferred per spec line 572: requires a real
-FastAPI server + real GitHub App + real Postgres + the
-`op run --env-file=.env --` 1Password pattern. Mock mode covers the
-durability-contract regression floor for V1.
+No database, GitHub or model calls are made. --apply is not implemented and
+exits with a setup error; the live shell scripts are separate experiments.
 """
 
 from __future__ import annotations

@@ -1,19 +1,11 @@
-# Intake node — webhook-seeded ReviewState → PR file metadata + content.
-# See DECISIONS.md#065-authorization-is-a-live-github-check-the-local-install-db-is-a-cache
-"""Fetch PR metadata and content for triage (DECISIONS.md#020).
+"""Fetch the pull request's files before review begins.
 
-Check the persisted review identity and live GitHub authorization before
-creating the async installation client (DECISIONS.md#065, DECISIONS.md#070).
-Terminal reviews exit. A denied or uncertain authorization result skips the review.
-The size gate runs before content fetches and per-file events.
+intake checks the saved review, live GitHub access and PR size before fetching
+content. It validates paths, bounds concurrent fetches and total decoded bytes,
+records skipped files, then passes the remaining content to triage.
 
-Fetch each file's required refs with bounded concurrency and decoded bytes.
-Validate paths before I/O, emit file outcomes, and drop skipped content from
-`pr_context.changed_files` before routing to triage.
-
-On failure or cancellation, drain fetch tasks before closing the persisted
-phase, attempt to mark the review failed, then re-raise the original error.
-Shield cleanup against another cancellation so it can finish before exit.
+Failures and cancellation drain pending fetches before cleanup and preserve the
+original error. See DECISIONS.md#020, #065 and #070.
 """
 
 from __future__ import annotations

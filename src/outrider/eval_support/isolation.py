@@ -1,11 +1,9 @@
-# is_eval integrity gate shared by run_review + the eval_db conftest fixture.
-# See specs/2026-06-01-eval-graph-driver.md (resolution A) + docs/testing.md "Eval isolation".
-"""Reject eval database rows whose is_eval flag is not True.
+"""Detect evaluation records that lack is_eval=True.
 
-Writers set the flag; this post-run check catches missing assignments without
-coercing them. IS DISTINCT FROM TRUE catches False and NULL. Drivers and eval
-fixtures share the query, which must include each is_eval-bearing table
-(docs/schema.md "Eval isolation" and specs/2026-06-11-file-hash-analyze-cache.md)."""
+The checks include NULL flags and report contaminated tables rather than
+silently changing data. Runners use them to verify database isolation before
+teardown.
+"""
 
 from __future__ import annotations
 

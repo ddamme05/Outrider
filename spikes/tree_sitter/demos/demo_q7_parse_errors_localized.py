@@ -1,14 +1,8 @@
-"""Q7 — parse-error localization (inside vs outside a scope).
+"""Check whether syntax errors affect a particular scope.
 
-spec §5.5 distinguishes:
-- "Parse with errors outside changed regions" → clean-parse semantics for
-  findings inside the changed scope.
-- "Parse with errors inside changed regions" → file degrades to JUDGED-only.
-
-For that policy to be implementable, ast_facts must be able to answer
-'is the error inside this scope?' deterministically. Tree-sitter exposes
-``node.has_error`` per-node, so a scope with has_error=False is provably
-clean even when root_node.has_error=True. This demo proves that holds.
+Compare each scope's has_error value with errors elsewhere in the file. Analysis
+can use a clean changed scope even when another region has an error; errors in
+changed regions require model-only review (spec §5.5).
 """
 
 from pathlib import Path

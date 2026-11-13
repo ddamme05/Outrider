@@ -1,15 +1,11 @@
-# FastAPI router for the GitHub webhook endpoint per intake-and-webhook spec.
-"""Receive GitHub events and start reviews at `POST /webhooks/github`.
+"""Verify GitHub deliveries and queue eligible pull requests for review.
 
-Verify the signature on size-bounded raw bytes before interpreting the payload.
-Installation events update the local cache. Eligible non-draft PR events pass
-the local authorization check, reuse an existing review for the same commit or
-commit a review row and initial audit event, then enqueue graph execution.
+POST /webhooks/github checks the signature before parsing event data. It updates
+installation records or starts a review after action and access checks. A saved
+review for the same commit is reused instead of starting another one.
 
-New work returns 202 with its review_id; duplicate deliveries return 200 with
-the existing id. Dispatch failures attempt to mark the new review failed, then propagate.
-`_PULL_REQUEST_ACTION_ALLOWLIST` defines triggers. `X-GitHub-Delivery` is logged,
-not persisted. Full streaming protection remains FUP-034.
+New work returns 202; duplicates return 200. Queueing failures attempt to mark
+the new review failed. Full streaming protection remains FUP-034.
 """
 
 from __future__ import annotations

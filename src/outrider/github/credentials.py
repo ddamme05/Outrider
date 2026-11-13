@@ -1,18 +1,8 @@
-# See DECISIONS.md#070 — the single GitHub App credential source (mode + provider).
-"""`GitHubCredentialProvider` — the single source of GitHub App credentials (`DECISIONS.md#070`).
+"""Select the GitHub App credentials used for an operation.
 
-Credential source is an explicit mode, `OUTRIDER_GITHUB_CREDENTIAL_SOURCE ∈ {env, database}`
-(default `env`), with **no dynamic fallback**: only the selected source is validated, and a
-missing/unreadable `database` record never falls back to `env` (that could silently switch App
-identity + webhook trust).
-
-Every consumer that today closes over `GitHubAppSettings` — `auth.make_installation_client_factory`,
-`api/webhooks/signature.verify_signature`, `authz.make_installation_authorizer`, the reconciliation
-janitor — instead obtains one immutable `GitHubAppCredentials` snapshot from the provider, per
-operation. `env` mode wraps `GitHubAppSettings` (behavior unchanged); `database` mode reads the one
-active `github_app_credentials` row and decrypts the PEM + webhook secret via `credential_crypto`,
-raising `GitHubUnconfiguredError` (fail-closed) while unconfigured — so a booted-but-unonboarded
-instance denies webhooks/dispatch/authorization until activation, with no restart on activation.
+Environment and database sources are explicit choices with no fallback.
+Each read returns one immutable snapshot, keeping App identity and secrets
+together while credentials rotate. See DECISIONS.md#070.
 """
 
 from __future__ import annotations

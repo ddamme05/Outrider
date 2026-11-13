@@ -2,51 +2,19 @@
 # ================================================================
 #  Outrider — deep inspector: every moving part of one review
 # ================================================================
-"""Full forensic timeline of a single review — all moving parts, their state,
-their results — reconstructed from the append-only audit stream + content tables.
+"""Print a review's saved state, events, findings and model exchanges.
 
-Where `diagnose_review_context.py` answers one focused question ("what did the
-model see for analyze"), this is the firehose: the complete ordered event
-stream, grouped by graph-node phase, with every event's COMPLETE payload printed
-verbatim from JSONB in non-compact mode (no field is curated or hidden —
-including the `review_phase` start/end markers, shown both as a header line AND
-their full payload), the joined LLM prompt/
-completion + finding content, the reviews-row state, and the replay-equivalence
-verdict. It is the "open the hood and watch every part move" view.
+Read the database and replay checks without changing data or calling GitHub or
+a model. The timeline groups events by review phase; retained content supplies
+prompt, completion and finding text. diagnose_review_context.py is the smaller
+view for checking what analysis saw.
 
-Sections, in order:
-  1. reviews row — the durable record (status, metrics, timestamps, retention)
-  2. replay verdict — reconstruct() mode + assert_replay_equivalent() pass/fail
-     + orphan detection (findings-rows with no audit event)
-  3. phase timeline — every ReviewPhaseEvent start/end pair (grouped under the 7
-     logical nodes; analyze emits several keyed pairs per pass since the fan-out),
-     and under each, every per-operation event IN SEQUENCE with its full payload
-  4. LLM exchanges — per analyze/triage/synthesize/trace call: token/cost/cache
-     metadata + the full prompt and completion text (within retention)
-  5. findings — per finding: the FindingEvent payload + the content-table row
-     (title/description/evidence/suggested_fix + override provenance)
-  6. summary — event-type histogram + the accounting that should balance
+With DATABASE_URL configured, run:
+    uv run python scripts/inspect_review.py --review-id UUID
 
-Pure READER over audit_events + reviews + llm_call_content + findings (no
-mutation, no LLM call, no GitHub call). Payloads are rendered generically from
-the JSONB column, so this tool does not drift when an event gains a field.
-
-Run:
-  op run --env-file=.env -- uv run python scripts/inspect_review.py            # list latest
-  op run --env-file=.env -- uv run python scripts/inspect_review.py --review-id <uuid>
-  op run --env-file=.env -- uv run python scripts/inspect_review.py --review-id <uuid> --compact
-  op run --env-file=.env -- uv run python scripts/inspect_review.py --review-id <uuid> --no-content
-
-Flags:
-  --compact      one line per event (seq · type · node · key fields) instead of
-                 full payloads; section 3 only. Sections 1/2/5/6 unaffected.
-  --no-content   skip prompt/completion + finding-description text (metadata only)
-  --phase NODE   restrict the timeline to one node (e.g. --phase analyze — shows ALL
-                 of analyze's fan-out phases: plan + every per-file worker + aggregate)
-  --phase-key K  restrict to one fan-out phase by phase_key prefix
-                 (e.g. --phase-key file:src/ops/deploy_helpers.js isolates one worker)
-
-Exit codes: 0 = dumped; 2 = setup error (missing DATABASE_URL / review not found).
+Omit the ID to list recent reviews. --compact shortens timeline entries;
+--no-content omits content text. --phase and --phase-key narrow the timeline.
+Exit 0 means success; exit 2 reports a setup error or missing review.
 """
 
 from __future__ import annotations

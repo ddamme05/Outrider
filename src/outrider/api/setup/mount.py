@@ -1,15 +1,10 @@
-# See DECISIONS.md#070 — create-app-time mount of the `/setup` onboarding router.
-"""Create-app-time mount for the `/setup` onboarding router (spec F6).
+"""Mount GitHub App setup routes before the dashboard fallback.
 
-`main.py::_include_routers` calls `mount_setup_router(app)` in `database` credential mode only
-(`env` mode has no onboarding; demo mode mounts no side-effecting surface). The router is mounted at
-create_app time — BEFORE the SPA catch-all, which is registration-last (`DECISIONS.md#069`) — so the
-`/setup/*` routes win over the SPA history-fallback.
+Only database credential mode uses these routes. Their database dependency is
+looked up when called because startup creates it after the app is built. The
+saved state-machine instance also supports recovery during startup.
 
-The state machine needs the DB `session_factory`, which the lifespan builds at STARTUP (after
-create_app returns). `_LazyAppStateSessionmaker` defers that lookup to call time, and the machine is
-stashed on `app.state.setup_state_machine` so the lifespan can run its startup stale-`CONVERTING`
-repair (`recover_stale_converting`) against the same instance.
+See DECISIONS.md#070 and #069.
 """
 
 from __future__ import annotations

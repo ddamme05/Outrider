@@ -1,33 +1,11 @@
-"""The Arc 2 verdict classifier — pre-registered, total, and prose-blind.
+"""Classify probe results using the experiment's fixed rules.
 
-Frozen before any spend so the outcome cannot be rationalized after the fact
-(specs/2026-07-20-arc2-strict-schema-feasibility.md, "Frozen verdict rule").
+Each EvaluatedRow binds an observation to one response. Classification uses the
+request's position, status and structured response fields rather than vendor
+error prose. A first-row HTTP 400 records a rejected request; it does not establish
+why the host rejected it.
 
-Three properties this module is built to guarantee:
-
-1. **Totality over BOTH arms.** Every transport outcome (any HTTP status, any
-   timeout) and every capture outcome (any envelope shape, including malformed
-   and ambiguous ones) reaches exactly one classification. There is no
-   fall-through branch.
-2. **Structure-only classification.** The verdict never reads vendor prose.
-   `RawOpenAICaptureError` exposes only a validated status, a validated request
-   id, and a bounded raw excerpt — an invalid-schema 400 and any other 400 are
-   indistinguishable from those fields — so request rejection is decided
-   POSITIONALLY (which row) and never by matching message substrings.
-3. **Every fact is BOUND TO THE BYTES it came from.** A row is one immutable
-   `EvaluatedRow`, not several independently-supplied booleans. An earlier
-   design passed the envelope, the finding assessment, and the zero-findings
-   flag as separate arguments, so a caller could pair a `{"findings":[]}` body
-   with `returned_any_finding=True` — an impossible observation that still
-   produced a positive verdict. Coherence is now enforced at construction, so
-   that pairing raises instead of grading.
-
-**`STOP_SHAPE` from a 400 is an observation, not a diagnosis.** It means "the
-exact first-row strict request was rejected with HTTP 400" and nothing more. It
-does NOT assert that the API rejected the schema, or that the design is
-inexpressible in the strict subset — those readings would require interpreting
-vendor prose. A narrower-encoding follow-up is a hypothesis for a later spec,
-not a conclusion this classifier draws.
+See specs/2026-07-20-arc2-strict-schema-feasibility.md for the frozen verdict rule.
 """
 
 from __future__ import annotations

@@ -1,10 +1,8 @@
-"""Reconcile janitor against a real DB (Arc B2, DECISIONS.md#065 / #012 / #067).
+"""Check installation reconciliation against PostgreSQL with a scripted GitHub list.
 
-Verifies: tombstone a local install GitHub no longer lists (missed delete), live-confirmed restore
-of a tombstoned install GitHub DOES list, the #067 session-scoped advisory-lock single-runner skip,
-idempotent grace-deadline preservation, empty-list mass-tombstone, and list-failure abort.
-The GitHub list is monkeypatched (no network); the reconcile SQL runs against Postgres.
-"""
+Cover missing installations, confirmed restores, single-runner locking, retained
+grace deadlines, empty lists, and listing failures. No network calls are made.
+See DECISIONS.md#065, #012, and #067."""
 
 from __future__ import annotations
 

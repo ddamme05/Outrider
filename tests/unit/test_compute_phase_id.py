@@ -1,14 +1,7 @@
-"""Canonical-recipe pinning for `compute_phase_id`.
+"""Check deterministic phase IDs from review, node, and attempt identity.
 
-`ReviewPhaseEvent` uses `phase_id: str`. `PhaseEventSink` idempotency
-keys on `(review_id, phase_id, COALESCE(phase_key, ''), marker)`; LangGraph checkpoint replay
-re-runs the body and re-mints, so the helper produces a deterministic
-SHA-256 hex digest over `(review_id, node_id, attempt_key)`.
-
-Tests pin: determinism, cross-node uniqueness, cross-attempt_key
-uniqueness, cross-review uniqueness, and recipe-equivalence against
-the canonical-encoding chokepoint.
-"""
+Distinct inputs must produce distinct IDs, and encoding must match the canonical
+hash recipe so checkpoint retries identify the same phase."""
 
 from __future__ import annotations
 

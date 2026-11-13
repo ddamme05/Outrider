@@ -1,10 +1,6 @@
-"""reviews.updated_at BEFORE UPDATE trigger stamps NOW() on every row update.
+"""Check that the reviews trigger updates updated_at on every row update.
 
-Backs migration 54bb7ed5f51a. Before the trigger, `updated_at` was frozen at
-its insert value (== created_at) because the column has no `onupdate` and the
-status persister updates via `.values(status=...)` without touching it. The
-trigger fires on UPDATE only, so reads and inserts are unaffected.
-"""
+Reads and inserts do not fire the trigger. See migration 54bb7ed5f51a."""
 
 import asyncio
 

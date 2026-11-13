@@ -1,14 +1,7 @@
-# See specs/2026-05-19-analyze-foundation.md §6.
-"""`FINDING_TYPE_TO_DIMENSION` mapping + module-load lockstep tests.
+"""Check complete, immutable finding-type dimension mappings.
 
-Pins:
-- Every `FindingType` has a dimension entry; conversely no extras.
-- Lockstep with `SEVERITY_POLICY` (same key set).
-- `MappingProxyType` blocks runtime mutation.
-- `verify_lockstep()` raises when the three sets drift (simulated
-  via temporary set difference).
-- `lookup_dimension` returns the canonical mapping.
-"""
+Dimension and severity key sets must agree; drift must raise explicitly.
+See specs/2026-05-19-analyze-foundation.md §6."""
 
 from __future__ import annotations
 

@@ -1,11 +1,7 @@
-"""ReviewFinding.confidence is a deterministic computed_field.
+"""Check that finding confidence is computed from evidence tier and cannot be assigned.
 
-Backs `confidence-is-computed-not-assigned`. Confidence is derived from
-evidence_tier (OBSERVED=0.9, INFERRED=0.75, JUDGED=0.5 per spec §7.3),
-not persisted by the model and not settable. The schema-layer migration
-deliberately omits a `confidence` column; this test verifies the
-Pydantic side mirrors that omission as a read-only computed field.
-"""
+It is neither model output nor stored content (``confidence-is-computed-not-assigned``;
+spec §7.3)."""
 
 from typing import Any
 from uuid import uuid4

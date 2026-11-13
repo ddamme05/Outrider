@@ -1,11 +1,8 @@
-"""Identity-triad schema slots (DECISIONS.md#056, arc 1a step 4).
+"""Check nullable host identity fields on LLM responses and completion events.
 
-`profile_id` / `reasoning_enabled` / `profile_contract_digest` are additive + nullable on
-`LLMResponse` and the three completion events. The write-time fail-closed validator + the
-provider/graph stamping land in later step-4 commits; this pins the schema slots (default
-`None` = the UNQUALIFIED pre-#056 state, read-tolerant per DECISIONS#032) + the digest
-sha256 pattern on the events.
-"""
+Older stored events may lack the profile ID, reasoning flag, and contract digest.
+Cover defaults and digest shape; provider stamping and write-time checks have
+separate tests. See DECISIONS.md#056 and #032."""
 
 from __future__ import annotations
 

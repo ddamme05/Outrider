@@ -1,19 +1,12 @@
-"""reviews.pr_title — persist the PR title captured at review creation.
+"""Save the pull-request title with each new review.
 
 Revision ID: f4c8a1d2b9e3
 Revises: e9a1c3d5b7f2
 Create Date: 2026-06-13
 
-Adds a nullable `pr_title` column to `reviews`. The PR title
-(`pull_request.title` from the webhook payload) was previously only present
-on the transient `PRContext` / `ReviewState`, never persisted — so the
-dashboard reviews list could not show it (it rendered raw `repo_id` + PR
-number). Captured at review creation (`api/webhooks/router.py`), immutable
-thereafter: review creation is idempotent on `(repo_id, pr_number,
-head_sha)`, so a new head SHA is a new row (new title) and the same triple
-short-circuits without mutating the title. Nullable with NO backfill —
-pre-existing rows stay NULL and the dashboard renders a fallback. Touches
-only `reviews`; no append-only table is involved.
+The nullable pr_title column has no backfill, so older reviews keep null.
+A later commit creates a new review; redelivering the same commit does not
+rewrite the saved title.
 """
 
 from collections.abc import Sequence

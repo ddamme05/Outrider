@@ -1,15 +1,11 @@
-"""Dashboard policy read-API — `GET /api/policy/{version}` (FUP-132;
-spec `2026-06-01-policy-version-endpoint.md`).
+"""Return the stored severity policy for GET /api/policy/{version}.
 
-Exposes the versioned `FindingType` → severity mapping for a policy version, read
-through `policy/versions.py::load_policy_for_version` — the STORED versioned policy
-(`severity_policies` table), never the active in-code `SEVERITY_POLICY`. Serving the
-current policy for a historical version would violate
-`severity-policy-versioned-for-replay`; reading the stored row is the replay-safe
-contract. The endpoint exposes the policy as the source of truth
-(`severity-set-by-policy`); it computes/overrides nothing. Dimension comes from the
-current append-only, lockstep-guarded `FINDING_TYPE_TO_DIMENSION` (`DECISIONS.md#021`),
-so every returned type has one. Read-only — no writes to `severity_policies`.
+load_policy_for_version reads that version from the database, never substitutes
+the active in-code mapping. This preserves historical replay
+(severity-policy-versioned-for-replay). Severity remains policy-assigned
+(severity-set-by-policy); dimensions use the shared mapping.
+
+See specs/2026-06-01-policy-version-endpoint.md, FUP-132 and DECISIONS.md#021.
 """
 
 from __future__ import annotations

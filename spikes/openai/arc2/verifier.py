@@ -1,26 +1,11 @@
-"""The SOLE verdict authority: decode the evidence, derive the conclusion.
+"""Derive the probe verdict from saved response files.
 
-For each ordered reference this module re-hashes the fixture, DECODES it through
-the closed attempt union, and derives every response fact from that decoded
-object. Then it advances one semantic automaton, rebuilds each `EvaluatedRow`,
-and calls `classify_session`. The verdict is the RESULT of that replay.
+verify_and_derive checks fixture hashes and contract identity, decodes each
+attempt, rebuilds EvaluatedRow values and calls classify_session. Recorded
+verdicts and response facts supplied beside a fixture are not trusted.
 
-**What went wrong before, twice.**
-
-1. `verify_paid_capture` authenticated hashes and identity and then accepted
-   whatever `verdict` the manifest carried — a resealed false `GO` passed.
-2. Its replacement hashed the fixture but graded `attempt.content` supplied
-   separately by the ledger, so honest bytes containing no refusal could be
-   accompanied by a ledger claiming one. A forged `GO` was demonstrated.
-
-Both had the same shape: two copies of one fact, only one of them checked. There
-is now exactly one source for captured evidence (the fixture), one for generation
-identity (the contract lineage), and one for grading (this module).
-
-**Nothing verdict-affecting is a parameter.** The parser adapter and the expected
-finding are DERIVED from the verified `EvaluationContract`, not accepted from the
-caller — both change the verdict, so accepting them would reintroduce the
-injectable-authority defect at the outermost layer.
+The registered plan supplies parser inputs and expected findings. This keeps
+request identity, captured evidence and grading tied to the same experiment.
 """
 
 from __future__ import annotations

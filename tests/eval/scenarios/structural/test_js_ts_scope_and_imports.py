@@ -1,11 +1,4 @@
-"""Structural eval scenario: JS/TS/TSX scope + import extraction.
-
-LLM-free per `docs/conventions.md` — validates `ast_facts` directly.
-Required by CLAUDE.md for a new language: realistic JS and TSX sources
-must produce well-formed `ScopeUnit`/`ImportRef` objects through the
-public `parse_javascript` / `parse_typescript` entry points (per
-specs/2026-07-02-js-ts-tree-sitter-adapters.md).
-"""
+"""Check JavaScript, TypeScript and TSX scope and import extraction without a model."""
 
 from unittest.mock import MagicMock
 

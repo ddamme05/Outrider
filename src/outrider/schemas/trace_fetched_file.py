@@ -1,15 +1,9 @@
-# See specs/2026-05-23-trace-node.md (Q3 resolution).
-"""Head-side content fetched after a trace candidate resolves.
+"""Hold fetched source from a related file outside the original PR patch.
 
-Trace emits this when the target is outside pr_context.changed_files so
-post-trace analysis can examine it. V1 uses API probes then a content fetch;
-filesystem-aware resolution remains a separate future path per
-`DECISIONS.md#024` point 4.
-
-The state reducer deduplicates by path, keeping the first source_finding_id.
-TraceDecisionEvent and state.trace_decisions retain every cause; query them
-by target_file for complete provenance. This carrier has no changed-file
-status or diff because the fetched target may be unchanged."""
+Files deduplicate by path. The first requesting finding remains attached to
+the content; trace decisions preserve the other request outcomes.
+See DECISIONS.md#024.
+"""
 
 from __future__ import annotations
 

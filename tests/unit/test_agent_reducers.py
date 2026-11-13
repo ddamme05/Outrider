@@ -1,12 +1,8 @@
-# See specs/2026-05-19-analyze-foundation.md §2.
-"""`append_with_dedup_by` reducer factory tests.
+"""Check append_with_dedup_by ordering, replay deduplication, and empty inputs.
 
-Pins the §2 contract: (a) plain append when no duplicates; (b) dedup
-on replay (same key appearing twice → kept once); (c) different-content-
-same-key resolution to first-seen; (d) empty existing + empty incoming
-→ empty; (e) the returned reducer is referentially stable for repeated
-calls with the same key_fn (sanity).
-"""
+The first item wins when the same key carries different content. Repeated use
+of the same key function must return the same reducer.
+See specs/2026-05-19-analyze-foundation.md §2."""
 
 from __future__ import annotations
 

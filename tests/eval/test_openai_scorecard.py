@@ -1,61 +1,13 @@
-"""Opt-in, real-spend: Anthropic-vs-GPT-5.6 scorecard over the analyze node.
+"""Collect paid analysis comparisons for the OpenAI deep and standard candidates.
 
-The openai-native-host candidate gate (specs/2026-07-18-openai-native-host.md).
-Runs the SAME recall + precision scenarios as the Sonnet-vs-Haiku model-tier
-comparison (`test_model_comparison.py`) and the GLM scorecard
-(`test_glm_scorecard.py`), with TWO candidate columns matching the spec's
-evidence-domain rule — the scorecard canonizes exactly the two ANALYZE fields:
+Compare each candidate with its tier's Anthropic baseline over the same
+known-issue and safe-code fixtures. Verified, current wire captures and
+matching billing evidence are required before spending; stale evidence fails.
 
-  - deep candidate (default `gpt-5.6-sol`) vs the Anthropic DEEP-tier
-    baseline (`cfg.analyze_model`)
-  - standard candidate (default `gpt-5.6-luna`) vs the Anthropic
-    STANDARD-tier baseline (`cfg.standard_analyze_model`)
-
-Candidates are ENV-SELECTABLE so the Terra-swap workflow needs no code edit:
-`OUTRIDER_SCORECARD_DEEP_CANDIDATE` (sol|terra) and
-`OUTRIDER_SCORECARD_STANDARD_CANDIDATE` (luna|terra); accounting is keyed by
-(candidate, baseline) column so a both-fields-Terra rerun stays two columns.
-
-REPORT-ONLY BY DESIGN (the glm-scorecard precedent): pytest "passed" means the
-run COMPLETED, not that a gate passed. ADJUDICATION RULE (frozen in the spec's
-gates section): the operator reads the report and records the verdict + report
-pointer in the spec's Actual Outcome. Canonizing a provisional default requires
-BOTH (a) structured-output yield at the #059 bar (zero rejected responses
-across the rows — json_object mode + prompt-named fields are the conformance
-drivers here) and (b) the `grading.py` baseline recall floor against that
-tier's incumbent. A miss on either swaps THAT field to `gpt-5.6-terra` and
-reruns this scorecard — never a silent fallback — and a Terra swap first
-inherits the full paid-wire probe matrix (spikes/openai/probe.py).
-
-PRECONDITION (enforced, not advisory): a passing, coherent, CURRENT probe
-capture (`spikes/openai/fixtures/manifest.json`) is REQUIRED — this test FAILS
-without it. The gate verifies the verdict boolean AND the capture's provenance
-(canonical base_url; the profile contract digest AND the probe's own
-procedure/manifest versions — a wire-affecting profile change or a probe
-prompt/matrix/predicate change both stale the capture), the EXACT expected row
-set (refusal rows included: the refusal-normalization fixture is a pre-ship
-gate per model; extra rows rejected; bare path-safe filenames only), each
-fixture's sha256, the cold/warm conservation BOUNDS recomputed from fixture
-bytes, and — because bounds cannot choose between the spec's two accounting
-equations — the operator's sanitized billing-adjudication ARTIFACT
-(`billing_adjudication.json`; raw exports stay local/gitignored, but the raw
-export must EXIST under fixtures/raw/ and hash-match the artifact at
-admission), which is closed-key at every level (extra keys refuse — that is
-what keeps the sole committable file sanitized) and must be BOUND to this
-capture (exact response IDs, a bounded window covering the fixtures'
-`created` stamps, billed class counts consistent with the wire) and must
-match the equation `read_usage()` ships. A conformance surprise is caught on
-the probe's cheap capture, never on this ~128-call run.
-
-Run (keys resolve from .env via 1Password):
-  OUTRIDER_EVAL_REAL_MODELS=1 op run --env-file=.env -- \
-    uv run pytest tests/eval/test_openai_scorecard.py --is-eval -v -s
-
-Cost: 2 candidate columns x the FULL imported evidence catalog (22 recall + 10
-safe fixtures at last count — counts are computed at runtime and printed before
-any spend) = 64 comparisons, each a baseline + candidate call: ~128 small
-analyze calls.
-"""
+Pytest success means collection completed, not admission. Review response
+validity and recall against the incumbent, then record the operator verdict
+in the spec's Actual Outcome. Candidate swaps are explicit and require the
+full wire probe first. Requires OUTRIDER_EVAL_REAL_MODELS=1 and op run credentials."""
 
 from __future__ import annotations
 

@@ -1,20 +1,7 @@
-"""Production wiring guard — DEMO_MODE boots keyless (no LLM/GitHub/Slack/graph).
+"""Check that demo mode starts with read-only dependencies and no live credentials.
 
-Piece 2 of the public demo deployment. The demo box must hold NO live
-credentials: the lifespan's `if demo_mode:` branch (right after the shared
-persister step) serves the read-only dashboard over precomputed seed reviews and
-skips the entire review/write half. These guards prove:
-
-- the lifespan reaches `yield` with NO truncation secret, NO Anthropic key, and
-  NO GitHub App env present (only the public read token);
-- the provider factory, checkpointer factory, and `build_graph` are never called
-  — nothing that could call out is constructed;
-- `app.state` carries the read-side deps (engine / session / persister / admin
-  token) and `None` for every review-side dep, with the agent-view surface
-  disabled (no agent token);
-- the contrast: the SAME minimal env with demo_mode off fails loud at the
-  truncation-secret gate — so the branch, not the ambient env, is what boots it.
-"""
+Provider, checkpointer, and graph factories must not run. The same minimal
+environment must fail outside demo mode at the truncation-secret check."""
 
 from __future__ import annotations
 

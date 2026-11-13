@@ -1,13 +1,8 @@
-"""Installation lifecycle hard-delete: full content purge + cascade.
+"""Check installation deletion after the grace period (DECISIONS.md#012).
 
-Per ``DECISIONS.md#012`` end-to-end. After the grace window expires,
-purge_installation deletes all content for the installation in strict
-order, writes per-table purge_audit rows, then hard-deletes the
-installations row. INSTALLATION_REPOSITORIES cascades automatically
-via the ON DELETE CASCADE FK declared in migration 0001. PURGE_AUDIT
-rows survive the installation hard-delete (loose-reference no-FK).
-audit_events stays untouched throughout (append-only forever).
-"""
+Content is purged in order with per-table purge records before the installation
+is deleted. Repository memberships cascade; purge records and append-only audit
+events survive."""
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine

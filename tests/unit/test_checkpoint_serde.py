@@ -1,25 +1,8 @@
-"""FUP-220: the checkpoint serde registers every Outrider state type.
+"""Check that checkpoint serialization allows exactly the required state types.
 
-`build_checkpoint_serde()` returns a `JsonPlusSerializer` with an explicit
-msgpack allowlist. An explicit allowlist permits the listed types + the
-serializer's built-in safe types and BLOCKS the rest — so the list must cover
-every Outrider type that can land in a checkpoint, or resume/replay breaks
-(a blocked type deserializes to raw data instead of the model, silently
-corrupting rehydrated state; under strict-msgpack it is refused outright).
-
-These tests pin four things:
-1. The allowlist is exact `(module, name)` pairs — no module-prefix wildcard.
-2. The allowlist matches the ReviewState type graph exactly (drift guard: a new
-   state type added without registering it fails here — FUP-220's trigger).
-3. Every registered enum and a findings-bearing state round-trip through the
-   serde with no blocked types (empirical: proves the traversal in (2) predicts
-   real serialization, since str-enum `==` is too loose to catch a block).
-4. An UNregistered type IS blocked (proves the serde is restrictive, i.e. it was
-   not accidentally constructed with `allowed_msgpack_modules=True`).
-
-The full real-state guarantee (hitl/publish/trace channels populated) is the
-hitl_resume eval + integration path exercised under `LANGGRAPH_STRICT_MSGPACK=true`.
-"""
+Match explicit module/name pairs to the ReviewState type graph, round-trip enums
+and finding-bearing state, and reject an unregistered type. Full approval-resume
+state is exercised separately with strict msgpack validation. See FUP-220."""
 
 from __future__ import annotations
 

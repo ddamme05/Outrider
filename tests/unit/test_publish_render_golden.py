@@ -1,8 +1,8 @@
-"""Golden + adversarial render tests for the GitHub inline-comment body (PR A, see
-specs/2026-07-06-finding-presentation.md). The body is an OUTPUT-SANITIZATION BOUNDARY: it folds
-attacker-influenced model prose (title, description, evidence, suggested_fix) into a GitHub
-comment. These pin the humanized render AND that every security invariant still holds with the
-restored evidence fence + proof line + labelled suggestion in the reserved tail."""
+"""Check complete inline-comment output and hostile input handling.
+
+Model text must remain safe inside prose, evidence fences, proof lines, and
+suggestions. Compare fixed rendered output as well as sanitization behavior.
+See specs/2026-07-06-finding-presentation.md."""
 
 from __future__ import annotations
 

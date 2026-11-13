@@ -1,12 +1,8 @@
-"""SlackNotificationOrchestrator — dedup, mutual exclusion, post-then-record, fire-and-forget.
+"""Check Slack notification deduplication, locking, and post-before-record ordering.
 
-Pins the two V1 flows (`notify_hitl_pending` / `notify_review_posted`): a clean
-post records a `SlackNotificationEvent` carrying the returned `ts`; the pre-post
-dedup + mutual-exclusion guards skip re-posts; and every failure path (transport
-error, audit-emit crash, dedup-query crash) is swallowed so the graph never sees
-an exception. The notifier + sink are in-memory doubles. See
-specs/2026-06-15-slack-dashboard-in-slack.md (Output boundary / Audit append-only).
-"""
+Recording failures and transport errors must stay contained so they do not fail
+the review graph. Use in-memory notifier and sink doubles.
+See specs/2026-06-15-slack-dashboard-in-slack.md."""
 
 from __future__ import annotations
 

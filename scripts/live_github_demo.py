@@ -2,50 +2,21 @@
 # ================================================================
 #  Outrider — live GitHub demo (real LLM · REAL GitHub · real DB)
 # ================================================================
-"""Direct-invoke the real 7-logical-node graph against a REAL GitHub PR.
+"""Run the real review graph against a GitHub pull request.
 
-This is step C2 of `docs/live-verification.md`: it swaps the two faked
-boundaries of `scripts/live_claude_smoke.py` (stub GitHub client + recording
-publisher) for the REAL ones the FastAPI lifespan builds — so intake fetches a
-real PR diff via a minted installation token, and publish posts a real review
-back to the PR. It bypasses ONLY the webhook receiver (no ingress); the graph,
-LLM, GitHub read+write, persistence, and replay are all real.
+This paid demo reads the PR, calls the selected model provider, stores the review,
+and can post back to GitHub. It bypasses webhook delivery, while using the normal
+graph and service implementations (docs/live-verification.md).
 
-What it proves (exit 0 = all structural checks hold):
-  - a real installation token mints + fetches the real PR diff (intake)
-  - the real host-selected model drives triage/analyze/synthesize over that diff
-  - a real review posts to GitHub (publish) UNLESS a CRITICAL/HIGH finding
-    trips the HITL gate (which pauses before publish — the gate working)
-  - the audit stream persists + reconstructs FULL (replay-equivalent)
+Configure DATABASE_URL, the OUTRIDER_GITHUB_APP_* credentials and the selected
+host's API key. Example:
+    uv run python scripts/live_github_demo.py --owner OWNER --repo REPO --pr PR --installation-id ID
 
-Guardrails (per the demo constraints + smoke_publish.py precedent):
-  - `--repo` is allowlisted; refuses anything but the sandbox repo unless
-    `--allow-any-repo` is passed (a visible, deliberate override).
-  - CRITICAL/HIGH findings hit the HITL gate (expire_only) — they do NOT
-    auto-post. The run reports "PAUSED at HITL" and leaves the review
-    awaiting approval rather than commenting on GitHub.
-
-Run (needs the host LLM key + the GitHub App env + a reachable Postgres):
-  op run --env-file=.env -- uv run python scripts/live_github_demo.py \\
-    --owner ddamme05 --repo outrider-smoke-test --pr 1 --installation-id <ID>
-
-Host is selected by OUTRIDER_LLM_HOST (default `anthropic`; `baseten` and `fireworks` are
-GLM-5.2 single-model hosts — all nodes on one model). The required LLM key is host-dependent:
-ANTHROPIC_API_KEY for anthropic, else the profile's key (BASETEN_API_KEY for baseten,
-FIREWORKS_API_KEY for fireworks). Keep OUTRIDER_LLM_REASONING off for any GLM host — those
-profiles have no verified reasoning-ON wire in V1, and the runner fails clean at setup (exit 2)
-if it is left on.
-
-Concurrency: OUTRIDER_ANALYZE_MAX_CONCURRENCY (default 4) sets the analyze fan-out width; set
-it to 1 for a sequential baseline (the parallel-vs-sequential A/B). Same head_sha, same findings.
-
-Env required (read by GitHubAppSettings + the host provider + DB):
-  OUTRIDER_GITHUB_APP_ID, OUTRIDER_GITHUB_APP_PRIVATE_KEY, OUTRIDER_GITHUB_WEBHOOK_SECRET,
-  DATABASE_URL, and the host LLM key (ANTHROPIC_API_KEY, BASETEN_API_KEY, or FIREWORKS_API_KEY).
-
-Exit codes: 0 = all structural checks passed; 1 = a check failed; 2 = setup/
-config error (missing env, DB unreachable, PR not found, or a review already
-exists for this head_sha — push a new commit or clear the existing row).
+The repository is restricted unless --allow-any-repo is supplied. Required human
+approval pauses publication. OUTRIDER_LLM_HOST selects the provider; GLM hosts
+require reasoning off. OUTRIDER_ANALYZE_MAX_CONCURRENCY controls parallel analysis.
+Exit 0 means the run's structural checks passed; 1 reports a failed check and
+2 reports setup problems, including a review already saved for the same head.
 """
 
 from __future__ import annotations

@@ -1,22 +1,13 @@
-"""installations B2 columns — suspension state + repository_selection.
+"""Record installation suspension and repository selection.
 
 Revision ID: a7c3f2b18d40
 Revises: ff57dcf6fbd1
 Create Date: 2026-07-06
 
-Arc B2 (DECISIONS.md#065) adds two columns to `installations`:
-
-  - suspended_at        — nullable timestamptz; set on `installation.suspend`,
-                          cleared on `unsuspend`. Suspension is a reversible
-                          pause (#012 — never a purge); the active-membership
-                          gate excludes suspended installs (`suspended_at IS NULL`).
-  - repository_selection — NOT NULL text, `'all'` | `'selected'` (GitHub's
-                          install `repository_selection`). `selected` requires a
-                          per-repo `installation_repositories` row (fail-closed);
-                          `all` authorizes at the install level. Server-default
-                          `'selected'` so any pre-B2 row is fail-closed by default.
-
-Touches only `installations`; no append-only table is involved.
+suspended_at records a reversible pause. repository_selection distinguishes
+all-repository access from individually selected repositories. Existing rows
+default to selected, so missing repository membership does not grant access
+(DECISIONS.md#065).
 """
 
 from collections.abc import Sequence

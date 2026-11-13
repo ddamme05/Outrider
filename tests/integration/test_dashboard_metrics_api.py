@@ -1,24 +1,9 @@
-"""Integration tests for the dashboard analytics endpoint (`api/dashboard/metrics.py`).
+"""Check dashboard analytics against seeded PostgreSQL rows.
 
-Proves the honest-aggregation contract from `specs/2026-06-04-dashboard-analytics.md`
-+ `DECISIONS.md#039` against real seeded `audit_events` / `reviews` rows:
-
-- per-day reviews / cost / failed buckets + the severity AND evidence-tier distributions;
-- "findings" = DEDUPED logical findings (distinct `(review_id, finding_content_hash)`),
-  so a re-emit of the same hash counts ONCE (the Codex catch);
-- cross-window guard: a finding whose FIRST emission predates the window is excluded
-  even when re-emitted in-window (min-then-filter, not filter-then-min);
-- tier representative: the EARLIEST emission's tier wins (OBSERVED-then-JUDGED → observed);
-- `is_eval` excluded by default, exposed with `?include_eval=true`;
-- sparse windows render honest zeros;
-- 401 without the admin key; read-only.
-
-Seeding controls timestamps via `NOW() - (:age * INTERVAL '1 day')` and emission ORDER
-(= `sequence_number`, a BIGINT IDENTITY) by INSERT order — the representative is the
-earliest-inserted row of a content_hash group, matching production (earlier emission =
-lower sequence_number = earlier timestamp). Finding payloads are minimal (the endpoint
-only reads `finding_content_hash` / `severity` / `evidence_tier`).
-"""
+Count logical findings once by review and content hash, using their earliest
+emission for the time window and evidence tier. Cover review, cost, failure, and
+severity counts, evaluation exclusion, empty windows, and authentication.
+See specs/2026-06-04-dashboard-analytics.md and DECISIONS.md#039."""
 
 from __future__ import annotations
 

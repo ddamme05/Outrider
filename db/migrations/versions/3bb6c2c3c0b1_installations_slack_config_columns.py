@@ -1,26 +1,13 @@
-"""installations Slack config columns — per-install workspace / bot-token / channel.
+"""Store optional Slack connection details for each installation.
 
 Revision ID: 3bb6c2c3c0b1
 Revises: b1d7e4a92c63
 Create Date: 2026-06-15
 
-Adds five nullable columns to `installations` for per-installation Slack
-notifications (dashboard-in-Slack, commit 6):
-
-  - slack_team_id              — Slack workspace/team id (from oauth.v2.access)
-  - slack_bot_token_ciphertext — bot token ENCRYPTED at rest (DECISIONS.md#051;
-                                 Fernet ciphertext via notify/token_crypto.py),
-                                 never plaintext
-  - slack_channel_id           — the channel the bot posts to
-  - slack_configured_at        — when the install completed the Slack OAuth flow
-  - slack_configured_by        — the dashboard admin who bound the install (V1: "admin")
-
-All nullable: Slack is opt-in per install, and an install that never connects
-Slack leaves them NULL — no backfill. The ciphertext column is bytea
-(`LargeBinary`); decryption is confined to the Slack notifier boundary. The
-columns live on `installations` (per the dashboard-in-Slack spec) so the #012
-tombstone/purge lifecycle carries the encrypted token with the install on
-hard-delete. Touches only `installations`; no append-only table is involved.
+The fields hold the workspace, encrypted bot token, destination channel and
+setup details. They are nullable because Slack is optional; existing rows need
+no backfill. Deleting an installation also removes its Slack settings
+(DECISIONS.md#051).
 """
 
 from collections.abc import Sequence

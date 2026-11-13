@@ -1,33 +1,9 @@
-"""Trace-decision natural-key partial unique index — migration smoke test.
+"""Check the trace-decision unique index after migration.
 
-Per `specs/2026-05-23-trace-node.md` M7 (a) + DECISIONS.md#026. The
-8f2a4c1e7b3d migration adds:
-
-    CREATE UNIQUE INDEX uq_audit_events_trace_decision_natural_key
-        ON audit_events (review_id, (payload->>'source_finding_id'))
-        WHERE event_type = 'trace_decision'
-              AND payload ? 'source_finding_id';
-
-This test pins:
-
-  1. `alembic upgrade head` creates the index on a fresh DB; the
-     normalized `pg_indexes.indexdef` matches the expected canonical
-     form (column order, expression shape, partial-WHERE shape).
-  2. The index enforces uniqueness — inserting two TraceDecisionEvent
-     rows with the same (review_id, source_finding_id) tuple raises
-     IntegrityError on the second INSERT.
-  3. The partial WHERE clause restricts the constraint to
-     `event_type = 'trace_decision'` only — other event types with the
-     same (review_id, payload->>'source_finding_id') tuple do NOT
-     collide (the partial index doesn't apply to them).
-  4. The `payload ? 'source_finding_id'` conjunct in the WHERE excludes
-     key-missing rows from the index — duplicates with NULL natural
-     keys do not silently collide nor get admitted as distinct.
-  5. `postgresql_insert(...).on_conflict_do_nothing(...)` returns zero
-     rows on natural-key conflict (the persister-side contract).
-  6. `alembic downgrade -1` removes the index cleanly; upgrade →
-     downgrade → upgrade cycles cleanly via the IF NOT EXISTS guard.
-"""
+Verify its definition, duplicate rejection, required payload key, restriction
+to trace decisions, and the persister's conflict-ignore behavior. Upgrade and
+downgrade must both work. See specs/2026-05-23-trace-node.md M7(a)
+and DECISIONS.md#026."""
 
 import re
 from collections.abc import Awaitable, Callable

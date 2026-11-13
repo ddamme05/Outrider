@@ -1,10 +1,7 @@
-"""reviews UNIQUE(repo_id, pr_number, head_sha) blocks duplicate inserts.
+"""Check that the database rejects duplicate reviews for a PR head.
 
-Backs ``idempotency-via-db-unique-constraint`` and spec §6.5: the
-webhook handler relies on IntegrityError from this constraint as the
-dedup signal under near-simultaneous deliveries. The application-level
-SELECT is a fast path; the constraint is the real gate.
-"""
+The repository/PR/head unique constraint is the final duplicate-delivery check,
+including concurrent webhooks (``idempotency-via-db-unique-constraint``; spec §6.5)."""
 
 import pytest
 from sqlalchemy import text

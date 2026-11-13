@@ -1,10 +1,8 @@
-# See specs/2026-05-19-analyze-foundation.md §1.
-"""One analyze-pass record, accumulated across analyze/trace iterations.
+"""Record the accepted findings from one analysis round.
 
-Analyze emits admitted findings; synthesize consumes the rounds to build the
-report. round_id is content-derived through policy.canonical.compute_round_id
-and is the append_with_dedup_by reducer key, so identical replayed rounds
-collapse on merge."""
+Stable finding identities let reducers avoid duplicates when workflow state
+is replayed. Summary generation consumes these round records.
+"""
 
 from __future__ import annotations
 
@@ -26,26 +24,14 @@ from outrider.schemas.review_finding import (
     ReviewFinding,  # noqa: TC001 — Pydantic field type, needs runtime import
 )
 
-# Finding ceilings (FUP-180). A round aggregates admitted findings across ALL
-# files in one analyze pass, so these are cross-file aggregate bounds — NOT the
-# per-LLM-call ceiling (`AnalyzeResponseRaw.findings`, 50).
-#
-# `MAX_FINDINGS_PER_ROUND` is the SOFT cap: the analyze node truncates NON-gated
-# findings to this bound before emission via `finding_cap.cap_findings_by_severity`.
-# Gated (CRITICAL/HIGH) findings are NEVER dropped to fit it (FUP-180 review design
-# call — silently dropping a gated finding would weaken hitl-gates-high-severity),
-# so a round whose gated findings alone exceed the soft cap legitimately holds more
-# than `MAX_FINDINGS_PER_ROUND`.
-#
-# `MAX_FINDINGS_HARD_CAP` is the runaway ceiling — ALIGNED to `HITL_MAX_GATED_FINDINGS`
-# (the most gated findings the HITL request can carry). Gated findings are never
-# dropped to fit it; instead `finding_cap.cap_findings_by_severity` raises
-# `FindingCapOverflowError` (a clean crash, before any side effect) when gated findings
-# exceed it — a review with more gated findings than HITL can hold fails loud rather
-# than dropping a CRITICAL below the approval gate. Alignment matters: a hard cap LARGER
-# than the HITL bound would keep gated findings the HITL request can't carry, crashing
-# at HITL-partition construction (a strand) instead. The schema `max_length` below uses
-# this so the kept set always satisfies it. See specs/2026-06-24-finding-cap-pre-side-effect.md.
+# Round-wide ceilings across all files (FUP-180), separate from the per-call
+# AnalyzeResponseRaw.findings limit of 50. cap_findings_by_severity drops only
+# unprotected findings at the soft cap; CRITICAL/HIGH and known holds may exceed it
+# (FUP-180, hitl-gates-high-severity).
+# The hard cap matches HITL_MAX_GATED_FINDINGS so the retained set fits approval.
+# Gated overflow raises FindingCapOverflowError before side effects rather than
+# losing findings or stranding the review at HITL. The schema enforces the same
+# ceiling. See specs/2026-06-24-finding-cap-pre-side-effect.md.
 MAX_FINDINGS_PER_ROUND: Final[int] = 200
 MAX_FINDINGS_HARD_CAP: Final[int] = HITL_MAX_GATED_FINDINGS
 
@@ -67,8 +53,8 @@ class AnalysisRound(BaseModel):
     # produces same id, so replay re-application collapses duplicates.
     round_id: Annotated[str, Field(pattern=SHA256_HEX_PATTERN)]
     pass_index: int = Field(ge=0)
-    # max_length is the HARD runaway ceiling (not the soft cap) — gated findings
-    # are never dropped to fit the soft `MAX_FINDINGS_PER_ROUND`, so the round can
+    # max_length is the HARD runaway ceiling (not the soft cap). Severity-gated
+    # and known held findings survive `MAX_FINDINGS_PER_ROUND`, so the round can
     # legitimately exceed it; only `MAX_FINDINGS_HARD_CAP` bounds it. The analyze
     # node enforces the cap BEFORE emission, so this is the defense-in-depth
     # backstop that bounds checkpoint + audit-row payload size. See the constants

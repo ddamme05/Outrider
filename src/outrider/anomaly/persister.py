@@ -1,14 +1,8 @@
-"""Persist anomalies once per `(review_id, rule_name)`.
+"""Save each operator alert once per review and rule.
 
-Each emit opens a fresh session and inserts with `on_conflict_do_nothing`
-against the rule's partial unique index. `_RULE_NAME_INDEX_WHERE` supplies
-literal SQL predicates: a bound predicate can fail PostgreSQL index inference
-under prepared generic plans. Every rule needs a matching index migration.
-
-Sweep callers hold `SWEEP_LOCK_ID` around their status changes and emit the
-anomaly first, so a failed emit leaves expiry retryable. Graph callers rely
-on insert idempotency without a sweep lock. Both pass `severity` and `is_eval`
-explicitly; the database default is only a backstop.
+AnomalyPersister opens a session for each insert and uses the rule's database
+index to ignore retries. New rules need matching indexes. Sweep callers record
+the alert before changing status so a failed write can be retried safely.
 """
 
 from collections.abc import Mapping
@@ -24,17 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.db.models.anomalies import Anomaly
 
-# Per-rule partial-index predicates as LITERAL SQL, never ORM expressions.
-# The ON CONFLICT arbiter only matches a rule's partial unique index when
-# `index_where` is literal text identical to the migration's `CREATE UNIQUE
-# INDEX ... WHERE rule_name = '<value>'`. An ORM expression
-# (`Anomaly.rule_name == rule_name.value`) renders a bind parameter, which
-# psycopg3 generic plans can't prove implies the index's constant predicate,
-# so arbiter inference fails (42P10) once the statement is server-prepared —
-# silently defeating the idempotent no-op the HITL sweep depends on. Mirrors
-# the literal `sa_text(...)` form the audit natural-key path uses. Every
-# AnomalyRuleName MUST have an entry (enforced at import below); a new rule
-# without its literal predicate fails loud rather than shipping the bug.
+# Match each migration's partial-index predicate with literal SQL. A bound
+# parameter cannot establish that predicate under PostgreSQL generic plans,
+# causing ON CONFLICT inference to fail (42P10). The import guard requires a
+# predicate for every AnomalyRuleName; each new rule also needs its migration.
 _RULE_NAME_INDEX_WHERE: Final[Mapping[AnomalyRuleName, TextClause]] = MappingProxyType(
     {
         AnomalyRuleName.HITL_TIMEOUT: sa_text("rule_name = 'hitl_timeout'"),
@@ -110,11 +97,7 @@ class AnomalyPersister:
                 )
                 .on_conflict_do_nothing(
                     index_elements=["review_id"],
-                    # LITERAL partial-index predicate keyed by the runtime
-                    # rule_name (each rule_name has its own partial unique
-                    # index). MUST be literal SQL, not an ORM expression —
-                    # see `_RULE_NAME_INDEX_WHERE` above for why a bind
-                    # parameter breaks arbiter inference under generic plans.
+                    # Literal predicate for this rule's partial unique index.
                     index_where=_RULE_NAME_INDEX_WHERE[rule_name],
                 )
             )

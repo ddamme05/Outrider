@@ -1,9 +1,7 @@
-"""Unit tests for `github/manifest_conversion` — the App Manifest conversion wrapper (#070).
+"""Check GitHub App manifest conversion with a fake client (DECISIONS.md#070).
 
-Drives `convert_manifest_code` with a FAKE githubkit client (no network): the happy path parses +
-discards `client_secret`, the `code` is percent-encoded into the path, and malformed / null / wrong-
-type / non-201 responses fail closed (never coerce a null into a persisted credential).
-"""
+Encode the conversion code in the path, discard client_secret, and reject
+malformed or unsuccessful responses without storing credentials."""
 
 from __future__ import annotations
 

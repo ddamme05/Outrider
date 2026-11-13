@@ -1,29 +1,8 @@
-"""Trace-accuracy eval scenario: handler-to-model resolution via direct import.
+"""Follow a handler's direct import to a model file outside the PR diff.
 
-Per spec §11.2: PR modifies a request handler where the vulnerability is
-resolvable via simple direct import to a model definition file. Expected:
-`TraceDecision.resolution_status="resolved"` + `target_file` pointing at
-the model file + `resolved_candidate_paths` containing exactly one path
-equal to `target_file` (per DECISIONS.md#017 × #024: the resolved
-selection equals the single `resolved_candidate_paths` entry).
-
-`trace_path` is NOT a field on `TraceDecision` (`docs/spec.md` §7.2). It
-lives on:
-- `ReviewFinding.trace_path` — for INFERRED findings, per the proof
-  boundary. The corresponding finding is identified by
-  `decision.source_finding_id`.
-- `TraceDecisionEvent.trace_path` (audit event) — same data, on the
-  audit-log side.
-
-Driven by the eval graph driver (`run_review`) against
-`tests/eval/fixtures/mock_github/handler_to_model_trace.json`. The changed
-handler (`app/handlers.py`) imports `app.models`; the model file
-(`app/models.py`) lives ONLY in the fixture's `repository_contents_head`
-(beyond the diff — NOT in `files`), so trace's two-phase probe fetches it at
-`head_sha` and resolves. That beyond-diff fetch is the whole point of this
-scenario. A single trace candidate skips the Haiku ranking call, so no
-`trace` LLM response is scripted.
-"""
+The real graph resolves and fetches the related file from fake GitHub at the
+head revision. A single candidate needs no ranking call. Findings and audit
+events carry the trace path; TraceDecision identifies the resolved target."""
 
 EXPECTED_DECISION = {
     "resolution_status": "resolved",

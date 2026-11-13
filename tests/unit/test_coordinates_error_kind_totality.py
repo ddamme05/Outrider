@@ -1,22 +1,7 @@
-# See specs/2026-05-21-publish-node.md Q1.
-# This test is the structural defense that every `raise CoordinateError(...)`
-# in coordinates/ carries a typed `kind`. Pairs with the required-kwarg
-# discipline on `CoordinateError.__init__` (which catches bare
-# `raise CoordinateError("msg")` at runtime via TypeError) — this AST walk
-# catches the rarer aliased-class-raise patterns the kwarg check might miss.
-"""Totality: every `raise CoordinateError(...)` in coordinates/ carries `kind=`.
+"""Check that coordinate errors are raised with a typed kind.
 
-Mechanism: AST-walk `coordinates/translator.py` + `coordinates/diff_parser.py`,
-find every `ast.Raise` whose exc is a `CoordinateError(...)` Call, and assert
-the call has a `kind=` keyword argument drawn from the `CoordinateErrorKind`
-enum.
-
-This test backstops the structural enforcement at construction time
-(`CoordinateError.__init__` requires `kind` as a keyword-only arg). Without
-the structural enforcement, this test would be the only defense; with it,
-this test catches the corner patterns the runtime check might miss
-(aliased-class raises, factory helpers that wrap construction).
-"""
+Inspect translator and diff-parser raises alongside the constructor's required
+keyword check. See specs/2026-05-21-publish-node.md Q1."""
 
 from __future__ import annotations
 

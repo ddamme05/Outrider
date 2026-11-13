@@ -1,30 +1,8 @@
-# Test for `InlineComment.from_finding` structural-routing per spec §V.5.
-"""Pin the contract that `InlineComment.from_finding` is the only
-production construction path for `InlineComment` inside `src/outrider/`.
+"""Check that production inline comments are constructed through from_finding.
 
-Per the publish-node spec §V Input boundary sub-rule 5 (note: spec text
-predates the 2026-05-22 side-threading fix; the runtime signature now
-requires `side` from `coordinates`):
-
-    Structural-routing assertion: all GitHub-comment-body fields route
-    through sanitizer; `InlineComment.from_finding(*, finding, path,
-    line, side, body)` is the only documented production construction
-    path. Direct Pydantic construction is permitted by the schema
-    (test fixtures need it) but an import-graph test forbids it inside
-    `src/outrider/`.
-
-This module is the import-graph test. Direct `InlineComment(...)`
-construction in production code bypasses the sanitizer guarantee that
-`from_finding` enforces by composing through `sanitize_display_string`
-+ `apply_size_cap` at the publisher's call site. A future contributor
-adding `InlineComment(body=raw_text, ...)` in production should fail
-this test loudly so the sanitizer's defense doesn't silently regress.
-
-The test scans every `.py` file under `src/outrider/` for the pattern
-`InlineComment(` (constructor call, not import, not method reference).
-Exemption: `schemas/publish.py` itself (defines the class) and any
-file that ONLY references the class via `from_finding(...)`.
-"""
+Scan production Python calls to prevent direct construction from bypassing the
+sanitizer and size cap. Test fixtures may construct the model directly.
+See specs/2026-05-21-publish-node.md §V.5."""
 
 from __future__ import annotations
 

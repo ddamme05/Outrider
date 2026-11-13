@@ -1,15 +1,7 @@
-# See DECISIONS.md#045 — V1 per-process concurrent-review ceiling (FUP-164).
-"""Concurrency ceiling for background review execution.
+"""Check the concurrent-review ceiling and its configuration.
 
-Pins the bound `concurrency_limited` enforces: with a semaphore of N, at
-most N wrapped calls run concurrently; the N+1th awaits a free slot and
-enters only after a running call exits. This is the dispatch-level
-ceiling (wired around the lifespan `run_graph` closure) that keeps a
-webhook flood from saturating the shared Anthropic connection pool.
-
-Also pins `DispatchConfig`: default 8, and the `ge=1` floor that rejects
-a deadlocking `Semaphore(0)` ceiling at startup.
-"""
+Calls beyond the configured limit must wait for a slot. Reject a zero limit,
+which would block every review. See DECISIONS.md#045 and FUP-164."""
 
 from __future__ import annotations
 

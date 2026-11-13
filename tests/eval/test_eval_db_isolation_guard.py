@@ -1,12 +1,6 @@
-"""The eval-DB isolation guard (`_assert_test_url_is_isolated`) rejects unsafe URLs.
+"""Reject evaluation database URLs that could reach the development database.
 
-PR-1 fix #7: the guard parses TEST_DATABASE_URL with SQLAlchemy `make_url` and
-checks the port + database as structured components, rather than substring
-matching that could false-match a port-like or "test"-like sequence embedded in
-a password or host. These tests pin the rejection paths — the guard is the
-safety mechanism that prevents eval tests from running against the dev DB
-(see docs/testing.md "Two-container model").
-"""
+Check parsed host/port/database components rather than misleading substrings."""
 
 import pytest
 

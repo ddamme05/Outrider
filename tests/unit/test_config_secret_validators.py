@@ -1,11 +1,7 @@
-"""Secret-validator unit tests for DashboardSettings + GitHubAppSettings.
+"""Check dashboard and GitHub secret validation.
 
-Both validators reject empty / whitespace-only secrets AND known `.env.example`
-placeholders ('replace-me', ...) at construction, so a verbatim `.env.example`
-copy fails loud at startup rather than authenticating against a public value
-(an empty or placeholder secret would otherwise admit empty/forged bearer tokens
-and unsigned webhooks via `hmac.compare_digest`). Whole-repo review MEDIUM.
-"""
+Empty, whitespace-only, and known example secrets must be rejected at settings
+construction rather than become publicly guessable authentication values."""
 
 import pytest
 from pydantic import SecretStr, ValidationError

@@ -1,19 +1,7 @@
-"""Parity guard: the dashboard's humanized finding labels mirror the Python presentation layer.
+"""Check that Python and dashboard finding labels agree.
 
-`dashboard/src/lib/findingSections.ts` is the TypeScript mirror of
-`src/outrider/presentation/finding_sections.py` (PR A). Two invariants:
-
-1. The five SHARED maps (SEVERITY_LABEL, TYPE_LABEL, TIER_PHRASE, DEST_LABEL, DIMENSION_LABEL) match
-   the Python maps byte-for-byte — a drift means GitHub/Slack and the dashboard would humanize the
-   same finding differently.
-2. The three dashboard-only maps (ELIGIBILITY_PHRASE, ELIGIBILITY_REASON_PHRASE, HITL_OUTCOME_LABEL)
-   are TOTAL over their backing enums — a new enum member without a TS label would render as a raw
-   slug (the frontend's *Phrase() helpers fall back to the raw value, so it wouldn't crash; this
-   test is the fail-closed guard that catches the gap the Python `_assert_total` catches at import).
-
-This fails if either invariant breaks — the fix is to edit findingSections.ts to match. Pure: reads
-the checked-in .ts as text (no node, no build).
-"""
+Shared maps must match exactly, and dashboard-only maps must cover every enum
+member. Read the checked-in TypeScript directly; no frontend build is needed."""
 
 from __future__ import annotations
 

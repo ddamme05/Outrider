@@ -1,17 +1,8 @@
-"""Q2 — scope-node identification when decorators are present.
+"""Check where decorated functions begin and which syntax nodes contain them.
 
-When a function has one or more decorators, tree-sitter-python wraps the
-``function_definition`` inside a ``decorated_definition`` node. This matters
-for two reasons:
-
-1. The natural parent pointer from a matched ``function_definition`` walks to
-   ``decorated_definition``, not to the enclosing ``class_definition.body``.
-   Qualified-name derivation (Q3) must handle that jump.
-2. ``start_point`` of the ``function_definition`` is the ``def`` line;
-   ``start_point`` of the wrapping ``decorated_definition`` is the first
-   ``@decorator`` line. Which one goes into ScopeUnit.line_start (spec §5.4)
-   determines whether findings on decorator lines are attributed to the
-   function or treated as module-level.
+Tree-sitter wraps function_definition in decorated_definition. Inspect the
+wrapper's parent and start point so scope selection can include decorator lines
+(spec §5.4). The Q3 demo uses these relationships for qualified names.
 """
 
 from pathlib import Path

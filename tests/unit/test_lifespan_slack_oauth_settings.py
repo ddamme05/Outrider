@@ -1,10 +1,4 @@
-"""`_load_slack_oauth_settings` — Slack OAuth config is opt-in and NON-FATAL.
-
-Slack is an optional integration, so a present-but-invalid OAuth config must DISABLE
-Slack (return None + log a loud ERROR), never crash app startup. Regression guard for
-the boot-coupling bug where a partial OUTRIDER_SLACK_* config raised at lifespan startup
-and took the whole app (PR review included) down with it.
-"""
+"""Check that invalid optional Slack OAuth settings disable Slack without stopping startup."""
 
 from __future__ import annotations
 

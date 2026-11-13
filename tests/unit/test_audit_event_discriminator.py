@@ -1,11 +1,7 @@
-"""AuditEvent discriminated union: round-trip through TypeAdapter reconstructs concrete subtypes.
+"""Check that audit-event validation reconstructs the concrete event subtype.
 
-Backs the replay contract: `audit/replay.py` (separate spec) reads an
-`audit_events` row, merges the row-level `sequence_number` into the
-JSONB payload, then calls `AuditEventAdapter.validate_python(merged)` to
-reconstruct the right concrete event. The discriminator (`event_type`)
-is what makes this fan-out replayable.
-"""
+Replay merges the row's sequence number into its payload before validation;
+event_type selects the model."""
 
 from datetime import UTC, datetime
 from typing import Any

@@ -1,35 +1,12 @@
-"""Reconstruct a faithful multi-file PR diff from a local git range.
+"""Build demo file inputs from a local git range.
 
-Backs the demo's #6 "Outrider reviewing Outrider" showcase
-(`specs/2026-06-21-demo-deployment.md`): a real ~27-file feature-arc diff fed
-through the live graph, demonstrating dashboard-at-scale + triage cost-control.
+START..END produces FileEntry values with GitHub-style diff hunks, change counts,
+and base/head content. The demo runner consumes them through intake's normal
+file contract (specs/2026-06-21-demo-deployment.md).
 
-`START..END` -> one `FileEntry` per changed file, in the EXACT shape the intake
-node expects. The shape was verified against `src/outrider/agent/nodes/intake.py`
-+ `src/outrider/schemas/pr_context.py` (the demo-build-contracts workflow):
-
-  - `status`            : added | modified | removed | renamed
-  - `patch`             : hunks-only, NO `--- a/` / `+++ b/` headers (GitHub's
-                          `/pulls/{n}/files` wire shape; headers are re-synthesized
-                          downstream by coordinates._wrap_github_hunks_with_headers)
-  - `content_base`      : base-side text (None for `added`)
-  - `content_head`      : head-side text (None for `removed`)
-  - `previous_path`     : the old path, for `renamed` only
-  - `additions`/`deletions` : counted from the unified diff itself (how GitHub
-                          derives them), so the counts and the served patch agree
-
-It also prints an HONEST offline dry-run summary. Triage tiers are an LLM (Haiku)
-call (verified against `triage.py`), so this module CANNOT predict
-DEEP/STANDARD/SKIM and deliberately refuses to claim a tier. It reports only what
-is knowable offline: per-file path/status/±lines/bytes/estimated-tokens, the
-configured analyze budget, the per-file cap, the high-risk reserve, the
-starvation threshold, and a clearly-labelled (ceiling, not prediction) pressure
-heuristic.
-
-This module is pure local tooling: it shells out to `git` with argv lists (never
-`shell=True`), validates both refs before use, and reads only the local repo. It
-performs no network or LLM call. The live seed run that consumes these entries is
-a separate, paid step (`scripts/live_claude_smoke.py`).
+The dry-run summary estimates input size and budget pressure. It cannot predict
+which files the model will select for detailed review. This tool reads local git
+only; scripts/live_claude_smoke.py performs the separate paid review.
 """
 
 from __future__ import annotations

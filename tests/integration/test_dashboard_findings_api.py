@@ -1,10 +1,8 @@
-"""Integration tests for `GET /api/reviews/{id}/findings`.
+"""Check the dashboard findings API against stored content and decision events.
 
-Covers the source-split contract from `specs/2026-05-31-dashboard-v1.md`:
-analyze-time content read from the `findings` table; `publish_destination`
-joined from `PublishRoutingEvent` by `finding_id` (NOT the null
-`findings.publish_destination` column), latest-routing-wins; auth; 404.
-"""
+Analyze-time content comes from findings; posting destinations come from the
+latest PublishRoutingEvent for each finding, rather than the table's empty column.
+See specs/2026-05-31-dashboard-v1.md."""
 
 from __future__ import annotations
 

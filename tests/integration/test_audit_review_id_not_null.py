@@ -1,17 +1,8 @@
-"""audit_events.review_id NOT NULL + no-FK regression net.
+"""Check that every audit row requires a review ID without a foreign key.
 
-Two assertions backing two complementary rules:
-
-  - ``every-audit-event-has-review-id`` requires ``review_id`` to be
-    NOT NULL at the DB layer. INSERT without it must fail.
-  - docs/schema.md "AUDIT_EVENTS.review_id is a logical reference, not
-    a DB FK" — the column carries no foreign-key constraint to
-    reviews.id by design (no cascade behavior fits the
-    append-only-forever invariant). The no-FK assertion is the
-    regression net for someone "fixing" the schema by re-adding the
-    forbidden FK; without it, a well-meaning future contributor could
-    quietly break the metadata-only-replay state per #014 point 4.
-"""
+The ``every-audit-event-has-review-id`` rule requires NOT NULL. A foreign key to
+reviews would prevent metadata-only replay after review content is removed;
+see docs/schema.md and DECISIONS.md#014."""
 
 import pytest
 from sqlalchemy import text

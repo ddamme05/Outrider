@@ -1,15 +1,7 @@
-"""Schema-level default-redaction on `model_dump()` (AC#22).
+"""Check that LLM schemas omit prompt, message, and response content by default.
 
-Five content-bearing fields total:
-  - LLMRequest.system_prompt
-  - LLMRequest.user_prompt
-  - LLMRequest.messages (V1.5+, but the redaction lives on the field anyway)
-  - LLMMessage.content (covers standalone + nested-via-LLMRequest cases)
-  - LLMResponse.text
-
-`model_dump()` redacts by default. Persister opts in via the typed
-`INCLUDE_TEXT_OPT_IN` sentinel — identity check, not dict-key lookup.
-"""
+Persistence must explicitly request text with the identity-checked
+INCLUDE_TEXT_OPT_IN sentinel."""
 
 from __future__ import annotations
 

@@ -1,15 +1,8 @@
-# See DECISIONS.md#070 — the durable singleton setup state machine + nonce store.
-"""`SetupState` (singleton) + `SetupNonce` — the App-Manifest onboarding state machine (#070).
+"""Store the active GitHub App setup attempt and its hashed nonce.
 
-`SetupState` is a DB-enforced **singleton** (fixed `id = 1`, `CHECK`): the one row holding the
-onboarding status (`UNCONFIGURED → AWAITING_CALLBACK → CONVERTING → CONFIGURED`, + `ORPHANED`), the
-attempt binding (`expected_org_login`, `expected_permissions`, `expected_events`,
-`manifest_contract_digest`) recorded at Start, and `conversion_started_at` for the stale
-timeout. Transitions are guarded by DB compare-and-swap on `status`, not SELECT checks.
-
-`SetupNonce` holds the **hashed** callback nonce (never raw) with `expires_at`; consumption is
-atomic delete-on-consume (no periodic sweep — expired rows are deleted by the lazy `POST /setup`
-repair).
+setup/state_machine.py owns the atomic transitions. The database permits only
+one active attempt, and a saved hash never reveals the raw setup nonce.
+See DECISIONS.md#070.
 """
 
 from __future__ import annotations

@@ -1,10 +1,6 @@
-"""ReviewPhaseEvent: marker Literal + V1.5 forward-compat phase_key.
+"""Check phase markers and optional worker keys (``phase-events-bound-work``).
 
-Backs `phase-events-bound-work`. The marker Literal constrains the
-deterministic vocabulary; phase_key is nullable so V1 events emit None
-and V1.5's parallel-analyze workers can populate it without a schema
-migration.
-"""
+Null phase keys remain valid for stored events without worker identity."""
 
 from typing import Any
 from uuid import uuid4

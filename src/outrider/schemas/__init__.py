@@ -1,7 +1,7 @@
-"""Cross-boundary Pydantic models per docs/conventions.md.
+"""Models shared across review subsystems without a single owning subsystem.
 
-Re-exports the public symbols of the schemas package. Each submodule
-has its own focused docstring; this file is the namespace.
+Import each model from its named module. Types with a clear owner live beside
+that subsystem instead (DECISIONS.md#019).
 """
 
 from outrider.schemas.analysis_round import AnalysisRound

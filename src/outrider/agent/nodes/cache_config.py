@@ -1,12 +1,10 @@
-# Stage B serve flip — analyze-cache read mode (specs/2026-06-13-analyze-cache-serve-flip.md).
-"""Choose whether an analyze-cache hit supplies the review result.
+"""Choose whether cached analysis can replace a model call.
 
-Startup reads these settings and passes mode through build_graph's closures.
-Shadow records completed lookups without serving them; normal analysis continues.
-Serve can reconstruct a usable live hit and skip the model call.
+Shadow mode records usable cache lookups and continues normal review. Serve
+mode can reuse a valid result. Both need a configured cache store; no store
+means caching is disabled. Startup passes the mode into the review graph.
 
-Mode is separate from enablement: analyze_cache_store=None disables the cache.
-The default remains shadow; serving requires a deliberate, telemetry-gated change.
+See specs/2026-06-13-analyze-cache-serve-flip.md.
 """
 
 from __future__ import annotations

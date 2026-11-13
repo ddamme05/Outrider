@@ -1,11 +1,6 @@
-"""Numeric-field bounds across audit events.
+"""Check audit-event bounds for costs, tokens, durations, and entity counts.
 
-Backs the cost-budget anomaly's input-sanitization claim: the V1
-post-hoc cost cap sums `LLMCallEvent.cost_usd`; a malformed negative-cost
-event would understate review cost. Token counts, latencies, and
-GitHub-side counts all carry `ge=0` (or `ge=1` for entity IDs) at the
-schema layer so the budget-summing code can trust its inputs.
-"""
+Negative values must not reduce accumulated review cost or corrupt metrics."""
 
 from datetime import UTC, datetime, timedelta
 from typing import Any

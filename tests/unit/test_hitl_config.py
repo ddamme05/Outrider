@@ -1,12 +1,8 @@
-"""HITLConfig validator unit tests.
+"""Check approval timeout settings and rejection of automatic posting on expiry.
 
-`_enforce_v1_expire_only` is the SOLE runtime guard of the V1 no-auto-post-on-expiry
-guarantee (trust-boundary #6 / `hitl-gates-high-severity`): if `timeout_action` is set
-to `auto_post`, construction must raise so the process never boots in a mode that could
-publish unapproved CRITICAL/HIGH findings on expiry. The `gt=0` timeout-minutes
-constraint guards a silent quality regression (zero would expire every gate
-immediately). Both had zero coverage — whole-repo review MEDIUM.
-"""
+Startup must reject auto_post and nonpositive timeouts so unapproved HIGH or
+CRITICAL findings cannot post on expiry (``hitl-gates-high-severity``;
+docs/trust-boundaries.md §6)."""
 
 import pytest
 from pydantic import ValidationError

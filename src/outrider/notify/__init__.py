@@ -1,8 +1,7 @@
-"""Slack notification subsystem.
+"""Expose review notifications and their transport contract.
 
-Public surface: the `SlackNotifier` Protocol + result + typed exceptions from
-`notify/base.py`. The concrete `slack_sdk`-backed provider (`SlackWebClientNotifier`)
-lives in `notify/slack.py`; consumers import the Protocol from here, never the SDK.
+Slack SDK calls belong in notify/slack.py. Other modules build messages and
+coordinate delivery through the injected notifier.
 """
 
 from outrider.notify.base import (

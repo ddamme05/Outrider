@@ -1,16 +1,7 @@
-# Tests for `coordinates.query_span_to_source_lines` — the OBSERVED-tier
-# producer's byte-envelope → source-line bridge (Cost Lever 3 spec).
-"""Pin `query_span_to_source_lines` semantics:
+"""Check conversion from half-open byte spans to inclusive source lines.
 
-- a `QueryMatchSpan` byte envelope (half-open, `byte_end` EXCLUSIVE) maps to a
-  1-indexed INCLUSIVE source line range `(line_start, line_end)`;
-- a span that ends exactly at a `\\n` does NOT spill onto the next line
-  (`line_end` is derived from the last CONTENT byte, `byte_end - 1`);
-- a ZERO-WIDTH span (`byte_start == byte_end`, which `QueryMatchSpan` admits)
-  is rejected — it has no reviewable line range and would underflow `byte_end - 1`;
-- inverted / out-of-bounds offsets raise `BYTE_OFFSET_INVALID`;
-- offsets are BYTE offsets, not character offsets (multi-byte UTF-8).
-"""
+Use UTF-8 byte offsets, avoid spilling at a newline, and reject empty, inverted,
+or out-of-bounds spans."""
 
 from __future__ import annotations
 

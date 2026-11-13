@@ -1,10 +1,10 @@
-# See specs/2026-05-16-audit-persister.md + DECISIONS.md#012 + #016.
-"""Operator-configured retention for LLM content, findings, and reviews.
+"""Configure how long model content, findings and reviews are retained.
 
-All three default to 90 days and must be positive, with
-`llm_content <= findings <= review` (`DECISIONS.md#012/#014/#016`).
-Prompt/completion content expires first; its review outlives the content.
-Construction validates the ordering before writers assign row deadlines.
+All three default to 90 days. Values must be positive and ordered as
+llm_content <= findings <= review, so the review outlives its content.
+Construction validates the settings before writers assign expiry dates.
+
+See specs/2026-05-16-audit-persister.md and DECISIONS.md#012, #014, #016.
 """
 
 from datetime import timedelta

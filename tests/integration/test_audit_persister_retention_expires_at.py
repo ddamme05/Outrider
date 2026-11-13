@@ -1,11 +1,4 @@
-"""AuditPersister retention TTL — explicit retention_expires_at write + override.
-
-Pins:
-  - Default TTL (90 days from DECISIONS#016) is applied to `retention_expires_at`.
-  - `retention_expires_at = event.timestamp + ttl` (deterministic from event).
-  - Override via constructor's `retention_settings` propagates end-to-end.
-  - Aware-datetime semantics: tzinfo is UTC, never None.
-"""
+"""Check that content expiry uses the event's UTC timestamp and configured retention."""
 
 from __future__ import annotations
 

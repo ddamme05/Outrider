@@ -1,10 +1,7 @@
-"""Slack OAuth code-exchange wrapper (commit 6.3b).
+"""Check Slack OAuth exchange parsing and typed errors.
 
-Pins the success shape (identity + bot token from the response), SlackApiError →
-SlackOAuthError translation (error code surfaced, token never), and malformed-
-response rejection. The bot token is returned as a SecretStr. `SlackApiError` here
-is the documented surface-tier test exception (wrapper test).
-"""
+Return the bot token as SecretStr, reject malformed responses, and expose error
+codes without leaking tokens. SlackApiError is permitted in this wrapper test."""
 
 from __future__ import annotations
 

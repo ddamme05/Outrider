@@ -1,17 +1,8 @@
-"""Q5 — FastAPI receiver route end-to-end.
+"""Exercise the spike's webhook receiver through a local HTTP test transport.
 
-Drive ``receiver.app`` through ``httpx.AsyncClient`` + ASGI transport.
-Assert:
-
-1. A request with a **valid** signature + known event → 202 with the
-   shape-summary dict populated from the parsed event.
-2. A request with a **wrong** signature → 401.
-3. A request with **no** signature header → 401.
-4. A request with an **unknown event name** → 400.
-5. The ACK latency is well under a second — matching spec §6.3's "webhook
-   must ACK within 10 seconds, ideally well under a second." Anything
-   approaching 10s on this code path is a sign dispatcher work leaked into
-   the request handler.
+Check accepted events, wrong or missing signatures, unknown event names and
+response time. This measures the small receiver in this process, not production
+webhook latency (spec §6.3).
 """
 
 from __future__ import annotations

@@ -1,12 +1,6 @@
-"""Quality-finding eval scenario: PR with missing error handling on network call.
+"""Follow a scripted missing-error-handling finding through the review graph.
 
-Per spec §11.2: PR adds a network call without try/except or `.raise_for_status()`;
-expected: `FindingType.MISSING_ERROR_HANDLING` (canonical enum) + severity from
-`SEVERITY_POLICY[MISSING_ERROR_HANDLING]`.
-
-Driven by the eval graph driver (`run_review`) against
-`tests/eval/fixtures/mock_github/missing_error_handling.json`.
-"""
+Check its finding type and policy severity using the frozen network-call PR."""
 
 from outrider.policy import FindingType, lookup_severity
 

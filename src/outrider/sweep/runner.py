@@ -1,20 +1,11 @@
-# See specs/2026-05-26-hitl-node.md Group 8 scheduler-wiring bullet +
-# sweep/purge_expired.py + sweep/hitl_expiry.py.
-"""Run one maintenance tick: reconcile, recover HITL, purge, then project verdicts.
+"""Run installation reconciliation, approval expiry, retention and verification.
 
-`run_scheduled_tick` first reconciles installations with GitHub. Hard deletion
-of expired installation tombstones is allowed only after this tick confirms
-liveness; credential, list, or lock failures defer that deletion while the
-other sweeps continue (`DECISIONS.md#012/#065/#067`). The internal lifespan
-loop and external schedulers use this entry point.
+GitHub reconciliation must confirm installation state before installation
+purge; other cleanup can continue if that check fails. Database sweeps share
+a transaction lock, while reconciliation uses a session lock around network
+work (sweep-jobs-use-advisory-locks).
 
-`run_all_sweeps` runs HITL recovery/expiry, content retention, optional install
-purge, and replay verdicts in order. Its caller must hold an explicit transaction
-on `conn`, keeping the shared `SWEEP_LOCK_ID` across the time-based sweeps.
-This enforces `sweep-jobs-use-advisory-locks`.
-Reconcile uses a separate session lock across its GitHub call. Verdict projection
-is insert-idempotent and opens separate read sessions; it can still see rows
-purged by this tick's uncommitted transaction, which is safe for append-only audit.
+See DECISIONS.md#012, #065, #067.
 """
 
 from __future__ import annotations

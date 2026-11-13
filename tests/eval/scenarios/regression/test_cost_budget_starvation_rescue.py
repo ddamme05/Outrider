@@ -1,30 +1,9 @@
-"""analyze-cost-fairness Stage 1c: the PR #8 starvation, promoted to a permanent
-end-to-end guard.
+"""Check that reserved budget reaches a risky file after ordinary budget runs out.
 
-The arc started because a coverage smoke (`ddamme05/outrider-smoke-test` PR #8)
-dropped a CRITICAL `command_injection` (`os.system`) — not because triage tiered
-it out, but because the analyze cost gate skipped it `COST_BUDGET_EXHAUSTED`
-behind benign DEEP files (the budget drained before its turn). The Stage 1
-high-risk reserve fixes that. This scenario pins the fix through the REAL 7-node
-graph.
-
-Fixture `cost_budget_starvation_rescue.json`: 5 DEEP files (4 benign + a late
-`ops_service.py` whose added `os.system(cmd)` line trips `policy.recall`) under a
-tight 80k budget. The general pool fits the first 3 benign; benign4 starves;
-`ops_service` draws the reserve and is analyzed. Its scripted `command_injection`
-finding (line 3, inside `ops_service`'s scope) is admitted → CRITICAL → the HITL
-gate holds (single-pass driver does not resume).
-
-LOAD-BEARING (verified): neutralize the reserve (`HIGH_RISK_RESERVE_FRACTION=0.0`)
-and `ops_service` starves — benign4 is analyzed in its place, the `command_injection`
-response misdirects to benign4's 2-line scope, gets rejected (line 3 outside
-scope), and BOTH assertions below fail. So this scenario cannot pass without the
-reserve actually rescuing the high-risk file.
-
-Lives in `regression/` (not `structural/`): it drives a real scripted-LLM analyze
-pass, so it needs `--is-eval` + the `postgres-test` container (`run_review`
-self-manages an ephemeral DB).
-"""
+Drive the real graph with scripted responses and a tight budget. The late
+command-injection file must still be analyzed, and its critical finding
+must wait for approval. Requires --is-eval and the postgres-test database;
+the driver creates and removes its own test database."""
 
 from __future__ import annotations
 

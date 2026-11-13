@@ -1,21 +1,13 @@
-# See specs/2026-05-19-analyze-foundation.md §7.
-"""Bounded raw proposals and enum-constrained admitted proposals.
+"""Define proposed analysis findings and their accepted response shape.
 
-The raw layer lets off-list type/tier strings reach the parser so it can
-record rejection events. The admitted layer is what reaches ReviewFinding
-construction; failed admission rejects rather than downgrades tiers.
+Raw proposals retain values needed to explain parser rejections. Accepted
+models constrain fields; the parser validates evidence and source locations.
+Line ranges are 1-indexed and unchanged between raw and accepted proposals.
+proposal_hash includes those raw locations; coordinate translation stays in
+coordinates/. Import paths follow the shared import rules.
 
-Line ranges are 1-indexed file lines and identity-preserved across layers
-per `DECISIONS.md#022` (FUP-126): proposal_hash includes the raw location.
-Byte translation stays inside coordinates for degraded file-bound checks.
-proposal_hash remains excluded from finding_content_hash per
-`DECISIONS.md#025` point 3.
-
-Trace candidates differ: import_string_raw becomes the canonical
-import_string through coordinates.is_valid_trace_import_string, supporting
-dotted Python imports and JS/TS relative specifiers per `DECISIONS.md#024`.
-The pinned constrained-decoding format below is a separate provider contract;
-Pydantic admission still enforces constraints omitted from that format."""
+See DECISIONS.md#022, #024, #025 and FUP-126.
+"""
 
 from __future__ import annotations
 
@@ -124,7 +116,7 @@ class TraceCandidateProposal(BaseModel):
 
     Constructed by the sister analyze-implementation spec's parser only
     AFTER `coordinates.is_valid_trace_import_string(raw.import_string_raw)`
-    succeeds (the two-form dispatcher per `DECISIONS.md#024`, Amended
+    succeeds (the syntax dispatcher per `DECISIONS.md#024`, Amended
     2026-07-03).
 
     Distinct field name (`import_string` vs raw's `import_string_raw`)
@@ -152,7 +144,7 @@ class TraceCandidateProposal(BaseModel):
     @classmethod
     def _enforce_canonical_import_string(cls, value: str) -> str:
         """Re-run `is_valid_trace_import_string` so the admitted layer
-        enforces the two-form canonical invariant the layer's name
+        enforces the syntax-dispatched canonical invariant the layer's name
         promises (`DECISIONS.md#024`, Amended 2026-07-03).
         The raw layer (`TraceCandidateProposalRaw.import_string_raw`)
         stays loose — its whole purpose is to admit unvalidated model
@@ -200,17 +192,11 @@ class AnalyzeFindingProposal(BaseModel):
 
 # ---------------------------------------------------------------------------
 # Constrained-decoding schema (specs/2026-06-12-constrained-decoding.md,
-# FUP-096). The PINNED, hand-trimmed JSON Schema the provider sends as
-# `output_config.format` — NOT `AnalyzeResponseRaw.model_json_schema()`,
-# because the API's supported subset excludes constructs Pydantic emits
-# (`maxLength`, numeric bounds, `maxItems`>1) and requires
-# `additionalProperties: false` on every object. The stripped constraints
-# still enforce at parse time via the Pydantic models above — constrained
-# decoding guarantees SYNTAX and shape; the raw/admitted layers stay the
-# semantic gate. A drift test asserts structural agreement (property names,
-# required sets, types) with the generated model schema, so a model change
-# forces this constant to be revisited; byte equality is deliberately NOT
-# the assertion.
+# FUP-096). Hand-trim the provider's supported subset: omit unsupported length,
+# numeric and array bounds, and forbid extra properties on every object.
+# Pydantic still enforces the omitted constraints at parse time; constrained
+# decoding guarantees shape, not semantic admission. A drift test checks names,
+# required sets and types against AnalyzeResponseRaw.model_json_schema().
 # ---------------------------------------------------------------------------
 
 ANALYZE_RESPONSE_SCHEMA: Final[dict[str, Any]] = {
@@ -288,20 +274,10 @@ ANALYZE_RESPONSE_SCHEMA: Final[dict[str, Any]] = {
     "additionalProperties": False,
 }
 
-# Compact ORDER-PRESERVING serialization — deliberately NOT
-# `canonicalize_for_hash`, whose key sorting is generatively load-bearing
-# under constrained decoding: the API emits object properties in the
-# schema's defined order (structured-outputs doc, "Property ordering" —
-# required first, in schema order), so a sorted schema forced
-# `description`/`evidence` to be generated BEFORE `finding_type`/`title`
-# existed in the model's own context, and three consecutive live runs
-# returned them empty (FUP-169). The dict literal above is written in
-# reasoning order — classify, name, explain, quote, locate — and these
-# bytes preserve it on the wire. The digest is sha256 over exactly these
-# bytes, so `LLMRequest.response_format_digest` (recomputed from the
-# string) and this constant can never disagree; a property-order change
-# rotates the digest, which is correct — emission order is part of the
-# format's identity.
+# Preserve property order: constrained decoding follows the schema's generation
+# order (FUP-169). Classification and title must precede description/evidence,
+# so canonicalize_for_hash's key sorting would change model behavior.
+# Hash these exact wire bytes; order changes must rotate the format digest.
 ANALYZE_RESPONSE_SCHEMA_JSON: Final[str] = json.dumps(
     ANALYZE_RESPONSE_SCHEMA, separators=(",", ":"), ensure_ascii=False, allow_nan=False
 )

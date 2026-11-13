@@ -1,25 +1,11 @@
-# See DECISIONS.md#051-slack-bot-tokens-are-encrypted-at-rest
-"""Slack OAuth install-flow endpoints (commit 6.3e).
+"""Connect a Slack channel through the OAuth install and callback routes.
 
-Two routes connect a GitHub App installation to a Slack workspace:
+The admin-authorized start route signs the installation, channel and operator
+choices. The public callback uses those verified choices, exchanges the code,
+then encrypts the token before saving it. Tokens are never logged.
 
-  - `GET /slack/install` (ADMIN-authed) — the operator passes `installation_id` +
-    `channel_id`; we validate the channel shape, mint an HMAC-signed `state` binding
-    (installation_id, admin principal, channel) + expiry, and 302-redirect to Slack's
-    `oauth/v2/authorize` with `scope=chat:write`.
-  - `GET /slack/oauth/callback` (PUBLIC — Slack redirects the browser here, so no
-    bearer auth is possible; the signed `state` IS the CSRF defense) — verify the
-    state, exchange the `code` for a bot token server-side, encrypt it, and persist
-    it per-install. The installation_id / channel / admin are read from the VERIFIED
-    STATE, never from the callback query params (trust-boundaries.md §5: GitHub/Slack
-    redirect params are attacker-controllable).
-
-Trust boundaries: input (§5 — signed-state provenance, no shell/format-string use of
-params), token encryption (DECISIONS.md#051 — `encrypt_token` before persist; the
-bot token only ever flows as `SecretStr` / ciphertext, never logged), install
-retention (DECISIONS.md#012 — `set_slack_config` refuses tombstoned/absent installs).
-The Slack SDK stays confined to `notify/` (this module calls the `notify/` wrappers,
-never `slack_sdk` directly).
+Slack SDK calls stay in notify (vendor-sdks-only-in-wrappers). Absent or deleted
+installations cannot receive new configuration. See DECISIONS.md#051 and #012.
 """
 
 from __future__ import annotations

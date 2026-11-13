@@ -1,14 +1,11 @@
-"""Coordinate Slack cards with the durable review journey.
+"""Send review notifications and save their delivery information.
 
-For HITL, check prior posts, build the approval card, post it, then record its
-message id. Reviews without a prior approval card receive a compact posted notice.
-Publication can update the original approval card with one terminal rendering;
-concurrent writers must agree because chat.update has no compare-and-set (FUP-252).
+Initial delivery posts a card before recording its message ID, so a process
+failure between those operations can cause a retry to post twice. Later status
+updates edit that card when its saved ID is available (FUP-252).
 
-Ordinary transport and audit failures are logged and contained (degrades-gracefully);
-cancellation propagates. Posting before recording leaves a crash window that can duplicate a
-notification on replay. Dependencies come from the per-install resolver and stay
-outside ReviewState (nodes-receive-deps-via-closure, state-is-pure-data).
+The notifier and writers are injected services, never saved in review state
+(nodes-receive-deps-via-closure; state-is-pure-data).
 """
 
 from __future__ import annotations

@@ -1,66 +1,18 @@
 # Direct-invoke smoke harness for the V1 publish node.
-"""Exercise `outrider.agent.nodes.publish.publish(...)` end-to-end.
+"""Exercise the publish node with mock services or a live sandbox PR.
 
-Two modes:
+Default mock mode uses recording sinks and a fake publisher, without network
+or database services. Live mode requires --apply, GitHub App credentials and
+TEST_DATABASE_URL on the isolated test Postgres. It can post a review to the
+allowlisted ddamme05/outrider-smoke-test repository.
 
-- **mock** (default; no external deps): stub publisher + recording sinks.
-  Asserts that the eight-step pre-flight, routing, eligibility gate,
-  attempt emission, and idempotency check all flow correctly under
-  realistic ReviewState shapes. Runs in under a second; suitable for
-  CI/local sanity.
+The live checks inspect the posted review, its saved audit events and a retry
+with the same review ID (FUP-070, FUP-064). Synthetic findings stay below the
+human-approval threshold, and records use is_eval=True (docs/testing.md).
+The operator handles posted-review cleanup using cleanup_manifest.jsonl.
 
-- **live** (`--apply`; requires real GitHub App + Postgres): real
-  `GitHubKitPublisher` + real `AuditPersister`. Posts a single review
-  comment to a hard-allowlisted PR on `ddamme05/outrider-smoke-test`.
-  Asserts pillar 1 (`PublishResult.success` shape) + pillar 2 (GitHub
-  re-query via body-marker matcher returns the just-posted review) +
-  pillar 3 (audit-row counts: queries `audit_events` for the harness's
-  `review_id` and asserts one row each of `publish_routing`,
-  `publish_eligibility`, `publish_attempt`, `publish` landed — closes
-  FUP-070). Then re-invokes publish() with the same `review_id` to
-  assert the intra-Outrider idempotency path returns
-  `PublishResult.idempotently_skipped` and NO duplicate comment posts.
-
-This harness is the empirical validation of the publish path the unit
-suite (stub publisher) cannot give: it proves githubkit actually
-accepts our request shape, the body marker round-trips through
-`GET /pulls/{n}/reviews`, the four publish-event types actually land
-in `audit_events` against real Postgres with the expected per-type
-counts, and the FUP-064 intra-Outrider idempotency check actually
-fires on a re-run.
-
-Guard rails (per the multi-lens design audit):
-
-- `--repo` is hardcoded-allowlisted; refuses any value other than
-  `ddamme05/outrider-smoke-test`.
-- `TEST_DATABASE_URL` must point at port 5433 with a name containing
-  `outrider_test` — mirrors `tests/integration/conftest.py`'s guard.
-- All synthetic findings are severity ∈ {MEDIUM, LOW, INFO} with
-  `original_severity=None` — the V1 eligibility gate withholds
-  everything else, which would silently yield "ran clean" with zero
-  comments posted (the canonical false-success bug class).
-- `is_eval=True` on every constructed `ReviewState` so harness writes
-  don't pollute production dashboard queries (per `docs/testing.md`).
-- `_BODY_MARKER_TEMPLATE` is imported from `agent/nodes/publish.py`,
-  not re-derived — if the production template changes, the harness
-  follows automatically.
-- Per-run `cleanup_manifest.jsonl` records every `(timestamp,
-  github_review_id)` the harness posts (live mode only); operator
-  uses this for batch dismissal. Append-only, gitignored.
-
-Out of scope for V1:
-
-- Full-graph smoke (`await graph.ainvoke(seed_state)`) requires LLM
-  credentials + a real PR with model-eligible findings; the four-node
-  graph runs intake → triage → analyze → publish, and analyze needs
-  a Sonnet call. Tracked separately.
-- The `IDEMPOTENTLY_SKIPPED_EXTERNAL_RECORD` branch (Step 6 of
-  `agent/nodes/publish.py` — the `find_existing_review_on_head_sha`
-  body-marker query path) requires a crash-after-success scenario;
-  deferred to a future harness extension.
-- Automatic teardown of posted GitHub reviews: GitHub doesn't expose
-  bulk-delete and submitted comment-reviews persist. Operator runs a
-  separate cleanup pass against `cleanup_manifest.jsonl`.
+This calls publish directly, not the full graph. It does not simulate a crash
+between GitHub publication and the local success record.
 """
 
 from __future__ import annotations

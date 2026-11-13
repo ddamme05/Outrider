@@ -1,8 +1,4 @@
-"""Structural eval scenario: import statement parsing.
-
-Per spec §11.2: `import x`, `from x import y`, `from .x import y`,
-`from x import *` all produce well-formed `ImportRef` objects.
-"""
+"""Check parsed direct, relative, from and wildcard Python imports."""
 
 from unittest.mock import MagicMock
 

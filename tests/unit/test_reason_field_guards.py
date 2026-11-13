@@ -1,19 +1,7 @@
-"""Reason-field length bound on TraceDecisionEvent + nested PerFindingDecision.reason.
+"""Check length limits on trace and reviewer decision reasons.
 
-Per `docs/schema.md` line 213 + `DECISIONS.md#014` point 5 (Amended same-day
-clauses): two distinct properties — only one is mechanically enforced.
-
-  - Length bound (mechanical): Pydantic Field(max_length=500) on each
-    reason field; the validator rejects any string longer than 500 chars.
-  - Structural-description-not-code-snippet (author/reviewer discipline):
-    no automated heuristic for "looks like code" vs "is a structural
-    description"; the rule is documented and reviewed at PR time, not
-    gated by code.
-
-These tests cover the mechanical gate. The discipline rule is out of
-scope for validators; the happy-path test below admits short structural
-text but does NOT attempt to verify the content rule.
-"""
+These validators do not decide whether text is a structural description or a
+code snippet; that remains a review rule. See docs/schema.md and DECISIONS.md#014."""
 
 from typing import Any
 from uuid import uuid4

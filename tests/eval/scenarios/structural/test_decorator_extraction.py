@@ -1,11 +1,4 @@
-"""Structural eval scenario: Flask + FastAPI route decorators extracted.
-
-Per spec §11.2: `@app.route` (Flask) and `@router.get` (FastAPI) decorators
-are extracted on the `ScopeUnit` for the decorated function.
-
-V1: live (flipped on the ast_facts/ V1 spec landing). Calls `parse_python`
-directly and gates current ast_facts behavior for decorator extraction.
-"""
+"""Check that parsing retains Flask and FastAPI decorators on their functions."""
 
 from unittest.mock import MagicMock
 

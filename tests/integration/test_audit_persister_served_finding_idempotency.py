@@ -1,32 +1,8 @@
-"""AuditPersister.emit_finding — serve-path replay idempotency (FUP-176).
+"""Check finding retries after a cache-served proposal hash changes.
 
-Pins the persister-level guarantee the cache `serve` flip depends on: when a
-cache-served finding is RE-EMITTED under the same deterministic served
-`finding_id` (`compute_served_finding_id(review_id, content_hash)` — proposal_hash
-EXCLUDED per FUP-177 edge 1 / DECISIONS.md#025), the persister must be idempotent
-on a benign refresh and loud on real content drift.
-
-Two cases, mirroring the cache row's refresh-in-place behavior:
-
-- **Case A — proposal_hash drift is benign.** A cache row refreshed in place
-  between the original serve and a checkpoint re-execution carries the SAME
-  `content_hash` (and therefore the SAME served `finding_id`) but a NEW
-  `proposal_hash` (the LLM free-text moved). Re-emitting must write ONE findings
-  row and raise nothing: `proposal_hash` is in neither the served-id recipe NOR
-  the Case-B verify set (`_finding_verify_values`).
-- **Case B — real content drift is loud.** Same served `finding_id`/`content_hash`
-  but a changed analyze-time-immutable column (here `title`) raises
-  `AuditPersisterIdempotencyConflict`, naming the drifted field.
-
-Why this is distinct from `test_findings_content_writer.py`: that file pins the
-GENERIC re-emit idempotency (same object twice → one row; drifted STORED row →
-raise) for analyze's own retries. This file pins the SERVE-SPECIFIC shape — a
-re-minted served `finding_id` plus a drifted `proposal_hash` across a cache
-refresh — which the serve flip introduces and the generic tests never exercise.
-The re-execution itself is simulated at the persister (the resume driver
-checkpoints AFTER analyze, so analyze never re-runs through the graph — see the
-FUP-176 re-scope in specs/2026-06-14-serve-flip-hardening.md).
-"""
+The deterministic served finding ID still identifies the stored row; changed
+content remains an error. These tests exercise the persister, not a graph
+checkpoint rerun, which resumes after analysis."""
 
 from __future__ import annotations
 

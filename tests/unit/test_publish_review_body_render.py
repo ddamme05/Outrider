@@ -1,25 +1,8 @@
-# Tests for the publish-node review-body renderers + create_review body param
-# (DECISIONS.md#050, commit 2b). The renderers are PURE + PRE-GATED — they
-# render exactly the (eligible) findings handed to them; the eligibility gate
-# lives in the routing loop. The create_review body param is inert by default
-# (body=None falls back to body_marker) and guards the marker-first
-# crash-recovery invariant.
-"""Pin the review-body renderers and the create_review body pass-through.
+"""Check review-body rendering and the publisher's body parameter.
 
-Covers:
-- `_review_deep_link`: base-url fallback, finding anchor, trailing-slash strip.
-- `_render_related_concern_entry`: effective_severity drives the displayed
-  severity (never finding.severity / model output), file:line + title both pass
-  through `sanitize_display_string` (the path is rendered as TEXT here, so an
-  `@`/`#`/backtick would otherwise spawn a mention/ref/code-span), no-link
-  fallback prose.
-- `_render_review_body`: marker at offset 0 (crash-recovery startswith), the
-  "Related concerns" section, the aggregate dashboard-only note (N distinct
-  files / M findings + pluralization + no-link fallback), marker-survives-cap.
-- `GitHubKitPublisher.create_review`: body=None -> request payload uses
-  body_marker; body=valid -> used verbatim; body not starting with the marker ->
-  ValueError before any HTTP call.
-"""
+Render already-eligible findings, sanitize displayed text, and keep the recovery
+marker first even when capped. Cover dashboard-link fallbacks and rejection of
+a supplied body without its marker before HTTP. See DECISIONS.md#050."""
 
 from __future__ import annotations
 

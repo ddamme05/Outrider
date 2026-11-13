@@ -1,10 +1,7 @@
-"""SlackNotificationEvent — shape, validators, discriminator routing.
+"""Check Slack notification events, allowed kinds, and replay routing.
 
-Pins the two message-class `kind`s, the metadata-only field set, frozen +
-extra="forbid" (no message body may be stored), and discriminator routing
-through `AuditEventAdapter`. See specs/2026-06-15-slack-dashboard-in-slack.md
-(Audit events emitted).
-"""
+Events are immutable metadata records and must not store message bodies.
+See specs/2026-06-15-slack-dashboard-in-slack.md."""
 
 from __future__ import annotations
 

@@ -1,12 +1,7 @@
-"""Integration tests for `GET /api/reviews/{id}/agent-view` (feature 3 / S2).
+"""Check the read-only agent-view endpoint.
 
-The read-only structured agent channel. Covers: separate-token scope (the agent
-key works, the ADMIN key is rejected, no key 401, the surface is disabled when
-OUTRIDER_AGENT_API_KEY is unset); the full JSON shape; pr_url derivation;
-hitl_gated + reviewer_decision (incl. decided_at); publish_event; the omitted V1
-fields (`github_comment_url` + the not-yet-persisted feature-2 `suggested_fix`); 404.
-Auth is the load-bearing part — agents must NEVER hold the admin key (POSTs /decide).
-"""
+Exercise its separate token, response shape, review decisions, publish details,
+and missing-review response. The admin token must not authorize this surface."""
 
 from __future__ import annotations
 

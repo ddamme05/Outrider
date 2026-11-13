@@ -1,12 +1,7 @@
-"""Unit tests for the `HITLEventSink` Protocol and its recording test double.
+"""Check the approval-event sink protocol and recording double.
 
-Mirrors the per-test-file recording-sink precedent in
-`tests/unit/test_publish_routing.py` and `tests/unit/test_analyze_node.py`:
-the durable `AuditPersister` is integration-tested elsewhere; this file
-asserts the Protocol surface (member presence, runtime-checkable
-membership, non-None return contract) and pins the recording double's
-audit-first return shape.
-"""
+Cover member presence and returned audit events; database persistence is tested
+separately."""
 
 from __future__ import annotations
 

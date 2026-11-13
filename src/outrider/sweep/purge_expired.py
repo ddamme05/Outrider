@@ -1,17 +1,9 @@
-# See DECISIONS.md#012-data-retention-ttls-configurable-purge-on-installationdeleted
-# See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
-"""Delete retained content in audited child-before-parent order.
+"""Delete expired review content and installations eligible for removal.
 
-Time-based purge covers analyze cache, LLM content, findings, and reviews
-(`DECISIONS.md#012/#014`). Active/resumable reviews are protected, while
-their content follows its own TTL. Installation hard deletion removes
-all installation content after confirmed liveness and the grace window.
-
-Callers supply an open transaction on `AsyncConnection`; the transaction
-holds `SWEEP_LOCK_ID` and commits deletions with their `purge_audit` rows.
-Delete cache/LLM/finding children before reviews, so review cascades cannot
-erase rows without per-table counts. `audit_events` remains append-only.
-`purge_expired_installations` locks due tombstones before deleting them.
+Permanent audit metadata remains, with deletion counts recorded per table.
+Active or resumable reviews are protected from review deletion; content still
+has its own retention deadline. Installation removal also needs confirmed
+GitHub deletion and the grace period (DECISIONS.md#012, #014).
 """
 
 import logging
@@ -279,13 +271,9 @@ async def purge_expired_installations(
 ) -> dict[str, dict[str, int]]:
     """Hard-delete installations whose #012 grace window has expired.
 
-    Arc B2 fix (DECISIONS.md#065 / #012): `purge_installation` existed but had NO
-    scheduled caller, so tombstoned installs were never actually hard-deleted and
-    #012 retention silently never completed on uninstall. This selects the expired
-    tombstones (`tombstoned_at IS NOT NULL AND purge_after_at < NOW()` — BOTH
-    predicates: the `tombstoned_at IS NOT NULL` guard prevents a stray
-    `purge_after_at` on a live/reinstalled install from deleting live data) and calls
-    `purge_installation` for each.
+    Select tombstoned_at IS NOT NULL and purge_after_at < NOW(), then call
+    purge_installation for each (DECISIONS.md#065 / #012). Both predicates matter:
+    a stray purge_after_at on a live/reinstalled install must not delete live data.
 
     `purge_role` defaults to ``"install-purge"`` — DISTINCT from the time-based sweep's
     ``"sweep"`` — so #012 lifecycle hard-deletes are separable from routine TTL purges

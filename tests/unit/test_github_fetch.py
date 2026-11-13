@@ -1,12 +1,7 @@
-"""Tests for `outrider.github.fetch` — the per-file content + file-list helpers.
+"""Check GitHub file reads with a stub client and no HTTP calls.
 
-Uses a hand-rolled stub `GitHub` client to avoid HTTP; the focus is on:
-  - `coordinates.validate_diff_path` runs BEFORE the githubkit call
-    (path-traversal payloads are rejected without any network attempt).
-  - `fetch_file_content_at` correctly handles the inline-base64,
-    directory, symlink, submodule, and no-content response shapes.
-  - The 1 MB per-file decoded-size cap is enforced.
-"""
+Paths must be validated before requests. Cover content response types, strict
+base64 decoding, and the decoded file-size limit."""
 
 from __future__ import annotations
 

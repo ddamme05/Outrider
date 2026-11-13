@@ -1,9 +1,7 @@
-"""Unit tests for `api/setup/state_token` — the signed setup `state` (#070).
+"""Check signed onboarding state with real secrets supplied by monkeypatch.
 
-Parallels `test_slack_oauth_state` (the sibling it mirrors): round-trip, tamper/expiry/malformed
-rejection, secret fail-closed (missing / placeholder / too-short), and the #070 distinct-secret
-requirement. All run for real against monkeypatched env secrets.
-"""
+Cover tampering, expiry, malformed input, invalid secrets, and separation from
+other signing secrets. See DECISIONS.md#070."""
 
 from __future__ import annotations
 

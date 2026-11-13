@@ -1,10 +1,8 @@
-"""HTTP entry points and shared dependency construction.
+"""HTTP routes and startup wiring for the application.
 
-`main.py` constructs the app. `lifespan.py` builds its providers, persisters,
-graph, and background workers. `webhooks/` accepts signed GitHub deliveries;
-`dashboard/` reads reviews and accepts human decisions. `setup/` onboards a
-GitHub App in database credential mode (DECISIONS.md#070); `slack/` connects channels.
-Dashboard review data uses bearer auth; deployment metadata is public.
+main.py mounts the routes; lifespan.py builds their shared services. Webhooks
+start reviews, the dashboard displays results and accepts decisions, and setup
+and Slack routes connect integrations. GitHub App setup follows DECISIONS.md#070.
 """
 
 from outrider.api.lifespan import build_lifespan, lifespan

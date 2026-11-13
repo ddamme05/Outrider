@@ -1,31 +1,12 @@
 #!/usr/bin/env python3
 """Extract tagged invariants from docs/spec.md into docs/invariants.md.
 
-Tag format (inline in spec.md):
+Read invariant comments under numbered headings, validate their fields, and write
+entries in ID order. Duplicate IDs, misplaced tags and embedded section references
+are errors. Fenced examples are ignored; headings supply the source section.
 
-    <!-- invariant:id=<kebab-case-id>
-         rule: <one-sentence rule statement>
-         violation: <one-sentence description of violation patterns>
-         check: <optional: shell command that verifies the invariant>
-    -->
-
-Rules enforced at extraction time (all are hard failures, not warnings):
-- The 'id' is unique across the entire spec.
-- No tag field contains a section number (e.g. '§7.4' or '7.4').
-  Section references are derived from the enclosing heading at extraction
-  time, so embedding one in the tag creates drift.
-- Every tag sits inside a numbered H2/H3/H4 heading's scope. Tags in the
-  preamble (before any heading) fail.
-- Tags inside fenced code blocks are silently skipped (they're example
-  documentation, not live invariants).
-
-The generated invariants.md lists entries alphabetically by ID. The
-[security-critical] label is applied by presence of 'security:' field
-(see tag schema below).
-
-Usage:
-    .venv/bin/python scripts/extract_invariants.py
-    .venv/bin/python scripts/extract_invariants.py --check   # verify only; no write
+Run .venv/bin/python scripts/extract_invariants.py to write the catalog.
+Add --check to compare it with the current catalog without writing.
 """
 
 from __future__ import annotations

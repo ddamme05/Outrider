@@ -1,13 +1,8 @@
-"""Unit tests for the production SPA-serving layer (`outrider.api.spa`, DECISIONS.md#069).
+"""Check production SPA settings, route precedence, and reserved backend paths.
 
-Three concerns:
-1. The tri-state `OUTRIDER_SERVE_SPA` contract (absent / "1" / invalid) is fail-loud.
-2. Route precedence: the SPA fallback serves the app shell for its own GET client
-   routes (incl. `/reviews/*`), 404s unknown sub-paths under reserved backend
-   namespaces, never shadows `POST /reviews/{id}/decide`, and never serves the shell
-   for a missing hashed asset or a path traversal.
-3. `RESERVED_PREFIXES` stays in sync with the real router set (drift guard).
-"""
+Client routes may serve the app shell; unknown backend paths, missing assets,
+and traversal must not. Keep reserved prefixes aligned with real routers.
+See DECISIONS.md#069."""
 
 from __future__ import annotations
 

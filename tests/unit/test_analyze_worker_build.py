@@ -1,12 +1,8 @@
-# Worker-outcome builder pins per specs/2026-07-05-parallel-analyze.md (3b-2b).
-"""Builder pins — the two 3b-2 acceptance gates live here.
+"""Check worker-outcome origin tracking and copied findings.
 
-Origin truth: `producer_observed_hashes` derives from the #054 merge's
-object placement, never from evidence tier — a model-cited OBSERVED
-proposal stays out, an evicted-slot producer survivor is in, a producer
-finding dropped against a non-JUDGED incumbent is out. Non-aliasing:
-builders clone findings INTO outcomes; no live object crosses.
-"""
+Producer identity comes from the actual merge result, not evidence tier: a
+model-cited OBSERVED proposal is still model-originated. Outcomes must not share
+live finding objects. See specs/2026-07-05-parallel-analyze.md and DECISIONS.md#054."""
 
 from __future__ import annotations
 

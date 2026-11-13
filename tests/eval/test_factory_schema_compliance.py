@@ -1,17 +1,4 @@
-"""Eval-harness factory schema compliance.
-
-Each factory's `.create()` produces a schema-valid instance of its target
-canonical type. Catches drift between factory-generated shapes and the
-underlying canonical types when those types evolve.
-
-Backs the harness's "factories own setting `is_eval=True`" discipline:
-audit-event factories construct frozen+extra=forbid Pydantic models with
-`is_eval=True` set on every instance.
-
-The `PRContext`-shape factory + the webhook-input-schema validation
-arrives in a later spec (when `api/webhooks/schemas.py` exists), per the
-Input boundary held item in the eval-harness spec.
-"""
+"""Check that evaluation factories produce valid models and mark evaluation records."""
 
 from typing import Any
 from uuid import UUID

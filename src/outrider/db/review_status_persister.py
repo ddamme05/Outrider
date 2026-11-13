@@ -1,9 +1,8 @@
-"""Persist lifecycle transitions and read human-decision preflight data.
+"""Save review status and pending approval data for workflow nodes.
 
-Each write uses a fresh session and one atomic UPDATE for status and its paired
-fields. Matching no rows is a successful no-op. fetch_for_decide reads the review
-cache, then loads gated severities from the canonical audit stream when needed.
-See db/sinks.py for the cross-boundary contract.
+Updates validate the transition before changing the row. Approval data and
+status commit together so resume sees a consistent review.
+See DECISIONS.md#016, #019 and db/sinks.py for the writer contract.
 """
 
 from collections.abc import Mapping
@@ -245,14 +244,9 @@ class ReviewStatusPersister:
                 f"schema-level cap regressed."
             )
         gated_str = [str(fid) for fid in gated_ids]
-        # ORDER BY sequence_number ASC: when a finding_id has multiple
-        # FindingEvent rows (round-1 LOW, round-2 promoted to HIGH after
-        # trace), the iterator's dict-overwrite assignment ends on the
-        # row with the highest sequence_number — the canonical "latest
-        # severity for this finding" used by the publish gate. Without
-        # the ORDER BY, `result.all()` returns rows in unspecified order
-        # and the resulting severity becomes nondeterministic across
-        # engine row-arrival reorderings.
+        # Ascending sequence order makes dict overwrites select each finding's
+        # latest severity. Database arrival order would make the publish gate
+        # nondeterministic when trace or re-analysis changes a finding.
         stmt = (
             select(
                 AuditEvent.payload["finding_id"].astext.label("finding_id"),

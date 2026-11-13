@@ -1,16 +1,7 @@
-"""Unit tests for `coordinates.file_in_patch` — file-membership helper.
+"""Check file membership in patches, including renames.
 
-Per docs/spec.md §4.1.7 (publish routing) and docs/trust-boundaries.md §3
-(coordinate translation): the publisher uses this helper to distinguish
-`unchanged_region` (file in patch but span outside any hunk) from
-`non_diffed_file` (file absent from patch entirely) WITHOUT inlining
-patch-membership math — keeps trust boundary #3 intact.
-
-Comparison via `unidiff.PatchedFile.path` (normalized — `a/` / `b/`
-prefix stripped). For rename hunks, `pf.path` returns the target
-(head-side) path per `unidiff/patch.py` (preferred over source when
-`is_rename` and target is not `/dev/null`).
-"""
+Publish distinguishes files outside the patch from spans outside changed hunks
+through this helper. See docs/spec.md §4.1.7 and docs/trust-boundaries.md §3."""
 
 from __future__ import annotations
 

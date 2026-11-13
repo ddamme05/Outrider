@@ -1,15 +1,8 @@
-# See specs/2026-05-19-analyze-foundation.md §1.
-"""Canonical-encoding chokepoint tests.
+"""Check exact canonical JSON bytes used by identity hashes.
 
-Per §1: define the canonical JSON serialization recipe in ONE module so
-all four identity-hash recipes downstream (round_id, candidate_id,
-proposal_hash, response_hash) share encoding. Without this chokepoint,
-the round-1-crazy-audit C1 finding (`\\n`-separator collisions)
-recurs per-call-site.
-
-Tests pin the BYTE OUTPUT, not just the digest, so a future
-`json.dumps` semantics change surfaces with a visible diff.
-"""
+Round, candidate, proposal, and response identities share one unambiguous
+encoding. Compare bytes as well as digests.
+See specs/2026-05-19-analyze-foundation.md §1."""
 
 from __future__ import annotations
 

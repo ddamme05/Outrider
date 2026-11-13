@@ -1,13 +1,8 @@
-# See specs/2026-05-23-trace-node.md M7 (c).
-"""`_payload_identity_subset` golden-pin tests.
+"""Check which trace-decision fields define retry identity.
 
-Per spec M7 (c) + DECISIONS.md#026, the natural-key idempotency mode's
-identity-subset comparison MUST match a specific enumeration so retries
-collapse cleanly to no-ops while real producer divergence raises.
-
-This file pins the canonical subset for `trace_decision` and the
-cross-check against `TraceDecisionEvent`'s actual payload fields.
-"""
+The selected fields must match the event model so identical retries collapse
+while changed decisions conflict. See specs/2026-05-23-trace-node.md M7(c)
+and DECISIONS.md#026."""
 
 from __future__ import annotations
 

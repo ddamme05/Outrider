@@ -1,20 +1,7 @@
-"""Unit tests for `sweep/hitl_expiry.py` — anomaly-first ordering +
-reclaim_stuck_hitl_states semantics.
+"""Check approval expiry and recovery ordering with stub sinks and a checkpointer.
 
-Per the spec's Group 8 prescription, the load-bearing properties are:
-  1. transition_expired_hitl_reviews emits the anomaly BEFORE flipping
-     status. If anomaly emit RAISES, the status flip is skipped.
-  2. reclaim_stuck_hitl_states marks `failed` only when the LangGraph
-     checkpointer has no record for the thread_id (window-(c) crash).
-  3. run_once runs reclaim BEFORE expiry so a stuck row past
-     expires_at is correctly classified as `failed` (not expired).
-
-Integration-style tests against real DB live in
-`tests/integration/test_sweep_hitl_expiry_integration.py` (to land
-when the schema migration is applied against postgres-test). These
-unit tests pin the loop semantics against stub sinks + stub
-checkpointer.
-"""
+Emit the anomaly before changing status. Reclaim reviews without a checkpoint
+as failed before expiring other reviews; these are not database integration tests."""
 
 from __future__ import annotations
 

@@ -1,10 +1,7 @@
-"""Persistent operations findings emitted through anomaly/persister.py.
+"""Store operator alerts and their notification status.
 
-Anomalies survive review retention: ON DELETE SET NULL removes their review link
-while rule_name retains their meaning. They are not retention-bound audit events.
-Their lifecycle uses a separate PostgreSQL enum from review status
-(docs/schema.md, "Two distinct PG ENUM types"). Partial unique indexes enforce
-per-rule idempotency.
+One row represents a review/rule alert. Deleting the review clears that link,
+leaving the alert available for operations history.
 """
 
 from datetime import datetime

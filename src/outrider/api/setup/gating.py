@@ -1,15 +1,9 @@
-# See DECISIONS.md#070 — setup-only route gating (credential-dependent surfaces fail closed).
-"""Setup-only route gating (spec F6): fail closed while not `CONFIGURED`.
+"""Block credential-dependent routes until GitHub App setup is complete.
 
-While the credential provider is not `CONFIGURED` — a `database`-mode instance still onboarding
-(`UNCONFIGURED`/`AWAITING_CALLBACK`/`CONVERTING`/`ORPHANED`), or a missing provider — every
-credential-dependent / side-effecting route returns `503 Service Unavailable`. The `/setup*` routes,
-the read-only dashboard, `GET /health`, and `GET /privacy` stay up (they need no App credentials).
-
-`env` mode is always configured, so the gate is a no-op there; demo mode mounts none of the gated
-routers at all, so the gate is structurally absent on the demo box. Applied at mount time via
-`include_router(..., dependencies=[Depends(require_credentials_configured)])` on the webhook, HITL,
-and Slack-OAuth routers (`main.py::_include_routers`).
+require_credentials_configured returns 503 when the selected provider is missing
+or unconfigured. Setup, read-only dashboard, health and privacy routes remain
+available. Environment credential mode is already configured; demo mode does
+not mount the affected routes. See DECISIONS.md#070.
 """
 
 from __future__ import annotations

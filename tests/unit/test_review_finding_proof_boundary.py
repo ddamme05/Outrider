@@ -1,12 +1,7 @@
-"""ReviewFinding wires enforce_proof_boundary as a Pydantic model_validator.
+"""Check that constructing a finding runs proof validation.
 
-Backs `evidence-tier-schema-enforced`. The validator's own correctness
-is covered by the policy-module proof-boundary tests
-(test_proof_boundary_observed.py / _inferred.py / _judged.py /
-_invalid_tier.py); these tests verify the wiring — that constructing
-a ReviewFinding triggers the validator at model-construction time and
-surfaces ProofBoundaryViolationError as a Pydantic ValidationError.
-"""
+ProofBoundaryViolationError must surface as a Pydantic ValidationError. The
+policy helper's own rules have separate tests (``evidence-tier-schema-enforced``)."""
 
 from typing import Any
 from uuid import uuid4

@@ -1,113 +1,19 @@
-"""Live OpenAI GPT-5.6 wire probe — the openai-native-host admission capture.
+"""Capture OpenAI request and response evidence for the host experiment.
 
-The PAID wire capture DECISIONS.md#056 gates the `openai` HostProfile on
-(specs/2026-07-18-openai-native-host.md: the host is WIRE-PENDING until these
-fixtures exist). A free `--dry-run` prefix builds and audits every request body
-without network; the paid matrix writes raw responses AND a machine-readable
-SUCCESS MANIFEST to `spikes/openai/fixtures/` — the scorecard REQUIRES that
-manifest (`test_openai_scorecard.py` FAILS without a passing one), so a failed
-capture cannot silently launch an ~128-call scorecard.
+The default mode can make paid API calls. --dry-run builds and checks requests
+locally without network access:
+    uv run --no-sync python spikes/openai/probe.py --dry-run
 
-Evidence-integrity rules:
-  - base_url is `OPENAI_PROFILE.base_url` EXACTLY — no env override. An
-    alternate host would receive the real key (credential leak) and would
-    produce "native OpenAI" evidence from the wrong host.
-  - Every request body comes from the PRODUCTION `_build_sdk_kwargs` on a real
-    `LLMRequest` — including the production-derived `prompt_cache_key` — so
-    the capture exercises the wire the provider actually sends. The frozen
-    envelope pin lives in `tests/unit/test_openai_wire_golden.py`.
-  - Every row has a REQUIRED success predicate; the run exits non-zero and the
-    manifest records `all_required_passed: false` if any required row fails.
-  - The manifest records the capture's provenance (base_url + the profile
-    contract digest, so a profile change stales the capture; PROBE_CONTRACT_VERSION,
-    so a prompt/matrix/predicate change stales it too) and each fixture's
-    sha256, and the scorecard gate re-verifies all of it plus the cold/warm
-    conservation inequalities FROM THE FIXTURE BYTES.
-  - The conservation EQUATION (writes inside prompt_tokens or additive — the
-    spec's [probe] item) is count-characterized by the probe but adjudicated
-    by the OPERATOR against billed usage. The adjudication is BOUND to THIS
-    capture: the sanitized billing_adjudication.json artifact (raw exports
-    stay local/gitignored — the Fireworks evidence policy) must carry the
-    fixtures' exact response IDs, a bounded capture window covering their
-    `created` stamps, and the billed fresh/write class counts, which the gate
-    cross-checks against the wire counts under the adjudicated equation. A
-    hash proves integrity; the binding proves RELEVANCE — a stale or
-    unrelated export cannot authorize a run. The gate also recomputes
-    per-model count support from fixture bytes (contrary counts refuse;
-    indeterminate needs an explicit reconciliation) and refuses a verdict
-    that differs from what read_usage() implements.
+Paid captures use the production request builder and fixed profile URL, then
+save raw responses and a manifest under spikes/openai/fixtures/. Every required
+row must pass. Role flags choose which models supply the tested operations;
+admission evidence is specific to those models (DECISIONS.md#056;
+specs/2026-07-18-openai-native-host.md).
 
-Capture matrix — Sol + Luna full by default; Terra gets the cheap reasoning
-row, and the role flags (--full-models / --trace-model / --patch-model /
---analyze-models) reshape the matrix for swap reruns (the spec's workflow:
-a fallback inherits the gate before serving). ALL rows are
-REQUIRED — the refusal-normalization fixture is a PRE-SHIP gate (spec "Gates
-before any production-shaped use") and wire admission is PER MODEL, so a
-refusal fixture is required per full-matrix model, not best-effort:
-
-  envelope  json_object on the analyze-style prompt: default tier echoed AND
-            output conforms to AnalyzeResponseRaw (fence-stripped).
-  cold      >=1024-token stable prefix, cold cache: cache_write_tokens > 0
-            reported; the (prompt, cached, write) triple is RECORDED so the
-            conservation equation can be pinned from the fixture.
-  warm      immediate same-prefix repeat: cached_tokens > 0.
-  refusal   message.refusal POPULATED. A comply-with-caveats response fails
-            the row honestly — never soften the gate instead. The elicitation
-            is FROZEN from spikes/openai/refusal_discovery.py output (a
-            bounded free-standing discovery matrix; the v4 ransomware prompt
-            conflated OpenAI's API-level cyber screen with in-band structured
-            refusal — Sol 400'd before the model ran, Luna complied in-band).
-            Per #056 the admission is PER MODEL — each model's row uses its own
-            frozen elicitation (a single prompt may cover all models, or they
-            differ). The paid runner refuses to start while the elicitations
-            are unfrozen or any serving model still holds the placeholder
-            (_REFUSAL_ELICITATIONS_FROZEN / _REFUSAL_ELICITATIONS).
-  trace     (declared node model) the REAL trace-node ranking request over
-            the admission scenario (both candidates share one finding's
-            provenance — the production-reachable multi-candidate bucket):
-            valid permutation per the production parser, the load-bearing
-            candidate ranked first. Graded offline again by
-            tests/eval/test_trace_admission.py.
-  patch     (declared node model) the REAL synthesize patch-pass request: an
-            anchored single-line fix surviving apply_patch_batch AND matching
-            the CLOSED reviewed-fix set (a wrong-but-safe or composite-unsafe
-            line fails). Graded offline again by
-            tests/eval/test_patch_admission.py.
-  trace_emission (declared analyze candidates) the PRODUCTION analyze prompt
-            (real stable prefix + render + analyze VERSION + schema) with
-            production-equivalent visibility: scope bodies + clipped hunks
-            ONLY — the import line and "app.db" are WITHHELD (dry-run
-            pinned). The scenario's verdict GENUINELY depends on the hidden
-            imported helper (escape_owner sanitization), so the analyze
-            prompt's own candidate discipline requires a candidate — a
-            locally-proven defect would instead instruct an empty array.
-            Graded through the PRODUCTION chain: real admission
-            (parse_analyze_response incl. the #024 corrected sibling), join
-            to an ADMITTED sql_injection finding, deterministic resolution
-            via the real probe ladder. The honest bare-symbol form
-            (escape_owner / run_query) passes via its corrected sibling; a
-            fabricated foreign module (app.user_store) fails. A red row does
-            NOT admit the host under any recording: the paths forward are a
-            production context change + rerun, an approved spec amendment,
-            or no-ship.
-  reasoning (Terra) reasoning_effort="none" accepted, tier echoed.
-
-Run (PAID):  op run --env-file=.env -- uv run --no-sync python spikes/openai/probe.py
-Swap reruns: declare the replacement PER ROLE — e.g.
-             --full-models=gpt-5.6-sol,gpt-5.6-luna,gpt-5.6-terra \
-                 --trace-model=gpt-5.6-terra          (trace-field swap only)
-             --full-models=gpt-5.6-sol,gpt-5.6-terra \
-                 --trace-model=gpt-5.6-terra --patch-model=gpt-5.6-terra \
-                 --analyze-models=gpt-5.6-sol,gpt-5.6-terra
-             Failed incumbents are NOT re-required and may be dropped from
-             the matrix entirely; their failure evidence stays in the
-             previous manifest.
-Dry  (free): uv run --no-sync python spikes/openai/probe.py --dry-run
-
-CREDIT NOTE: 13 calls default; the cold/warm rows carry a ~2.6k-token prefix
-and the two emission rows carry the full production analyze prompt (the
-expensive rows, ~production-analyze-call sized each). 401/402 on the first
-call means fix the key, nothing spent.
+The manifest binds request versions and fixture digests. Matching operator
+billing evidence is also required to resolve token accounting. Captures alone
+do not unlock the production OpenAI host. Refusal discovery is a separate tool;
+probe.py requires its selected prompts to be frozen before a paid capture.
 """
 
 import asyncio

@@ -1,11 +1,8 @@
-# See DECISIONS.md#070 — database-mode GitHub App credential storage.
-"""`GitHubAppCredential` — encrypted, versioned GitHub App credentials (`DECISIONS.md#070`).
+"""Store the active GitHub App identity and its encrypted secrets.
 
-Under `database` credential mode, the manifest-onboarded App `pem` + `webhook_secret` are stored
-encrypted at rest (`github/credential_crypto.py`; ciphertext columns, never plaintext). Exactly one
-row is active at a time — a unique partial index on `is_active` enforces first-write-wins so two
-racing manifest conversions can never both activate. `app_id` + `slug` + `client_id` are non-secret
-metadata. `client_secret` is deliberately NOT stored (OAuth user-tokens are a non-goal; #070).
+The database permits one active credentials row. Private keys and webhook
+secrets are encrypted; the manifest conversion's client secret is not stored.
+See DECISIONS.md#070.
 """
 
 from __future__ import annotations

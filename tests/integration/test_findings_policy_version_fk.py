@@ -1,11 +1,7 @@
-"""findings.policy_version FK to severity_policies (RESTRICT).
+"""Check that findings retain a valid policy version for replay.
 
-Backs ``severity-policy-versioned-for-replay``. A finding's policy
-version must remain reachable for the lifetime of the finding so the
-classification can be replayed under the version that made it. The FK
-is RESTRICT so the parent row cannot be deleted while findings reference
-it; INSERT with a non-existent version raises FK violation.
-"""
+The RESTRICT foreign key rejects unknown versions and prevents deletion of a
+referenced policy (``severity-policy-versioned-for-replay``)."""
 
 import pytest
 from sqlalchemy import text

@@ -1,27 +1,8 @@
-"""Graph-wiring introspection — Command is the sole routing mechanism from intake.
+"""Check that intake routes only through its returned Command.
 
-Closes FUP-030. Spec line 96 (`specs/2026-05-17-intake-and-webhook.md`):
-
-> Also assert by introspecting `build_graph(...)` output that no static
-> `add_edge('intake', 'triage')` and no `add_conditional_edges('intake', ...)`
-> are present — `Command` is the sole routing mechanism.
-
-The invariant matters because LangGraph 1.1.6 semantics let a static
-edge fire ALONGSIDE a `Command(goto=...)` returned by the node — both
-destinations get traversed. A regression here (someone re-adding
-`add_edge('intake', 'triage')` because "the test still passes when I
-forget the Command branch") would silently double-route on success and
-not break any current test. Without this introspection guard, the
-contract is unguarded.
-
-The test reads two attributes of the compiled graph's builder:
-  - `builder.edges` — set of static `(src, dst)` tuples
-  - `builder.branches` — dict[node_id, dict[branch_key, Branch]] for
-    conditional edges
-
-Both must be free of intake-as-source entries other than the canonical
-START → intake admission edge.
-"""
+Inspect compiled graph edges and branches: adding a static or conditional intake
+edge could run alongside Command routing and dispatch twice.
+See specs/2026-05-17-intake-and-webhook.md and FUP-030."""
 
 from __future__ import annotations
 

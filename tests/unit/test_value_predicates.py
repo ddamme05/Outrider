@@ -1,11 +1,7 @@
-"""Unit tests for the OBSERVED value-predicate surface (FUP-193).
+"""Check literal-value filters applied after structural query matches.
 
-The value-predicate runs after the structural match to filter a query's matches
-by a captured literal's value (a numeric comparison tree-sitter's native query
-predicates cannot express). These tests pin the threshold semantics, the
-literal-parse bases, the conservative drop on a non-literal, the loud failure on
-a wiring mismatch, and the cache-key digest sensitivity to a parameter change.
-"""
+Cover numeric thresholds, literal bases, rejection of non-literals or mismatched
+captures, and cache invalidation when parameters change. See FUP-193."""
 
 from __future__ import annotations
 

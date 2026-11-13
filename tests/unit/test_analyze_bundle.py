@@ -1,12 +1,7 @@
-# FUP-170: post-cost-gate parse bundle + the derived unsafe set.
-"""`extract_triviality_and_scan` consolidates two head parses into one.
+"""Check that triviality and parameterized-call scanning share a head parse.
 
-Pins the FUP-170 acceptance bar: the bundle is behavior-equivalent to the
-separate `build_triviality_context` + `scan_parameterized_calls` calls, and it
-proves the consolidation (the scan reuses the bundle's head tree — no separate
-parse). Also pins `ParameterizedCallScan.unsafe_parameterized_calls` (the derived
-multiset `all − safe` the coordinates veto now consumes).
-"""
+The combined result must match separate scans, including unsafe calls derived
+by subtracting safe calls. See FUP-170."""
 
 from __future__ import annotations
 

@@ -1,13 +1,8 @@
-"""`RawOpenAICaptureClient` — the spike wire-capture transport under `llm/`.
+"""Check the raw OpenAI capture wrapper's project-owned results and errors.
 
-Pins that the helper OWNS the openai SDK end-to-end: it constructs the client, and
-`capture()` normalizes the response into the frozen project-owned `RawCapture` DTO
-(retaining the SDK reserialization as `sdk_response_json`) while a vendor error becomes
-the project-owned
-`RawOpenAICaptureError` — so no SDK object or exception class escapes the boundary
-(`vendor-payloads-normalized-at-boundary`, trust boundary #8). See
-`src/outrider/llm/raw_openai_capture.py`.
-"""
+The wrapper owns SDK construction and normalization; no vendor object or exception
+may escape (``vendor-payloads-normalized-at-boundary``; trust boundary §8).
+See src/outrider/llm/raw_openai_capture.py."""
 
 from __future__ import annotations
 

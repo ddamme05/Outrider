@@ -1,10 +1,8 @@
-"""Slack OAuth install-flow HTTP surface.
+"""Routes that connect a GitHub installation to a Slack channel.
 
-`oauth.py` ships the two routes that connect a GitHub App installation to a Slack
-workspace: admin-authed `GET /slack/install` (mint signed `state` → redirect to
-Slack) and the public `GET /slack/oauth/callback` (verify state → exchange code →
-encrypt + persist the per-install bot token). Exported as `slack_oauth_router` for
-the app to mount via `app.include_router(...)`.
+oauth.py starts the admin-authorized connection and handles Slack's callback.
+The callback verifies signed state before exchanging and encrypting the bot
+token. The app mounts these routes through slack_oauth_router.
 """
 
 from outrider.api.slack.oauth import router as slack_oauth_router

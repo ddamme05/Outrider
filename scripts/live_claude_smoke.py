@@ -1,45 +1,18 @@
 #!/usr/bin/env python3
-"""Live-Claude smoke — real Anthropic call through analyze/synthesize, no GitHub.
+"""Run a review with real Claude calls and local GitHub substitutes.
 
-The first real-service step of the live-demo arc (Phase 1, step 1). It answers
-ONE question that no green test answers: does a REAL Claude response survive
-Outrider's parsing, severity policy, synthesize aggregation, audit emission, and
-replay reconstruction?
+This is a paid smoke run. It uses real Postgres, audit persistence and replay,
+but serves a local diff and records publication without contacting GitHub.
+The scenario comes from the existing integration test. Human approval may pause
+the review before publication; the runner reports that outcome.
 
-It is `scripts/smoke_e2e.py` with exactly ONE boundary swapped: the scripted LLM
-becomes the real `AnthropicProvider` (real Sonnet analyze + Haiku triage/
-synthesize). The other boundary stays faked — a stub GitHub client serves a
-LOCAL synthetic diff (no GitHub App, no token, no network to GitHub) and a
-recording publisher captures the would-be review without posting. Real Postgres,
-real AuditPersister, real replay. So the only new variable vs the green suite is
-"the LLM is really Claude."
-
-It reuses the committed test's fakes + scenario verbatim (single source of truth,
-no second scenario to drift).
-
-What it proves (hard-asserted): the graph runs with real Claude; analyze produces
-at least one AnalysisRound; the audit stream persists; `reconstruct` +
-`assert_replay_equivalent` pass over the real stream.
-What it reports but does NOT assert (Claude-dependent): how many findings, their
-severities, and whether the run reached publish or paused at the HITL gate (a
-CRITICAL/HIGH finding legitimately interrupts before publish — that's the gate
-working, not a failure).
-
-Run it:
-
-    docker compose up -d postgres-test
-    export ANTHROPIC_API_KEY=sk-ant-...          # the only live credential
-    export TEST_DATABASE_URL=postgresql+psycopg://...:5433/outrider_test
+Start postgres-test and configure ANTHROPIC_API_KEY and TEST_DATABASE_URL, then run:
     uv run python scripts/live_claude_smoke.py
 
-It creates a throwaway DB on the test container, migrates it, runs one review
-through the real LLM, prints the findings + audit stream + replay verdict, then
-drops the DB. Exit 0 = the structural checks passed (Claude produced a
-replayable run); 1 = something broke; 2 = setup/credentials missing.
-
-Cost: one real review — a Haiku triage + Sonnet analyze + Haiku synthesize pass
-over a tiny synthetic file. Cents, not dollars. No cost cap is wired here beyond
-the synthetic diff's small size; do not point this at large inputs.
+The runner creates and migrates a temporary database, checks the saved review,
+and drops it afterward. Exit 0 means its structural checks passed, not that every
+expected defect was found. Exit 1 reports failure; exit 2 reports missing setup.
+There is no separate spending cap beyond the configured inputs and review budget.
 """
 
 from __future__ import annotations

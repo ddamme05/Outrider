@@ -1,33 +1,8 @@
-"""Cross-scenario eval scorecard: typed rows + JSON/HTML emit.
+"""Collect evaluation rows and render JSON and HTML reports.
 
-Productizes the inline `(fixture, dimension, ok, fail_label)` aggregation that
-lived only in the opt-in spend test (`test_model_comparison.py`'s GATE SUMMARY
-print) into reusable typed objects. One `ScorecardRow` per `(node, model,
-scenario)`; a `Scorecard` collects rows and emits a JSON + HTML artifact.
-
-Per `specs/2026-06-23-eval-runner-scorecard.md`:
-  - Step 1 emits `node="analyze"` rows only; the `node` axis is in the schema
-    for forward-compat (step 2 slots `node="triage"` rows in with no schema
-    change), not filled with placeholder rows here.
-  - Metric provenance is per row: quality from the analyze-direct comparison
-    (`quality_source`), cost/latency from the full-graph run (`cost_source`),
-    replay from the resume/persisting drivers (`replay_source`). The scorecard
-    makes the split-path join explicit instead of pretending one path measures
-    everything equally well.
-  - `cost_source` is THREE-state so a missing cost is never a false zero:
-    `full_graph` (measured), `not_measured` (the cost pass was not requested),
-    `measure_failed` (it was requested but produced no usable number — a
-    transient flake or a review that completed with no metrics). The aggregate
-    surfaces `n_costed` so `total_cost_usd` carries its own denominator.
-  - Report-only: a row records its gate verdict (`gate.passes`); nothing here
-    raises on a failed gate. Enforcement, if ever wanted, is a separate surface.
-
-Wires the three previously-unconsumed `metrics.py` shapes (`FalsePositiveRate`,
-`CostPerReview`, `LatencyPerReview`) into their first consumer. Quality numbers
-are pulled OFF a `grading.ModelComparison` (the deterministic gate); this module
-computes no recall/precision/severity itself — only the false-positive RATE,
-over the same finding population the grader's precision uses.
-"""
+Keep the source of quality, cost, latency and replay measurements explicit.
+Unrequested or failed cost measurements are not zero costs. A report records
+gate results without enforcing them; grading.py owns finding-quality scores."""
 
 from __future__ import annotations
 

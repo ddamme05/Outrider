@@ -1,11 +1,12 @@
-# See specs/2026-05-23-trace-node.md M6 + Q4.
-"""Validate a model ranking as a permutation of the supplied trace candidates.
+"""Check that the model ranked exactly the related-file candidates it received.
 
-Normalize the outer JSON fence (`vendor-payloads-normalized-at-boundary`),
-validate the envelope, then check count, duplicates and ID membership before
-reordering the original candidate objects.
-The trace node warns and retains input order on rejection. A dedicated
-TraceRankingRejectedEvent remains deferred (FUP-076)."""
+Parse the response, reject missing, repeated or unknown IDs, then reorder the
+original candidates. The trace node keeps input order if this check fails.
+An optional outer JSON fence is removed at this boundary
+(vendor-payloads-normalized-at-boundary).
+
+See specs/2026-05-23-trace-node.md; rejection events remain deferred (FUP-076).
+"""
 
 from __future__ import annotations
 

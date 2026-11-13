@@ -1,16 +1,9 @@
-"""Zero-spend contract tests for the live-smoke/seed scenario path.
+"""Check the live-smoke and demo-seed GitHub factory without service calls.
 
-Pins the #070 async github_factory contract at the exact surface intake, trace,
-and publish consume: `_make_scenario_github_factory` must return an AWAITABLE
-factory (a0eb420 flipped the injected contract to
-`Callable[[int], Awaitable[InstallationGitHubClient]]`; the tests/-side stub was
-updated, the scripts/-side scenario factory was missed, and every seed_demo
-entry failed at intake's first `await github_factory(...)` with zero coverage —
-mypy --strict scans src/ only, and --dry-run never constructs the factory).
-
-Run: `uv run python scripts/test_live_claude_smoke.py` (no DB, no network, no
-LLM spend). Wired into pre-commit so edits to the factory OR its awaiting
-consumers re-run this file.
+_make_scenario_github_factory must return a client through an awaitable factory,
+as intake, trace and publish expect (DECISIONS.md#070). The dry-run plan does not
+exercise this factory. Run uv run python scripts/test_live_claude_smoke.py;
+pre-commit also runs these checks.
 """
 
 from __future__ import annotations

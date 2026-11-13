@@ -1,19 +1,11 @@
 #!/usr/bin/env python3
-"""Smoke tests for _git_range_scenario.py — the wire-fidelity-critical pure logic.
+"""Check local git-range inputs without git, network or model calls.
 
-Run: `uv run python scripts/test__git_range_scenario.py`
+Synthetic diffs test header removal, missing hunks, added/deleted line counts,
+range validation and FileEntry size bounds. These are the file inputs consumed
+by the live demo runner.
 
-These pin the parts a faithful GitHub `/pulls/{n}/files` reconstruction depends on,
-none of which need git (they take synthetic patch text):
-  (a) _hunks_only strips `diff --git` / `index` / `--- a/` / `+++ b/` headers,
-      leaving a body that starts with `@@`
-  (b) _hunks_only returns None for a no-hunk (pure-rename / mode-only) patch and
-      for an empty string — matching GitHub omitting `patch` for those
-  (c) _count_changes derives additions/deletions from the unified diff the way
-      GitHub does (and does NOT miscount the `+++`/`---` header lines)
-  (d) _parse_range accepts two-dot `A..B` (incl. refs with single dots like
-      v1.2.3) and rejects three-dot `A...B`, shell-noise, and malformed input
-  (e) FileEntry bounds: changed_bytes < head_bytes, floor <= ceiling, is_python
+Run uv run python scripts/test__git_range_scenario.py.
 """
 
 import sys

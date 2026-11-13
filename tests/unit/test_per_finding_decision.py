@@ -1,17 +1,8 @@
-"""PerFindingDecision cross-field validation and the frozen-artifact guard.
+"""Check reviewer decision fields and immutability.
 
-Exercises `enforce_override_fields` directly: override fields must appear
-together only on `SEVERITY_OVERRIDE`, a severity override must change the
-baseline, and every non-`APPROVE` outcome requires a non-empty reason.
-
-APPROVE is the only outcome where reason="" admits — the field itself is
-required (no default), so APPROVE callers pass reason="" to keep the
-decision-record shape uniform across outcomes.
-
-Also includes the frozen=True regression guard: PerFindingDecision IS frozen
-(decision artifact, final at construction), in contrast to ReviewFinding which
-is NOT frozen due to its multi-stage lifecycle.
-"""
+Severity overrides need paired fields and a changed severity. Every outcome
+except approval requires a reason; approval still requires the field, which
+may be empty. ReviewFinding's separate lifecycle remains mutable."""
 
 from uuid import uuid4
 

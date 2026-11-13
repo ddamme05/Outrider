@@ -1,33 +1,8 @@
-"""FUP-137 end-to-end: a clip-head finding inside an indented scope is admitted.
+"""Check that a finding on an indented function's first body line is accepted.
 
-The end-to-end layer on top of the parser-level regression
-(`tests/unit/test_analyze_parser.py::test_step5_clean_line_range_inside_indented_scope_admits`).
-It drives the real 7-node graph via `run_review` against a JSON PR fixture
-(`mock_github/fup137_blocking_async.json`) whose scripted analyze response
-plants the exact FUP-126 shape: a `blocking_call_in_async` finding on the
-FIRST body line of an indented `async def` method (`Worker.poll`, whose token
-`byte_start` is far past column 0).
-
-Pre-FUP-126-fix this finding was silently dropped — the model anchored at the
-clip head (byte 0), and the byte-containment gate rejected it because
-`scope_unit.byte_start (>0) <= 0` is false (`finding_proposal_rejected{reason=
-span_outside_scope_unit}`). Post-fix the proposal is line-based and admission is
-line-space scope containment, so the finding survives, hashes, routes, and posts
-with a correct file-frame line range.
-
-The finding is MEDIUM (`blocking_call_in_async` → MEDIUM per `SEVERITY_POLICY`),
-so the HITL gate is a pass-through and publish runs to completion. The
-blocking call lands on an added diff line, so publish routes it INLINE and the
-capturing publisher records a comment.
-
-Unlike the LLM-free structural scenarios (in `scenarios/structural/`, which
-validate `ast_facts` directly), this one needs the eval graph driver: it runs a
-real (scripted-LLM) analyze pass, which is what FUP-126 is a behavior of — hence
-it lives in `regression/`, not `structural/`. It therefore requires `--is-eval` +
-the
-`postgres-test` container (`run_review` self-manages an ephemeral DB and refuses
-to touch a non-test URL). Shipped UNSKIPPED — it is new with the driver.
-"""
+Drive the real graph with a scripted medium-severity finding and check its
+file line range and inline GitHub comment. Requires --is-eval and postgres-test;
+the driver manages an isolated database and substitutes external services."""
 
 from __future__ import annotations
 

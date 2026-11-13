@@ -1,14 +1,7 @@
-# Cross-type subsumption proof-retention record per DECISIONS.md#055.
-"""`ObservedSubsumedMatch` — the dropped-OBSERVED structural proof record.
+"""Record structural findings removed in favor of more specific findings.
 
-Lives in `schemas/` per the placement rule (`DECISIONS.md#019`): the model
-is produced by analyze, carried on `AnalyzeWorkerOutcome` (state) AND
-`AnalyzeCompletedEvent` (audit) — cross-boundary with no single owning
-subsystem. It previously lived in `audit/events.py`; the V1.5 worker
-outcome created a true import cycle (audit.events ↔ schemas.analyze_worker
-via the schemas package init), and this leaf is importable by both sides
-cycle-free. `audit/events.py` re-exports it, so existing importers are
-unchanged.
+Workers and audit events share these records so removed proof remains
+explainable. See DECISIONS.md#019, #055.
 """
 
 from typing import Annotated, Self

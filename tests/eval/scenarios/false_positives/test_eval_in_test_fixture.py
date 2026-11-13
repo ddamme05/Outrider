@@ -1,16 +1,7 @@
-"""False-positive eval scenario: `eval()` call inside a test fixture.
+"""Exercise the no-findings graph path for an eval() call in test code.
 
-Per spec §11.2: a test file that uses `eval()` in a fixture (e.g., to
-parse a literal in test setup) is NOT a security finding — the call
-lives in test code, not production code paths. Expected: zero security
-findings.
-
-Driven by the eval graph driver (`run_review`) against
-`tests/eval/fixtures/mock_github/eval_in_test_fixture.json`. The scripted
-analyze response is deliberately empty (`{"findings": []}`), so this asserts
-the no-findings pipeline path; the SECURITY-dimension discriminator itself is
-exercised by the finding-producing scenarios (quality / true-positives).
-"""
+The model response is scripted empty. This checks the workflow; it does not
+measure a real model's false-positive rate or test finding-dimension filtering."""
 
 from outrider.schemas import ReviewDimension
 

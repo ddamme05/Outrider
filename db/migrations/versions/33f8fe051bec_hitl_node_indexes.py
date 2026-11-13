@@ -1,70 +1,12 @@
-"""HITL node schema additions: reviews.expires_at + four partial unique indexes.
+"""Add approval timeouts and prevent duplicate approval records.
 
 Revision ID: 33f8fe051bec
 Revises: 8f2a4c1e7b3d
 Create Date: 2026-05-26
 
-Schema additions for the HITL node per `specs/2026-05-26-hitl-node.md`
-Implementation Group 3:
-
-  1. `reviews.expires_at TIMESTAMPTZ NULL` — the HITL approval window
-     timestamp, mirrored from `HITLRequest.expires_at` for sweep-query
-     efficiency (`WHERE status='awaiting_approval' AND expires_at < NOW()`).
-     The corresponding `reviews.hitl_request` JSONB carries the full
-     HITLRequest snapshot; the typed column is a convenience cache for
-     the sweep's HITL-expiry sub-job (see `sweep/hitl_expiry.py` per Group 8).
-
-  2. `ix_reviews_awaiting_approval_expires_at` — partial index on
-     `(expires_at)` filtered by `status='awaiting_approval'`. Powers the
-     sweep query directly; sibling pattern to the existing
-     `ix_reviews_active_status` partial index.
-
-  3. `uq_audit_events_hitl_request_natural_key` — partial unique index
-     on `(review_id)` filtered by `event_type='hitl_request'`. V1 HITL
-     is single-shot per review (per Non-goals "No multi-gate semantics");
-     the index lets the persister-side `_persist_keyed_by_natural_key`
-     helper fire `IntegrityError(UniqueViolation)` (caught by
-     `postgresql_insert(...).on_conflict_do_nothing(...)`) when a body
-     re-run on resume re-emits the request event.
-
-  4. `uq_audit_events_hitl_decision_natural_key` — same shape for
-     `event_type='hitl_decision'`. Natural-key identity-subset includes
-     `decisions_content_hash`; divergent re-submissions raise
-     `AuditPersisterHITLDecisionNaturalKeyConflict`.
-
-  5. `uq_anomalies_hitl_timeout_natural_key` — partial unique index on
-     `anomalies(review_id) WHERE rule_name='hitl_timeout'`. Schema-side
-     defense for the anomaly-first ordering's idempotency claim (see
-     `sweep/hitl_expiry.py::transition_expired_hitl_reviews` per Group 8):
-     the sweep emits the canonical `hitl_timeout` anomaly BEFORE flipping
-     the review's status to `awaiting_approval_expired`, and the index
-     makes `postgresql_insert(...).on_conflict_do_nothing(...)` a clean
-     no-op on retry.
-
-All four indexes are partial (event_type / rule_name predicate in WHERE)
-so they restrict the constraint to the relevant event-type / rule-name
-partition only; other rows stay under whatever idempotency mode their
-producer chooses.
-
-Sibling-pattern caveats from the trace-decision precedent
-(`8f2a4c1e7b3d_trace_decision_natural_key_index.py`) apply:
-
-  - `payload ? '...'` predicate is NOT needed on the HITL audit indexes
-    because the natural-key uses `review_id` only (a top-level column,
-    never NULL). For the trace index the natural-key crosses into JSONB
-    via `payload->>'source_finding_id'`, requiring the existence check.
-
-  - `CREATE UNIQUE INDEX CONCURRENTLY` keeps the build non-blocking on
-    production audit-events scans. Recovery from a failed concurrent
-    build: `DROP INDEX CONCURRENTLY IF EXISTS <name>` then re-run.
-
-  - No backfill: HITL has not shipped, so no `hitl_request` /
-    `hitl_decision` / `hitl_timeout` rows exist yet.
-
-See:
-  - specs/2026-05-26-hitl-node.md Implementation Group 3
-  - DECISIONS.md#026 (natural-key idempotency mode)
-  - docs/spec.md §4.1.6 line 1421 (canonical `hitl_timeout` anomaly)
+The expiry column supports timeout checks. Indexes keep each review's approval
+request, decision and timeout warning from being stored twice. The migration
+checks that its indexes are valid before finishing.
 """
 
 from collections.abc import Sequence

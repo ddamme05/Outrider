@@ -1,15 +1,7 @@
-"""Production wiring guard — lifespan injects the analyze-cache store.
+"""Check that application startup passes an analyze-cache store to build_graph.
 
-Pins the lever-8 Stage-B production contract
-(specs/2026-06-11-file-hash-analyze-cache.md): store-or-None is the
-enable switch, so a `build_graph(...)` call that omits
-`analyze_cache_store` silently ships an inert shadow stage — no
-`CacheLookupEvent` telemetry and no `analyze_file_cache` writes ever
-accrue in the one environment the flip evidence must come from. The
-spy wraps the REAL `build_graph` (delegates, then captures kwargs) so
-the guard also proves the wired store is accepted by the actual graph
-builder, not just named in the call.
-"""
+Wrap the real builder so the test checks both the injected dependency and its
+acceptance by the graph. See specs/2026-06-11-file-hash-analyze-cache.md."""
 
 from __future__ import annotations
 

@@ -1,49 +1,9 @@
-"""Eval-harness conftest per spec §11.2 + DECISIONS.md#008 Amended 2026-04-30.
+"""Require evaluation mode and provide a fresh, isolated database for each test.
 
-Two responsibilities:
-
-1. **`--is-eval` CLI option.** Sets `OUTRIDER_IS_EVAL=1` so the rest of the
-   pipeline can detect eval mode if it cares to (see `docs/testing.md`).
-2. **`eval_db` fixture with bundled integrity gate.** Fresh-DB-per-test
-   pattern with the URL-pattern guard from `assert_test_url_is_isolated`,
-   mirroring the integration-tier `migrated_db` fixture. Created at fixture
-   setup, integrity-gate query at the start of teardown, dropped at the
-   end of teardown. The integrity gate is loud-failure: it queries every
-   `is_eval`-bearing table (`reviews`, `audit_events`, `findings`,
-   `llm_call_content`, `anomalies`, `analyze_file_cache` per
-   `docs/schema.md` "Eval isolation" + the file-hash-analyze-cache spec)
-   for rows where `is_eval` is not TRUE (FALSE or NULL, via `IS DISTINCT
-   FROM TRUE` — robust against a future nullable `is_eval` column) and
-   raises `AssertionError` if any are found. Does NOT auto-coerce — that
-   would mask the exact bug class the
-   gate exists to catch (factories that forget the flag). Setting
-   `is_eval=True` is the factory's responsibility (see
-   `tests/eval/fixtures/factories.py`); this gate is the after-the-fact
-   check. Pattern matches the project's loud-failure discipline
-   (`PerFindingDecision.reason` required-no-default,
-   `proposed_import_strings` required-no-default,
-   `FindingEvent.finding_content_hash` equality verifier).
-
-   Earlier drafts split this into a separate `is_eval_injection` autouse
-   fixture; folded into `eval_db`'s teardown to make the order
-   deterministic (autouse fixtures of the same scope can set up before
-   explicit fixtures, putting the autouse's post-yield query AFTER
-   `eval_db`'s drop — querying a dropped DB).
-
-Conftest scope: this file applies to tests under `tests/eval/`. The
-harness-internal tests at `tests/eval/test_*.py` (not under
-`tests/eval/scenarios/`) consume `eval_db` directly when they need a DB.
-
-The ephemeral-DB lifecycle primitives (URL-isolation guard, create/drop,
-alembic upgrade, integrity gate) live in `outrider.eval_support` — the
-shared module `run_review` and the integration conftest also consume.
-The two test-private aliases below (`_assert_test_url_is_isolated`,
-`_assert_no_is_eval_violations`) re-export the shared functions under the
-names the harness-internal tests import (`tests/eval/test_eval_db_isolation_guard.py`,
-`tests/eval/test_is_eval_flag.py`); the shared `EvalDBIsolationError` /
-`EvalIsolationViolationError` subclass `RuntimeError` / `AssertionError`
-respectively, so those tests' `pytest.raises(...)` contracts hold unchanged.
-"""
+Pass --is-eval to enable this suite. Before dropping an eval_db database,
+check every table with an is_eval field and fail if any row is not marked
+as evaluation data. Factories set the flag; teardown never repairs it.
+Shared database lifecycle helpers live in outrider.eval_support."""
 
 import os
 from collections.abc import AsyncGenerator

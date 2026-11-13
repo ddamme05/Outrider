@@ -1,15 +1,11 @@
-# See specs/2026-05-19-analyze-foundation.md §1 and specs/2026-05-23-trace-node.md.
-"""Analyze's request to inspect code outside the current file set.
+"""Describe a request to inspect a file related to a finding.
 
-Trace resolves import_string and decides whether to fetch. candidate_id is
-content-derived via policy.canonical.compute_candidate_id and deduplicates
-replay emissions. source_proposal_hash joins rejected or admitted proposal
-provenance per `DECISIONS.md#022`; its identity includes the source file.
+Each candidate links an import string to its source finding. The trace node
+validates and resolves the repository path before fetching it. Stable IDs
+support deduplication and replay.
 
-Per `DECISIONS.md#024`, dotted Python imports use the suffix-strip API probe
-ladder (FUP-209), while JS/TS relative specifiers use
-coordinates.relative_specifier_candidate_paths. Every probe path is
-validated before fetch. Actual fetched files deduplicate by path in state."""
+See DECISIONS.md#022, #024 and FUP-209.
+"""
 
 from __future__ import annotations
 

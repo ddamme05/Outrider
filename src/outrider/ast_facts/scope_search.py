@@ -1,15 +1,8 @@
-# Shared scope/node geometry helpers per
-# specs/2026-07-02-js-ts-tree-sitter-adapters.md.
-"""Language-agnostic scope-lookup and error-line helpers.
+"""Find containing scopes, matching syntax nodes and syntax-error lines.
 
-Extracted from `python_adapter.py` so the JS/TS adapters share the
-byte-range geometry instead of duplicating it: `innermost_scope_containing`
-is pure `ScopeUnit` math, `find_node_by_span` is the same containment
-lookup parameterized by each language's scope-defining node types, and
-`error_lines_from_tree` walks ERROR/MISSING nodes identically for every
-grammar. Raw `tree_sitter` objects are consumed here but never returned
-beyond `ast_facts/` (AST firewall): callers receive `ScopeUnit | None`,
-a `Node` that stays adapter-internal, or `frozenset[int]`.
+Python, JavaScript and TypeScript adapters share these range calculations.
+Raw tree-sitter nodes stay inside ast_facts/; other callers receive domain
+scopes or line numbers. See specs/2026-07-02-js-ts-tree-sitter-adapters.md.
 """
 
 from __future__ import annotations

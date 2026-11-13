@@ -1,8 +1,6 @@
-# Tests for the github/webhooks.py vendor wrapper.
-"""Confirm `verify_webhook_signature` is a faithful delegation to
-`githubkit.webhooks.verify`, and that the wrapper is the only call site
-of `githubkit.webhooks` in the codebase (per `vendor-sdks-only-in-wrappers`).
-"""
+"""Check webhook-signature delegation and the SDK wrapper boundary.
+
+Only the wrapper may call githubkit.webhooks (``vendor-sdks-only-in-wrappers``)."""
 
 from __future__ import annotations
 

@@ -1,8 +1,7 @@
-"""Slack bot-token encryption boundary (DECISIONS.md#051).
+"""Check Slack token encryption, tamper rejection, and key rotation.
 
-Pins: round-trip, ciphertext != plaintext, fail-closed on a missing/malformed key,
-tamper detection (Fernet auth), empty-token rejection, and MultiFernet key rotation.
-"""
+Reject missing or malformed keys and empty tokens. Ciphertext must differ from
+plaintext. See DECISIONS.md#051."""
 
 from __future__ import annotations
 

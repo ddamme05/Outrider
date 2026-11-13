@@ -1,26 +1,7 @@
-"""AuditPersister.acquire_publish_lock — DB-touching contention + timeout pin.
+"""Check per-review publish locks against PostgreSQL (DECISIONS.md#027).
 
-See DECISIONS.md#027 — V1 per-review publish-side advisory lock.
-
-Per F5/F6/F8 (CodeRabbit + reviewer-driven, F8 round): the publish-side
-advisory lock must
-
-  1. serialize concurrent acquisitions on the same review_id (one task
-     yields only after the other's transaction commits/rolls back),
-  2. NOT block cross-review acquisitions (different review_ids derive
-     different 64-bit lock keys from the first 8 bytes of
-     `review_id.bytes` as a signed int8),
-  3. honor a bounded deadline — a holder that monopolizes the lock past
-     `max_wait_seconds` causes the waiter to raise
-     `AuditPersisterPublishLockAcquisitionTimeoutError`, not hang forever
-     and not silently skip.
-
-Tier: integration (real Postgres, real `pg_advisory_xact_lock` /
-`pg_try_advisory_xact_lock`, real session pooling). Unit-level tests
-exercise the publish-node side (lock loser path, lock-acquire failure
-emit); this file exercises the lock primitive against a real DB so the
-contention semantics are proven, not assumed.
-"""
+Calls for the same review must serialize; different reviews may proceed
+independently. A bounded wait must raise the typed acquisition-timeout error."""
 
 from __future__ import annotations
 

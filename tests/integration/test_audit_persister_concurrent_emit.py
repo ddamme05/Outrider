@@ -1,14 +1,7 @@
-"""AuditPersister concurrent emission — fresh AsyncSession per call.
+"""Check concurrent writes through one AuditPersister instance.
 
-Pins the "fresh `AsyncSession` per call" contract from both Protocols'
-docstrings. Fan out N concurrent `emit_phase()` calls from the same
-persister instance; all N rows must land, no session-sharing exception.
-
-V1.5 parallel-analyze fanout will issue concurrent persist()/emit_phase()
-calls from N worker tasks — without per-call session acquisition, those
-calls would share a single AsyncSession (which is NOT concurrent-safe per
-SQLAlchemy docs) and silently corrupt transactions.
-"""
+Each call must use its own session and persist its event without interfering
+with the other calls."""
 
 from __future__ import annotations
 

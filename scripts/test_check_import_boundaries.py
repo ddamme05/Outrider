@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Smoke-test check_import_boundaries.py — the trust-boundary import lint (FUP-005).
+"""Check import-boundary rules in temporary source trees (FUP-005).
 
-Not a pytest suite (matches `scripts/test_extract_invariants.py`'s standalone shape):
-constructs temp trees with known violations + allowed cases and asserts the checker
-flags exactly the hard-stops, AND confirms the REAL repo tree is clean. Run via the
-`boundary-lint-tests-pass` pre-commit hook + the CI `pre-commit-tracked-only` job.
+Run this standalone script to test allowed imports, known violations and the
+current repository. CI and pre-commit invoke it; it is not a pytest module.
 """
 
 from __future__ import annotations

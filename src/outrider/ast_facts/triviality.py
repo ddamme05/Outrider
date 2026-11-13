@@ -1,23 +1,12 @@
-# Per specs/2026-06-10-trivial-scope-filter.md — the trivial-scope classifier.
-# See DECISIONS.md#044 (veto shares the prompt's clipping frame) and
-# DECISIONS.md#018 Amended 2026-06-11 (SkipReason.ALL_SCOPES_TRIVIAL).
-"""Ordinary-comment-only change classification for the trivial-scope filter.
+"""Recognize changed scopes containing only ordinary comment lines.
 
-A changed scope classifies TRIVIAL iff every changed line (head-side
-added, base-side kept-removed) is a standalone ordinary-comment line:
-non-empty non-whitespace content entirely contained within tree-sitter
-comment-node spans, firing none of the directive matcher rules. Every
-error path fails closed to NON_TRIVIAL — the filter can only under-skip.
+build_triviality_context parses each file version once and prepares line facts.
+classify_scope_triviality checks those facts for one changed scope. Directives,
+syntax errors and uncertain cases remain eligible for review.
 
-Two-step API so analyze pays one parse per file side, not per scope:
-`build_triviality_context(...)` parses head (and base when present) and
-precomputes the per-line tables; `classify_scope_triviality(...)` is
-then pure per-scope work over `coordinates.ScopeChangedLineSpans`.
-
-Raw tree-sitter stays inside this module per the AST firewall; the
-matcher rules are text rules over comment bodies, versioned by
-`TRIVIAL_FILTER_VERSION` — any rule or denylist change bumps it. The version
-is recorded in audit events and the lever-#8 cache key (FUP-166).
+Raw parser objects stay here. Matcher changes require a TRIVIAL_FILTER_VERSION
+bump because saved events and cache keys record it (FUP-166).
+See specs/2026-06-10-trivial-scope-filter.md and DECISIONS.md#018, #044.
 """
 
 from __future__ import annotations

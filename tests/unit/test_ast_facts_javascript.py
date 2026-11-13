@@ -1,10 +1,7 @@
-"""Unit tests for `ast_facts/javascript_adapter.py` (JS/JSX).
+"""Check JavaScript/JSX parsing through the public adapter API.
 
-Consumes only the public `parse_javascript` entry point, the adapter's
-Protocol methods, and `ast_facts` domain models — no raw parse trees and
-no `tree_sitter` imports, so the boundary-lint test allowlist stays at
-its two existing files (per specs/2026-07-02-js-ts-tree-sitter-adapters.md).
-"""
+Tests use project models rather than raw trees or tree_sitter imports.
+See specs/2026-07-02-js-ts-tree-sitter-adapters.md."""
 
 from __future__ import annotations
 

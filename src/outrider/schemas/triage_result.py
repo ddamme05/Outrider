@@ -1,16 +1,9 @@
-# Triage-output cross-boundary models per docs/spec.md §7.2 (RiskLevel: Amended 2026-05-08)
-"""Triage classifications and the policy snapshot used by later nodes.
+"""Record proposed file priorities and the review dimensions to inspect.
 
-Triage proposes per-file tiers, overall PR risk, and review dimensions;
-agent/nodes/triage.py enforces deterministic review floors. PRContext separates
-webhook metadata from intake-enriched source per DECISIONS.md#020. The PR-size gate
-produces SKIP, while model classifications are DEEP/STANDARD/SKIM.
-RiskLevel measures the whole PR; FindingSeverity measures one finding.
-
-The result is immutable across checkpoints: tuple dimensions, a copied
-MappingProxyType file map, and a serializer returning ordinary JSON data.
-The policy_version field captures the active version at construction and
-supports explicit historical versions during replay."""
+The triage node applies live admission checks. Results are immutable and retain
+their policy version; replay can read older versions without applying today's
+policy retroactively. See DECISIONS.md#020.
+"""
 
 from collections.abc import Mapping
 from enum import StrEnum
@@ -70,26 +63,11 @@ class TriageResult(BaseModel):
     relevant_dimensions: tuple[ReviewDimension, ...]
     reasoning: str = Field(max_length=500)
     # See DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.
-    # Snapshot anchor for synthesize's H-1 forge defense. Triage runs
-    # FIRST in the canonical graph; the live `ACTIVE_POLICY_VERSION`
-    # is captured here so a single review's findings + summary share
-    # one anchor regardless of mid-deploy bumps. The schema-level
-    # `pattern=BARE_SEMVER_PATTERN` rejects shape garbage, but admits
-    # ANY valid semver — an LLM emitting an explicit
-    # `{"policy_version": "0.0.0", ...}` in its triage JSON would
-    # survive Pydantic. The triage-node gate `_enforce_triage_policy`
-    # closes that producer path: Rule (d) raises
-    # `TriagePolicyViolationError` if the post-validation value does
-    # not equal the live `ACTIVE_POLICY_VERSION`. After the gate runs
-    # the anchor is non-LLM-reachable. Synthesize compares each
-    # finding's `policy_version` against this captured snapshot and
-    # mirrors it onto `SynthesizeCompletedEvent.policy_version` so the
-    # audit row records the snapshot under which findings were
-    # classified. `default_factory` captures live at TriageResult
-    # construction time; producers MAY pass an explicit value (e.g.,
-    # replay paths that rehydrate from a historical audit row), in
-    # which case the field's pattern is the only floor — the
-    # triage-node gate runs only on the live-review path.
+    # Capture the active version at construction so findings and summary share
+    # one snapshot across deploys. Synthesize checks findings against this anchor
+    # and records it on SynthesizeCompletedEvent. The pattern checks shape only;
+    # _enforce_triage_policy rejects a different model-supplied version on the
+    # live-review path. Replay may supply an explicit historical semver.
     policy_version: str = Field(
         default_factory=lambda: ACTIVE_POLICY_VERSION,
         pattern=BARE_SEMVER_PATTERN,

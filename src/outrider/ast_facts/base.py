@@ -1,24 +1,11 @@
-# LanguageAdapter and ImportPathResolver Protocols per
-# specs/2026-04-30-ast-facts-module.md Internal contracts.
-"""Protocol definitions for the ast_facts/ surface.
+"""Define the contracts for source parsers and import-path validation.
 
-Two Protocols, both consumed by graph nodes via closure injection from
-`build_graph(...)` per `nodes-receive-deps-via-closure`:
+LanguageAdapter describes the facts each language parser extracts.
+ImportPathResolver lets those parsers request path checks from coordinates/.
+build_graph supplies these services to nodes (nodes-receive-deps-via-closure).
+Importing the contracts loads neither a parser nor coordinates/.
 
-  - `LanguageAdapter` — implemented by per-language adapters
-    (`PythonAdapter`, `JavaScriptAdapter`, `TypeScriptAdapter`). The
-    methods cover scope, import, call-site, assignment, and
-    lexical-binding extraction; simple-direct-import resolution; and
-    parse-outcome computation.
-
-  - `ImportPathResolver` — the path-validation contract that
-    `resolve_simple_direct_import` calls into. Implementation is owned
-    by `coordinates/` per trust-boundary #5; this module ships only
-    the Protocol so `ast_facts/` doesn't pull `coordinates/` into its
-    type surface.
-
-This module is import-light: only `pathlib`, `typing`, and the local
-domain models. No `tree_sitter`, no `coordinates/`, no `audit/`.
+See specs/2026-04-30-ast-facts-module.md.
 """
 
 from pathlib import Path

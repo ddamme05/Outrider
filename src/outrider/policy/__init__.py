@@ -1,7 +1,7 @@
-"""Severity policy, proof-boundary validator, and replay-time policy loader.
+"""Expose the finding types, severity rules and policy-version loader.
 
-Re-exports for ergonomic ``from outrider.policy import ...`` use. Each
-submodule has its own focused docstring; this package is the namespace.
+Policy assigns severity and validates evidence independently of model output.
+Saved policy versions let replay interpret older reviews.
 """
 
 from outrider.policy.findings import (

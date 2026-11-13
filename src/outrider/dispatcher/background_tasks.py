@@ -1,9 +1,8 @@
-# V1 in-process dispatcher per docs/spec.md §9.2.
-"""Schedule a review graph after the webhook response is sent.
+"""Run queued reviews after the HTTP response using FastAPI background tasks.
 
-Each request gets its own FastAPI BackgroundTasks queue and shares the graph
-runner constructed at startup. Before enqueueing, serialize and validate state
-as JSON so execution uses the same data shape a future broker would receive.
+Dispatch validates a JSON round-trip of the seed before queueing it. The
+shared runner applies its concurrency limit when the task executes. These tasks
+run in the API process and do not survive its termination. See DECISIONS.md#020.
 """
 
 from __future__ import annotations

@@ -1,14 +1,8 @@
-"""Webhook receiver — POST /webhooks/github.
+"""Receive signed GitHub deliveries at POST /webhooks/github.
 
-Sub-modules:
-  - `schemas` — raw-payload Pydantic models for the GitHub `pull_request`
-    event (the input-boundary trust translation).
-  - `signature` — route-facing security-critical module that performs
-    HMAC verification; preserves the trust-boundary attribution at
-    [docs/trust-boundaries.md:87](docs/trust-boundaries.md#L87).
-    Delegates internally to `outrider.github.webhooks` (the vendor wrapper).
-  - `router` — FastAPI router exposing `POST /webhooks/github`.
+router.py handles the request, schemas.py parses the fields the app needs,
+and signature.py verifies the delivery through the GitHub wrapper. SDK imports
+stay in their wrappers (vendor-sdks-only-in-wrappers).
 
-This module does NOT import `githubkit` directly — that's confined to
-`outrider.github.*` per the `vendor-sdks-only-in-wrappers` invariant.
+See docs/trust-boundaries.md#5-input-boundary.
 """

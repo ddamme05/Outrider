@@ -1,5 +1,6 @@
-# Per DECISIONS.md#055 + specs/2026-06-21-cross-type-subsumption.md.
-"""`SUBSUMES` relation: the shipped map is well-formed + `subsumes()` truth table."""
+"""Check finding-type suppression rules and relation validity.
+
+See DECISIONS.md#055 and specs/2026-06-21-cross-type-subsumption.md."""
 
 from __future__ import annotations
 

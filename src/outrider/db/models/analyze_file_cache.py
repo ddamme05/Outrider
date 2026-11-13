@@ -1,15 +1,11 @@
-# See specs/2026-06-11-file-hash-analyze-cache.md + DECISIONS.md#014 (retention regime).
-"""Retained per-file analysis results, keyed by cache/key.py's composed digest.
+"""Store reusable file-analysis results with tenant scope and expiry.
 
-These rows contain user-code-derived findings and trace candidates. They may be
-deleted; companion audit events remain append-only. The source-review CASCADE,
-retention_expires_at, and lookup-time expiry check prevent serving purged content.
-Expiry is bounded by cache TTL and source-review retention (DECISIONS.md#014).
+Cache content expires even though the review's audit metadata remains.
+Installation and test-run scope prevent results crossing tenants. Source
+review retention limits an entry's lifetime; diagnostic recipe/model fields
+do not replace the cache key.
 
-Installation RESTRICT requires explicit, audited content purge before hard-delete.
-Live keys keep the first writer; expired rows can be refreshed by the store's
-conditional upsert. Denormalized recipe and host columns are telemetry only;
-the digest is the lookup identity (DECISIONS.md#056, FUP-194).
+See DECISIONS.md#014, #056 and FUP-194.
 """
 
 from datetime import datetime

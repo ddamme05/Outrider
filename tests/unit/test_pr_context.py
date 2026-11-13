@@ -1,9 +1,6 @@
-"""PRContext + ChangedFile: construction-time validation, round-trip, frozen guards.
+"""Check PR context and changed-file validation, immutability, and JSON round trips.
 
-Per spec §7.2 + docs/conventions.md "Pydantic models use ConfigDict(extra='forbid')".
-Both models are frozen=True (round-trip through LangGraph state JSON; immutability
-prevents mid-graph mutation by any node).
-"""
+See spec §7.2 and docs/conventions.md's cross-boundary model rules."""
 
 import pytest
 from pydantic import ValidationError

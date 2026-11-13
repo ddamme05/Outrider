@@ -1,10 +1,11 @@
-# See specs/2026-05-19-analyze-foundation.md §2 and DECISIONS.md#017.
-"""Idempotent list reducers for checkpoint replay.
+"""Merge saved lists without duplicating work during replay.
 
-`append_with_dedup_by` keeps the first item for each caller-provided identity key
-(`reducers-dedup-not-concat`). ReviewState uses IDs and file paths.
-`append_with_slot_guard` also checks semantic content for positional worker slots:
-an identical replay is ignored; divergent content raises (DECISIONS.md#063)."""
+append_with_dedup_by keeps the first item for each identity
+(reducers-dedup-not-concat). append_with_slot_guard also rejects conflicting
+results for the same worker slot instead of silently choosing one.
+
+See specs/2026-05-19-analyze-foundation.md and DECISIONS.md#017, #063.
+"""
 
 from __future__ import annotations
 
@@ -129,19 +130,11 @@ def append_with_slot_guard[T](
     """
 
     def reducer(existing: list[T], incoming: list[T]) -> list[T]:
-        # `existing` is validated too: the append path below never produces a
-        # duplicate slot, so one already in state means a foreign writer or
-        # pre-guard corruption. Divergent duplicates raise even when
-        # `incoming` is empty (they must not ride along silently); identical
-        # duplicates collapse to the first occupant (replay-shaped, harmless).
-        #
-        # Digests are computed LAZILY, only on an actual slot collision:
-        # LangGraph folds the N fan-out writes one at a time, so an eager
-        # per-item digest (full model_dump + canonical JSON + SHA-256 over
-        # every nested finding) would cost ~N²/2 digests per pass on the
-        # review hot path — for a merge sequence whose normal case has ZERO
-        # collisions. A collision (checkpoint replay or divergence) costs
-        # two digests, exactly when the answer is needed.
+        # Validate existing slots even when incoming is empty: divergent
+        # duplicates must raise; identical replay duplicates keep the first.
+        # Hash only collisions. LangGraph folds fan-out writes one at a time,
+        # so hashing every existing item on every fold would cost quadratic work
+        # in the normal case where slots are distinct.
         seen: dict[Hashable, T] = {}
         merged: list[T] = []
 

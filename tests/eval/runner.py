@@ -1,39 +1,14 @@
-"""Cross-scenario eval runner: drive a (scenario × model) matrix into a Scorecard.
+"""Build a scorecard across scenarios and candidate models.
 
-Productizes the inline three-dimension loop (recall / precision / regression) +
-`GATE SUMMARY` print from the opt-in spend test into a reusable batch runner that
-emits a typed `Scorecard`. Per `specs/2026-06-23-eval-runner-scorecard.md`:
+Compare finding quality through direct analysis, holding triage fixed and
+reusing the baseline result across candidates. Optional cost runs use the
+full graph: input estimates come from rendered prompts, while output sizes
+come from scripted responses. Missing and failed measurements stay distinct
+from zero; latency and replay are not measured here.
 
-  - Quality (recall/precision/severity/FP/gate) from the analyze-direct path —
-    triage held fixed (the `#041` isolation). `quality_source="analyze_direct"`.
-    The BASELINE analyze runs ONCE per scenario (its grade is invariant across
-    candidate models), so a multi-candidate matrix doesn't re-pay for it.
-  - Cost (opt-in via `measure_cost`) from a full-graph `run_review` pass under a
-    fully-pinned `ModelConfig` (candidate on both analyze tiers; the other nodes
-    pinned to declared defaults, NOT ambient env — so $/review is reproducible),
-    with a `CostProbe`. Review-level; `cost_source` is `full_graph` (measured),
-    `not_measured` (not requested), or `measure_failed` (requested, no number).
-    Two honest provenance caveats: cost prices the file's REAL triage tier (DEEP
-    for the shipped fixtures) while quality holds triage fixed at STANDARD; and
-    OUTPUT tokens come from the fixtures' scripted responses (input tokens are
-    real). Latency is deferred (run_review wall-clock is harness-dominated, not
-    review latency); replay-equivalence is not yet wired.
-  - Transient-failure isolation: a `retry_at_layer="node"` provider error on one
-    cell becomes an ERRORED row and the batch continues; a terminal class
-    (auth/config) re-raises and aborts — a revoked key must not "complete" a run
-    with every cell ERRORED. Ports `_run_scenario_isolating_transients`.
-  - Type-scoped `sql_injection` regression verdict per cell (the `#041` caveat
-    track). Ports `_sqli_fp_count` / `_regression_verdict`.
-
-One row per `(node, candidate-model, scenario)`; the baseline is the gate's
-reference, not its own row. Duplicate scenario labels or candidate models are
-rejected up front (they would collide on the `(scenario, model)` result key).
-
-SYNC by necessity: the cost pass calls `run_review` (a sync wrapper around
-`asyncio.run`), which cannot nest inside a running loop. So `build_scorecard`
-runs all quality comparisons in ONE `asyncio.run`, then issues the cost-pass
-`run_review` calls sequentially. The opt-in entrypoint is therefore a sync test.
-"""
+Retryable provider errors become failed rows; terminal configuration or
+authentication errors stop the run. Duplicate scenario/model labels fail.
+The synchronous entry point runs quality checks before sequential cost runs."""
 
 from __future__ import annotations
 

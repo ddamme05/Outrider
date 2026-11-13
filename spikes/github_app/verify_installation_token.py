@@ -1,38 +1,12 @@
-"""Q2 live verification — actually mint an installation token and call GitHub.
+"""Make a live GitHub request with the experiment's App credentials.
 
-The offline spike confirmed JWT signing works (Q1) and the SDK construction
-path accepts a key (Q1b), but neither path actually crosses the network.
-DECISIONS.md#006 explicitly required minting an installation token; without
-this script, the spike has surface-level confidence (5/5 demos) but no
-integration-level confidence that the App's identity actually authenticates
-against GitHub.
+Configure GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_PATH and GITHUB_INSTALLATION_ID
+as described in runbook.md (DECISIONS.md#006). The script switches to installation
+authentication. With TEST_REPO=owner/name it reads that repository; otherwise it
+calls the authenticated-App endpoint. Both paths contact GitHub.
 
-Run from the runbook (Step 7 — Verify installation token mint) after the
-App is installed and you've captured the installation_id from the
-installation.created webhook.
-
-Required env vars:
-  GITHUB_APP_ID                — numeric App ID from the App settings page
-  GITHUB_APP_PRIVATE_KEY_PATH  — filesystem path to the .pem file you
-                                 downloaded when registering the App
-  GITHUB_INSTALLATION_ID       — installation_id captured from
-                                 installation.created webhook (smee.io UI
-                                 or receiver logs)
-
-Optional env var:
-  TEST_REPO                    — owner/name (e.g., "yourname/test-repo")
-                                 to make a repo-scoped API call as
-                                 evidence the installation token works.
-                                 If unset, the script only checks that
-                                 the SDK accepts the auth-switch chain.
-
-Outputs a privacy_notice-style log line on success documenting:
-  - The installation_id used
-  - The minted token's expiration window (1h per GitHub policy)
-  - The repo (if TEST_REPO set) and a single field from the response
-
-This is the runbook's Q2 artifact. Capture the success line into NOTES.md
-under "Q2 — installation access token minting."
+The printed success details are a manual experiment record for NOTES.md.
+This is separate from Outrider's production credential setup.
 """
 
 from __future__ import annotations

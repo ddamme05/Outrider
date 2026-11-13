@@ -1,19 +1,8 @@
-"""Genesis migration smoke test: upgrade head + downgrade base round-trip.
+"""Check migration upgrade and downgrade against an empty database.
 
-Backs the ``alembic migration applies cleanly against a fresh DB`` claim
-in the schema-layer spec. Two assertions in two tests:
-
-  - upgrade head produces all 9 outrider tables, both PG ENUM types, the
-    append-only trigger function and its two trigger attachments, and
-    the v1.0.0 row in severity_policies.
-  - downgrade base produces a clean state — only ``alembic_version``
-    survives (alembic owns this table; it remains after downgrade by
-    design with no rows). No leftover content tables, ENUM types,
-    plpgsql functions, or triggers.
-
-These tests use ``fresh_db`` (not ``migrated_db``) because they exercise
-the migration itself; they need to drive ``alembic_runner`` directly.
-"""
+Upgrade must create the expected tables, enums, triggers, and initial policy;
+downgrade must leave only Alembic's empty version table. Use fresh_db because
+these tests apply migrations themselves."""
 
 from collections.abc import Awaitable, Callable
 

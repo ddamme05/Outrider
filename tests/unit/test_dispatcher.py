@@ -1,13 +1,7 @@
-"""Tests for the dispatcher Protocol and V1 BackgroundTasksDispatcher.
+"""Check review dispatch and its pure-data state requirement.
 
-Covers:
-  - `ReviewDispatcher` Protocol membership semantics (mirrors the
-    PhaseEventSink / FileExaminationSink test shape).
-  - `BackgroundTasksDispatcher.dispatch(state)` enqueues the run_graph
-    callable and survives the JSON-roundtrip fail-loud gate.
-  - The gate actually fails on a non-JSON-serializable state — defends
-    `state-is-pure-data` at the V1 dispatch site.
-"""
+Verify protocol membership, background-task arguments, and rejection of state
+that cannot serialize as JSON (``state-is-pure-data``)."""
 
 from __future__ import annotations
 

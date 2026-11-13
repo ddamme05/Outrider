@@ -1,10 +1,7 @@
-"""GET /api/meta returns the deployment-shape `demo_mode` flag.
+"""Check the demo_mode value returned by GET /api/meta in both deployment modes.
 
-The demo allowlist test pins that the ROUTE exists; this pins its VALUE in both
-modes — the flag drives the SPA's read-only banner + disabled HITL controls, so
-a regression that hardcoded it would silently disable the whole affordance chain
-while every route-presence test still passed.
-"""
+The dashboard uses it to show read-only controls; route presence alone cannot
+prove the value is correct."""
 
 from __future__ import annotations
 

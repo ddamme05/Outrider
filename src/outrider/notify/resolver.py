@@ -1,18 +1,10 @@
-# See DECISIONS.md#051-slack-bot-tokens-are-encrypted-at-rest
-"""Composition-root resolver: `installation_id -> SlackNotifyTarget | None`.
+"""Resolve an installation's saved Slack settings into a notifier.
 
-The graph holds only the `resolve_slack_target` seam (FUP-186); THIS class is the
-implementation the lifespan injects. Per `installation_id` it reads the install's
-Slack config, decrypts the bot token (`token_crypto`), builds a per-install
-orchestrator (a `SlackWebClientNotifier` + the shared audit sink), and caches it
-keyed on `(installation_id, ciphertext)` so a token rotation (re-OAuth → new
-ciphertext) misses the cache and builds a fresh notifier; the prior entry is not
-evicted — it is released at lifespan teardown when all notifiers are closed.
+Tokens are decrypted when needed. A token change creates a new cached notifier;
+old clients remain available for in-flight work and close at shutdown.
+Encryption belongs to token_crypto.py and Slack SDK calls to slack.py.
 
-Lives in `notify/` (not `agent/`) so `cryptography` (via `token_crypto`) and
-`slack_sdk` (via `SlackWebClientNotifier`) stay out of the graph — `agent/` imports
-neither. The decrypted bot token is read ONLY at the notifier-construction site
-below (never logged, stored in state, or placed in an audit event).
+See DECISIONS.md#051 and FUP-186.
 """
 
 from __future__ import annotations

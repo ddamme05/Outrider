@@ -1,6 +1,7 @@
-# Per specs/2026-06-11-file-hash-analyze-cache.md — shadow-event contract pins.
-"""CacheLookupEvent: discriminator round-trip, the path audit-shadow,
-and the bounded outcome/key shapes."""
+"""Check cache-lookup event validation and replay.
+
+Cover indexed paths, bounded outcomes, and cache-key shapes.
+See specs/2026-06-11-file-hash-analyze-cache.md."""
 
 from __future__ import annotations
 

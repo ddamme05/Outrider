@@ -1,19 +1,10 @@
-# Policy versioning per docs/trust-boundaries.md §2 (severity-policy-versioned-for-replay)
-"""Replay-time loader for historical SEVERITY_POLICY versions.
+"""Load the severity rules recorded for a review's policy version.
 
-`severity-policy-versioned-for-replay` requires that historical reviews
-replay under the policy version they were classified under, not the
-current policy. Every policy version is stored in the `severity_policies`
-table keyed by version string; this module exposes the loader.
+The current policy must cover every active finding type. Older policies may
+omit types introduced later, preserving replay of saved reviews. Invalid or
+unknown version data raises rather than using today's rules silently.
 
-The loader returns a typed ``dict[FindingType, FindingSeverity]`` rather
-than a raw JSON dict — the type system enforces the policy shape at the
-load boundary, so a row with a key/value that doesn't translate to a
-FindingType/FindingSeverity fails loud rather than silently corrupting
-classification. Completeness (every current FindingType present) is
-enforced for the ACTIVE version only; historical versions are exempt so
-replay survives later enum growth (``severity-policy-versioned-for-replay``).
-See ``load_policy_for_version`` for the active-vs-historical rationale.
+See severity-policy-versioned-for-replay.
 """
 
 import json

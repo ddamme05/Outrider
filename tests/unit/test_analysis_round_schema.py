@@ -1,11 +1,7 @@
-# See specs/2026-05-19-analyze-foundation.md §1.
-"""`AnalysisRound` per-pass results record tests.
+"""Check AnalysisRound validation and immutable result fields.
 
-Pins the §1 schema discipline: frozen + `extra="forbid"`, SHA-256 hex
-`round_id`, `pass_index >= 0`, AwareDatetime timestamps, tuple-typed
-`findings` / `files_examined` / `files_skipped`. Construction via the
-canonical identity-hash recipe so `round_id` is content-derived.
-"""
+Cover content-derived identity, pass indexes, aware timestamps, and tuple fields.
+See specs/2026-05-19-analyze-foundation.md §1."""
 
 from __future__ import annotations
 

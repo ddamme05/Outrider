@@ -1,57 +1,12 @@
-"""Finding cap: partial unique index for the `gated_findings_over_cap`
-anomaly rule.
+"""Prevent repeated warnings when approval-required findings exceed the limit.
 
 Revision ID: e1f2a3b4c5d6
 Revises: c7a2f5e1b9d4
 Create Date: 2026-06-24
 
-Schema addition for FUP-180 per
-`specs/2026-06-24-finding-cap-pre-side-effect.md`:
-
-  1. `uq_anomalies_gated_findings_over_cap_natural_key` — partial unique
-     index on `anomalies(review_id) WHERE rule_name =
-     'gated_findings_over_cap'`. Idempotency contract for the graph-emitted
-     GATED_FINDINGS_OVER_CAP anomaly that `agent/nodes/analyze.py` (per
-     round) and `agent/nodes/synthesize.py` (per report) raise when
-     HITL-gated (CRITICAL/HIGH) findings ALONE exceed the soft finding cap
-     (gated findings are never dropped to fit the soft cap, so they all reach
-     HITL — but >200 gated findings is a loud capacity signal). Mirrors the
-     COST_BUDGET_STARVATION / CROSS_ROUND_SEVERITY_DIVERGENCE / HITL_TIMEOUT
-     pattern.
-
-The `AnomalyPersister.emit_anomaly` dispatch looks up a LITERAL-SQL
-predicate `index_where=_RULE_NAME_INDEX_WHERE[rule_name]`
-(-> `sa_text("rule_name = 'gated_findings_over_cap'")`) keyed by the runtime
-rule_name — without this paired partial unique index, Postgres' conflict-
-arbiter would fail to match a partial index for the new rule_name and the
-`on_conflict_do_nothing` falls through SILENTLY: every retry would land a NEW
-row. (The predicate must be literal SQL, not an ORM expression — a bind
-parameter fails arbiter inference under psycopg3 generic plans; see
-`_RULE_NAME_INDEX_WHERE` in the persister.) The integration test
-`tests/integration/test_anomaly_rule_name_index_paired.py` enumerates every
-`AnomalyRuleName` value and asserts a matching partial unique index exists in
-`pg_index`, catching enum-vs-migration drift.
-
-Sibling-pattern caveats from the cost-fairness precedent
-(`5786686ef937_cost_budget_starvation_index.py`) apply:
-
-  - `CREATE UNIQUE INDEX CONCURRENTLY` keeps the build non-blocking on
-    production `anomalies` scans. Recovery from a failed concurrent build:
-    `DROP INDEX CONCURRENTLY IF EXISTS <name>` then re-run.
-
-  - No backfill needed: GATED_FINDINGS_OVER_CAP has never been emitted (this
-    migration is a prerequisite for the node emission). Zero existing rows for
-    the predicate.
-
-  - `anomalies.review_id` is nullable with `ondelete='SET NULL'`; the partial
-    unique index admits at most one non-null `(review_id,
-    rule_name='gated_findings_over_cap')` per review. Orphans (post-purge NULL
-    `review_id`) are not enforced — same trade-off as the sibling rules.
-
-See:
-  - specs/2026-06-24-finding-cap-pre-side-effect.md (FUP-180)
-  - docs/invariants.md `idempotency-via-db-unique-constraint`
-  - docs/CODE_REVIEW_STYLES.md Class 10 (centrally-pinned contract)
+The gated_findings_over_cap index permits one warning per non-null review ID.
+The migration verifies the full index definition and validity. Warnings whose
+review was deleted may keep a null review ID.
 """
 
 from collections.abc import Sequence

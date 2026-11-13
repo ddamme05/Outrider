@@ -1,15 +1,7 @@
-"""Unit tests for `queries.registry` public surface.
+"""Check model-citable structural query IDs by language and across the registry.
 
-Pins the contract that `REGISTERED_QUERY_IDS` is the all-languages union
-of structural (model-citable) query ids, from which the analyze node's
-per-file OBSERVED-admission set is selected via
-`structural_query_ids_for(language)` — every claim cross-referenced
-against that per-language set at `analyze_parser.py`'s producer-admission
-step. A drift in construction (e.g., including deprecated ids, missing a
-freshly-added query, or a language selecting another language's ids)
-would silently shift which `query_match_id` claims the parser accepts;
-pinning the set construction catches that.
-"""
+The parser's per-file admission set must include the right language's current
+queries and exclude deprecated or unrelated IDs."""
 
 from __future__ import annotations
 

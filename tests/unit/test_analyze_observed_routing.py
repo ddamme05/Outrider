@@ -1,13 +1,8 @@
-"""OBSERVED skip-routing telemetry — `compute_observed_skip_shadow`
-(Cost Lever 3, DECISIONS.md#049).
+"""Check recorded decisions about skipping structurally covered files.
 
-Default-deny coverage: a file is `would_skip` iff every changed region lies in a
-`skip_safe` envelope; `signal_only` matches never count; base/removed regions are
-un-coverable by head-content matches → always blockers. V1 seeds zero `skip_safe`
-queries, so real registry matches are all `signal_only` → `not_eligible`. The
-function RECORDS the decision; it never skips the LLM (enforcement is the later
-evidence-gated flip).
-"""
+Every changed region needs skip-safe coverage; signal-only matches and removed
+regions do not qualify. These tests record eligibility rather than skip a model
+call. See DECISIONS.md#049."""
 
 from __future__ import annotations
 

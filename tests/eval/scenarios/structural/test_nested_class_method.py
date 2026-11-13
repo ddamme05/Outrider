@@ -1,11 +1,4 @@
-"""Structural eval scenario: nested class methods resolve to qualified names.
-
-Per spec §11.2: methods inside nested classes resolve to the right
-`ScopeUnit` qualified-name path.
-
-V1: live (flipped on the ast_facts/ V1 spec landing). Calls `parse_python`
-directly and gates current ast_facts behavior for nested-class qualified names.
-"""
+"""Check method names and containing classes for nested Python classes."""
 
 from unittest.mock import MagicMock
 

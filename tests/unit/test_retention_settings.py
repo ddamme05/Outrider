@@ -1,9 +1,7 @@
-"""RetentionSettings unit tests — TTL constraints + env-var override.
+"""Check positive retention durations and environment overrides.
 
-Pins the `gt=timedelta(0)` constraint that prevents the "operator sets
-0/negative TTL by accident, retention sweep deletes every row on next
-tick" failure mode (per `specs/2026-05-16-audit-persister.md` H1).
-"""
+Reject zero or negative durations before they could expire all content.
+See specs/2026-05-16-audit-persister.md H1."""
 
 from datetime import timedelta
 

@@ -1,24 +1,13 @@
-"""Shared full-trace narration for the rehearsal scripts.
+"""Print review details for the smoke and live-demo scripts.
 
-One recipe, three consumers (`smoke_e2e.py`, `live_claude_smoke.py`,
-`live_github_demo.py`) — the "prints everything" granularity must not
-fork per script. Every helper takes the calling script's `say` so output
-rides that script's terminal+file tee (`scripts/_trace_log.py`).
+smoke_e2e.py, live_claude_smoke.py and live_github_demo.py share these helpers.
+Each supplies its own say function so terminal and trace-file output agree.
 
-LLM exchanges come from the DATABASE (`llm_call_event` rows joined to
-`llm_call_content`), not from a provider spy: the real AnthropicProvider
-persists every exchange per DECISIONS.md#016. Retention nuance — the
-content row stores the USER prompt + the real completion; the SYSTEM
-prompt is deliberately retained as `system_prompt_hash` + template
-version on the event (reconstructable from the versioned template
-library, spec §8.3), NOT as text. The scripted provider persists
-nothing — `smoke_e2e` additionally dumps its recorded requests
-provider-side (where both prompts ARE available), and this DB view
-prints an explanatory zero there.
-
-`narrate_db_state` dumps whole tables only for the scripts' ephemeral
-scratch DBs; pass `review_id` to scope the dump when the target is a
-real shared database (`live_github_demo` → DATABASE_URL).
+Database output includes retained user prompts and completions (DECISIONS.md#016).
+System prompt text is not stored there; events retain its hash and version.
+The scripted provider writes no model exchanges, so its runner prints recorded
+requests separately. Scope narrate_db_state by review_id on a shared database;
+whole-table dumps are intended for the scripts' temporary databases.
 """
 
 from __future__ import annotations

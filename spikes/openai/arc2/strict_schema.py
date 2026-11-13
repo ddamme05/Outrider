@@ -1,54 +1,14 @@
-"""Derive the proof-preserving, evidence-tier-discriminated STRICT analyze schema.
+"""Build the experiment's strict schema from the production analyze schema.
 
-The hypothesis this arc tests: a strict `json_schema` can make invalid tier/proof
-shapes *unrepresentable at the wire* — an OBSERVED finding without a
-`query_match_id`, a JUDGED finding carrying one — rather than merely
-parser-rejected downstream.
+Keep the original fields, descriptions and property order (FUP-169), then add
+branches that require the proof fields allowed for each evidence tier. A response
+can fit the schema and still cite false proof; production admission must check
+those claims separately.
 
-**What this cannot do.** A schema cannot establish proof AUTHENTICITY: that a
-`query_match_id` names a query that actually fired, or that a `trace_path`
-element was really walked. Those stay in `agent/nodes/analyze_parser.py`
-(step 4, `query_match_id_not_in_registry`). This module encodes SHAPE only.
-
-**Derived, not hand-copied.** Base properties, types, and the `description`
-annotations come from `ANALYZE_RESPONSE_SCHEMA` at runtime. Only the
-tier->proof-field mapping is probe-local semantic knowledge — it is NOT
-derivable from the canonical schema, which is flat (`evidence_tier` is a bare
-`string` there). `tests/unit/test_arc2_strict_schema.py` pins the mapping
-against `EvidenceTier`, the canonical property set, and the production parser,
-so canonical drift fails a test instead of silently producing a schema that
-probes a shape production no longer sends.
-
-**Property ORDER is generatively load-bearing** — not cosmetic. The Structured
-Outputs guide states outputs "will be produced in the same order as the ordering
-of keys in the schema", and FUP-169 is the local scar: a sorted schema forced
-`description`/`evidence` to be generated before `finding_type`/`title` existed in
-the model's context, and three consecutive live runs returned them EMPTY. Every
-branch therefore preserves the canonical dict's insertion order exactly.
-
-**Strict-subset constructs used, and their documented status** (aegis-docs
-`openai-api`, Structured Outputs guide):
-
-- `enum`, `minItems`, `pattern`, non-root `anyOf` — all DOCUMENTED-SUPPORTED.
-  Root is an object (not `anyOf`); every property is `required` with
-  `additionalProperties: false`.
-- Bare `{"type": "null"}` — **UNDOCUMENTED, and load-bearing.** The guide's
-  "Supported types" list is String / Number / Boolean / Integer / Object /
-  Array / Enum / anyOf. **Null is not on it**, and the only null usage the guide
-  demonstrates is the type-array union (`"type": ["string", "null"]`) for
-  emulating an optional field. This module uses a null-ONLY subschema at four
-  sites (the "this tier must NOT carry that proof field" branches), which is
-  precisely what makes wrong-tier proof unrepresentable. There is no documented
-  alternative that preserves the discrimination: the type-array idiom WIDENS the
-  field back to "string or null", which is exactly the shape the tier branches
-  exist to forbid. So this is a known, deliberate bet on an undocumented
-  construct, recorded here rather than hidden — and it is a live candidate cause
-  if the paid row returns `STOP-shape(b)`.
-
-Documented exclusion that matters: for FINE-TUNED models `pattern`/`minItems`
-are not supported, so this encoding targets `gpt-5.6-sol` and would need a
-narrower variant for a fine-tuned slug. Docs are not wire (`DECISIONS.md#056`) —
-the paid row is what actually verifies acceptance.
+Null-only branches are part of this experiment. The probe, rather than local
+schema construction, establishes whether the host accepts them (DECISIONS.md#056).
+tests/unit/test_arc2_strict_schema.py checks the local mapping and production
+field agreement. This module is not a production schema export.
 """
 
 from __future__ import annotations

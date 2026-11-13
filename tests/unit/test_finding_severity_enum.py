@@ -1,9 +1,6 @@
-"""FindingSeverity enum has the 5 values from spec §7.4.
+"""Check severity values against spec §7.4 and the initial policy's vocabulary.
 
-The value strings must match the values in the v1.0.0 seed JSON
-byte-for-byte; the integration test asserts the seed side, this asserts
-the enum side.
-"""
+The integration suite checks the stored seed; this file checks the enum."""
 
 from outrider.policy import FindingSeverity
 

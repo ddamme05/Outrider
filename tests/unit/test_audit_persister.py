@@ -1,8 +1,6 @@
-"""AuditPersister unit tests — constructor, Protocol conformance, helpers.
+"""Check AuditPersister construction, protocol membership, and database-free helpers.
 
-DB-touching tests live in `tests/integration/` under `migrated_db`. This
-file covers everything checkable without a real Postgres.
-"""
+PostgreSQL writes are covered in integration tests."""
 
 from __future__ import annotations
 

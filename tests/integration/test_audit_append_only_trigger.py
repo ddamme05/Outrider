@@ -1,34 +1,7 @@
-"""Append-only trigger behavioral test.
+"""Check append-only protections on audit_events and purge_audit.
 
-Backs `audit-events-append-only` and the schema-layer spec's append-only
-guarantee on both `audit_events` and `purge_audit`. Per
-DECISIONS.md#012 + #014, the trigger is absolute: there is no
-privileged-role bypass, and `purge_audit` carries the same trigger as
-`audit_events` so the forensic trail of which content rows were purged
-on which `installation.deleted` event survives untouched.
-
-Four assertion concepts, eight concrete cases:
-
-  - Introspection: the guard function + all four triggers (two row-level
-    append-only + two statement-level no-truncate) exist with expected names.
-    Overlaps deliberately with
-    test_genesis_migration.py::test_genesis_upgrade_creates_full_schema —
-    that test asserts the post-upgrade schema state at the introspection
-    layer; this test is the behavioral counterpart, asserting the
-    trigger's protective effect at the constraint-enforcement layer.
-    Both layers are required: a trigger that exists but doesn't fire
-    correctly fails this test; a trigger whose existence isn't asserted
-    fails the genesis test.
-  - UPDATE raises on audit_events and on purge_audit.
-  - DELETE raises on audit_events and on purge_audit.
-  - TRUNCATE raises on audit_events and on purge_audit (the statement-level
-    guard; row triggers don't fire for TRUNCATE — migration c22e2864d3d8).
-
-Uses ``migrated_db`` (not ``fresh_db``) — the test does not need to
-drive alembic itself, so it asks the fixture for a DB-at-head. This is
-the first test that exercises ``migrated_db``; if the fixture is broken,
-this is where it would surface.
-"""
+Use a migrated PostgreSQL database to inspect the triggers and verify that
+UPDATE, DELETE, and TRUNCATE are rejected without a privileged bypass."""
 
 import pytest
 from sqlalchemy import text

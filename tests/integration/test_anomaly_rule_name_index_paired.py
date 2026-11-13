@@ -1,31 +1,7 @@
-"""Enum-vs-index pairing test for AnomalyRuleName.
+"""Check that every anomaly rule has a matching partial unique index.
 
-The `AnomalyPersister.emit_anomaly` dispatch looks up a LITERAL-SQL
-partial-index predicate from `_RULE_NAME_INDEX_WHERE` by the RUNTIME
-rule_name (`index_where=_RULE_NAME_INDEX_WHERE[rule_name]`). The
-conflict-arbiter resolves against the partial unique index matching that
-rule_name — every `AnomalyRuleName` value MUST have a matching partial
-unique index in the live schema, or `on_conflict_do_nothing` silently
-falls through and idempotency breaks. (The predicate is literal `sa_text`,
-not an ORM expression: an ORM-expression `index_where` renders a bind
-parameter that fails arbiter inference under psycopg3 generic plans — the
-defect this paired index + the persister's literal-SQL form guard against.)
-
-This test pre-empts the Class-10 (centrally-pinned contract requires
-call-side registration) failure mode catalogued in
-`docs/CODE_REVIEW_STYLES.md`: a contributor adding a new
-`AnomalyRuleName` value WITHOUT the paired Alembic migration creates a
-silent INSERT-duplicate window for the new rule. The producer-side
-discipline ("ship the migration in the same PR") is documented at
-`anomaly/persister.py` and in the migration files, but documentation
-alone is not the gate — this test is the gate.
-
-Convergent finding from the Phase 2 multi-lens audit
-(adversarial + sharp-edges + CR-styles all flagged it independently);
-adding it here closes that gap before the synthesize node body lands.
-
-Tier: integration (queries `pg_index` against a real migrated DB).
-"""
+Inspect the migrated PostgreSQL indexes so a new rule cannot silently lose
+the database protection against duplicate emissions."""
 
 from __future__ import annotations
 

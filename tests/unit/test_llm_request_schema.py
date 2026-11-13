@@ -1,9 +1,6 @@
-"""LLMRequest constraint + validator tests.
+"""Check LLM request fields and cross-field validation.
 
-Covers all field-level constraints + the two cross-field validators (the
-V1-messages-unset rejection and the analyze/synthesize empty-context
-rejection). Per AC#20.
-"""
+Cover message restrictions and required context for analysis and synthesis."""
 
 from __future__ import annotations
 

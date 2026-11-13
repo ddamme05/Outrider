@@ -1,55 +1,12 @@
-"""Analyze cost-fairness: partial unique index for the
-`cost_budget_starvation` anomaly rule.
+"""Prevent repeated budget-shortage warnings for the same review.
 
 Revision ID: 5786686ef937
 Revises: 3bb6c2c3c0b1
 Create Date: 2026-06-20
 
-Schema addition for FUP-044 extension 3 per
-`specs/2026-06-17-analyze-cost-fairness.md` Stage 2:
-
-  1. `uq_anomalies_cost_budget_starvation_natural_key` — partial unique
-     index on `anomalies(review_id) WHERE rule_name =
-     'cost_budget_starvation'`. Idempotency contract for the graph-emitted
-     COST_BUDGET_STARVATION anomaly that `agent/nodes/analyze.py` raises
-     when an analyze pass skips >= COST_BUDGET_STARVATION_THRESHOLD files
-     with `skip_reason=COST_BUDGET_EXHAUSTED`. Mirrors the
-     CROSS_ROUND_SEVERITY_DIVERGENCE / HITL_TIMEOUT pattern.
-
-The `AnomalyPersister.emit_anomaly` dispatch looks up a LITERAL-SQL
-predicate `index_where=_RULE_NAME_INDEX_WHERE[rule_name]`
-(-> `sa_text("rule_name = 'cost_budget_starvation'")`) keyed by the
-runtime rule_name — without this paired partial unique index, Postgres'
-conflict-arbiter would fail to match a partial index for the new
-rule_name and the `on_conflict_do_nothing` falls through SILENTLY: every
-retry would land a NEW row. (The predicate must be literal SQL, not an
-ORM expression — a bind parameter fails arbiter inference under psycopg3
-generic plans; see `_RULE_NAME_INDEX_WHERE` in the persister.) The
-integration test `tests/integration/test_anomaly_rule_name_index_paired.py`
-enumerates every `AnomalyRuleName` value and asserts a matching partial
-unique index exists in `pg_index`, catching enum-vs-migration drift.
-
-Sibling-pattern caveats from the synthesize precedent
-(`7c4d8e2a1b5f_synthesize_node_indexes.py`) apply:
-
-  - `CREATE UNIQUE INDEX CONCURRENTLY` keeps the build non-blocking on
-    production `anomalies` scans. Recovery from a failed concurrent
-    build: `DROP INDEX CONCURRENTLY IF EXISTS <name>` then re-run.
-
-  - No backfill needed: COST_BUDGET_STARVATION has never been emitted
-    (this migration is a prerequisite for the analyze-node emission).
-    Zero existing rows for the predicate.
-
-  - `anomalies.review_id` is nullable with `ondelete='SET NULL'`; the
-    partial unique index admits at most one non-null
-    `(review_id, rule_name='cost_budget_starvation')` per review. Orphans
-    (post-purge NULL `review_id`) are not enforced — same trade-off as the
-    sibling rules' partial unique indexes.
-
-See:
-  - specs/2026-06-17-analyze-cost-fairness.md (Stage 2; FUP-044 ext 3)
-  - docs/invariants.md `idempotency-via-db-unique-constraint`
-  - docs/CODE_REVIEW_STYLES.md Class 10 (centrally-pinned contract)
+A unique index permits one cost_budget_starvation warning per non-null review
+ID. The migration verifies the index definition and validity before finishing.
+Warnings whose review was deleted may keep a null review ID.
 """
 
 from collections.abc import Sequence

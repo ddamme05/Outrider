@@ -1,16 +1,7 @@
-"""True-positive eval scenario: JS file through the full graph (dispatch spec).
+"""Check JavaScript analysis through the real graph with a scripted SQL finding.
 
-The full-graph proof the adapters spec deferred: a `.js` PR drives the
-real 7-node graph via `run_review` — the analyze registry dispatch
-parses it with the JavaScript adapter, the scope-aware prompt renders,
-and the finding lands as JUDGED with severity from policy. Since the
-JS/TS OBSERVED catalog, `judged` is the correct tier for THIS fixture
-specifically because its sink is deliberately outside the catalog
-(`db.raw(...)` with the concat at an assignment, not at a `.query`/
-`.execute` call site): OBSERVED is per-language-conditional now —
-impossible on a file with no matching query, possible on one that
-matches (see the structural JS catalog scenario for the positive case).
-"""
+This fixture is outside the structural query catalog, so its finding is model
+judgment with severity assigned by policy."""
 
 from outrider.policy import EvidenceTier, FindingType, lookup_severity
 

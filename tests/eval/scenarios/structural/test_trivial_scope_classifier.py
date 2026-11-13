@@ -1,12 +1,6 @@
-"""Structural eval scenario: the trivial-scope classifier and its directive matcher.
+"""Check comment-only scope classification and directives using real comment lines.
 
-Per specs/2026-06-10-trivial-scope-filter.md: LLM-free validation of
-`ast_facts.triviality` — the comment-only containment rule (node-span
-based, both sides), the fail-closed paths, and every pinned matcher rule
-with one structural test per denylist token. Tests exercise RAW comment
-lines (the full `# …` text) through the public classify API, never
-pre-stripped bodies, so a wrong body-extraction step fails here.
-"""
+Call the public classifier without stripping comments first or calling a model."""
 
 from __future__ import annotations
 

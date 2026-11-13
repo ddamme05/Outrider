@@ -1,25 +1,9 @@
-"""Unit-level pin of the concurrent-decide endpoint race per the
-HITL spec line 313.
+"""Check concurrent approval submissions at the endpoint boundary.
 
-Both endpoint calls observe `preflight.hitl_decision is None`
-(JSONB cache hasn't been written yet because no graph body has
-completed). Both pass auth + state + mismatch gates. Both return
-202 Accepted. The natural-key partial unique index on
-`audit_events(review_id) WHERE event_type='hitl_decision'` is the
-serialization point: only one HITLDecisionEvent lands. The
-second background task hits `AuditPersisterHITLDecisionNaturalKeyConflict`,
-which the resume wrapper absorbs at WARNING level (per the
-post-fold-3 contract — INFO `hitl_resume_duplicate_submission` is
-the pre-fold spec wording).
-
-Per the spec's Group 8 framing + the F2 audit-fold note, real
-serialization of the GRAPH invocation comes from langgraph's
-per-thread checkpointer. The endpoint-level race (both submissions
-admitted) is bounded at the audit-row natural-key check. This test
-pins the endpoint behavior in isolation; the integration-level
-serialization assertion (only one publish landing) belongs in an
-integration test against a real graph + checkpointer.
-"""
+Both requests may return 202 before state updates. The losing background write's
+decision conflict is logged and contained. These doubles do not prove real graph
+serialization or that only one GitHub review posts; those require integration
+with the graph and checkpointer."""
 
 from __future__ import annotations
 

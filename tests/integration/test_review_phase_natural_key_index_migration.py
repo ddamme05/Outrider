@@ -1,39 +1,9 @@
-"""review_phase natural-key partial unique index — migration smoke test.
+"""Check the phase-event unique index after migration.
 
-Per `specs/2026-05-26-hitl-node.md` §Q8 + `docs/invariants.md`
-`phase-events-bound-work`. The 4b9f1c5a7e21 migration adds:
-
-    CREATE UNIQUE INDEX uq_audit_events_review_phase_natural_key
-        ON audit_events (
-            review_id,
-            (payload->>'phase_id'),
-            COALESCE(phase_key, ''),
-            (payload->>'marker')
-        )
-        WHERE event_type = 'review_phase'
-              AND payload ? 'phase_id'
-              AND payload ? 'marker';
-
-This test pins:
-
-  1. `alembic upgrade head` creates the index on a fresh DB with the
-     expected canonical definition (column order, expression shape,
-     partial-WHERE shape).
-  2. The index enforces uniqueness — inserting two ReviewPhaseEvent
-     rows with the same (review_id, phase_id, phase_key, marker)
-     tuple raises IntegrityError on the second INSERT.
-  3. Different `marker` values for the same `(review_id, phase_id,
-     phase_key)` do NOT collide — `start` + `end` are distinct rows.
-  4. NULL `phase_key` values collide via `COALESCE(phase_key, '')`
-     — closes PostgreSQL's NULL-distinct default for the V1 case
-     where every phase event has `phase_key=NULL`.
-  5. The partial WHERE clause restricts the constraint to
-     `event_type='review_phase'` only.
-  6. `payload ? 'phase_id' AND payload ? 'marker'` conjuncts in the
-     WHERE exclude key-missing rows from the index.
-  7. `alembic downgrade -1` removes the index cleanly; upgrade →
-     downgrade → upgrade cycles cleanly via the IF NOT EXISTS guard.
-"""
+Verify its definition, duplicate rejection, distinct start/end markers, null
+phase-key handling, and restriction to phase events with the required keys.
+Upgrade and downgrade must both work. See specs/2026-05-26-hitl-node.md §Q8
+and ``phase-events-bound-work`` in docs/invariants.md."""
 
 import re
 from collections.abc import Awaitable, Callable

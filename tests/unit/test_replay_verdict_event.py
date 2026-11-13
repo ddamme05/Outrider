@@ -1,12 +1,7 @@
-"""Unit tests for `ReplayVerdictEvent` (the replay-verdict-projection audit event).
+"""Check replay-verdict fields and typed event reconstruction.
 
-Covers its validators (reason paired with inequivalence; the all-present-or-
-all-absent reconstruction-metadata envelope), the `mode` constraint to the
-replay modes, the all-absent envelope when reconstruct raised, the
-`target_max_sequence_number >= 1` bound, the `extra="forbid"` contract, and the
-discriminator round-trip through `AuditEventAdapter` (the union must select
-`ReplayVerdictEvent` on `event_type`).
-"""
+Reasons accompany inequivalence. Reconstruction metadata must be wholly present
+or absent, including when reconstruction fails; sequence numbers stay positive."""
 
 from __future__ import annotations
 

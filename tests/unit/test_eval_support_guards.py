@@ -1,9 +1,7 @@
-"""Unit tests for eval_support's fail-closed guards (no DB).
+"""Check evaluation database and environment guards without a database.
 
-The URL guard's messages are also pinned by `tests/eval/test_eval_db_isolation_guard.py`
-(via the conftest re-export); this file covers the db-name guard on the exported
-DDL primitives + the OUTRIDER_IS_EVAL gate, which have no other direct test.
-"""
+Exercise exported DDL helpers and the OUTRIDER_IS_EVAL requirement.
+URL-message checks also live in eval/test_eval_db_isolation_guard.py."""
 
 from __future__ import annotations
 

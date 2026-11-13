@@ -1,9 +1,8 @@
-# ReviewDispatcher Protocol per DECISIONS.md#020 (Amended 2026-05-08).
-"""The webhook's background-execution contract (DECISIONS.md#020).
+"""Define the contract for scheduling a review from saved seed data.
 
-Dispatch takes a complete seed ReviewState because there is no seed-payload
-storage layer. BackgroundTasksDispatcher is the current in-process implementation;
-a future broker can implement the same contract.
+ReviewDispatcher lets webhook handlers submit work without owning the runner.
+background_tasks.py supplies the API-process implementation.
+See DECISIONS.md#020.
 """
 
 from typing import Protocol, runtime_checkable

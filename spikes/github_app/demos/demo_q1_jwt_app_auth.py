@@ -1,20 +1,8 @@
-"""Q1 — GitHub App JWT authentication.
+"""Check GitHub App key handling without making an API call.
 
-Two checkpoints:
-
-Q1a (primitive): sign a JWT with `pyjwt[crypto]` using the RS256 algorithm,
-decode it with the public key, assert the canonical claims are present and
-correctly typed. If this fails, we don't trust any higher-level library.
-
-Q1b (canonical): instantiate `githubkit.AppAuthStrategy` with the same key
-and confirm the resulting GitHub client constructs without error. We do
-NOT make a live API call here — Q2 (live runbook) covers that. The
-offline check is: does the SDK accept the key shape we'll generate from
-pydantic-settings in V1?
-
-The RSA key is generated in-memory each run. No on-disk fixture, no
-gitignored secret to lose. If Q1a/b pass, the same key shape works on any
-fresh checkout — the spike's offline reproduction contract is self-contained.
+Generate an RSA key in memory, sign and verify a JWT, then construct a
+GitHub client with AppAuthStrategy. This tests local key and SDK compatibility;
+verify_installation_token.py exercises authentication against GitHub.
 """
 
 from __future__ import annotations

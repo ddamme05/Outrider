@@ -1,13 +1,7 @@
-# Tests for policy/output_sanitizer.py per spec §V publish sanitizer.
-"""Pin the V1 output sanitizer.
+"""Check safe display text, fenced content, and authenticated truncation.
 
-Covers the five concerns named in the module docstring:
-  1. Codepoint stripping (bidi, ANSI, NUL).
-  2. Fence neutralization for fenced content.
-  3. Markdown-semantic neutralization for prose.
-  4. Size cap in UTF-8 bytes (with non-ASCII coverage).
-  5. HMAC-tagged truncation marker (incl. fake-marker stripping).
-"""
+Cover control characters, Markdown, UTF-8 byte limits, and forged truncation
+markers. See specs/2026-05-21-publish-node.md §V."""
 
 from __future__ import annotations
 

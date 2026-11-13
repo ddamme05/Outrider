@@ -1,12 +1,10 @@
-"""Block Kit message builders for Slack notifications — metadata-first.
+"""Build Slack review cards with finding labels and dashboard links.
 
-Pure rendering: domain objects + a prebuilt deep-link in, Slack `(text, blocks)`
-out (no IO, no config, no SDK). **Metadata-first** per the spec: a finding renders
-only severity / type / `file:line` / title — never `description` or `evidence`
-(no raw code leaves to Slack; the dashboard link carries the detail). The
-HITL-pending card caps inline findings at `top_n` by severity and collapses the
-rest to one overflow line; there is no interactive "show more" (that needs V2
-inbound). See specs/2026-06-15-slack-dashboard-in-slack.md (Output boundary).
+Cards show severity, finding type, title and location, capped at the configured
+number of findings. Descriptions and evidence are omitted; titles may still
+contain source-derived text and must be escaped for Slack.
+
+See specs/2026-06-15-slack-dashboard-in-slack.md.
 """
 
 from __future__ import annotations

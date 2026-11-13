@@ -1,11 +1,6 @@
-"""Unit tests for the `ReviewStatusSink` Protocol + its recording test
-double.
+"""Check the review-status sink protocol and recording double.
 
-Durable persister behavior is covered by integration tests; this file
-asserts the Protocol surface (member presence, runtime-checkable
-membership) and pins the recording double's idempotency-exempt
-recording semantics.
-"""
+Cover runtime member checks and repeated status recording without a database."""
 
 from __future__ import annotations
 

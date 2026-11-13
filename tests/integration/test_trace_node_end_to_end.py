@@ -1,33 +1,9 @@
-"""Trace node end-to-end integration — controlled fakes + real persister.
+"""Exercise the trace node with a real PostgreSQL persister and scripted services.
 
-Per `specs/2026-05-23-trace-node.md` M7 + M8: the unit tests
-(`tests/unit/test_trace_node.py`) pin individual contracts (join
-integrity, bucket build, probe-path construction). The integration
-tests in `test_audit_persister_natural_key.py` pin the persister
-side. Neither exercises the FULL trace node body through Phase 1
-probes + audit-first emission + Phase 2 fetch + state delta
-assembly. This file closes that gap with controlled GitHub fakes +
-mock LLM provider + the real AuditPersister against a real Postgres.
-
-Coverage:
-
-  - **Resolved path (Phase 1 + Phase 2):** one candidate, one probe
-    returns content, Phase 2 fetches the resolved target, the state
-    delta carries the TraceDecision + TraceFetchedFile, the audit
-    row was actually written.
-  - **Unresolved path (Phase 1 only):** one candidate, both probes
-    return None, state delta carries the TraceDecision with
-    `resolution_status="unresolved"`, NO TraceFetchedFile lands
-    (M8 invariant: probes do NOT populate trace_fetched_files).
-  - **Target-in-PR-files skip (M8):** Phase 1 resolves the target,
-    but `target_file` IS in `pr_context.changed_files` → decision
-    emitted, Phase 2 skipped, NO TraceFetchedFile.
-  - **Audit-first lockstep contract (M7 b):** node-side composition
-    is exercised here (trace constructs `TraceDecision` from the
-    persister's returned event), while the persister's no-op-on-
-    retry behavior (existing-row return on natural-key conflict) is
-    pinned in `tests/integration/test_audit_persister_natural_key.py`.
-"""
+Cover resolved and unresolved targets, targets already in the PR, and decisions
+persisted before content is fetched. Probes must not populate fetched files.
+Retry identity is tested separately in test_audit_persister_natural_key.py.
+See specs/2026-05-23-trace-node.md M7 and M8."""
 
 from __future__ import annotations
 

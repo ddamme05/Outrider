@@ -1,17 +1,8 @@
-# See specs/2026-05-23-trace-node.md M7 (b) + DECISIONS.md#026.
-"""`AuditPersisterNaturalKeyConflict` + `AuditPersisterTraceIdempotencyLookupError`
-constructor + metadata-only contract tests.
+"""Check metadata-only errors for trace-decision retry conflicts and lookup failures.
 
-Sibling of `test_audit_persister.py` but scoped to the natural-key
-exception types added per M7 (b). The metadata-only allowlist
-inventory test in `test_audit_persister.py` already pins membership;
-this file pins constructor shape + str() content.
-
-DB-touching behavior tests (`_persist_keyed_by_natural_key` happy path
-/ no-op path / conflict path) live in
-`tests/integration/test_audit_persister_natural_key.py` per spec
-implementation-sketch group 4.
-"""
+Cover constructors and error text without a database. Persisted retry behavior
+is in integration/test_audit_persister_natural_key.py.
+See specs/2026-05-23-trace-node.md M7(b) and DECISIONS.md#026."""
 
 from __future__ import annotations
 

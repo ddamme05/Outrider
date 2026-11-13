@@ -1,9 +1,6 @@
-"""Unit tests for the dashboard read-API response schemas.
+"""Check strict dashboard response models, aware timestamps, and nullable metrics.
 
-Pins the cross-boundary model contract: `extra="forbid"`, `AwareDatetime`
-(naive datetimes rejected), and that the file/wall-clock metric fields
-accept `None` (the pending-not-zero edge case).
-"""
+Pending metrics must accept null rather than imply a measured zero."""
 
 from __future__ import annotations
 

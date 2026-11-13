@@ -1,14 +1,7 @@
-# The shadowing guard's cross-subsystem gate (DECISIONS.md#060).
-"""Shadowing guard end-to-end against real Postgres: ast_facts extraction →
-OBSERVED producer/registry admission → cache-key composition → the real
-`AnalyzeCacheStore`.
+"""Check that shadowed imports cannot reuse a value-import cache entry.
 
-The spec's integration promise, verified on live subsystems: the shadowed
-variant of a file admits ZERO OBSERVED findings and its cache row is keyed
-with the widened digests; the value-import variant admits the finding under
-a DIFFERENT key — so the two variants can never cross-serve, and a lookup
-under one key never returns the other's payload.
-"""
+Use real parsing, structural facts, cache keys, and PostgreSQL storage for the
+shadowed and value-import variants."""
 
 from __future__ import annotations
 

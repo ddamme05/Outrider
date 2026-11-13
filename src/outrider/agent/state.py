@@ -1,11 +1,7 @@
-# Re-export shim per docs/conventions.md "File organization"
-"""ReviewState re-export shim.
+"""Provide the ReviewState import used by review nodes.
 
-Lets node files write `from outrider.agent.state import ReviewState`
-without reaching into `outrider.schemas`. This shim is INTENTIONALLY a
-re-export, not an abstraction layer — if it grows beyond re-exports,
-that's the signal to reconsider, not to grow the shim (per
-docs/conventions.md "File organization").
+The model lives in schemas/review_state.py. This module only re-exports it,
+as described in docs/conventions.md.
 """
 
 from outrider.schemas.review_state import ReviewState

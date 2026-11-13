@@ -1,11 +1,7 @@
-"""policy.recall — high-risk signature scan for the analyze cost-budget reserve.
+"""Check high-risk signature scanning on added diff lines.
 
-Scans the ADDED lines of a unified-diff patch for blatant CRITICAL-class
-signatures. A recall reserve tolerates false positives by design (a false match
-costs one reserved analyze slot); the tests pin (a) that each planted signature
-is caught on the added side, (b) that removed/context lines are NOT scanned, and
-(c) that the documented FP behavior (a match inside a comment still fires) holds.
-"""
+Removed and context lines must not count. Matching text in a comment is an
+accepted false positive: it reserves analysis budget rather than emits a finding."""
 
 from __future__ import annotations
 

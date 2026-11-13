@@ -1,28 +1,8 @@
-"""Engine-level hide_parameters contract — bound prompt/completion never
-appear in SQLAlchemy exception strings.
+"""Check that database exception text hides prompt and completion parameters.
 
-Original codex sharp-edges finding (round-3-era): SQLAlchemy's default
-`IntegrityError` string representation embeds bound parameter values,
-which for a failing content INSERT would carry raw `prompt` /
-`completion` text. `RejectLLMContentFilter` is key-based (per FUP-023)
-and would not strip content from the log record's `message` field.
-The residual leak vector remaining today is any log handler that
-renders `str(exc)` on the raw SQLAlchemy exception BEFORE the wrapper
-at `AnthropicProvider.complete()` Step 9 sees it (engine-level
-logging, third-party pool handlers, ad-hoc `logger.exception(...)`
-calls in test code). The wrapper-chain vector for unknown exception
-types is separately closed via the round-9 + round-26 hardening
-(`<TypeName>` rendering + `from None` + `__suppress_context__`).
-
-The defense: `hide_parameters=True` on the engine. SQLAlchemy then
-renders bound parameter values as placeholders in exception strings.
-
-This test pins the contract end-to-end: a real `IntegrityError`
-triggered by inserting `llm_call_content` with a non-existent
-`installation_id` (FK RESTRICT) and embedded prompt/completion text
-must NOT carry those values in the exception's string representation
-when the engine is constructed with `hide_parameters=True`.
-"""
+Trigger a real foreign-key failure using an engine with hide_parameters=True.
+Exception text must not expose the supplied content; a key-based log filter
+cannot remove content already embedded in that text."""
 
 from __future__ import annotations
 

@@ -1,24 +1,8 @@
-"""Analyze post-trace (pass-1) pass — integration test for the M8 loop output.
+"""Check analysis of files fetched by trace on the second pass.
 
-The trace-node arc landed all the trace-side machinery + graph wiring,
-but the consumer side (analyze re-examining `state.trace_fetched_files`
-+ admitting INFERRED findings with `trace_path`) wasn't wired until
-the 2026-05-24 fold per Codex review findings 1 + 2.
-
-This file pins the load-bearing pass-1 contracts:
-
-  1. `pass_index` derives from `len(state.analysis_rounds)`. A second
-     analyze invocation (post-trace re-entry) sees `pass_index=1`,
-     NOT `0`. Without this, the `round_id` reducer would collide and
-     silently dedup the second pass.
-  2. Pass 1 iterates `state.trace_fetched_files` (NOT
-     `pr_context.changed_files`) — trace-resolved files, no PR diff.
-  3. Pass 1 admits INFERRED proposals with non-empty `trace_path`;
-     pass 0 still rejects (no trace context yet).
-  4. The returned `AnalysisRound` carries `pass_index=1`, distinct
-     `files_examined` (the trace-fetched file path), and distinct
-     `round_id` from pass 0.
-"""
+The pass index and round identity must change, input comes from trace-fetched
+files, and INFERRED proposals require trace paths. The first pass still rejects
+claims that have no trace context."""
 
 from __future__ import annotations
 

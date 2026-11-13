@@ -1,8 +1,6 @@
-"""Slack OAuth signed-`state` CSRF token (commit 6.3a).
+"""Check signed Slack OAuth state, tampering, expiry, and channel validation.
 
-Pins: round-trip, tampered body/signature rejection, expiry, fail-closed on a
-missing secret, malformed-state rejection, and channel-id shape validation.
-"""
+Missing secrets and malformed tokens must fail closed."""
 
 from __future__ import annotations
 

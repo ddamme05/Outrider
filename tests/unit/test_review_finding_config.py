@@ -1,19 +1,7 @@
-"""ReviewFinding model configuration: extra='forbid', NOT frozen, validate_assignment.
+"""Check finding validation during construction and lifecycle updates.
 
-Four rule families covered here:
-  - Pydantic config: extra='forbid' rejects unknown fields; frozen is
-    deliberately OFF (multi-stage lifecycle — see review_finding.py
-    module docstring); validate_assignment=True so post-construction
-    writes re-run model_validators + Field constraints + enum typing.
-  - Enum gates: invalid string values raise (at construction AND on
-    assignment). Pydantic V2 coerces VALID string values to enum members
-    (that's fine; the resulting field is still an enum instance, so
-    `severity-set-by-policy` and `finding-type-enum-constrained` still
-    hold). The gate that matters is rejection of invalid values.
-  - Line constraints: line_start ≥ 1, line_end ≥ line_start.
-  - Validate-on-assignment: lifecycle setters cannot bypass the proof
-    boundary, the line constraint, or the enum gates.
-"""
+Findings are mutable but reject unknown fields and invalid assignments. Enum,
+line-range, and proof constraints must still apply after construction."""
 
 from typing import Any
 from uuid import uuid4

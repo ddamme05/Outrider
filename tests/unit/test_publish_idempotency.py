@@ -1,34 +1,8 @@
-# Per spec §V lines 233-241: publish-idempotency coverage (FUP-066 + FUP-064).
-"""Pin the publish node's idempotency contracts.
+"""Check repeated publish decisions, conflicting inputs, and duplicate-run skips.
 
-Per the publish-node spec at §V lines 233-241 the publish node MUST:
-
-1. Content-hash dedup: two executions emit two routing rows with the
-   SAME `finding_content_hash` AND same `decision_content_hash` for
-   the same logical decision (consumer-side dedup identity).
-2. Decision-drift surfacing: same finding, different coordinate
-   outcome → SAME `finding_content_hash`, DIFFERENT
-   `decision_content_hash` (both rows present; V1.5 anomaly rule
-   per FUP-063 surfaces the drift).
-3. Intra-execution drift detection: `_assert_no_duplicate_finding_ids`
-   rejects duplicate finding_ids in admitted_findings (producer-bug
-   defense).
-4. **Same `review_id` dispatched twice → `idempotently_skipped`** —
-   the FUP-064 closure path (`query_prior_publish_event` returns a
-   prior `PublishEvent`; node short-circuits without GitHub call).
-5. Crash-after-success → `idempotently_skipped_external_record` —
-   covered in `test_publish_node_end_to_end.py`; sanity-check here
-   for the per-spec scenario list.
-6. External-record filter correctness — deleted bot review, different-
-   installation review, human review all → publisher proceeds (no
-   false short-circuit).
-7. `PublishEvent` divergence signal: two distinct `github_review_id`
-   for same `review_id` surface as two rows (consumer-side anomaly).
-
-Helpers (`_make_*`, `_Recording*`, `_StubPublisher`) inlined per the
-existing repo convention — `tests/unit/` has no `__init__.py` so
-cross-file imports aren't first-class.
-"""
+Stable logical decisions retain hashes; changed routing changes decision hashes.
+Prior database or external records prevent reposting, while unrelated external
+reviews do not. See FUP-066, FUP-064, and FUP-063."""
 
 from __future__ import annotations
 

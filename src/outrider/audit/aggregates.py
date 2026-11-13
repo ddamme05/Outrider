@@ -1,15 +1,9 @@
-# See DECISIONS.md#030 — this helper populates the (nullable-for-read-compat)
-# ReviewMetrics / SynthesizeCompletedEvent LLM aggregates that #030 governs.
-"""One query for dashboard and synthesis LLM-call totals.
+"""Calculate model-call totals for the dashboard and review summary.
 
-`aggregate_review_llm_metrics` sums a review's audit rows in the caller's
-session. The dashboard supplies its request session; `AuditPersister`
-opens a session for synthesis. Both use the same aggregation rules, though
-a later read can include calls made after an earlier synthesis snapshot.
-
-V1 counts stored rows. Durable node retries that mint new event IDs would
-double-count a logical call; V2 must choose a logical-call dedup key here
-so both consumers inherit it (`DECISIONS.md#029`, FUP-145).
+aggregate_review_llm_metrics reads a review's audit rows using the caller's
+database session. A later dashboard read can include calls made after summary
+generation. Totals count stored rows; retries with new event IDs count again
+(DECISIONS.md#029, #030; FUP-145).
 """
 
 from __future__ import annotations

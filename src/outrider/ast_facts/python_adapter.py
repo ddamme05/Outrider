@@ -1,20 +1,11 @@
-# Python adapter implementing LanguageAdapter Protocol per
-# specs/2026-04-30-ast-facts-module.md.
-"""Python adapter for tree-sitter-python 0.25.0.
+"""Extract scopes, imports and other source facts from Python.
 
-Wraps the Month 0 spike's validated primitives:
-  * `decorated_definition` wraps `function_definition` with the
-    decorator span; `decorated_definition.start_point` precedes the
-    inner `function_definition.start_point`.
-  * Per-scope `node.has_error` is reliable — a module-level syntax
-    error does NOT taint sibling function scopes.
-  * Byte/point duality on multi-byte UTF-8: `start_byte` / `end_byte`
-    always land on character boundaries.
+parse_python checks exclusions, decodes and parses the source, then returns
+domain models. Skipped or failed files return no extracted facts. Decorators
+belong to their function's span; a syntax error affects its containing scope,
+not unrelated siblings. Raw parser objects stay inside ast_facts/.
 
-Defines the canonical `parse_python(...)` orchestration function per
-Internal contracts: runs the size→pattern→decode→parse pipeline,
-discards extracted tuples on a post-parse failed outcome, returns
-`ParseResult` with the empty-tuples shape on skip/fail.
+See specs/2026-04-30-ast-facts-module.md.
 """
 
 from __future__ import annotations
@@ -584,14 +575,8 @@ class PythonAdapter:
 # call sites address it here.
 _innermost_scope_containing = innermost_scope_containing
 
-# Python's scope-defining node types for the ScopeUnit→node containment
-# lookup. `decorated_definition` is included so a syntax error inside a
-# decorator (e.g., `@route(/*malformed*/)\ndef foo(): ...`) propagates
-# to the ScopeUnit's `has_error`: the ScopeUnit's span starts at the
-# decorator (Month 0 spike), and the decorator's `has_error` lives on
-# the decorated_definition wrapper, not the inner function_definition —
-# without it the lookup returns the inner (clean) node and downstream
-# `degraded` derivation goes blind to decorator-region parse errors.
+# Include decorated_definition so decorator errors reach ScopeUnit.has_error;
+# the narrower function/class node may be clean even when its wrapper is not.
 _PY_OUTCOME_TARGET_TYPES: Final[frozenset[str]] = frozenset(
     {
         "function_definition",

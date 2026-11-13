@@ -1,12 +1,7 @@
-"""Q7 — githubkit surface audit.
+"""Check the SDK names and import paths used by this GitHub App experiment.
 
-Confirm the names and import paths the V1 `src/outrider/github/` wrapper will
-use are present and callable on the pinned 0.15.3. This is a lightweight
-"smoke test" of the SDK surface, not a behavior test — each item's behavior
-is exercised by another demo.
-
-If githubkit is upgraded and this demo fails, the wrapper's imports are the
-first place to check for breaking changes.
+Verify that the pinned githubkit exposes the expected objects. Other demos
+exercise their behavior; this file only checks the available API surface.
 """
 
 from __future__ import annotations

@@ -1,37 +1,10 @@
-"""Grade the JS/TS OBSERVED catalog against the vendored Juice Shop corpus.
+"""Compare structural findings with the frozen Juice Shop expectations.
 
-The measurement arc's engine (`specs/2026-07-04-juice-shop-graded-corpus.md`).
-LLM-free and DB-free: for each corpus file it drives the same three layers the
-production analyze path does — `registry.match` (raw structural match),
-`run_observed_matches` (producer admission), `produce_observed_findings`
-(emitted findings) — and attributes every graded outcome to the STAGE it
-reached, so a real vulnerability the catalog drops is separable into
-"the query never matched" vs "admission denied it" (a binding / shadowing /
-module_presence residual) vs "a finding was emitted".
-
-Ground truth (`corpus/juice_shop/ground_truth.json`) is a discriminated row
-union: `expected_finding` rows assert a located (query, line) expectation — a
-real vulnerability the catalog should reach, or, with
-`real_vulnerability=false`, a documented non-vulnerability whose emission is a
-tolerated false positive (carrying the outcome the catalog reaches TODAY plus,
-for a non-emitted real vulnerability, the `residual_tag` naming the deferred
-mechanism); `expected_clean` rows assert the catalog emits nothing for a file
-(optionally scoped to one query id). `grade()` fail-louds before observing:
-every vendored corpus file must carry at least one row (a row-less file would
-never be parsed, so a catalog FP on it could ship unmeasured) and each row's
-`query_match_id`/`finding_type` must resolve in the live registry AND be a
-query production actually runs for the file's language. Observations key on
-(query, line) with same-line multiplicity counts — line is the ground-truth
-resolution, counts keep a 1 -> 2 emission drift visible. The grader
-then compares the empirically-observed stage against each row's documented
-current outcome and produces a deterministic `Scorecard` — the checked-in
-`scorecard_juice_shop.json` pins current behavior, and the structural scenario
-fails on any drift (a true positive regressing, a residual silently closing, or
-a new false positive), forcing ground truth to be revisited.
-
-No `tree_sitter` import crosses into this module: it consumes `parse_source`
-output and the producer's domain records only (AST firewall).
-"""
+Run real parsing, queries and finding checks without a model or database.
+Report whether each expected issue matched a query, passed admission and
+became a finding. Check every corpus file and preserve same-line counts.
+The saved scorecard records successes, known misses and tolerated false
+positives; a changed result requires reviewing those expectations."""
 
 from __future__ import annotations
 
@@ -66,10 +39,7 @@ if TYPE_CHECKING:
 _GRADING_REVIEW_ID = UUID("00000000-0000-0000-0000-0000000c0d05")
 _GRADING_INSTALLATION_ID = 1
 
-# `denied_at_production` is structurally unreachable today — the producer emits
-# every admitted match — and is retained only so stage attribution stays total
-# if production ever grows a post-admission filter. No ground-truth row should
-# pin it as a `current_outcome`.
+# Context-required matches pass admission but do not produce automatic findings.
 CorpusOutcome = Literal["emitted", "denied_at_production", "denied_at_admission", "no_raw_match"]
 Grade = Literal[
     "true_positive",

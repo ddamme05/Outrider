@@ -1,20 +1,9 @@
 #!/usr/bin/env python3
-"""Smoke tests for check_decision_refs.py.
+"""Check the decision-reference validator with small synthetic documents.
 
-Cases:
-  (a) happy path — all references resolve
-  (b) unresolved reference in prose — should fail
-  (c) unresolved reference inside a fenced code block — should pass (block skipped)
-  (d) Supersedes #NNN to a valid entry — should pass
-  (e) Superseded by #NNN to a missing entry — should fail
-  (f) format-example block with illustrative numbers not in the entry list — should pass
-  (g) multiple errors reported together — should fail with correct count
-  (h) no references at all — should pass
-  (i) duplicate ## NNN. headers — should fail
-  (j) illustrative header inside code block — should pass (regression test for
-      the real DECISIONS.md scenario where the Supersession format-example
-      block contains a "## 007. ..." header that would otherwise be flagged
-      as duplicating the real #007 entry)
+Cover valid and missing references, duplicate entry numbers, fenced examples,
+empty documents and combined errors. These checks run without a database or
+network calls.
 """
 
 import subprocess

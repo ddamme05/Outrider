@@ -1,16 +1,8 @@
-# Per specs/2026-06-12-constrained-decoding.md — the pinned analyze response schema.
-"""The hand-trimmed constrained-decoding schema (FUP-096): derivability of
-the digest from the canonical JSON string, structural agreement with the
-raw proposal models it mirrors, and absence of JSON Schema keywords the
-Anthropic structured-outputs grammar rejects with a 400.
+"""Check the constrained response schema against raw proposal fields.
 
-Structural agreement is deliberately NOT byte equality with
-`model_json_schema()`: Pydantic emits `maxLength` / `maxItems` /
-`minimum` constraints that the API forbids, so the pin is hand-trimmed.
-What must never drift is the property-name sets and required sets — a
-field added, removed, renamed, or flipped required on the raw layer
-without a matching schema edit fails here.
-"""
+Property and required-field sets must agree. Unsupported API schema keywords
+are deliberately omitted, so equality with Pydantic's full schema is not expected.
+See specs/2026-06-12-constrained-decoding.md and FUP-096."""
 
 from __future__ import annotations
 

@@ -1,18 +1,8 @@
-"""OUTRIDER_LLM_HOST=baseten composition-root wiring — the REAL provider factory.
+"""Check Baseten selection through the real application provider factory.
 
-DECISIONS.md#056 lets an operator run the whole pipeline on GLM-5.2 via Baseten by
-setting OUTRIDER_LLM_HOST=baseten. Every OTHER lifespan test injects a stub via the
-`provider_factory=` seam (and discards the `_host` arg), so the real
-`_default_provider_factory` else-branch — host selection, `resolve_host_profile`,
-the BASETEN_API_KEY fail-loud, the configured-model tuple, and the
-`OpenAICompatibleProvider` construction — ships with NO coverage. These tests boot
-the production lifespan with the DEFAULT factory (no stub) and the baseten host env,
-so a regression in that branch fails here instead of in production.
-
-No network mock: the openai client is constructed in `OpenAICompatibleProvider.__init__`
-but never called during startup (provider construction validates models + pricing,
-not key validity), so a dummy BASETEN_API_KEY boots cleanly.
-"""
+Cover the host profile, required API key, and configured models (DECISIONS.md#056).
+Constructing the OpenAI-compatible client does not make a network request or
+validate the dummy key used here."""
 
 from __future__ import annotations
 

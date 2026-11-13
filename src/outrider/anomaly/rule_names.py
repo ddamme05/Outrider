@@ -1,9 +1,8 @@
-"""Typed rule names and severities for the text-valued anomaly columns.
+"""Names and severity levels for operator alerts.
 
-Enums catch producer typos without a database enum migration. Each new rule
-also needs its matching partial unique index in `AnomalyPersister` and a
-migration, which enforce one anomaly per review and rule.
-The divergence rule flags violations of `severity-set-by-policy`.
+The enums catch typos before values reach the database's text columns. New rules
+also need a matching index so repeated alerts do not create duplicates.
+The disagreement rule protects severity-set-by-policy.
 """
 
 from enum import StrEnum

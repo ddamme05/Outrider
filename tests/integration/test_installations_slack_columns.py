@@ -1,8 +1,6 @@
-"""Per-install Slack config columns on `installations` (commit 6.2).
+"""Check nullable installation Slack fields after migration.
 
-After `alembic upgrade head`, the five nullable Slack columns exist and round-trip
-— in particular the bytea bot-token ciphertext (DECISIONS.md#051) byte-for-byte.
-"""
+The encrypted bot token must round-trip byte for byte (DECISIONS.md#051)."""
 
 from __future__ import annotations
 

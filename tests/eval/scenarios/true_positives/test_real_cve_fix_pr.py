@@ -1,13 +1,6 @@
-"""True-positive eval scenario: real CVE-fix PR from a public Python project.
+"""Placeholder for reviewing a real CVE-fix PR.
 
-Per spec §11.2: agent identifies the CVE-fixed vulnerability with the
-correct finding type + tier on a real PR taken from a public project's
-git history.
-
-V1: scaffolded; assertions wire up when the eval graph driver + CVE
-fixture selection land (analyze node shipped). The specific CVE + project
-pair is pinned when CVE fixture selection lands (its own follow-up).
-"""
+This scenario remains skipped until a project, CVE and verified fixture are chosen."""
 
 import pytest
 

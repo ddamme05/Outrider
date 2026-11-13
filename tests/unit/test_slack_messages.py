@@ -1,10 +1,8 @@
-"""Block Kit message builders — ordering, overflow, metadata-first, review-posted.
+"""Check Slack message ordering, overflow, links, and metadata-only content.
 
-Pins: HITL card sorts by severity + caps at top_n + collapses the rest to one
-overflow line; the deep-link button carries the URL; metadata-first (no
-`description`/`evidence` leaks into Slack); review-posted phrasing for the
-posted/dashboard-only/empty cases. See specs/2026-06-15-slack-dashboard-in-slack.md.
-"""
+Finding descriptions and evidence must not enter messages. Cover posted,
+dashboard-only, and empty review wording.
+See specs/2026-06-15-slack-dashboard-in-slack.md."""
 
 from __future__ import annotations
 

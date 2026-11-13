@@ -1,20 +1,9 @@
-"""Integration proof for the setup-only serving surface (spec F6, DECISIONS.md#070).
+"""Check setup-only startup and credential activation against PostgreSQL.
 
-Against a real migrated Postgres, with a FAKE manifest conversion (no GitHub network):
-
-  A. the REAL composition root (`main.create_app` + the production lifespan) boots
-     database-unconfigured WITHOUT the GitHub App triad, mounts `/setup`, and returns the exact
-     setup-only `(route, method) → status` table;
-  B. all four credential consumers fail closed BEFORE configuration;
-  C. those same already-constructed consumers work AFTER activation, with **no restart**.
-
-The unit test `tests/unit/test_setup_route_gating.py` pins the gate's return code + the exact gated
-set structurally; THIS test pins the booted-app status codes + the
-fail-closed→working-without-restart transition against a live DB. Test A drives the actual
-`create_app()` + `build_lifespan(...)` (heavy deps stubbed: LLM provider, checkpointer, graph — the
-credential provider + setup wiring are real); Tests B/C exercise the four consumers directly over a
-real `DatabaseCredentialProvider`.
-"""
+The real app and setup wiring start without GitHub credentials; heavy review
+dependencies and GitHub manifest conversion are scripted. Check gated routes,
+then exercise the four credential consumers before and after activation without
+a restart. See DECISIONS.md#070."""
 
 from __future__ import annotations
 

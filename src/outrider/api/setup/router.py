@@ -1,21 +1,11 @@
-# See DECISIONS.md#070 — the self-service onboarding HTTP surface.
-"""The App-Manifest onboarding router (`DECISIONS.md#070`).
+"""Handle GitHub App setup, callback, status and reset requests.
 
-Four endpoints composing the Slice-2 engine + the manifest builder + the conversion wrapper:
+Admin-only start/reset routes manage the saved setup attempt. The public
+callback checks signed state, consumes its one-use value, exchanges the code
+and verifies the App before saving encrypted credentials. The public status
+route exposes setup progress, not credentials.
 
-- **`POST /setup`** (admin) — CAS-start the state machine, mint a signed+nonce `state`, build the
-  manifest, and return it + the org's GitHub target URL for the dashboard to auto-submit.
-- **`GET /setup/callback`** (public) — verify the signed `state`, atomically consume the nonce, run
-  the conversion, verify the response binding, encrypt + activate, and redirect to the install
-  screen. Any conversion/binding failure orphans the attempt.
-- **`GET /setup/status`** (public, metadata-minimal) — the state-machine status; no credentials.
-- **`POST /setup/reset`** (admin) — `ORPHANED → UNCONFIGURED` after operator cleans up on GitHub.
-
-The router is built by `build_setup_router` with its runtime deps injected (the state machine, the
-onboarding settings, and the conversion callable — test-faked). Admin auth reuses the dashboard's
-`require_admin_api_key` (reads `app.state.admin_api_key`). Credentials are encrypted via
-`credential_crypto` and never logged; the callback reads its trusted values from the VERIFIED state,
-never the raw query.
+build_setup_router receives its services explicitly. See DECISIONS.md#070.
 """
 
 from __future__ import annotations

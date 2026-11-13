@@ -1,12 +1,10 @@
-"""Project-owned OpenAI response capture for research spikes.
+"""Capture OpenAI responses for host research outside production review.
 
-`RawOpenAICaptureClient` owns SDK calls, objects, and errors inside `llm/`.
-It validates responses into frozen DTOs and translates vendor failures;
-spikes never receive raw SDK objects (`vendor-payloads-normalized-at-boundary`).
+The wrapper returns validated capture records without production pricing or
+persistence. Captured JSON is the SDK's serialized response, not raw network
+bytes. Automatic SDK retries are disabled so each capture is one attempt.
 
-This research transport has no production provider, pricing, or persistence
-contract. It preserves the spike client settings (`max_retries=0`, SDK-default
-timeout) and the SDK's JSON reserialization, rather than original wire bytes.
+See vendor-payloads-normalized-at-boundary and docs/trust-boundaries.md §8.
 """
 
 from __future__ import annotations

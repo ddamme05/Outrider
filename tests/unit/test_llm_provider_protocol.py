@@ -1,14 +1,7 @@
-"""Protocol shape + schema-config invariants.
+"""Check LLM protocols, strict models, response fields, and canonical prompt hashes.
 
-Covers:
-  - `LLMProvider` Protocol shape (no agent-state in signatures)
-  - `LLMExchangePersister` Protocol shape (async)
-  - Every Pydantic model in `llm/` has `extra="forbid"` AND `frozen=True`
-  - `LLMResponse` has NO `severity`/`evidence_tier`/`confidence`/`cost_usd`
-  - `LLMMessage.role` is `Literal["user", "assistant"]` (NOT `"system"`)
-  - `_canonical_prompt_hash` AC#15 — pinned hex digest for known input
-  - `_canonical_system_prompt_hash` separate cache lifecycle helper
-"""
+Provider signatures must not carry graph state, and responses must not assign
+policy severity, evidence tier, confidence, or cost."""
 
 from __future__ import annotations
 

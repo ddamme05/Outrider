@@ -1,22 +1,8 @@
-"""Structural eval scenario: JS/TS OBSERVED query catalog
-(specs/2026-07-03-js-ts-observed-query-catalog.md).
+"""Check structural security queries across JavaScript, TypeScript and TSX.
 
-The JS/TS mirror of the Python OBSERVED precision scenario: each catalog
-family MUST fire on a canonical positive fixture and must NOT fire on a
-lookalike negative, under EVERY grammar the catalog compiles for
-(javascript / typescript / tsx) — the catalog is one query set with three
-dialect variants, and dialect parity is part of the contract. LLM-free —
-runs `queries.registry.match` and the deterministic producer directly.
-
-The producer case is the spec's graded slice: a real broken-cipher use in
-a JS file becomes an OBSERVED `ReviewFinding` (real `javascript.*`
-query_match_id, policy severity, registry static text) with zero model
-involvement — the evidence-tier parity the arc exists to close. The
-exhaustive per-variant pins live in tests/unit/test_queries_javascript.py.
-
-All fixture sources are deliberately-insecure PARSER INPUTS for the
-security queries under test — nothing here executes them.
-"""
+Queries must match positive examples and reject lookalikes. A real producer
+case checks the resulting finding and policy severity without a model.
+Deliberately insecure examples are parser inputs and are never executed."""
 
 from __future__ import annotations
 

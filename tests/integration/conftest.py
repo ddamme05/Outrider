@@ -1,49 +1,9 @@
-"""Integration-test fixtures: fresh-DB-per-test isolation.
+"""Database fixtures for integration tests.
 
-Each integration test runs against a brand-new Postgres database, created
-at fixture setup and dropped at teardown. The pattern is committed to per
-the schema-layer spec — sharing a DB across tests would re-introduce
-ordering coupling, and tests like test_severity_policies_seeded depend on
-a fresh post-migration state.
-
-**Test isolation is enforced at two layers** (see docs/testing.md
-"Two-container model" for the full rationale):
-
-  1. *Process-level.* Tests connect to ``TEST_DATABASE_URL`` exclusively
-     — a separate ``postgres-test`` container on port 5433 with
-     ephemeral tmpfs data. The dev ``outrider`` DB on port 5432 is
-     never touched by the automated test suite.
-  2. *Fail-loud URL guard.* The ``fresh_db`` fixture asserts the URL
-     matches the expected pattern (port 5433, "test" in the database
-     name) before any DDL. A misconfigured ``.env`` that points the
-     fixture at the dev DB by mistake is caught at fixture setup with
-     a clear error, not silently swallowed.
-
-Two fixtures cover the integration-test surface:
-
-  - ``fresh_db``     — yields a URL to an empty Postgres database. The
-                      caller chooses what to do with it (run alembic,
-                      create raw SQL, etc.). Used by tests that exercise
-                      the migration itself.
-  - ``migrated_db``  — depends on ``fresh_db``; runs ``alembic upgrade
-                      head`` against it. Yields the URL of a fully-
-                      migrated DB. Used by tests that insert/query
-                      against the schema.
-
-Alembic is invoked programmatically (``alembic.command.upgrade``) rather
-than via subprocess because env.py reads ``DATABASE_URL`` from
-``os.environ`` on each invocation (runpy re-executes env.py from
-scratch), so the fixture can switch the URL by setting the env var
-before calling. ``asyncio.to_thread`` wraps the sync alembic call so the
-internal ``asyncio.run`` in env.py doesn't collide with the pytest-asyncio
-event loop.
-
-Future maintainers: do NOT "optimize" this by sharing a DB across tests.
-Test ordering becomes load-bearing the moment any test mutates state, and
-diagnosing ordering failures is much harder than the per-test DB
-creation cost (a few hundred milliseconds; CREATE/DROP DATABASE on a
-local Postgres is fast).
-"""
+Each fixture creates an isolated PostgreSQL database using TEST_DATABASE_URL.
+The URL must identify the test service on port 5433 and a test database before
+any DDL runs. ``fresh_db`` is empty; ``migrated_db`` has all migrations applied.
+Tests must not depend on another test's database state. See docs/testing.md."""
 
 import asyncio
 import os

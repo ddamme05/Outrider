@@ -1,13 +1,10 @@
-"""Review lifecycle writes and decision-preflight reads.
+"""Define the contract for saving a review's current status.
 
-The graph receives these protocols through dependency injection
-(nodes-receive-deps-via-closure). Each write atomically pairs a status transition
-with its request, decision, or timestamp fields. The dashboard reads the pending
-request from this cache because HITL has not yet returned its graph-state delta.
+Nodes receive this writer through build_graph rather than accessing database
+tables directly (nodes-receive-deps-via-closure). Status rows support current
+workflow state; audit events remain the permanent history.
 
-Audit events remain canonical on divergence (DECISIONS.md#016,
-audit-events-append-only). ReviewDecidePreflight belongs to the database read
-boundary (DECISIONS.md#019).
+See DECISIONS.md#016, #019 and audit-events-append-only.
 """
 
 from collections.abc import Mapping

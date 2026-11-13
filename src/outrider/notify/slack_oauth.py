@@ -1,13 +1,10 @@
-"""Slack OAuth code-exchange (notify/ boundary).
+"""Exchange a Slack authorization code for installation credentials.
 
-Confines slack_sdk's `oauth_v2_access` to the Slack wrapper boundary
-(vendor-sdks-only-in-wrappers, same as `notify/slack.py`). The verified callback
-hands this module the OAuth `code`; it exchanges that server-side using the App's
-client_id/client_secret for the workspace identity + bot token. The token and
-identity come from the EXCHANGE RESPONSE, never from request params (the callback
-already refuses to trust query params). The returned bot token is a `SecretStr` —
-the caller `encrypt_token`s it (DECISIONS.md#051) before persisting and never
-logs/audits it.
+The caller validates OAuth state and supplies trusted installation choices.
+Returned tokens use SecretStr and must be encrypted before storage. SDK calls
+stay in this wrapper and response content stays out of errors and logs.
+
+See DECISIONS.md#051 and vendor-payloads-normalized-at-boundary.
 """
 
 from __future__ import annotations

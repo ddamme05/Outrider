@@ -1,16 +1,8 @@
-# See specs/2026-05-19-analyze-foundation.md §1 and specs/2026-05-23-trace-node.md.
-"""`TraceCandidate` schema tests.
+"""Check immutable trace candidates, identities, string limits, and import syntax.
 
-Pins the §1 schema discipline: frozen + `extra="forbid"`, SHA-256 hex
-`candidate_id` and `source_proposal_hash`, bounded string lengths on
-`reason` and `import_string`. Per `DECISIONS.md#024` (Accepted
-2026-05-24, Amended 2026-07-03), trace candidates carry one of two
-syntactic forms — dotted Python import string or JS/TS relative
-specifier — validated by the shared
-`coordinates.is_valid_trace_import_string` dispatcher; `import_string`
-replaced `candidate_path` in lockstep with the rename of
-`compute_candidate_id`'s kwarg.
-"""
+Accept dotted Python imports or relative JS/TS specifiers through the shared
+validator. See specs/2026-05-19-analyze-foundation.md §1,
+specs/2026-05-23-trace-node.md, and DECISIONS.md#024."""
 
 from __future__ import annotations
 

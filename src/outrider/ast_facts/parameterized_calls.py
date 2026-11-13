@@ -1,34 +1,13 @@
-# Per specs/2026-06-12-sqli-parameterized-call-veto.md (FUP-162).
-"""Deterministic detection of provably-parameterized DB-execute calls.
+"""Find database calls that safely bind SQL parameters.
 
-The structural half of the `sql_injection` parameterized-call veto: the
-analyze parser rejects a JUDGED `sql_injection` proposal whose claimed
-lines land on a call this module classifies safe. Safe has TWO parts:
-(1) the SQL argument is a pure string LITERAL (no f-string
-interpolation, no concatenation with non-literals) passed alongside a
-SEPARATE params argument — structural proof that no user input reaches
-the string AT THE CALL SITE; and (2) the receiver idiom conventionally
-pins binding semantics (`_BINDING_RECEIVERS` / the Django manager
-chain) — because whether the callee BINDS the second argument or
-interpolates it into the string is the callee's contract, not the call
-shape's. Bare `execute(...)` and arbitrary-receiver wrappers fail open
-to HITL.
+A safe call needs literal SQL, a separate params argument and a recognized
+database receiver. An arbitrary execute() wrapper cannot establish safety.
+The analysis parser rejects a JUDGED sql_injection range only when it is
+wholly inside a safe call and overlaps no unsafe call.
 
-Triviality-filter precedent (`ast_facts/triviality.py`): this module
-parses with tree-sitter directly and walks raw nodes INTERNALLY; only
-line-range domain models cross the AST firewall. Deliberately NOT a
-registry query — registry entries are claimable OBSERVED evidence
-(`query_match_id`), and a veto's detection must never be citable as
-evidence.
-
-Versioning: any change to the matcher rules or the method-name set
-below changes per-file analyze outcomes and MUST ride an
-`ANALYZE_PARSER_VERSION` bump (the FUP-166 principle; the veto is part
-of the admission flow that constant versions).
-
-See DECISIONS.md#041 (Amended 2026-06-12): this detection is the
-deterministic half of the over-flag remediation that the #041 fix
-previously carried entirely in the analyze prompt.
+Only line-range facts leave this module; these facts are not OBSERVED evidence.
+Matcher changes require an ANALYZE_PARSER_VERSION bump (FUP-166).
+See specs/2026-06-12-sqli-parameterized-call-veto.md (FUP-162) and DECISIONS.md#041.
 """
 
 from __future__ import annotations

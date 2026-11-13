@@ -1,15 +1,8 @@
-"""Runner for the GitHub App + smee.io spike.
+"""Run the GitHub App demos with the current Python interpreter.
 
-Runs every demo as a subprocess with the project venv's Python. Exits 0
-iff every demo exits 0. Prints the number of demos that passed and the
-offending demo on first failure, then stops.
-
-Demos import from receiver.py (Q5 only) — the runner adds the spike root
-to PYTHONPATH so `from receiver import app` resolves without install.
-
-This is the mechanical verification for NOTES.md — if every claim in NOTES
-has a demo here, and run_all.py exits 0, the claims reproduce on the
-pinned versions.
+Add this spike directory to PYTHONPATH so the receiver demo can import it.
+Stop on the first failing demo and print the result. NOTES.md records the
+experiment's findings; the separate token-verification script makes live calls.
 """
 
 from __future__ import annotations

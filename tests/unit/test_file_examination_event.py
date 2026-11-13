@@ -1,8 +1,6 @@
-"""FileExaminationEvent skip_reason validator tests per DECISIONS.md#018.
+"""Check file-examination skip reasons and their event validation.
 
-Test list mirrors `specs/2026-04-29-audit-events-module.md`'s Actual
-outcome supersession note for the audit-events module.
-"""
+See DECISIONS.md#018 and specs/2026-04-29-audit-events-module.md."""
 
 from __future__ import annotations
 

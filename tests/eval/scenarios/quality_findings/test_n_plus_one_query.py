@@ -1,13 +1,6 @@
-"""Quality-finding eval scenario: PR introduces an N+1 query.
+"""Follow a scripted N+1-query finding through the review graph.
 
-Per spec §11.2: PR adds a loop that issues a DB query per item; expected:
-`FindingType.N_PLUS_ONE_QUERY` (canonical enum from `policy/severity.py`)
-+ severity from `SEVERITY_POLICY[N_PLUS_ONE_QUERY]` + tier per the
-structural evidence.
-
-Driven by the eval graph driver (`run_review`) against
-`tests/eval/fixtures/mock_github/n_plus_one_query.json`.
-"""
+Check the finding type, evidence and policy severity for a query inside a loop."""
 
 from outrider.policy import FindingType, lookup_severity
 

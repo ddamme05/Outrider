@@ -1,14 +1,4 @@
-"""Structural eval scenario: changed line resolves to its owning ScopeUnit.
-
-Per docs/spec.md §11.2: given a Python source file and a diff line, the
-scope at that line is found by parsing via `ast_facts.parse_python` and
-mapping via `coordinates.diff_line_to_scope` per `docs/spec.md` §5.6 /
-`docs/trust-boundaries.md` §3 (translation lives in `coordinates/`).
-
-V1: live. ast_facts ships scope extraction; coordinates ships the
-line-to-scope mapper; this test exercises both together for the
-nested-function innermost-scope case.
-"""
+"""Map a changed line to its innermost function using real parsing and coordinates."""
 
 from __future__ import annotations
 

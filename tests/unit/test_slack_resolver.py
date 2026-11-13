@@ -1,11 +1,7 @@
-"""PerInstallSlackResolver — the composition-root Slack target resolver (commit 6.4c).
+"""Check per-installation Slack targets, decryption, and caching.
 
-Pins: None config -> None target; a configured install -> a target carrying the
-channel + a real orchestrator (token decrypted via the real token_crypto); caching by
-(installation_id, ciphertext); rebuild on token rotation (new ciphertext); idempotent
-aclose. `get_slack_config` (the DB read) is monkeypatched — the resolver's DB query has
-its own integration coverage; this isolates the decrypt + build + cache logic.
-"""
+Changing token ciphertext rebuilds the target; closing is idempotent. Database
+reads are replaced here and covered separately by integration tests."""
 
 from __future__ import annotations
 

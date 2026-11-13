@@ -1,7 +1,8 @@
-"""Public ORM re-exports; importing them registers tables on Base.metadata.
+"""Expose database models and register their tables on Base.metadata.
 
-The declarative base and PostgreSQL enums live in _base.py so individual models
-can import them without cycling through this package's re-exports.
+The shared model base and database enums live in _base.py so individual models
+can import them without loading every table. Import this package when table
+registration is needed.
 """
 
 from outrider.db.models._base import Base, anomaly_status_enum, review_status_enum

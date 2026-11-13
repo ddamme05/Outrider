@@ -1,9 +1,7 @@
-# Per DECISIONS.md#055 + specs/2026-06-21-cross-type-subsumption.md.
-"""`verify_subsumption_wellformed()` fails loud on a malformed `SUBSUMES` map.
+"""Check rejection of malformed finding-type suppression maps.
 
-Monkeypatches the module attribute the guard reads, so each case exercises the
-real guard against a deliberately-broken relation (the import-time floor that
-fires even when `git commit --no-verify` bypasses CI)."""
+Replace the relation read by the real import-time guard for each invalid case.
+See DECISIONS.md#055 and specs/2026-06-21-cross-type-subsumption.md."""
 
 from __future__ import annotations
 

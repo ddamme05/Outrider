@@ -1,16 +1,9 @@
-"""Integration tests for the background replay-verdict projector
-(`sweep/replay_verdict.py`).
+"""Check the background replay-verdict projector against PostgreSQL.
 
-Seeds a valid completed-review audit stream (phase pairs — the minimal stream that
-passes `assert_equivalent`; no findings/LLM rows needed), runs the projector, and
-asserts: an equivalent verdict with the right envelope is appended; re-projection is
-idempotent (one verdict); eval reviews are excluded (the sweep contract); a
-tampered stream (an unterminated phase on a completed review) yields an inequivalent
-verdict carrying a reason; a corrupt audit row (reconstruct RAISES) yields an
-inequivalent verdict with an ABSENT envelope + a sanitized, content-free reason (the
-DECISIONS#014/#016 leak guard); and one bad review (no stream) is counted `failed`
-without aborting the tick. Replay-local + non-eval; reuses the `migrated_db` fixture.
-"""
+Valid completed reviews get one idempotent verdict; evaluation reviews are
+excluded. Broken streams get a non-equivalent verdict, corrupt rows get a
+content-free reason, and one failed review must not abort the tick.
+See DECISIONS.md#014 and #016."""
 
 from __future__ import annotations
 

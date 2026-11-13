@@ -1,20 +1,7 @@
-"""All timestamp columns use TIMESTAMP WITH TIME ZONE.
+"""Check migrated timestamp columns against PostgreSQL's timezone-aware type.
 
-Backs ``timestamps-are-aware``. Postgres stores ``timestamptz``, and a
-naive ``timestamp without time zone`` round-trips through the driver as
-a subtly-wrong value (interpreted as the server's local zone, not UTC).
-Schema introspection: every column ending in ``_at`` or named
-``timestamp`` across the nine Outrider tables must be ``timestamp with
-time zone``.
-
-This is the runtime introspection counterpart to
-``test_orm_structural_invariants::test_all_at_columns_are_timezone_aware``
-(unit-tier, runs against the ORM metadata directly). Both layers are
-useful: the unit test catches violations before alembic generates a
-migration; this test catches violations that slip past metadata (a
-hand-edited migration that overrides the column type, an Alembic
-autogenerate quirk that strips ``timezone=True``, etc.).
-"""
+Inspect all ``_at`` and ``timestamp`` columns. ORM metadata checks cannot catch
+a migration that changes the type (``timestamps-are-aware``)."""
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine

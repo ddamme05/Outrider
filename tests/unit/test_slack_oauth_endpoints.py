@@ -1,15 +1,8 @@
-"""Slack OAuth install-flow endpoints (commit 6.3e).
+"""Check Slack installation and OAuth callback validation.
 
-Pins the input-boundary behavior of GET /slack/install + GET /slack/oauth/callback:
-admin auth on install, opt-in 503 when unconfigured, signed-state round-trip, and —
-the load-bearing security property — that the callback reads installation_id/channel
-from the VERIFIED STATE (never the query params), encrypts the bot token before
-persist, and fails closed on denied/forged/expired/exchange-failure inputs.
-
-`exchange_code` (Slack network) + `set_slack_config` (DB) are mocked; `sign_state` /
-`verify_state` / `encrypt_token` run for real against monkeypatched env secrets, so
-the CSRF + encryption paths are exercised end-to-end.
-"""
+Verified signed state supplies installation and channel IDs, not query input.
+Signing, verification, and encryption run for real; Slack exchange and database
+writes are replaced. Tokens must be encrypted before storage."""
 
 from __future__ import annotations
 

@@ -1,27 +1,10 @@
-# See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
-# See also DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only
-# (same content-table pattern: `retention_expires_at` purge column, kept
-# alongside `llm_call_content` under the V1 content-tier retention policy).
-"""REVIEWS.
+"""Store a review's status, retained report and pending approval data.
 
-One row per agent review run. Idempotency is enforced by the
-`UNIQUE(repo_id, pr_number, head_sha)` constraint per `idempotency-via-db-unique-constraint`
-— the webhook handler relies on `IntegrityError` from this constraint as the
-dedup signal under near-simultaneous deliveries.
+The PR/commit uniqueness constraint prevents duplicate webhook reviews.
+Detailed model metrics come from audit events; this row holds the review's
+current state and content until expiry.
 
-`installation_id` is FK to INSTALLATIONS with `ON DELETE RESTRICT` so the
-installation-purge sweep step must explicitly purge reviews before the parent
-install hard-deletes (otherwise CASCADE would silently drop content without
-writing a per-table `purge_audit` row).
-
-`status` uses the `review_status_enum` PG-native ENUM type. `hitl_request` and
-`hitl_decision` are nullable JSONB envelopes; when the graph reaches the HITL
-node and gates on a critical/high finding, request lands here and the eventual
-decision lands alongside it.
-
-Aggregate-metric columns (`files_examined`, `total_cost_usd`, etc.) were dropped
-per DECISIONS.md#037 — the audit stream is the source of truth for review
-metrics; the seeded-zero row copy was a dead, never-read denormalization.
+See DECISIONS.md#014, #016, #037 and idempotency-via-db-unique-constraint.
 """
 
 from datetime import datetime

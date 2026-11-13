@@ -1,24 +1,12 @@
-# LanguageAdapter registry per
-# specs/2026-04-30-ast-facts-module.md.
-"""Per-language adapter registry keyed by file extension.
+"""Choose a source parser by file extension and load it on demand.
 
-Entries: `.py`/`.pyi` → `PythonAdapter`; `.js`/`.jsx`/`.mjs`/`.cjs` →
-`JavaScriptAdapter`; `.ts`/`.mts`/`.cts` → typescript-dialect
-`TypeScriptAdapter`; `.tsx` → tsx-dialect `TypeScriptAdapter` (per
-specs/2026-07-02-js-ts-tree-sitter-adapters.md — the registry is the
-single grammar-dispatch point; `typescript` and `tsx` are distinct
-grammars, so each extension group registers its own factory).
-`parse_source` is the language-generic parse dispatch over the same
-extension groups (dispatch spec).
+parse_source dispatches parsing. get_adapter_factory returns a factory that
+accepts the caller's ImportPathResolver. TypeScript and TSX use distinct
+grammars, selected here rather than guessed by an adapter.
 
-`get_adapter_factory(extension)` returns an adapter factory — typed as
-`Callable[[ImportPathResolver], LanguageAdapter]` — not an adapter
-instance. The caller constructs the adapter with their own
-`ImportPathResolver` per `nodes-receive-deps-via-closure`. Every
-factory lazily imports its adapter module inside the call, keeping this
-module import-light (`DECISIONS.md#018` point 6): importing the
-registry loads no grammar, and each language's grammar loads on first
-dispatch of that language only.
+Importing this registry loads no grammar (DECISIONS.md#018). Dependencies reach
+nodes through build_graph (nodes-receive-deps-via-closure).
+See specs/2026-07-02-js-ts-tree-sitter-adapters.md.
 """
 
 from __future__ import annotations

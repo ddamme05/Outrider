@@ -1,8 +1,6 @@
-"""Unit tests for `github.credential_crypto` — the GitHub App credential at-rest boundary (#070).
+"""Check GitHub credential encryption with its dedicated key (DECISIONS.md#070).
 
-Parallels `test_token_crypto` (Slack), but a dedicated key. Covers the round-trip, fail-closed on
-missing/placeholder/malformed key, empty-secret refusal, and tamper rejection.
-"""
+Cover round trips, invalid keys, empty secrets, and tamper rejection."""
 
 from __future__ import annotations
 

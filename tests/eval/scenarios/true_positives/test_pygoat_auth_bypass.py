@@ -1,14 +1,7 @@
-"""True-positive eval scenario: PyGoat auth bypass in login.
+"""Follow a scripted PyGoat authentication-bypass finding to the approval gate.
 
-Per spec §11.2: PR introduces auth bypass in login flow; agent produces
-`FindingType.AUTH_BYPASS` with the correct tier + severity per policy.
-
-Driver-backed: drives the real graph via `run_review` against
-`mock_github/pygoat_auth_bypass.json`. The fixture's finding is JUDGED;
-severity (CRITICAL) is asserted via `lookup_severity` (set by policy, not
-the model). AUTH_BYPASS is CRITICAL, so the run gates at HITL — the
-scenario reads only `.findings` (populated by synthesize before the gate).
-"""
+Check model-judgment evidence and policy severity. Critical findings must stop
+before publication when the driver has no human decision."""
 
 from outrider.policy import FindingType, lookup_severity
 

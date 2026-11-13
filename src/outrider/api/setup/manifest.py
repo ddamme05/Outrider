@@ -1,27 +1,11 @@
-# See DECISIONS.md#070 — the GitHub App Manifest builder + the bound contract.
-"""The GitHub App Manifest builder (`DECISIONS.md#070`).
+"""Build the GitHub App manifest submitted by the setup page.
 
-`POST /setup` returns a manifest that the operator's browser auto-submits to
-`github.com/organizations/{org}/settings/apps/new?state=<signed-state>`; GitHub creates the App and
-redirects to `redirect_url?code=&state=`. Everything GitHub needs is declared here, and ALL URLs are
-built from `OUTRIDER_PUBLIC_BASE_URL` — never the request `Host` header (an attacker-controlled
-header must not steer where GitHub sends the code/credentials).
+build_manifest returns the requested App configuration and a digest used to
+check that deployment settings did not change during setup. URLs come from
+OUTRIDER_PUBLIC_BASE_URL, never the request Host header. binding.py checks the
+organization, permissions and events returned by GitHub.
 
-The manifest declares `public: false` (so the App installs only on its owning org, keeping V1's
-one-org model), `default_permissions {contents: read, pull_requests: write}`, and `default_events
-[pull_request]`. (`installation` + `installation_repositories` are auto-delivered to every App and
-cannot be subscribed to, so they are NOT declared — the App still receives them.) `build_manifest`
-also returns the `manifest_contract_digest` — a hash of the exact manifest THIS attempt sent,
-recorded on `setup_state`. The single-use **nonce** binds the callback to the attempt; the digest is
-a **deployment-continuity guard** — the callback re-derives it from the stored org + current config
-and rejects on mismatch (`router._verify_attempt_digest`), catching an `OUTRIDER_PUBLIC_BASE_URL`
-change between Start and callback that would leave the App with URLs no longer pointing here.
-
-The **response-verifiable** expectations (`EXPECTED_PERMISSIONS` / `EXPECTED_EVENTS`) are what the
-response must match (`binding.verify_conversion_binding`): permissions is the declared map PLUS
-GitHub's implicit `metadata: read`; events is the same set the manifest declared (only the
-subscribable ones). `public` is submission-only — the response omits it, so it is not
-response-verified.
+See DECISIONS.md#070.
 """
 
 from __future__ import annotations
