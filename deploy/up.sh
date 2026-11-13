@@ -1,17 +1,8 @@
 #!/usr/bin/env bash
-# Launch the keyless demo with fail-loud preflight checks. Run from the droplet:
-#   cd /opt/outrider/deploy && bash up.sh
-#
-# Guards the three footguns a first live deploy hits, each of which produces an
-# obscure failure instead of a clear one:
-#   1. A missing/empty deploy/demo_seed.sql. The compose bind-mounts it into
-#      /docker-entrypoint-initdb.d; if absent, Docker silently creates a
-#      root-owned DIRECTORY there and Postgres aborts init ("Is a directory"),
-#      crash-looping behind restart: unless-stopped — a 100%-dead demo.
-#   2. An unedited DEMO_DOMAIN placeholder. Caddy would loop on ACME failures for
-#      a domain you don't control and can burn the Let's Encrypt rate limit.
-#   3. A missing .env or a placeholder admin token (the app rejects change-me at
-#      startup; catching it here beats a crash-loop).
+# Check demo settings and seed data, then start the demo containers.
+# Run bash deploy/up.sh on the demo host. Missing seed data, an unset domain
+# or placeholder credentials stop the launch with recovery instructions.
+
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -45,7 +36,8 @@ token=$(read_env OUTRIDER_ADMIN_API_KEY)
 [ -n "$domain" ] || fail "DEMO_DOMAIN is unset in .env."
 [ "$domain" != "demo.example.com" ] || fail "DEMO_DOMAIN is still the placeholder demo.example.com — set your real domain in .env."
 
-# Reject the SAME placeholders the app rejects at startup (config.py _PLACEHOLDER_SECRETS),
+# Mirror policy/secret_placeholders.py; test_demo_preflight_policy.py checks parity.
+# Reject the SAME placeholders the app rejects at startup,
 # case-insensitively, so the preflight isn't narrower than the runtime check it fronts for.
 case "$(printf '%s' "$token" | tr '[:upper:]' '[:lower:]')" in
   ""|change-me|changeme|replace-me|replace-me-with-a-long-random-secret|secret|password|your-secret-here)

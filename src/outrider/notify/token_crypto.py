@@ -1,14 +1,9 @@
-# See DECISIONS.md#051-slack-bot-tokens-are-encrypted-at-rest
-"""Encrypt persisted Slack bot tokens and decrypt at notifier construction.
+"""Encrypt and decrypt saved Slack tokens.
 
-installations stores ciphertext, never plaintext (DECISIONS.md#051). Read
-OUTRIDER_TOKEN_ENC_KEY as comma-separated Fernet keys: the first encrypts and all
-decrypt, allowing rotation. Missing or malformed keys raise; there is no plaintext
-fallback. Return decrypted tokens as SecretStr and keep them out of state, audit,
-logs, and API responses.
-
-GitHub App credentials have a separate encryption boundary and dedicated key in
-github/credential_crypto.py (DECISIONS.md#070).
+Comma-separated keys support rotation: writes use the first and reads try each
+key. Missing keys or invalid ciphertext raise; plaintext storage is never a
+fallback. Tokens must stay out of logs, workflow state and audit payloads.
+GitHub App secrets use a separate key (DECISIONS.md#051, #070).
 """
 
 from __future__ import annotations
@@ -17,6 +12,8 @@ import os
 
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 from pydantic import SecretStr
+
+from outrider.policy.secret_placeholders import SECRET_PLACEHOLDERS as _PLACEHOLDER_SECRETS
 
 __all__ = [
     "TOKEN_ENC_KEY_ENV",
@@ -28,23 +25,6 @@ __all__ = [
 
 # Env var NAME (not a secret value) — the at-rest encryption key(s).
 TOKEN_ENC_KEY_ENV = "OUTRIDER_TOKEN_ENC_KEY"  # noqa: S105
-
-# Known placeholders shipped in .env.example (+ the usual suspects); reject a verbatim
-# copy so a deploy can't treat a non-key as its at-rest encryption key. Mirrors
-# notify/config.py / api/dashboard/config.py / notify/oauth_state.py — keep in sync. A
-# placeholder is also not a valid Fernet key, so it would fail construction regardless;
-# this check names the misconfiguration instead of a generic "not a valid Fernet key".
-_PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
-    {
-        "replace-me",
-        "replace-me-with-a-long-random-secret",
-        "change-me",
-        "changeme",
-        "secret",
-        "password",
-        "your-secret-here",
-    }
-)
 
 
 class TokenCryptoError(RuntimeError):

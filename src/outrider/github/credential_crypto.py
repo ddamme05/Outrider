@@ -1,21 +1,9 @@
-# See DECISIONS.md#070 — GitHub App credential encryption boundary.
-"""At-rest encryption for manifest-onboarded GitHub App credentials (`DECISIONS.md#070`).
+"""Encrypt and decrypt saved GitHub App keys and webhook secrets.
 
-Parallel to `notify/token_crypto.py` (`#051`, Slack bot tokens), but a **dedicated key** and a
-**dedicated boundary module** for a different credential class. Under `database` credential mode,
-the App `pem` (private key) and `webhook_secret` GitHub returns from the manifest conversion are
-delivered at *runtime* and must be STORED to survive restarts — unlike the `env`-mode PEM, which
-lives only as an env `SecretStr`. So they are encrypted at rest: the `github_app_credentials` row
-stores ciphertext, never plaintext, and decryption is confined to this module plus the
-`GitHubCredentialProvider` construction site.
-
-All `cryptography` use here is confined to this file (mirrored in `notify/token_crypto.py`; the
-import lint allowlists exactly these two). The key is `OUTRIDER_GITHUB_CREDENTIAL_ENC_KEY` — one or
-more comma-separated urlsafe-base64 Fernet keys (the FIRST encrypts, ALL decrypt: `MultiFernet`
-rotation), **separate from Slack's `OUTRIDER_TOKEN_ENC_KEY`**. A missing / empty / malformed /
-placeholder key FAILS CLOSED (raises) so a misconfigured deploy can never silently persist
-plaintext credentials. Decrypted material is returned as `SecretStr` and held only at the use site
-— never in audit events, graph state, logs, or API responses.
+The dedicated encryption key is separate from Slack token encryption.
+Comma-separated keys allow rotation; reads try the configured keys and writes
+use the first. Missing keys and invalid ciphertext raise, with no plaintext
+fallback. See DECISIONS.md#051, #070.
 """
 
 from __future__ import annotations
@@ -24,6 +12,8 @@ import os
 
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 from pydantic import SecretStr
+
+from outrider.policy.secret_placeholders import SECRET_PLACEHOLDERS as _PLACEHOLDER_SECRETS
 
 __all__ = [
     "CREDENTIAL_ENC_KEY_ENV",
@@ -39,22 +29,6 @@ CREDENTIAL_ENC_KEY_ENV = "OUTRIDER_GITHUB_CREDENTIAL_ENC_KEY"  # noqa: S105
 # credential key be DISTINCT from it — enforced in validate_credential_enc_key so a compromise of
 # one credential class's key doesn't compromise the other.
 _SLACK_ENC_KEY_ENV = "OUTRIDER_TOKEN_ENC_KEY"  # noqa: S105
-
-# Known placeholders shipped in .env.example (+ the usual suspects); reject a verbatim copy so a
-# deploy can't treat a non-key as its at-rest encryption key. Mirrors github/config.py /
-# notify/token_crypto.py — keep in sync. A placeholder is also not a valid Fernet key, so it would
-# fail construction regardless; this check names the misconfiguration.
-_PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
-    {
-        "replace-me",
-        "replace-me-with-a-long-random-secret",
-        "change-me",
-        "changeme",
-        "secret",
-        "password",
-        "your-secret-here",
-    }
-)
 
 
 class CredentialCryptoError(RuntimeError):

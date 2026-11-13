@@ -1,12 +1,10 @@
-"""Slack credentials for local transport tests and installation OAuth.
+"""Load Slack setup settings and development notification defaults.
 
-SlackSettings reads a dev bot token and channel. Production posting uses encrypted
-per-installation configuration loaded by resolver.py, populated by the OAuth flow
-(specs/2026-06-15-slack-dashboard-in-slack.md).
+Production notification tokens are stored per installation. Environment tokens
+support development; OAuth client credentials support installation setup.
+Secrets use SecretStr to hide displays and must remain out of logs.
 
-SlackOAuthSettings reads OUTRIDER_SLACK_CLIENT_ID, CLIENT_SECRET, and REDIRECT_URI
-under the OUTRIDER_SLACK_ prefix. SecretStr credentials are unwrapped at SDK call
-sites, never in log or audit construction.
+See specs/2026-06-15-slack-dashboard-in-slack.md.
 """
 
 from urllib.parse import urlparse
@@ -14,22 +12,12 @@ from urllib.parse import urlparse
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from outrider.policy.secret_placeholders import SECRET_PLACEHOLDERS
+
 __all__ = ["SlackOAuthSettings", "SlackSettings"]
 
-# Known placeholder values shipped in `.env.example` (+ the usual suspects); reject a
-# verbatim copy at startup. Mirrors `github/config.py` / `api/dashboard/config.py`; keep in sync.
-_PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
-    {
-        "replace-me",
-        "replace-me-with-a-long-random-secret",
-        "change-me",
-        "changeme",
-        "secret",
-        "password",
-        "your-secret-here",
-        "xoxb-your-token",
-    }
-)
+# Slack's example bot token is also public, alongside the shared placeholders.
+_PLACEHOLDER_SECRETS: frozenset[str] = SECRET_PLACEHOLDERS | {"xoxb-your-token"}
 
 
 class SlackSettings(BaseSettings):

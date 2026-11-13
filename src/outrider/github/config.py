@@ -1,35 +1,17 @@
-# GitHub App settings, env-backed.
-"""Env-mode GitHub App identity and webhook secret.
+"""Load GitHub App credentials from environment settings.
 
-Read OUTRIDER_GITHUB_APP_ID, OUTRIDER_GITHUB_APP_PRIVATE_KEY (raw PEM), and
-OUTRIDER_GITHUB_WEBHOOK_SECRET. Frozen settings validate the selected env source
-at boot. SecretStr masks accidental string representations; consumers unwrap
-credentials at authentication and signature-verification boundaries.
-
-Signature verification enforces webhook-signature-constant-time-compare; GitHub
-payload handling enforces webhook-strings-are-data-not-format-strings.
+App ID, private key and webhook secret are required. Blank and placeholder
+values fail validation. SecretStr hides accidental displays; it does not
+encrypt credentials. See webhook-signature-constant-time-compare and
+webhook-strings-are-data-not-format-strings.
 """
 
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-__all__ = ["GitHubAppSettings"]
+from outrider.policy.secret_placeholders import SECRET_PLACEHOLDERS as _PLACEHOLDER_SECRETS
 
-# Known placeholder values shipped in `.env.example` (and the usual suspects). A verbatim
-# `.env.example` copy would otherwise authenticate UNSIGNED webhooks against a PUBLIC string —
-# reject these obvious non-secrets at startup. Exact-match (case-insensitive, stripped) so a
-# real secret is never rejected by accident. Mirrored in `api/dashboard/config.py`; keep in sync.
-_PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
-    {
-        "replace-me",
-        "replace-me-with-a-long-random-secret",
-        "change-me",
-        "changeme",
-        "secret",
-        "password",
-        "your-secret-here",
-    }
-)
+__all__ = ["GitHubAppSettings"]
 
 
 class GitHubAppSettings(BaseSettings):

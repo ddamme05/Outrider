@@ -9,22 +9,7 @@ validated when rendered (DECISIONS.md#050).
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Known placeholder values shipped in `.env.example` (and the usual suspects). A verbatim
-# `.env.example` copy would otherwise authenticate against a PUBLIC string — reject these
-# obvious non-secrets at startup so the operator must set a real value. Exact-match
-# (case-insensitive, stripped) so a real secret is never rejected by accident. Mirrored in
-# `github/config.py`; keep the two sets in sync.
-_PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
-    {
-        "replace-me",
-        "replace-me-with-a-long-random-secret",
-        "change-me",
-        "changeme",
-        "secret",
-        "password",
-        "your-secret-here",
-    }
-)
+from outrider.policy.secret_placeholders import SECRET_PLACEHOLDERS as _PLACEHOLDER_SECRETS
 
 
 class DashboardSettings(BaseSettings):

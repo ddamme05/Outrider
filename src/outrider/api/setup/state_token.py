@@ -1,17 +1,10 @@
-# See DECISIONS.md#070 — the signed setup `state` (CSRF + single-use-nonce carrier).
-"""The onboarding `state` — an HMAC-signed, expiring nonce carrier (`DECISIONS.md#070`).
+"""Sign and verify the expiring state returned through GitHub App setup.
 
-Mirrors `notify/oauth_state.py` (Slack OAuth state): the `state` round-trips through GitHub's App
-registration → callback redirect, so it MUST be unforgeable AND bound to the originating attempt. It
-carries the **raw single-use nonce** (whose sha256 is stored in `setup_nonce`) and an expiry,
-HMAC-signed with `OUTRIDER_SETUP_STATE_SECRET`. The callback verifies signature + expiry and reads
-the nonce FROM THE VERIFIED STATE — never from the attacker-controllable callback query.
+The state carries a random one-use value. The callback reads it only after
+signature and expiry checks; state_machine.py consumes it to prevent replay.
+Signing alone does not make state single-use. Missing or weak secrets raise.
 
-A signed+expiring-only state is NOT enough: it is replayable with a *different* attacker `code`,
-which would inject an attacker's App as the root identity. The single-use nonce (consumed atomically
-at callback, `state_machine.consume_callback`) is what closes that; this module only signs/verifies
-the carrier. A missing/weak secret fails CLOSED (raises) so a misconfigured deploy can't mint or
-accept unsigned state.
+See DECISIONS.md#070.
 """
 
 from __future__ import annotations
@@ -23,6 +16,8 @@ import os
 import time
 from dataclasses import dataclass
 from hashlib import sha256
+
+from outrider.policy.secret_placeholders import SECRET_PLACEHOLDERS as _PLACEHOLDER_SECRETS
 
 __all__ = [
     "SETUP_STATE_SECRET_ENV",
@@ -50,19 +45,6 @@ _SIBLING_SECRET_ENVS: tuple[str, ...] = (
     "OUTRIDER_SLACK_STATE_SECRET",
     "OUTRIDER_TOKEN_ENC_KEY",
     "OUTRIDER_TRUNCATION_HMAC_SECRET",
-)
-# Known placeholders shipped in .env.example (+ usual suspects); reject a verbatim copy. Mirrors
-# github/config.py / notify/oauth_state.py — keep in sync.
-_PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
-    {
-        "replace-me",
-        "replace-me-with-a-long-random-secret",
-        "change-me",
-        "changeme",
-        "secret",
-        "password",
-        "your-secret-here",
-    }
 )
 # Min length (chars). A short non-placeholder secret slips the placeholder set but has too little
 # entropy to be a credible HMAC root; 32 is the floor a `secrets.token_urlsafe(32)` (~43 chars)
