@@ -257,6 +257,11 @@ Apply the included source-side storage migration before running the upgraded app
 
 ### Follow-up check: bug, impact, PR relationship and repair advice
 
+Checked reviews cannot serve cached analysis. With `candidate_checks_enabled`, a
+configured cache store must use `SHADOW`; otherwise graph construction fails.
+The existing cache payload lacks the original warnings and assessments needed
+to preserve approval holds. Checks also work with the cache store disabled.
+
 The optional `native-candidate-check-v5` separates four model judgments:
 
 | Field | Values | Question |

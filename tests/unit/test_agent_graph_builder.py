@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from outrider.agent.graph import BuildGraphError, build_graph
+from outrider.agent.nodes.cache_config import CacheMode
 from outrider.audit.aggregates import ReviewLLMAggregates
 from outrider.llm.config import ModelConfig
 
@@ -98,6 +99,17 @@ class _StubAnalyzeEventSink:
         return None
 
     async def emit_observed_skip_shadow(self, event: object) -> None:  # noqa: ARG002
+        return None
+
+
+class _StubCandidateEventSink:
+    async def emit_native_candidate(self, event: Any) -> None:
+        return None
+
+    async def emit_candidate_check_started(self, event: Any) -> None:
+        return None
+
+    async def emit_candidate_assessment(self, event: Any) -> None:
         return None
 
 
@@ -305,6 +317,38 @@ def _valid_args() -> dict[str, Any]:
 def test_build_graph_happy_path_returns_compiled_graph() -> None:
     """Valid dependencies build a runnable graph with the optional Slack resolver omitted."""
     graph = build_graph(**_valid_args())
+    assert callable(graph.ainvoke)
+
+
+def test_candidate_checks_reject_cache_serving() -> None:
+    with pytest.raises(BuildGraphError, match="candidate checks cannot serve cached analysis"):
+        build_graph(
+            **_valid_args(),
+            candidate_checks_enabled=True,
+            candidate_event_sink=_StubCandidateEventSink(),
+            analyze_cache_store=object(),
+            cache_mode=CacheMode.SERVE,
+        )
+
+
+@pytest.mark.parametrize(
+    ("candidate_checks_enabled", "cache_mode", "has_cache_store"),
+    [
+        (True, CacheMode.SHADOW, True),
+        (False, CacheMode.SERVE, True),
+        (True, CacheMode.SERVE, False),
+    ],
+)
+def test_candidate_checks_allow_cache_modes_that_do_not_bypass_checks(
+    candidate_checks_enabled: bool, cache_mode: CacheMode, has_cache_store: bool
+) -> None:
+    graph = build_graph(
+        **_valid_args(),
+        candidate_checks_enabled=candidate_checks_enabled,
+        candidate_event_sink=_StubCandidateEventSink(),
+        analyze_cache_store=object() if has_cache_store else None,
+        cache_mode=cache_mode,
+    )
     assert callable(graph.ainvoke)
 
 

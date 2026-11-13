@@ -501,6 +501,11 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     if candidate_checks_enabled:
         if candidate_event_sink is None:
             raise BuildGraphError("candidate checks require a candidate event writer")
+        if analyze_cache_store is not None and cache_mode is CacheMode.SERVE:
+            raise BuildGraphError(
+                "candidate checks cannot serve cached analysis; "
+                "use shadow mode or disable the cache store"
+            )
         if candidate_store is None:
             candidate_store = CandidateStore(db_factory)
 
