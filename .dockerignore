@@ -19,6 +19,7 @@
 !pyproject.toml
 !uv.lock
 !alembic.ini
+!LICENSE
 
 # Re-exclude secrets / runtime files / build-noise within the un-ignored paths.
 deploy/.env

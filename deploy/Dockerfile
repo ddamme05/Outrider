@@ -16,7 +16,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 # get copied into the image. hatchling builds the wheel from src/outrider.
 COPY src/ ./src/
 COPY db/ ./db/
-COPY alembic.ini ./
+COPY alembic.ini LICENSE ./
 RUN uv sync --frozen --no-dev
 
 EXPOSE 8000

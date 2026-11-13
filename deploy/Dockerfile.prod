@@ -39,7 +39,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 # let the one-shot migration service (deploy/docker-compose.prod.yml) run `alembic upgrade head`.
 COPY src/ ./src/
 COPY db/ ./db/
-COPY alembic.ini ./
+COPY alembic.ini LICENSE ./
 RUN uv sync --frozen --no-dev
 
 # Bake the built SPA and turn on the fail-loud SPA contract (DECISIONS.md#069). A missing
