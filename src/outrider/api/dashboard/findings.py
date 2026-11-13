@@ -10,7 +10,7 @@ Replay reads decisions from its saved, verified events in `reviews.py`.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 from uuid import UUID  # noqa: TC003  (runtime: Pydantic field type)
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict
@@ -96,6 +96,7 @@ class FindingView(BaseModel):
     severity: str
     evidence_tier: str
     file_path: str
+    source_side: Literal["head", "base"] = "head"
     line_start: int
     line_end: int
     # Content — None on a retention-redacted stub (findings row purged).
@@ -196,6 +197,7 @@ async def assemble_finding_views(
                 severity=content_finding.severity,
                 evidence_tier=content_finding.evidence_tier,
                 file_path=content_finding.file_path,
+                source_side=content_finding.source_side,
                 line_start=content_finding.line_start,
                 line_end=content_finding.line_end,
                 content_redacted=False,
@@ -247,6 +249,7 @@ async def assemble_finding_views(
             severity=metadata["severity"],
             evidence_tier=metadata["evidence_tier"],
             file_path=metadata["file_path"],
+            source_side=metadata.get("source_side", "head"),
             line_start=metadata["line_start"],
             line_end=metadata["line_end"],
             content_redacted=True,

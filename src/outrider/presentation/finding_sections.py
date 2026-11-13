@@ -1,19 +1,8 @@
-# See specs/2026-07-06-finding-presentation.md
-"""Canonical finding → structured display sections, shared by the GitHub, Slack, and
-dashboard renderers.
+"""Build the labels and text sections used to display a finding.
 
-`FindingSections` is STRUCTURED DATA ONLY — never markdown/mrkdwn/JSX and never pre-escaped.
-It carries safe developer-authored display LABELS (severity_label, type_label, tier_phrase, …)
-alongside the RAW model-prose fields (title, description, evidence, suggested_fix) that each
-renderer escapes with its OWN primitive (`sanitize_display_string` / `render_fenced_block` for
-GitHub, `_escape_mrkdwn` for Slack, React text-nodes for the dashboard). A raw display string is
-NEVER shared across channels.
-
-The humanization maps are the single source of truth for the labels Python renders (GitHub +
-Slack). The dashboard mirrors them in `dashboard/src/lib/findingSections.ts`; a parity fixture
-keeps the two in lockstep. Eligibility / HITL-outcome phrasing is dashboard-only and lives in
-the TS mirror. An import-time totality assert makes a new enum member without a label crash
-loudly, like the totality guard in `policy/publish_eligibility.py`.
+Callers supply the policy-derived severity. GitHub and Slack share these
+sections and apply their own escaping; the dashboard maintains equivalent
+labels. Descriptions, evidence and titles remain untrusted source-derived text.
 """
 
 from __future__ import annotations
@@ -61,6 +50,7 @@ TYPE_LABEL: Final[dict[FindingType, str]] = {
     FindingType.MISSING_ERROR_HANDLING: "Missing error handling",
     FindingType.MISSING_TEST: "Missing test",
     FindingType.DEPRECATED_API: "Deprecated API",
+    FindingType.CORRECTNESS_BUG: "Correctness bug",
     FindingType.COMMAND_INJECTION: "Command injection",
     FindingType.UNSAFE_DESERIALIZATION: "Unsafe deserialization",
     FindingType.TLS_VERIFY_DISABLED: "TLS verification disabled",
@@ -214,6 +204,8 @@ def build_finding_sections(
         if finding.line_start == finding.line_end
         else f"{finding.file_path}:{finding.line_start}-{finding.line_end}"
     )
+    if finding.source_side == "base":
+        location = f"Removed BASE · {location}"
     return FindingSections(
         severity_key=effective_severity.value,
         severity_label=SEVERITY_LABEL[effective_severity],

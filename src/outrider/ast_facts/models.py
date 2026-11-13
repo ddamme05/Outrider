@@ -1,16 +1,11 @@
-# AST-facts domain models per docs/spec.md §5.4 + specs/2026-04-30-ast-facts-module.md.
-# AST firewall per docs/trust-boundaries.md §4.
-"""Core extraction shapes, parser verdicts, and skip reasons.
+"""Data returned by source parsers: scopes, imports, calls and parse outcomes.
 
-Adapters return these domain models; specialized scan and triviality shapes
-live beside their producers. Audit imports `SkipReason` here per
-`DECISIONS.md#018` point 6, so this module stays import-light: no tree-sitter
-or adapter imports.
+These models keep raw tree-sitter objects inside ast_facts/. Audit also uses
+SkipReason, so this module imports no adapters or grammars (DECISIONS.md#018).
+Specialized SQL-call and comment-filter facts live beside their producers.
 
-The canonical §5.4 shapes (`ScopeUnit`, `ImportRef`, `CallSite`,
-`AssignmentSite`, `ChangedRegion`, `SymbolCandidate`) retain the spec's
-fields without extra validators unless `DECISIONS.md` amends them.
-Other models validate replay-critical bounds and coherence."""
+See docs/spec.md §5.4 and specs/2026-04-30-ast-facts-module.md.
+"""
 
 import hashlib
 from enum import StrEnum
@@ -103,7 +98,7 @@ class SkipReason(StrEnum):
     - Analyze-stage (rule rooted in analyze's decision rationale):
       `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,
       `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`,
-      `ALL_SCOPES_TRIVIAL`, `PATCH_HEAD_MISALIGNED`. Set by the
+      `ALL_SCOPES_TRIVIAL`, `PATCH_HEAD_MISALIGNED`, `PATCH_BASE_MISALIGNED`. Set by the
       analyze node body when it skips a file mid-pass.
       `UNSUPPORTED_LANGUAGE` is capability-scoped: it fires for
       extensions with no registered ast_facts adapter (the registry
@@ -144,6 +139,7 @@ class SkipReason(StrEnum):
     # Amended 2026-07-05 (FUP-217). Best-effort detection: a misalignment
     # whose line numbers still fit the fetched source is not detectable here.
     PATCH_HEAD_MISALIGNED = "PATCH_HEAD_MISALIGNED"
+    PATCH_BASE_MISALIGNED = "PATCH_BASE_MISALIGNED"
 
     def stage(self) -> Literal["parser", "analyze"]:
         """Return which decision stage produced this skip reason.
@@ -191,6 +187,7 @@ _ANALYZE_STAGE_SKIP_REASONS: frozenset[SkipReason] = frozenset(
         SkipReason.UNSUPPORTED_LANGUAGE,
         SkipReason.ALL_SCOPES_TRIVIAL,
         SkipReason.PATCH_HEAD_MISALIGNED,
+        SkipReason.PATCH_BASE_MISALIGNED,
     }
 )
 

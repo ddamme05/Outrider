@@ -1,19 +1,11 @@
-# LLM provider wrapper — typed call surface + Protocols.
-# See specs/2026-05-05-llm-provider-wrapper.md and DECISIONS.md #013/#014/#015/#016/#019.
-"""Provider-neutral requests, responses, errors, and persistence contracts.
+"""Define model requests, responses, provider errors and the provider contract.
 
-Agent nodes call `LLMProvider`; concrete wrappers own vendor SDK access
-under `vendor-sdks-only-in-wrappers`.
-Requests carry transport inputs and audit context, while responses carry
-normalized text, usage, and host identity. Providers persist a completed
-exchange before returning it.
+Provider implementations save completed exchanges before returning. Request
+and response serializers redact content unless callers explicitly request it.
+These shared types import no vendor SDK.
 
-Content serializers redact by default. `INCLUDE_TEXT_OPT_IN` enables raw
-serialization through an identity check; `AuditPersister` instead reads raw
-attributes directly into the retained content table (`DECISIONS.md#016`).
-
-`LLMProviderError` enforces a retry layer on every concrete subclass.
-Its docstring records the complete taxonomy and construction rules.
+See DECISIONS.md#013, #014, #015, #016, #019 and
+docs/trust-boundaries.md §8.
 """
 
 import hashlib
@@ -32,6 +24,7 @@ from typing import (
 from uuid import UUID
 
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -492,27 +485,12 @@ class LLMRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    # Transport fields.
-    #
     # See DECISIONS.md#042-analyze-prompt-cache-packs-a-cross-file-invariant-prefix.
-    # V1 packing convention: V1 has exactly ONE cacheable block — `system_prompt`.
-    # Calling nodes pack CROSS-CALL-STABLE content into `system_prompt`
-    # and everything per-call into `user_prompt`. For analyze (the
-    # analyze-v4 cache-packing repartition), stable means CROSS-FILE
-    # stable: the invariant prefix (`SYSTEM_PROMPT_STABLE_PREFIX`) is
-    # byte-identical for every file in a review, so the cache hits
-    # across the whole per-file fan-out; per-file scope context + the
-    # diff travel in `user_prompt`. The wrapper marks `system_prompt`
-    # with `cache_control: ephemeral`, so reusing the same
-    # `system_prompt` across calls produces cache hits; `user_prompt`
-    # stays outside the cache boundary by design. NOTE: prompts below a
-    # model's min-cacheable floor (`pricing.MIN_CACHEABLE_TOKENS`) are
-    # silently processed uncached. Canonical `docs/spec.md` §9.5
-    # explicitly stages this V1 single-block packing vs the V1.5+
-    # multi-block extension (deferred until `LLMRequest.messages`
-    # becomes supported, which lets stable file-context blocks live in
-    # the user message with their own per-block `cache_control`
-    # markers — recovering same-file scope-context caching too).
+    # V1 has one cacheable block: system_prompt. Analyze keeps its invariant
+    # prefix identical across files; file scope and diff go in user_prompt.
+    # The native wrapper marks the system block cache_control: ephemeral.
+    # Prompts below pricing.MIN_CACHEABLE_TOKENS remain uncached without error.
+    # Multi-block caching needs messages support (docs/spec.md §9.5).
     system_prompt: str = Field(min_length=1)
     user_prompt: str = Field(min_length=1)
     messages: list[LLMMessage] | None = None
@@ -541,20 +519,9 @@ class LLMRequest(BaseModel):
     context_summary: tuple[ContextManifestEntry, ...] = ()
     prompt_template_version: str = Field(min_length=1)
     degraded_mode: bool
-    # Pins the provenance of `degraded_mode=True` so the bool can't be
-    # set without naming a documented degradation cause. The Literal is
-    # narrow on purpose: new reasons require expanding it (deliberate
-    # friction so degraded-mode causes stay enumerable). V1 reasons
-    # match the parser's parse-failure / has_error_in_changed_regions
-    # branches.
-    #
-    # Typed by the shared `DegradationReason` enum (audit/events.py) — the
-    # single source; the old three-Literal lockstep is gone. Adding a member
-    # there propagates here by the type system; the branch that MAPS a new
-    # cause to its reason (a parser branch for parse defects, a
-    # `decide_degradation` routing branch otherwise) and the degraded
-    # prompt's provenance sentence (totality-tested) are the two companions
-    # a new member still needs.
+    # Every degraded call names its cause through the shared DegradationReason
+    # enum. A new reason also needs its parser/routing branch and the degraded
+    # prompt's provenance sentence; the type alone cannot supply those mappings.
     degradation_reason: DegradationReason | None = None
     # V1.5 parallel-analyze phase attribution: the emitting phase's key,
     # mirrored verbatim onto `LLMCallEvent.phase_key` by every provider —
@@ -563,6 +530,8 @@ class LLMRequest(BaseModel):
     # in specs/2026-07-05-parallel-analyze.md). None outside analyze
     # fan-out phases.
     phase_key: str | None = None
+    # Stable identity for a bounded candidate check, independent of phase grouping.
+    candidate_attempt_id: UUID | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @field_validator("response_schema_json")
     @classmethod
@@ -601,6 +570,12 @@ class LLMRequest(BaseModel):
             )
             raise ValueError(msg)
         return value
+
+    @model_validator(mode="after")
+    def _enforce_candidate_attempt_scope(self) -> Self:
+        if self.candidate_attempt_id is not None and self.node_id != "trace":
+            raise ValueError("candidate_attempt_id is only valid for trace checks")
+        return self
 
     @property
     def response_format_digest(self) -> str | None:
@@ -778,6 +753,12 @@ class LLMResponse(BaseModel):
     cache_write_tokens: int = Field(ge=0)
     finish_reason: str
     latency_ms: int = Field(ge=0)
+    # Points to the atomically persisted, expiring exchange content. Older captures
+    # and scripted providers may omit it; callers must handle unavailable content.
+    exchange_event_id: UUID | None = Field(default=None, exclude_if=lambda value: value is None)
+    exchange_recorded_at: AwareDatetime | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     # Host-identity triad (DECISIONS.md#056): providers stamp all three together;
     # the persister cross-checks them against LLMCallEvent. None is read-compatible.
     profile_id: str | None = None
@@ -880,12 +861,8 @@ class LLMProvider(Protocol):
     async def aclose(self) -> None:
         """Release transport resources (e.g. drain the connection pool).
 
-        Wired into the FastAPI lifespan teardown; idempotent. Formalized on the
-        Protocol per DECISIONS.md#035 (retained under #058 after the tracing
-        decorator that originally motivated it was removed) — the lifespan has
-        always depended on this method (`api/lifespan.py`
-        push_async_callback(provider.aclose)); the Protocol declares the contract
-        it relied on.
+        Idempotent and registered by api/lifespan.py for shutdown
+        (DECISIONS.md#035, retained under #058).
         """
         ...
 

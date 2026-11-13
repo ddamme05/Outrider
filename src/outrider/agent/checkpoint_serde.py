@@ -1,13 +1,9 @@
-"""Allowlist Outrider data types for checkpoint serialization.
+"""Register the data types needed to save and resume a review.
 
-HITL resume round-trips ReviewState through the serializer. Register its reachable
-models and enums so strict msgpack decoding can restore them. This preserves
-`state-is-pure-data`: typed data is allowed; live clients and sessions are not.
-
-Channel-level models and enums need explicit entries. Nested model data is
-inlined by its parent; listing those models also covers a future channel use.
-tests/unit/test_checkpoint_serde.py checks the allowlist against the state type
-graph so new state types cannot silently break resume."""
+The checkpoint serializer restores ReviewState models and enums from saved
+data. Clients, database sessions and other running services do not belong in
+that state (state-is-pure-data). test_checkpoint_serde.py checks the allowlist.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +20,9 @@ _MODEL_TYPES: tuple[tuple[str, str], ...] = (
     ("outrider.schemas.hitl", "HITLDecision"),
     ("outrider.schemas.hitl", "HITLRequest"),
     ("outrider.schemas.hitl", "PerFindingDecision"),
+    ("outrider.schemas.native_candidate", "NativeCandidateRef"),
+    ("outrider.schemas.native_candidate", "CandidateAssessmentRef"),
+    ("outrider.schemas.native_candidate", "CandidateCitationRef"),
     ("outrider.schemas.observed_subsumption", "ObservedSubsumedMatch"),
     ("outrider.schemas.pr_context", "ChangedFile"),
     ("outrider.schemas.pr_context", "PRContext"),

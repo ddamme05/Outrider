@@ -433,6 +433,12 @@ export interface components {
             severity: string;
             /** File Path */
             file_path: string;
+            /**
+             * Source Side
+             * @default head
+             * @enum {string}
+             */
+            source_side: "head" | "base";
             /** Line Start */
             line_start: number;
             /** Line End */
@@ -626,6 +632,8 @@ export interface components {
             n_proposals_seen: number;
             /** N Findings Emitted */
             n_findings_emitted: number;
+            /** Selected Finding Ids */
+            selected_finding_ids?: string[] | null;
             /**
              * N Findings Served
              * @default 0
@@ -694,7 +702,7 @@ export interface components {
         };
         /**
          * AnalyzeResponseRejectedEvent
-         * @description Response-level rejection — the LLM response failed to parse as `AnalyzeResponseRaw`.
+         * @description The model response has no complete, bounded findings envelope.
          *
          *     Distinct event from `FindingProposalRejectedEvent` because that event
          *     presupposes a proposal; no proposal exists when the raw response
@@ -740,6 +748,12 @@ export interface components {
             node_id: "analyze";
             /** File Path */
             file_path: string;
+            /**
+             * Source Side
+             * @default head
+             * @enum {string}
+             */
+            source_side: "head" | "base";
             /** Response Hash */
             response_hash: string;
             /**
@@ -925,17 +939,208 @@ export interface components {
             source_cache_created_at: string;
         };
         /**
+         * CandidateAssessmentEvent
+         * @description Keep an assessment's status and content reference separately from the claim.
+         */
+        CandidateAssessmentEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "candidate_assessment";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /**
+             * Node Id
+             * @default trace
+             * @constant
+             */
+            node_id: "trace";
+            assessment: components["schemas"]["CandidateAssessmentRef"];
+        };
+        /** CandidateAssessmentRef */
+        CandidateAssessmentRef: {
+            /** Candidate Id */
+            candidate_id: string;
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Assessment Exchange Event Id */
+            assessment_exchange_event_id?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "supports" | "refutes" | "uncertain";
+            /** Head Assessment */
+            head_assessment?: ("supports" | "refutes" | "uncertain") | null;
+            /** Change Assessment */
+            change_assessment?: ("introduced_or_worsened" | "fix_attempt" | "unrelated_preexisting" | "uncertain") | null;
+            /** Impact Assessment */
+            impact_assessment?: ("supports" | "refutes" | "uncertain" | "not_claimed") | null;
+            /** Repair Assessment */
+            repair_assessment?: ("supports" | "refutes" | "uncertain" | "not_proposed") | null;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "completed" | "interrupted" | "content_unavailable" | "invalid_response" | "provider_failed" | "budget_exhausted";
+            suggested_finding_type?: components["schemas"]["FindingType"] | null;
+            suggested_severity?: components["schemas"]["FindingSeverity"] | null;
+            /** Policy Version */
+            policy_version: string;
+            /**
+             * Citations
+             * @default []
+             */
+            citations: components["schemas"]["CandidateCitationRef"][];
+            /** Reason Hash */
+            reason_hash?: string | null;
+            /** Reason Length */
+            reason_length?: number | null;
+        };
+        /** CandidateCheckStarted */
+        CandidateCheckStarted: {
+            /** Candidate Id */
+            candidate_id: string;
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /**
+             * Source Exchange Event Id
+             * Format: uuid
+             */
+            source_exchange_event_id: string;
+            /** Prompt Hash */
+            prompt_hash: string;
+            /** Question Hash */
+            question_hash: string;
+            /** Model */
+            model: string;
+            /** Snippets */
+            snippets: components["schemas"]["CandidateSnippetRef"][];
+            /** Response Contract */
+            response_contract?: ("head-and-change-v1" | "head-change-and-impact-v1" | "head-change-impact-and-repair-v1") | null;
+        };
+        /**
+         * CandidateCheckStartedEvent
+         * @description Record a check before a model call so interruption never silently rebills.
+         */
+        CandidateCheckStartedEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "candidate_check_started";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /**
+             * Node Id
+             * @default trace
+             * @constant
+             */
+            node_id: "trace";
+            check: components["schemas"]["CandidateCheckStarted"];
+        };
+        /** CandidateCitationRef */
+        CandidateCitationRef: {
+            /** Snippet Id */
+            snippet_id: string;
+            /** File Path */
+            file_path: string;
+            /**
+             * Source Side
+             * @default head
+             * @enum {string}
+             */
+            source_side: "head" | "base";
+            /** Line Start */
+            line_start: number;
+            /** Line End */
+            line_end: number;
+            /** Quote Hash */
+            quote_hash: string;
+        };
+        /** CandidateSnippetRef */
+        CandidateSnippetRef: {
+            /** Snippet Id */
+            snippet_id: string;
+            /** File Path */
+            file_path: string;
+            /**
+             * Source Side
+             * @default head
+             * @enum {string}
+             */
+            source_side: "head" | "base";
+            /** Line Start */
+            line_start: number;
+            /** Line End */
+            line_end: number;
+            /** Source Hash */
+            source_hash: string;
+            /** Text Hash */
+            text_hash: string;
+        };
+        /**
          * ContextManifestEntry
-         * @description One scope-unit entry inside `LLMCallEvent.context_summary`.
+         * @description One included source range in a recorded model call.
          *
-         *     Frozen + extra=forbid because the outer event's `frozen=True` does
-         *     not propagate to nested Pydantic models. Without this, an entry
-         *     could be mutated post-construction (`entry.file_path = "..."`) even
-         *     when the containing event is frozen and the tuple is immutable.
+         *     Nested entries are frozen separately so the call history stays immutable.
          */
         ContextManifestEntry: {
             /** File Path */
             file_path: string;
+            /**
+             * Source Side
+             * @default head
+             * @enum {string}
+             */
+            source_side: "head" | "base";
             /** Scope Unit Name */
             scope_unit_name: string;
             /** Line Start */
@@ -946,7 +1151,7 @@ export interface components {
              * Inclusion Reason
              * @enum {string}
              */
-            inclusion_reason: "changed_scope" | "same_file_context" | "trace_expansion";
+            inclusion_reason: "changed_scope" | "changed_region" | "same_file_context" | "trace_expansion" | "captured_reference";
         };
         /**
          * CostUnpricedReason
@@ -995,24 +1200,14 @@ export interface components {
         };
         /**
          * DegradationReason
-         * @description Why an analyze LLM call ran degraded — THE single source for the
-         *     vocabulary that previously lived in three hand-synced Literals
-         *     (`degradation.py`, `LLMRequest`, this module) plus the degraded prompt's
-         *     provenance-mapping keys. A `str` enum, so event payloads serialize the
-         *     same wire values as before and comparisons against raw strings still
-         *     hold. `PARSE_FAILED` is V1-unreachable (raw-bytes intake path, FUP-053);
-         *     `TREE_HAS_ERROR_NO_SCOPE` is the no-scope syntax-error case
-         *     (DECISIONS.md#033); `MODULE_LEVEL_OBSERVED_MATCH` (DECISIONS.md#062) is
-         *     the one cause that is NOT a parse defect — the parse is clean, the
-         *     degradation is a routing choice, and the review's FileExaminationEvent
-         *     truthfully reports `parse_status="clean"` while the LLMCallEvent carries
-         *     this reason (the cross-event pairing that distinguishes the route).
-         *     Adding a member: the type system now propagates it to every consumer;
-         *     the degraded prompt's provenance mapping (`prompts/analyze.py`) is the
-         *     one companion that needs a sentence, enforced by its totality test.
+         * @description Why a review used bounded text instead of ordinary scope context.
+         *
+         *     Parse defects, the clean module-producer route (#062), and configuration
+         *     text are distinct causes. These values persist in model-call events;
+         *     prompts/analyze.py supplies a truthful explanation for each member.
          * @enum {string}
          */
-        DegradationReason: "parse_failed" | "tree_has_error_in_changed_regions" | "tree_has_error_no_scope" | "module_level_observed_match";
+        DegradationReason: "parse_failed" | "tree_has_error_in_changed_regions" | "tree_has_error_no_scope" | "module_level_observed_match" | "text_only_context" | "file_removal";
         /**
          * EvidenceTier
          * @description How a finding's claim is justified.
@@ -1138,6 +1333,12 @@ export interface components {
             severity: components["schemas"]["FindingSeverity"];
             /** File Path */
             file_path: string;
+            /**
+             * Source Side
+             * @default head
+             * @enum {string}
+             */
+            source_side: "head" | "base";
             /** Line Start */
             line_start: number;
             /** Line End */
@@ -1163,14 +1364,17 @@ export interface components {
          *     rather than the raw model string per `DECISIONS.md#014` point 1:
          *     every model-originated value is hostile until validated, so audit
          *     rows must not carry user code or prompt/completion content.
-         *     Cross-field validator pairs `claimed_evidence_tier` with the
+         *     Valid-shaped proposals pair `claimed_evidence_tier` with the
          *     `evidence_tier_not_in_enum` reason bidirectionally.
          *
-         *     `proposal_hash` carries the PR/file-scoped `compute_proposal_hash`
+         *     Valid-shaped proposals use the file-scoped `compute_proposal_hash`
          *     digest per `DECISIONS.md#022`. Two analyze passes over DIFFERENT
          *     source files that emit logically-identical proposals produce
          *     DISTINCT `proposal_hash` values — preserving per-source-file
          *     audit provenance on the join with `TraceCandidate.source_proposal_hash`.
+         *     A malformed proposal instead identifies its file, exact response hash and
+         *     array index with the versioned `malformed-analyze-proposal-v1` recipe.
+         *     Type and tier metadata remain absent until proposal shape validates.
          */
         FindingProposalRejectedEvent: {
             /**
@@ -1210,18 +1414,24 @@ export interface components {
             node_id: "analyze";
             /** File Path */
             file_path: string;
+            /**
+             * Source Side
+             * @default head
+             * @enum {string}
+             */
+            source_side: "head" | "base";
             /** Proposal Hash */
             proposal_hash: string;
             claimed_evidence_tier?: components["schemas"]["EvidenceTier"] | null;
             /** Claimed Finding Type Hash */
-            claimed_finding_type_hash: string;
+            claimed_finding_type_hash: string | null;
             /** Claimed Finding Type Len */
-            claimed_finding_type_len: number;
+            claimed_finding_type_len: number | null;
             /**
              * Rejection Reason
              * @enum {string}
              */
-            rejection_reason: "query_match_id_not_in_registry" | "trace_path_not_admissible" | "finding_type_not_in_enum" | "evidence_tier_not_in_enum" | "span_outside_scope_unit" | "span_outside_file" | "span_outside_degraded_context" | "sql_injection_on_parameterized_call" | "schema_construction_failed";
+            rejection_reason: "raw_proposal_invalid" | "evidence_quote_invalid" | "model_observed_not_supported" | "query_match_id_not_in_registry" | "trace_path_not_admissible" | "finding_type_not_in_enum" | "evidence_tier_not_in_enum" | "span_outside_scope_unit" | "span_outside_file" | "span_outside_degraded_context" | "sql_injection_on_parameterized_call" | "schema_construction_failed";
             /** Rejection Detail */
             rejection_detail: string;
         };
@@ -1233,16 +1443,12 @@ export interface components {
         FindingSeverity: "critical" | "high" | "medium" | "low" | "info";
         /**
          * FindingType
-         * @description The constrained enum the LLM classifies findings under.
+         * @description Categories admitted by the analyzer and used by the severity policy.
          *
-         *     The retry/normalize/anomaly path that turns a model-produced string
-         *     into a FindingType enum value (or anomalies if no safe match) is the
-         *     analyze node's responsibility per `finding-type-enum-constrained`.
-         *     This enum is the type system; the analyze node is what bridges from
-         *     untrusted model output to it.
+         *     The analyzer records rejections before applying the severity policy.
          * @enum {string}
          */
-        FindingType: "sql_injection" | "xss" | "hardcoded_secret" | "auth_bypass" | "path_traversal" | "missing_input_validation" | "n_plus_one_query" | "blocking_call_in_async" | "unused_import" | "missing_error_handling" | "missing_test" | "deprecated_api" | "command_injection" | "unsafe_deserialization" | "tls_verify_disabled" | "weak_crypto" | "weak_password_hash" | "insecure_randomness" | "ssrf" | "ssrf_metadata" | "open_redirect" | "open_redirect_authed";
+        FindingType: "sql_injection" | "xss" | "hardcoded_secret" | "auth_bypass" | "path_traversal" | "missing_input_validation" | "n_plus_one_query" | "blocking_call_in_async" | "unused_import" | "missing_error_handling" | "missing_test" | "deprecated_api" | "command_injection" | "unsafe_deserialization" | "tls_verify_disabled" | "weak_crypto" | "weak_password_hash" | "insecure_randomness" | "ssrf" | "ssrf_metadata" | "open_redirect" | "open_redirect_authed" | "correctness_bug";
         /**
          * FindingView
          * @description One finding, assembled from the permanent audit record + content.
@@ -1285,6 +1491,12 @@ export interface components {
             evidence_tier: string;
             /** File Path */
             file_path: string;
+            /**
+             * Source Side
+             * @default head
+             * @enum {string}
+             */
+            source_side: "head" | "base";
             /** Line Start */
             line_start: number;
             /** Line End */
@@ -1483,6 +1695,11 @@ export interface components {
             /** Auto Post Findings */
             auto_post_findings: string[];
             /**
+             * Verification Hold Finding Ids
+             * @default []
+             */
+            verification_hold_finding_ids: string[];
+            /**
              * Created At
              * Format: date-time
              */
@@ -1544,6 +1761,8 @@ export interface components {
             is_eval: boolean;
             /** Phase Key */
             phase_key?: string | null;
+            /** Candidate Attempt Id */
+            candidate_attempt_id?: string | null;
             /** Model */
             model: string;
             /**
@@ -1633,6 +1852,95 @@ export interface components {
         MetricDeltas: {
             current: components["schemas"]["PeriodTotals"];
             previous: components["schemas"]["PeriodTotals"];
+        };
+        /**
+         * NativeCandidateEvent
+         * @description Identify an original proposal without copying its expiring content.
+         */
+        NativeCandidateEvent: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id?: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event_type: "native_candidate";
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp?: string;
+            /** Sequence Number */
+            sequence_number?: number | null;
+            /**
+             * Is Eval
+             * @default false
+             */
+            is_eval: boolean;
+            /**
+             * Node Id
+             * @default analyze
+             * @constant
+             */
+            node_id: "analyze";
+            /** Phase Key */
+            phase_key?: string | null;
+            candidate: components["schemas"]["NativeCandidateRef"];
+        };
+        /** NativeCandidateRef */
+        NativeCandidateRef: {
+            /** Candidate Id */
+            candidate_id: string;
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * Source Exchange Event Id
+             * Format: uuid
+             */
+            source_exchange_event_id: string;
+            /** Response Hash */
+            response_hash: string;
+            /** Proposal Index */
+            proposal_index: number;
+            /** File Path */
+            file_path: string;
+            /**
+             * Source Side
+             * @default head
+             * @enum {string}
+             */
+            source_side: "head" | "base";
+            /** Pass Index */
+            pass_index: number;
+            /**
+             * Initial Disposition
+             * @enum {string}
+             */
+            initial_disposition: "admitted" | "rejected" | "malformed";
+            /** Rejection Reason */
+            rejection_reason?: ("raw_proposal_invalid" | "query_match_id_not_in_registry" | "trace_path_not_admissible" | "finding_type_not_in_enum" | "evidence_tier_not_in_enum" | "span_outside_scope_unit" | "span_outside_file" | "span_outside_degraded_context" | "sql_injection_on_parameterized_call" | "schema_construction_failed" | "evidence_quote_invalid" | "model_observed_not_supported") | null;
+            /** Proposal Hash */
+            proposal_hash?: string | null;
+            /** Finding Id */
+            finding_id?: string | null;
+            /** Content Hash */
+            content_hash?: string | null;
+            finding_type?: components["schemas"]["FindingType"] | null;
+            severity?: components["schemas"]["FindingSeverity"] | null;
+            evidence_tier?: components["schemas"]["EvidenceTier"] | null;
+            /** Policy Version */
+            policy_version?: string | null;
         };
         /**
          * ObservedSkipChangedRegion
@@ -2044,6 +2352,12 @@ export interface components {
             finding_id: string;
             /** File Path */
             file_path: string;
+            /**
+             * Source Side
+             * @default head
+             * @enum {string}
+             */
+            source_side: "head" | "base";
             /** Line Start */
             line_start: number;
             /** Line End */
@@ -2188,6 +2502,12 @@ export interface components {
             coordinate_error_kind?: string | null;
             /** File Path */
             file_path: string;
+            /**
+             * Source Side
+             * @default head
+             * @enum {string}
+             */
+            source_side: "head" | "base";
             /** Line Start */
             line_start: number;
             /** Line End */
@@ -2208,7 +2528,7 @@ export interface components {
          *     audit-stream queries can filter by enum members rather than raw strings.
          * @enum {string}
          */
-        PublishRoutingReason: "reviewable_diff_line" | "unchanged_region" | "non_diffed_file" | "coordinate_error";
+        PublishRoutingReason: "reviewable_diff_line" | "unchanged_region" | "removed_source" | "non_diffed_file" | "coordinate_error";
         /**
          * ReconstructedPhase
          * @description A graph-node phase bounded by a `ReviewPhaseEvent` start/end pair.
@@ -2228,7 +2548,7 @@ export interface components {
             start: components["schemas"]["ReviewPhaseEvent"] | null;
             end: components["schemas"]["ReviewPhaseEvent"] | null;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"] | components["schemas"]["SlackNotificationEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"] | components["schemas"]["NativeCandidateEvent"] | components["schemas"]["CandidateCheckStartedEvent"] | components["schemas"]["CandidateAssessmentEvent"] | components["schemas"]["SlackNotificationEvent"])[];
         };
         /**
          * ReplayBucket
@@ -2328,11 +2648,11 @@ export interface components {
             /** Status */
             status: string | null;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"] | components["schemas"]["SlackNotificationEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"] | components["schemas"]["NativeCandidateEvent"] | components["schemas"]["CandidateCheckStartedEvent"] | components["schemas"]["CandidateAssessmentEvent"] | components["schemas"]["SlackNotificationEvent"])[];
             /** Phases */
             phases: components["schemas"]["ReconstructedPhase"][] | null;
             /** Inter Phase Events */
-            inter_phase_events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"] | components["schemas"]["SlackNotificationEvent"])[];
+            inter_phase_events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"] | components["schemas"]["NativeCandidateEvent"] | components["schemas"]["CandidateCheckStartedEvent"] | components["schemas"]["CandidateAssessmentEvent"] | components["schemas"]["SlackNotificationEvent"])[];
             /** Findings */
             findings: components["schemas"]["TimelineFindingContentView"][];
             /** Llm Exchanges */
@@ -2464,7 +2784,7 @@ export interface components {
              */
             review_id: string;
             /** Events */
-            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"] | components["schemas"]["SlackNotificationEvent"])[];
+            events: (components["schemas"]["AgentTransitionEvent"] | components["schemas"]["ReviewPhaseEvent"] | components["schemas"]["LLMCallEvent"] | components["schemas"]["FileExaminationEvent"] | components["schemas"]["ScopeExclusionEvent"] | components["schemas"]["CacheLookupEvent"] | components["schemas"]["CacheServeEvent"] | components["schemas"]["ObservedSkipShadowEvent"] | components["schemas"]["FindingEvent"] | components["schemas"]["TraceDecisionEvent"] | components["schemas"]["HITLRequestEvent"] | components["schemas"]["HITLDecisionEvent"] | components["schemas"]["PublishEvent"] | components["schemas"]["PublishRoutingEvent"] | components["schemas"]["PublishEligibilityEvent"] | components["schemas"]["PublishAttemptEvent"] | components["schemas"]["AnalyzeCompletedEvent"] | components["schemas"]["FindingProposalRejectedEvent"] | components["schemas"]["AnalyzeResponseRejectedEvent"] | components["schemas"]["SynthesizeCompletedEvent"] | components["schemas"]["ReplayVerdictEvent"] | components["schemas"]["NativeCandidateEvent"] | components["schemas"]["CandidateCheckStartedEvent"] | components["schemas"]["CandidateAssessmentEvent"] | components["schemas"]["SlackNotificationEvent"])[];
             /** Total */
             total: number;
         };
@@ -2782,7 +3102,7 @@ export interface components {
          *     - Analyze-stage (rule rooted in analyze's decision rationale):
          *       `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,
          *       `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`,
-         *       `ALL_SCOPES_TRIVIAL`, `PATCH_HEAD_MISALIGNED`. Set by the
+         *       `ALL_SCOPES_TRIVIAL`, `PATCH_HEAD_MISALIGNED`, `PATCH_BASE_MISALIGNED`. Set by the
          *       analyze node body when it skips a file mid-pass.
          *       `UNSUPPORTED_LANGUAGE` is capability-scoped: it fires for
          *       extensions with no registered ast_facts adapter (the registry
@@ -2793,7 +3113,7 @@ export interface components {
          *     Imported by `outrider/audit/events.py` per `DECISIONS.md#018`.
          * @enum {string}
          */
-        SkipReason: "OVERSIZED" | "VENDORED" | "GENERATED_FILENAME" | "MINIFIED" | "GENERATED_BANNER" | "BINARY" | "COST_BUDGET_EXHAUSTED" | "NO_REVIEWABLE_CONTEXT" | "NO_CHANGED_SCOPE_UNITS" | "UNSUPPORTED_LANGUAGE" | "ALL_SCOPES_TRIVIAL" | "PATCH_HEAD_MISALIGNED";
+        SkipReason: "OVERSIZED" | "VENDORED" | "GENERATED_FILENAME" | "MINIFIED" | "GENERATED_BANNER" | "BINARY" | "COST_BUDGET_EXHAUSTED" | "NO_REVIEWABLE_CONTEXT" | "NO_CHANGED_SCOPE_UNITS" | "UNSUPPORTED_LANGUAGE" | "ALL_SCOPES_TRIVIAL" | "PATCH_HEAD_MISALIGNED" | "PATCH_BASE_MISALIGNED";
         /**
          * SlackInstallURL
          * @description JSON body of `GET /slack/install` when the caller sends `Accept: application/json`
@@ -2996,6 +3316,8 @@ export interface components {
             overall_risk: components["schemas"]["RiskLevel"];
             /** N Findings */
             n_findings: number;
+            /** Selected Finding Ids */
+            selected_finding_ids?: string[] | null;
             /**
              * N Findings Dropped Over Cap
              * @default 0

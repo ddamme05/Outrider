@@ -1,21 +1,13 @@
-# See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
-# See also DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only
-# See also DECISIONS.md#031-replay-v1-verification-is-verify-only-no-source-span-re-run
-"""Reconstruct and verify a review from its append-only audit stream.
+"""Reconstruct and verify a review from its saved audit history.
 
-`AuditReplayer.reconstruct` reads audit rows and retained review/finding/LLM
-content in one repeatable-read snapshot. It restores event types and sequence
-numbers, checks row/payload and eval-scope agreement, groups phases, and
-labels content as full, mixed, or metadata-only by row presence.
+AuditReplayer.reconstruct reads one database snapshot, restoring typed events
+and any retained content. assert_equivalent checks ordering, references,
+evidence, hashes and the recorded severity policy. Missing expired content is
+represented explicitly; incompatible surviving data raises an error.
 
-`assert_equivalent` verifies that reconstruction: sequence and phase order,
-proof artifacts and hashes, cross-event references, content, and historical
-severity policy. Replay is verify-only (`DECISIONS.md#031`); it runs no graph,
-LLM call, or tree-sitter query against source bytes.
-
-Content retention follows `llm_content <= findings <= review` (`#014/#016`).
-Missing content produces labeled stubs; incompatible surviving rows raise.
-The dashboard replay timeline and background verdict projector share this model.
+Replay runs no workflow, model call or source query (DECISIONS.md#031).
+Content retention follows DECISIONS.md#014 and #016. The dashboard and
+background verification use the same reconstruction.
 """
 
 from collections.abc import Mapping
@@ -23,10 +15,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -34,6 +26,7 @@ from outrider.audit.events import (
     REPLAY_HISTORICAL_CONTEXT_KEY,
     RESERVED_HISTORICAL_PROPOSAL_HASH,
     AgentTransitionEvent,
+    AnalyzeCompletedEvent,
     AuditEvent,
     AuditEventAdapter,
     AuditEventBase,
@@ -48,6 +41,7 @@ from outrider.audit.events import (
     ReplayVerdictEvent,
     ReviewPhaseEvent,
     SlackNotificationEvent,
+    SynthesizeCompletedEvent,
     TraceDecisionEvent,
     compute_finding_content_hash,
 )
@@ -159,6 +153,9 @@ class FindingContent(BaseModel):
     severity: FindingSeverity
     evidence_tier: EvidenceTier
     file_path: str
+    source_side: Literal["head", "base"] = Field(
+        default="head", exclude_if=lambda value: value == "head"
+    )
     line_start: int
     line_end: int
     title: str
@@ -786,6 +783,7 @@ def _verify_proof_boundary(events: tuple[AuditEvent, ...]) -> None:
             line_start=event.line_start,
             line_end=event.line_end,
             finding_type=event.finding_type,
+            source_side=event.source_side,
         )
         if recomputed != event.finding_content_hash:
             raise ReplayEquivalenceError(
@@ -830,6 +828,10 @@ def _verify_cross_event_refs(events: tuple[AuditEvent, ...]) -> None:
         elif isinstance(event, HITLDecisionEvent):
             for decision in event.decisions:
                 _require(decision.finding_id, "HITLDecisionEvent.decisions")
+        elif isinstance(event, AnalyzeCompletedEvent | SynthesizeCompletedEvent):
+            if event.selected_finding_ids is not None:
+                for finding_id in event.selected_finding_ids:
+                    _require(finding_id, f"{type(event).__name__}.selected_finding_ids")
 
 
 def _verify_mode_consistency(review: ReconstructedReview) -> None:
@@ -904,6 +906,7 @@ def _verify_full_finding(
         ("severity", content.severity, event.severity),
         ("evidence_tier", content.evidence_tier, event.evidence_tier),
         ("file_path", content.file_path, event.file_path),
+        ("source_side", content.source_side, event.source_side),
         ("line_start", content.line_start, event.line_start),
         ("line_end", content.line_end, event.line_end),
         ("policy_version", content.policy_version, event.policy_version),
@@ -948,11 +951,9 @@ def _verify_finding_override_projection(
       must corroborate it: a `SEVERITY_OVERRIDE` decision for this finding whose
       `original_severity` / `reason` MATCH. This is the replay mirror of the
       runtime fabricated-override gate in `policy/publish_eligibility.py`.
-    - **Exactly one populated (PARTIAL)** — an incoherent envelope; rejected as a
-      forged/buggy row before any corroboration check. Without this, a row with
-      `original_severity` set + `override_reason` NULL passed whenever the stream
-      held a matching decision, because per-field NULL-skipping ignored the
-      missing half (the FUP-122 follow-up gap Codex flagged).
+    - **Exactly one populated (PARTIAL)** — an incoherent envelope; reject it
+      before checking the stream. A matching decision cannot justify an
+      incomplete projection.
 
     Deliberately NOT part of the checked envelope: `overrider_id`. The canonical
     `ReviewFinding` triplet includes it, but #034 leaves the ROW's `overrider_id`
@@ -1100,6 +1101,75 @@ def reconstruct_event_from_row(
 # ---------------------------------------------------------------------------
 
 
+def _build_reconstructed_review(
+    *,
+    review_id: UUID,
+    events: tuple[AuditEvent, ...],
+    review_row: Review | None,
+    finding_rows: dict[UUID, Finding],
+    content_rows: dict[UUID, LLMCallContent],
+) -> ReconstructedReview:
+    """Join loaded content to the audit stream and verify evaluation isolation."""
+    findings = tuple(
+        ReconstructedFinding(
+            event=event,
+            content=_finding_content(finding_rows.get(event.finding_id)),
+        )
+        for event in events
+        if isinstance(event, FindingEvent)
+    )
+    # Orphans: stored findings the append-only audit stream never recorded.
+    # There is deliberately NO `llm_call_content` equivalent (DECISIONS.md#036):
+    # `findings` has no FK to its FindingEvent, so a row can outlive a deleted
+    # event → reachable orphan. `llm_call_content.event_id` IS an FK to
+    # `audit_events.event_id`, so the missing-parent orphan is schema-prevented
+    # (the residual tamper cases are #036's scope, not per-review replay).
+    event_finding_ids = {e.finding_id for e in events if isinstance(e, FindingEvent)}
+    orphan_finding_ids = tuple(
+        fid for fid in sorted(finding_rows, key=str) if fid not in event_finding_ids
+    )
+    llm_exchanges = tuple(
+        ReconstructedLLMExchange(
+            event=event,
+            prompt=content.prompt if (content := content_rows.get(event.event_id)) else None,
+            completion=(
+                content.completion if (content := content_rows.get(event.event_id)) else None
+            ),
+        )
+        for event in events
+        if isinstance(event, LLMCallEvent)
+    )
+    # is_eval coherence (eval-isolation, docs/testing.md): the audit stream's
+    # is_eval (events[0], the canonical review-level flag) must agree across
+    # every event AND every joined content-table row (reviews / findings /
+    # llm_call_content). A table-vs-stream drift would mis-bucket the
+    # reconstructed review; checked during reconstruction so the timeline-UI
+    # read-model consumer is protected, not only assert_replay_equivalent.
+    _verify_is_eval_consistent(
+        stream_is_eval=events[0].is_eval,
+        events=events,
+        review_row=review_row,
+        finding_rows=tuple(finding_rows.values()),
+        content_rows=tuple(content_rows.values()),
+    )
+    mode = _classify_mode(
+        review_present=review_row is not None,
+        findings=findings,
+        llm_exchanges=llm_exchanges,
+    )
+    return ReconstructedReview(
+        review_id=review_id,
+        mode=mode,
+        is_eval=events[0].is_eval,
+        review=_review_metadata(review_row),
+        events=events,
+        phases=_group_phases(events),
+        findings=findings,
+        llm_exchanges=llm_exchanges,
+        orphan_finding_ids=orphan_finding_ids,
+    )
+
+
 class AuditReplayer:
     """Read-only reconstructor over `audit_events` + the content tables.
 
@@ -1215,63 +1285,12 @@ class AuditReplayer:
                     ).scalars()
                 }
 
-        findings = tuple(
-            ReconstructedFinding(
-                event=event,
-                content=_finding_content(finding_rows.get(event.finding_id)),
-            )
-            for event in events
-            if isinstance(event, FindingEvent)
-        )
-        # Orphans: stored findings the append-only audit stream never recorded.
-        # There is deliberately NO `llm_call_content` equivalent (DECISIONS.md#036):
-        # `findings` has no FK to its FindingEvent, so a row can outlive a deleted
-        # event → reachable orphan. `llm_call_content.event_id` IS an FK to
-        # `audit_events.event_id`, so the missing-parent orphan is schema-prevented
-        # (the residual tamper cases are #036's scope, not per-review replay).
-        event_finding_ids = {e.finding_id for e in events if isinstance(e, FindingEvent)}
-        orphan_finding_ids = tuple(
-            fid for fid in sorted(finding_rows, key=str) if fid not in event_finding_ids
-        )
-        llm_exchanges = tuple(
-            ReconstructedLLMExchange(
-                event=event,
-                prompt=content.prompt if (content := content_rows.get(event.event_id)) else None,
-                completion=(
-                    content.completion if (content := content_rows.get(event.event_id)) else None
-                ),
-            )
-            for event in events
-            if isinstance(event, LLMCallEvent)
-        )
-        # is_eval coherence (eval-isolation, docs/testing.md): the audit stream's
-        # is_eval (events[0], the canonical review-level flag) must agree across
-        # every event AND every joined content-table row (reviews / findings /
-        # llm_call_content). A table-vs-stream drift would mis-bucket the
-        # reconstructed review; checked here in reconstruct() so the timeline-UI
-        # read-model consumer is protected, not only assert_replay_equivalent.
-        _verify_is_eval_consistent(
-            stream_is_eval=events[0].is_eval,
+        return _build_reconstructed_review(
+            review_id=review_id,
             events=events,
             review_row=review_row,
-            finding_rows=tuple(finding_rows.values()),
-            content_rows=tuple(content_rows.values()),
-        )
-        mode = _classify_mode(
-            review_present=review_row is not None,
-            findings=findings,
-            llm_exchanges=llm_exchanges,
-        )
-        return ReconstructedReview(
-            review_id=review_id,
-            mode=mode,
-            is_eval=events[0].is_eval,
-            review=_review_metadata(review_row),
-            events=events,
-            phases=_group_phases(events),
-            findings=findings,
-            llm_exchanges=llm_exchanges,
-            orphan_finding_ids=orphan_finding_ids,
+            finding_rows=finding_rows,
+            content_rows=content_rows,
         )
 
     async def assert_replay_equivalent(
@@ -1391,6 +1410,7 @@ def _finding_content(row: Finding | None) -> FindingContent | None:
         severity=FindingSeverity(row.severity),
         evidence_tier=EvidenceTier(row.evidence_tier),
         file_path=row.file_path,
+        source_side=row.source_side,
         line_start=row.line_start,
         line_end=row.line_end,
         title=row.title,

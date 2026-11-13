@@ -63,6 +63,7 @@ class AgentFindingView(BaseModel):
     finding_type: str
     severity: str
     file_path: str
+    source_side: Literal["head", "base"] = "head"
     line_start: int
     line_end: int
     evidence_tier: str
@@ -202,6 +203,7 @@ def _to_agent_finding(
         finding_type=fv.finding_type,
         severity=effective_severity,
         file_path=fv.file_path,
+        source_side=fv.source_side,
         line_start=fv.line_start,
         line_end=fv.line_end,
         evidence_tier=fv.evidence_tier,

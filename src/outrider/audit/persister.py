@@ -1,22 +1,13 @@
-# See specs/2026-05-16-audit-persister.md + DECISIONS.md#014/#016.
-"""Durable writes and idempotency reads for every audit sink protocol.
+"""Save review events and content before reporting a successful write.
 
-Each write opens a fresh session and transaction. `_persist_non_phase_event`
-handles event-ID retries with payload equality; `_persist_keyed_by_natural_key`
-returns the canonical trace/HITL event after identity-subset comparison
-(`DECISIONS.md#026`). Phase markers and replay verdicts have their own keys.
+Each call uses its own database transaction. Retries must agree with the saved
+event; they never restore content already removed by retention. Model-call
+events and their content commit together, as do findings and their content.
+Audit rows cannot be updated or deleted.
 
-LLM events and raw content commit together (`DECISIONS.md#016`); findings
-and their content do too (`#014`). Retry paths verify surviving content but
-never recreate content already purged by retention. Audit rows are insert-only;
-the database trigger blocks UPDATE/DELETE.
-
-Conflict errors expose identifiers, field names, hashes, and lengths only.
-Provider wrappers preserve causes only for `METADATA_ONLY_EXCEPTION_TYPES`,
-suppressing unknown exception text and chains. Engine `hide_parameters=True`
-adds protection wherever SQLAlchemy errors are rendered outside the wrapper.
-Keep new persister exceptions metadata-only and add them to the allowlist;
-`test_every_persister_exception_is_metadata_only_listed` checks completeness.
+Errors expose identifiers, hashes and sizes, never saved content. New persister
+exceptions must remain in METADATA_ONLY_EXCEPTION_TYPES.
+See DECISIONS.md#014, #016, #026 and specs/2026-05-16-audit-persister.md.
 """
 
 from __future__ import annotations
@@ -34,10 +25,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple
 
-# Runtime import: typed-kwarg signatures on the strict-keyword exception
-# constructors reference UUID as a parameter annotation. TYPE_CHECKING-only
-# would only suffice if annotations were string-quoted; runtime-validated
-# parameter shapes benefit from a real type at module import.
+# Exception constructors need UUID available for runtime annotation inspection.
 from uuid import UUID  # noqa: TC003 — runtime annotation needed for typed exception constructors
 
 from sqlalchemy import func as sa_func
@@ -65,9 +53,12 @@ if TYPE_CHECKING:
         AnalyzeResponseRejectedEvent,
         CacheLookupEvent,
         CacheServeEvent,
+        CandidateAssessmentEvent,
+        CandidateCheckStartedEvent,
         FileExaminationEvent,
         FindingProposalRejectedEvent,
         LLMCallEvent,
+        NativeCandidateEvent,
         ObservedSkipShadowEvent,
         PublishAttemptEvent,
         PublishEligibilityEvent,
@@ -123,15 +114,9 @@ __all__ = [
 ]
 
 
-# Sentinel for "the denormalized top-level column stays NULL for this event
-# type." `audit_events` has a top-level nullable `phase_key TEXT` column
-# denormalized from the JSONB payload (genesis migration line 103, indexed by
-# `ix_audit_events_review_phase_key`). The persister populates it from
-# `event.phase_key` only for `ReviewPhaseEvent`; every other event type
-# writes NULL there — including the ten V1.5 analyze-emitted carriers whose
-# `phase_key` field rides the JSONB payload in full (DECISIONS.md#064).
-# Whether the carriers also denormalize into the column is a query-efficiency
-# call the replay increment may revisit; the payload is authoritative.
+# Only ReviewPhaseEvent populates audit_events.phase_key's indexed column.
+# Other carriers keep phase_key in the authoritative JSONB payload and write
+# NULL to the column (DECISIONS.md#064).
 _NO_PHASE_KEY: Final[None] = None
 
 # The `replay_verdict` partial-index predicate as LITERAL SQL, never an
@@ -150,20 +135,11 @@ _REPLAY_VERDICT_INDEX_WHERE: Final = sa_text("event_type = 'replay_verdict'")
 _EXCLUDE_FROM_PAYLOAD: Final[set[str]] = {"sequence_number"}
 
 
-# The metadata-only contract per `DECISIONS.md#016` point 4 is a property
-# of EACH exception type the persister raises — `str(exc)` and
-# `repr(exc)` MUST contain only schema identifiers (event_id, table/column
-# names, mismatched_fields, SHA-256 digests), never raw payload content.
-# `LLMPersisterError` at `anthropic_provider.py::complete()` step 9
-# (`except Exception as exc`) consults this tuple to type-narrow the
-# wrap shape: known metadata-only types render via `f"...{exc}..."`
-# with `from exc` (cause chain preserved — both wrapper message and
-# cause are content-clean); unknown types render only as
-# `f"...<{type(exc).__name__}>..."` with `from None`
-# (`__suppress_context__=True` blocks traceback walking into the
-# original exception's args/str). A new exception type added to this
-# module MUST be reviewed for the metadata-only property AND added to
-# this tuple — that's the explicit contributor contract.
+# Every listed exception's str/repr must contain metadata only: identifiers,
+# field names, digests and lengths, never payload content (DECISIONS.md#016).
+# Providers preserve these messages and cause chains. For unknown types they
+# expose only the class name and suppress the cause. Review and add each new
+# persister exception to this allowlist before its text can cross that boundary.
 METADATA_ONLY_EXCEPTION_TYPES: tuple[type[BaseException], ...] = ()
 # Populated below after each class is defined; forward-ref-free.
 
@@ -335,6 +311,7 @@ async def _verify_stored_finding_content(
                 Finding.severity,
                 Finding.evidence_tier,
                 Finding.file_path,
+                Finding.source_side,
                 Finding.line_start,
                 Finding.line_end,
                 Finding.title,
@@ -674,6 +651,7 @@ class AuditPersisterEventRequestFieldMismatchError(ValueError, metaclass=_Frozen
             # strict hybrid grouping would then bind the call under a phase
             # that never made it.
             "phase_key",
+            "candidate_attempt_id",
             "prompt_hash",
             "system_prompt_hash",
         }
@@ -749,6 +727,8 @@ class AuditPersisterEventResponseFieldMismatchError(ValueError, metaclass=_Froze
 
     _CHECKED_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {
+            "event_id",
+            "timestamp",
             "model",
             "input_tokens",
             "output_tokens",
@@ -1435,6 +1415,7 @@ _HITL_REQUEST_IDENTITY_SUBSET: Final[frozenset[str]] = frozenset(
     {
         "findings_requiring_approval",
         "auto_post_findings",
+        "verification_hold_finding_ids",
         "created_at",
         "expires_at",
         "is_eval",
@@ -1467,6 +1448,7 @@ _SET_SEMANTIC_IDENTITY_FIELDS: Final[frozenset[str]] = frozenset(
         # `AuditPersisterHITLRequestNaturalKeyConflict` raises.
         "findings_requiring_approval",
         "auto_post_findings",
+        "verification_hold_finding_ids",
     }
 )
 
@@ -1599,15 +1581,9 @@ def _payload_identity_subset(event_type: str) -> frozenset[str]:
     LLM-ranking-order-variant `proposed_import_strings` per #026 point 3),
     `event_type` (pinned by partial-index WHERE).
 
-    V1 supports `trace_decision`, `hitl_request`, and `hitl_decision`
-    — the natural-key mode per `DECISIONS.md#026` is shared across
-    these three event types (the trace-arc landed it first; the HITL
-    arc generalized the dispatch via the `_NATURAL_KEY_SPECS`
-    registry). Unknown event types are a producer bug: the caller
-    routed to the natural-key helper for an event type the persister
-    doesn't know how to compare. Fail loud on unknown event_type to
-    surface the routing bug at the persister boundary rather than
-    silently admitting a wrong-mode write.
+    `_NATURAL_KEY_SPECS` supports trace_decision, hitl_request and hitl_decision
+    under DECISIONS.md#026. Unknown event types raise: routing an unsupported
+    event here is a producer bug, not an event-ID retry.
     """
     try:
         return _IDENTITY_SUBSETS[event_type]
@@ -1742,6 +1718,9 @@ def _serialize_event_payload(
         | HITLDecisionEvent
         | SynthesizeCompletedEvent
         | ReplayVerdictEvent
+        | NativeCandidateEvent
+        | CandidateCheckStartedEvent
+        | CandidateAssessmentEvent
     ),
 ) -> dict[str, Any]:
     """Pydantic event → JSONB payload dict, JSON-normalized.
@@ -1795,6 +1774,7 @@ def _lift_finding_event(
         finding_type=finding.finding_type,
         severity=finding.severity,
         file_path=finding.file_path,
+        source_side=finding.source_side,
         line_start=finding.line_start,
         line_end=finding.line_end,
         dimension=finding.dimension,
@@ -1847,6 +1827,7 @@ def _finding_verify_values(
         "severity": finding.severity.value,
         "evidence_tier": finding.evidence_tier.value,
         "file_path": finding.file_path,
+        "source_side": finding.source_side,
         "line_start": finding.line_start,
         "line_end": finding.line_end,
         "title": finding.title,
@@ -1912,9 +1893,218 @@ def _finding_field_digests(
     return digests
 
 
+def _assert_exchange_fields_match(
+    event: LLMCallEvent, request: LLMRequest, response: LLMResponse
+) -> None:
+    """Check request and response fields before opening a database transaction."""
+    # Event and request must agree on review_id. Otherwise the
+    # persister would lookup installation_id via event.review_id
+    # but store request's content under that installation —
+    # misattributing the audit trail across review scopes.
+    if request.review_id != event.review_id:
+        raise AuditPersisterReviewIdMismatchError(
+            event_review_id=event.review_id,
+            request_review_id=request.review_id,
+        )
+
+    # Pass-through fields shared between LLMRequest and LLMCallEvent
+    # must agree. The persister stores content from request while
+    # taking audit metadata from event; mismatch means rows would
+    # land under the wrong eval / attribution / replay scope.
+    _direct_check_fields = AuditPersisterEventRequestFieldMismatchError._CHECKED_FIELDS - {
+        "prompt_hash",
+        "system_prompt_hash",
+    }
+    for field_name in _direct_check_fields:
+        if getattr(event, field_name) != getattr(request, field_name):
+            raise AuditPersisterEventRequestFieldMismatchError(field_name=field_name)
+
+    # Event hashes must match canonical hashes of the request's
+    # prompts. If they disagree, the audit row carries hash-of-X
+    # while the content row holds text-Y; after retention purges
+    # the content, only the (wrong) hash survives — replay would
+    # reconstruct under a false identity.
+    if event.prompt_hash != _canonical_prompt_hash(
+        system_prompt=request.system_prompt, user_prompt=request.user_prompt
+    ):
+        raise AuditPersisterEventRequestFieldMismatchError(field_name="prompt_hash")
+    if event.system_prompt_hash != _canonical_system_prompt_hash(request.system_prompt):
+        raise AuditPersisterEventRequestFieldMismatchError(field_name="system_prompt_hash")
+
+    # Provider-return-through fields shared between LLMResponse and
+    # LLMCallEvent must agree. Split into two groups:
+    #
+    # (1) STABLE fields (model, token counts, latency, cache state)
+    #     are checked pre-tx — disagreement is a producer bug
+    #     regardless of when the call landed. Pre-tx avoids a
+    #     wasted transaction on clearly malformed pairs.
+    #
+    # (2) PRICING-version-bound fields (`cost_usd`, `pricing_version`)
+    #     are checked INSIDE the transaction, only on the fresh-write
+    #     branch. `compute_cost_usd` reads the current pricing table
+    #     and `PRICING_VERSION` is the current module constant; both
+    #     change over deploys. An idempotent re-emission of an event
+    #     originally persisted under an older pricing version would
+    #     legitimately carry the old `pricing_version` / `cost_usd`,
+    #     and the audit-conflict path is the right verifier for that
+    #     case (payload equality against the stored row). Catching
+    #     pricing drift pre-tx would block those re-emissions.
+    _stable_response_fields = (
+        AuditPersisterEventResponseFieldMismatchError._CHECKED_FIELDS
+        - AuditPersisterEventResponseFieldMismatchError._CANONICAL_RECOMPUTATION_FIELDS
+        - AuditPersisterEventResponseFieldMismatchError._PRE_TX_EXEMPT_FIELDS
+    )
+    _response_value_for = {
+        "event_id": response.exchange_event_id or event.event_id,
+        "timestamp": response.exchange_recorded_at or event.timestamp,
+        "model": response.model,
+        "input_tokens": response.input_tokens,
+        "output_tokens": response.output_tokens,
+        "latency_ms": response.latency_ms,
+        "cached_tokens": response.cache_read_tokens,
+        "cache_hit": response.cache_read_tokens > 0,
+        "finish_reason": response.finish_reason,
+        # Host-identity triad (DECISIONS.md#056) — same name on response + event, so the
+        # loop compares event.<field> against the provider-returned response.<field>.
+        "profile_id": response.profile_id,
+        "reasoning_enabled": response.reasoning_enabled,
+        "profile_contract_digest": response.profile_contract_digest,
+    }
+    for field_name in _stable_response_fields:
+        if getattr(event, field_name) != _response_value_for[field_name]:
+            raise AuditPersisterEventResponseFieldMismatchError(field_name=field_name)
+
+
+async def _load_checked_finding_installation(
+    session: AsyncSession, finding: ReviewFinding, *, is_eval: bool
+) -> int:
+    """Load review scope and reject installation or evaluation mismatches."""
+    # Step 0: resolve installation_id + is_eval from the reviews row.
+    # Absence is a producer-side bug — the reviews row exists before
+    # graph dispatch.
+    review_row = (
+        await session.execute(
+            select(Review.installation_id, Review.is_eval).where(Review.id == finding.review_id)
+        )
+    ).one_or_none()
+    if review_row is None:
+        raise AuditPersisterReviewNotFoundError(review_id=finding.review_id)
+    installation_id: int
+    installation_id, review_is_eval = review_row
+
+    # Cross-check the finding's own installation_id against the
+    # reviews-row source of truth. A disagreement means the producer
+    # attributed the finding to the wrong installation scope; fail loud
+    # rather than write a content row under a fabricated scope. The
+    # typed exception keeps this on the persister's metadata-only
+    # exception taxonomy (METADATA_ONLY_EXCEPTION_TYPES) rather than a
+    # raw ValueError, so the wrapper's str(exc) safety contract holds.
+    if finding.installation_id != installation_id:
+        raise AuditPersisterFindingInstallationIdMismatchError(
+            finding_installation_id=finding.installation_id,
+            review_installation_id=installation_id,
+            review_id=finding.review_id,
+        )
+    # FUP-130: the is_eval twin of the installation_id cross-check above.
+    # The reviews row's is_eval is the source of truth; fail loud here
+    # (write-side guard) on a divergent event. The dashboard findings
+    # read also filters by is_eval (read-side defense).
+    if is_eval != review_is_eval:
+        raise AuditPersisterIsEvalMismatchError(
+            event_is_eval=is_eval,
+            review_is_eval=review_is_eval,
+            review_id=finding.review_id,
+        )
+
+    return installation_id
+
+
 # ---------------------------------------------------------------------------
 # AuditPersister.
 # ---------------------------------------------------------------------------
+
+
+async def _persist_fresh_llm_content(
+    session: AsyncSession,
+    *,
+    event: LLMCallEvent,
+    request: LLMRequest,
+    response: LLMResponse,
+    installation_id: int,
+    retention_expires_at: datetime,
+) -> None:
+    """Validate and store new content within the caller's audit transaction."""
+    # Fresh events must use current pricing. Historical retries keep their
+    # recorded cost and pricing version; persist() returns before this helper.
+    # A mismatch rolls back the caller's newly inserted audit row.
+    expects_tier_echo = _profile_expects_tier_echo(response.profile_id)
+    outcome = compute_cost_outcome(
+        response.profile_id,
+        response.model,
+        input_tokens=response.input_tokens,
+        cache_write_tokens=response.cache_write_tokens,
+        cache_read_tokens=response.cache_read_tokens,
+        output_tokens=response.output_tokens,
+        billed_prompt_tokens=response.billed_prompt_tokens,
+        service_tier=response.service_tier_actual,
+    )
+    if isinstance(outcome, Priced):
+        if event.cost_usd != float(outcome.cost_usd):
+            raise AuditPersisterEventResponseFieldMismatchError(field_name="cost_usd")
+        if event.cost_unpriced_reason is not None:
+            raise AuditPersisterEventResponseFieldMismatchError(field_name="cost_unpriced_reason")
+    else:
+        # Unpriced: the event must carry NO cost and the SAME typed reason the
+        # canonical authority derives — a fabricated number and a mis-classified
+        # reason are both mismatches (specs/2026-07-18-openai-native-host.md).
+        if event.cost_usd is not None:
+            raise AuditPersisterEventResponseFieldMismatchError(field_name="cost_usd")
+        if event.cost_unpriced_reason is not outcome.reason:
+            raise AuditPersisterEventResponseFieldMismatchError(field_name="cost_unpriced_reason")
+    if event.pricing_version != PRICING_VERSION:
+        raise AuditPersisterEventResponseFieldMismatchError(field_name="pricing_version")
+    _assert_fresh_pricing_context(event, response, expects_tier_echo=expects_tier_echo)
+
+    # DECISIONS.md#056 requires host identity for every new event. A failure
+    # rolls back the caller's newly inserted audit row.
+    _assert_fresh_triad_qualified(event)
+
+    # The caller inserted the audit row in this transaction. Existing content
+    # would imply an existing parent, which its audit insert would detect as a
+    # conflict before reaching this helper.
+    #
+    # Direct attribute access on `request.user_prompt` / `response.text`
+    # bypasses the LLMRequest/LLMResponse field-serializer redaction
+    # (which would persist "<redacted, N chars>" instead of the actual
+    # prompt). Pydantic field validators ran at construction time;
+    # attribute reads are raw.
+    content_stmt = (
+        postgresql_insert(LLMCallContent)
+        .values(
+            event_id=event.event_id,
+            installation_id=installation_id,
+            prompt=request.user_prompt,
+            completion=response.text,
+            is_eval=event.is_eval,
+            retention_expires_at=retention_expires_at,
+        )
+        .on_conflict_do_nothing(index_elements=["event_id"])
+        .returning(LLMCallContent.event_id)
+    )
+    inserted_content = await session.scalar(content_stmt)
+    if inserted_content is None:
+        # Defensive: unreachable while the parent PK, the child PK/FK, and
+        # this single transaction hold — a content row cannot exist without
+        # its audit row, and an existing audit row would have conflicted at
+        # the caller's audit INSERT. Kept so compare-or-purge applies if any of
+        # those three constraints drift.
+        await _verify_stored_llm_content(
+            session,
+            event=event,
+            request=request,
+            response=response,
+            installation_id=installation_id,
+        )
 
 
 class AuditPersister:
@@ -1984,80 +2174,7 @@ class AuditPersister:
           AuditPersisterIdempotencyConflict: same-`event_id` re-emit with
             different content.
         """
-        # Event and request must agree on review_id. Otherwise the
-        # persister would lookup installation_id via event.review_id
-        # but store request's content under that installation —
-        # misattributing the audit trail across review scopes.
-        if request.review_id != event.review_id:
-            raise AuditPersisterReviewIdMismatchError(
-                event_review_id=event.review_id,
-                request_review_id=request.review_id,
-            )
-
-        # Pass-through fields shared between LLMRequest and LLMCallEvent
-        # must agree. The persister stores content from request while
-        # taking audit metadata from event; mismatch means rows would
-        # land under the wrong eval / attribution / replay scope.
-        _direct_check_fields = AuditPersisterEventRequestFieldMismatchError._CHECKED_FIELDS - {
-            "prompt_hash",
-            "system_prompt_hash",
-        }
-        for field_name in _direct_check_fields:
-            if getattr(event, field_name) != getattr(request, field_name):
-                raise AuditPersisterEventRequestFieldMismatchError(field_name=field_name)
-
-        # Event hashes must match canonical hashes of the request's
-        # prompts. If they disagree, the audit row carries hash-of-X
-        # while the content row holds text-Y; after retention purges
-        # the content, only the (wrong) hash survives — replay would
-        # reconstruct under a false identity.
-        if event.prompt_hash != _canonical_prompt_hash(
-            system_prompt=request.system_prompt, user_prompt=request.user_prompt
-        ):
-            raise AuditPersisterEventRequestFieldMismatchError(field_name="prompt_hash")
-        if event.system_prompt_hash != _canonical_system_prompt_hash(request.system_prompt):
-            raise AuditPersisterEventRequestFieldMismatchError(field_name="system_prompt_hash")
-
-        # Provider-return-through fields shared between LLMResponse and
-        # LLMCallEvent must agree. Split into two groups:
-        #
-        # (1) STABLE fields (model, token counts, latency, cache state)
-        #     are checked pre-tx — disagreement is a producer bug
-        #     regardless of when the call landed. Pre-tx avoids a
-        #     wasted transaction on clearly malformed pairs.
-        #
-        # (2) PRICING-version-bound fields (`cost_usd`, `pricing_version`)
-        #     are checked INSIDE the transaction, only on the fresh-write
-        #     branch. `compute_cost_usd` reads the current pricing table
-        #     and `PRICING_VERSION` is the current module constant; both
-        #     change over deploys. An idempotent re-emission of an event
-        #     originally persisted under an older pricing version would
-        #     legitimately carry the old `pricing_version` / `cost_usd`,
-        #     and the audit-conflict path is the right verifier for that
-        #     case (payload equality against the stored row). Catching
-        #     pricing drift pre-tx would block those re-emissions.
-        _stable_response_fields = (
-            AuditPersisterEventResponseFieldMismatchError._CHECKED_FIELDS
-            - AuditPersisterEventResponseFieldMismatchError._CANONICAL_RECOMPUTATION_FIELDS
-            - AuditPersisterEventResponseFieldMismatchError._PRE_TX_EXEMPT_FIELDS
-        )
-        _response_value_for = {
-            "model": response.model,
-            "input_tokens": response.input_tokens,
-            "output_tokens": response.output_tokens,
-            "latency_ms": response.latency_ms,
-            "cached_tokens": response.cache_read_tokens,
-            "cache_hit": response.cache_read_tokens > 0,
-            "finish_reason": response.finish_reason,
-            # Host-identity triad (DECISIONS.md#056) — same name on response + event, so the
-            # loop compares event.<field> against the provider-returned response.<field>.
-            "profile_id": response.profile_id,
-            "reasoning_enabled": response.reasoning_enabled,
-            "profile_contract_digest": response.profile_contract_digest,
-        }
-        for field_name in _stable_response_fields:
-            if getattr(event, field_name) != _response_value_for[field_name]:
-                raise AuditPersisterEventResponseFieldMismatchError(field_name=field_name)
+        _assert_exchange_fields_match(event, request, response)
 
         payload = _serialize_event_payload(event)
         retention_expires_at: datetime = (
@@ -2154,92 +2271,14 @@ class AuditPersister:
                 )
                 return  # both audit and content agree; idempotent no-op
 
-            # Fresh-write pricing cross-check. Reachable only on the
-            # freshly-inserted audit branch — never on idempotent re-emit.
-            # An older event re-emitted across a `PRICING_VERSION` bump
-            # carries its original `cost_usd` / `pricing_version`; the
-            # audit-conflict path above is the right verifier for that
-            # case. Pre-tx pricing checks would block such re-emits.
-            # Brand-new events MUST use the current pricing snapshot;
-            # raising here rolls back the freshly-inserted audit row.
-            expects_tier_echo = _profile_expects_tier_echo(response.profile_id)
-            outcome = compute_cost_outcome(
-                response.profile_id,
-                response.model,
-                input_tokens=response.input_tokens,
-                cache_write_tokens=response.cache_write_tokens,
-                cache_read_tokens=response.cache_read_tokens,
-                output_tokens=response.output_tokens,
-                billed_prompt_tokens=response.billed_prompt_tokens,
-                service_tier=response.service_tier_actual,
+            await _persist_fresh_llm_content(
+                session,
+                event=event,
+                request=request,
+                response=response,
+                installation_id=installation_id,
+                retention_expires_at=retention_expires_at,
             )
-            if isinstance(outcome, Priced):
-                if event.cost_usd != float(outcome.cost_usd):
-                    raise AuditPersisterEventResponseFieldMismatchError(field_name="cost_usd")
-                if event.cost_unpriced_reason is not None:
-                    raise AuditPersisterEventResponseFieldMismatchError(
-                        field_name="cost_unpriced_reason"
-                    )
-            else:
-                # Unpriced: the event must carry NO cost and the SAME typed reason the
-                # canonical authority derives — a fabricated number and a mis-classified
-                # reason are both mismatches (specs/2026-07-18-openai-native-host.md).
-                if event.cost_usd is not None:
-                    raise AuditPersisterEventResponseFieldMismatchError(field_name="cost_usd")
-                if event.cost_unpriced_reason is not outcome.reason:
-                    raise AuditPersisterEventResponseFieldMismatchError(
-                        field_name="cost_unpriced_reason"
-                    )
-            if event.pricing_version != PRICING_VERSION:
-                raise AuditPersisterEventResponseFieldMismatchError(field_name="pricing_version")
-            _assert_fresh_pricing_context(event, response, expects_tier_echo=expects_tier_echo)
-
-            # Fresh-write fail-closed: a brand-new LLMCallEvent must be host-qualified
-            # (DECISIONS.md#056). Reachable only on the freshly-inserted audit branch,
-            # so a historical re-emit (audit_row_already_existed) is untouched. Raising
-            # rolls back the freshly-inserted audit row.
-            _assert_fresh_triad_qualified(event)
-
-            # Step 3 (freshly-inserted audit branch): INSERT llm_call_content.
-            # Reachable ONLY when the audit row was newly inserted this
-            # transaction (audit_row_already_existed == False). From this
-            # branch, the content row cannot pre-exist for this event_id
-            # (the audit-events PK constraint prevented a prior write under
-            # the same event_id from succeeding without us seeing the
-            # conflict above).
-            #
-            # Direct attribute access on `request.user_prompt` / `response.text`
-            # bypasses the LLMRequest/LLMResponse field-serializer redaction
-            # (which would persist "<redacted, N chars>" instead of the actual
-            # prompt). Pydantic field validators ran at construction time;
-            # attribute reads are raw.
-            content_stmt = (
-                postgresql_insert(LLMCallContent)
-                .values(
-                    event_id=event.event_id,
-                    installation_id=installation_id,
-                    prompt=request.user_prompt,
-                    completion=response.text,
-                    is_eval=event.is_eval,
-                    retention_expires_at=retention_expires_at,
-                )
-                .on_conflict_do_nothing(index_elements=["event_id"])
-                .returning(LLMCallContent.event_id)
-            )
-            inserted_content = await session.scalar(content_stmt)
-            if inserted_content is None:
-                # Defensive: unreachable while the parent PK, the child PK/FK, and
-                # this single transaction hold — a content row cannot exist without
-                # its audit row, and an existing audit row would have conflicted at
-                # the INSERT above. Kept so compare-or-purge still applies if any of
-                # those three constraints drift.
-                await _verify_stored_llm_content(
-                    session,
-                    event=event,
-                    request=request,
-                    response=response,
-                    installation_id=installation_id,
-                )
 
     # -- PhaseEventSink surface ----------------------------------------------
 
@@ -2304,25 +2343,10 @@ class AuditPersister:
             )
             inserted_event_id = await session.scalar(stmt)
             if inserted_event_id is None:
-                # Natural-key conflict fired (the partial unique index
-                # matched on `(review_id, phase_id, COALESCE(phase_key,
-                # ''), marker)`). Load the existing row and compare the
-                # non-ephemeral, non-natural-key fields. Per CodeRabbit
-                # 2026-05-27: phase_id is a `str` field so a producer
-                # bug could mint a phase_id that collides with a real
-                # row but carry different `node_id` or `is_eval` —
-                # without this reload+compare the producer bug
-                # silently no-ops instead of surfacing as a loud
-                # conflict. The reload reads by the SAME predicate
-                # the index targets (review_id + JSONB-extracted
-                # phase_id + COALESCE(phase_key, '') + JSONB-extracted
-                # marker) so it deterministically resolves to the
-                # single existing row.
-                #
-                # One SELECT for both comparands. `is_eval` is a top-level column
-                # while `node_id` rides the JSONB payload, so they used to be fetched
-                # by two queries carrying this identical five-predicate WHERE; the
-                # row is the same and no write intervenes, so one read serves both.
+                # Reload by the index's exact natural key. A colliding phase_id
+                # must still agree on node_id and is_eval; otherwise a producer
+                # error would silently pass as a retry. One SELECT reads payload
+                # node_id and the top-level is_eval column from the same row.
                 existing_row = (
                     await session.execute(
                         select(AuditEventRow.payload, AuditEventRow.is_eval).where(
@@ -2427,6 +2451,15 @@ class AuditPersister:
 
     # -- AnalyzeEventSink surface -------------------------------------------
 
+    async def emit_native_candidate(self, event: NativeCandidateEvent) -> None:
+        await self._persist_non_phase_event(event)
+
+    async def emit_candidate_check_started(self, event: CandidateCheckStartedEvent) -> None:
+        await self._persist_non_phase_event(event)
+
+    async def emit_candidate_assessment(self, event: CandidateAssessmentEvent) -> None:
+        await self._persist_non_phase_event(event)
+
     async def _persist_non_phase_event(
         self,
         event: (
@@ -2435,6 +2468,9 @@ class AuditPersister:
             | FindingProposalRejectedEvent
             | AnalyzeResponseRejectedEvent
             | AnalyzeCompletedEvent
+            | NativeCandidateEvent
+            | CandidateCheckStartedEvent
+            | CandidateAssessmentEvent
             | PublishRoutingEvent
             | PublishEligibilityEvent
             | PublishAttemptEvent
@@ -2531,43 +2567,9 @@ class AuditPersister:
         payload = _serialize_event_payload(event)
 
         async with self._session_factory() as session, session.begin():
-            # Step 0: resolve installation_id + is_eval from the reviews row.
-            # Absence is a producer-side bug — the reviews row exists before
-            # graph dispatch.
-            review_row = (
-                await session.execute(
-                    select(Review.installation_id, Review.is_eval).where(
-                        Review.id == finding.review_id
-                    )
-                )
-            ).one_or_none()
-            if review_row is None:
-                raise AuditPersisterReviewNotFoundError(review_id=finding.review_id)
-            installation_id, review_is_eval = review_row
-
-            # Cross-check the finding's own installation_id against the
-            # reviews-row source of truth. A disagreement means the producer
-            # attributed the finding to the wrong installation scope; fail loud
-            # rather than write a content row under a fabricated scope. The
-            # typed exception keeps this on the persister's metadata-only
-            # exception taxonomy (METADATA_ONLY_EXCEPTION_TYPES) rather than a
-            # raw ValueError, so the wrapper's str(exc) safety contract holds.
-            if finding.installation_id != installation_id:
-                raise AuditPersisterFindingInstallationIdMismatchError(
-                    finding_installation_id=finding.installation_id,
-                    review_installation_id=installation_id,
-                    review_id=finding.review_id,
-                )
-            # FUP-130: the is_eval twin of the installation_id cross-check above.
-            # The reviews row's is_eval is the source of truth; fail loud here
-            # (write-side guard) on a divergent event. The dashboard findings
-            # read also filters by is_eval (read-side defense).
-            if event.is_eval != review_is_eval:
-                raise AuditPersisterIsEvalMismatchError(
-                    event_is_eval=event.is_eval,
-                    review_is_eval=review_is_eval,
-                    review_id=finding.review_id,
-                )
+            installation_id = await _load_checked_finding_installation(
+                session, finding, is_eval=event.is_eval
+            )
 
             retention_expires_at = event.timestamp + self._retention_settings.findings_retention_ttl
 
@@ -2657,6 +2659,7 @@ class AuditPersister:
                     severity=finding.severity.value,
                     evidence_tier=finding.evidence_tier.value,
                     file_path=finding.file_path,
+                    source_side=finding.source_side,
                     line_start=finding.line_start,
                     line_end=finding.line_end,
                     title=finding.title,
@@ -2812,7 +2815,7 @@ class AuditPersister:
     # -- Natural-key idempotency surface ------------------------------------
     # Per `DECISIONS.md#026` natural-key idempotency mode. The shape supports
     # multiple event types (trace_decision, hitl_request, hitl_decision in
-    # V1) via `_NATURAL_KEY_SPECS` below. Each spec names: the event class
+    # V1) via `_NATURAL_KEY_SPECS`. Each spec names: the event class
     # (for `model_validate` reconstruction on the no-op path), the JSONB
     # natural-key extension (None for review-id-only keys; field name for
     # JSONB-extracted keys like trace's `source_finding_id`), the

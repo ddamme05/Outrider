@@ -1,37 +1,14 @@
-# Audit event hierarchy per docs/spec.md §7.2.1 + §8.2.
-# Append-only contract per docs/trust-boundaries.md §7.
-# Planned under DECISIONS.md#056: the identity triad (`profile_id`/`reasoning_enabled`/
-# `profile_contract_digest`) on LLMCall/Analyze/SynthesizeCompletedEvent.
-"""Audit event class hierarchy and its discriminated union.
+"""Define the immutable events saved in a review's audit history.
 
-Every concrete event subclasses `AuditEventBase` and declares its own
-`event_type: Literal[...]` discriminator. The `AuditEvent` union alias at the
-bottom of this module is the live inventory of those subtypes, and it is what
-`audit/replay.py` validates rows against when reconstructing from the
-`audit_events.payload` JSONB:
+Each event has its own event_type. AuditEvent collects the supported types for
+replay validation. The database assigns sequence_number; replay restores that
+value from the row before validating its payload.
 
-    TypeAdapter(AuditEvent).validate_python({**payload, "sequence_number": row.sequence_number})
-
-`sequence_number` is a DB-assigned BIGSERIAL that lives on the row rather than
-in the payload. New events carry `None` until INSERT; the persister excludes the
-field from JSONB, and replay restores the assigned value before validation.
-
-Immutability takes three separate mechanisms, because `frozen=True` alone is not
-enough (`audit-events-frozen-extra-forbid`):
-
-  - `ConfigDict(frozen=True, extra="forbid")` on every event blocks attribute
-    reassignment and unknown fields.
-  - Sequence fields are TUPLE-typed, because frozen does not prevent in-place
-    mutation of a list.
-  - Nested payload models carry their own `frozen=True, extra="forbid"`, because
-    the outer model's frozen-ness does not propagate into them.
-
-Cross-field rules live as validators on the classes that own them, next to the
-fields they constrain.
-
-Where present, `phase_key` identifies the planner, worker, or aggregate phase
-under the parallel-analyze fan-out and is `None` on sequential-era rows.
-Grouping follows the strict derived-owner hybrid (`DECISIONS.md#064`).
+Writers use JSON-compatible payloads and exclude sequence_number from them.
+Events reject unknown fields and use frozen nested models and tuples to
+prevent mutation (audit-events-frozen-extra-forbid). phase_key identifies
+parallel analysis work when present (DECISIONS.md#064).
+See docs/spec.md §7.2.1 and DECISIONS.md#056.
 """
 
 import hashlib
@@ -70,7 +47,12 @@ from outrider.policy.severity import BARE_SEMVER_PATTERN
 # module — a package-level import here would re-enter the partially
 # initialized schemas __init__ and fail on any name bound after the
 # review_state line. The leaf modules are cycle-free.
-from outrider.schemas.hitl import PerFindingDecision
+from outrider.schemas.hitl import HITL_MAX_GATED_FINDINGS, PerFindingDecision
+from outrider.schemas.native_candidate import (
+    CandidateAssessmentRef,
+    CandidateCheckStarted,
+    NativeCandidateRef,
+)
 from outrider.schemas.observed_subsumption import ObservedSubsumedMatch
 from outrider.schemas.review_finding import PublishDestination, ReviewDimension
 from outrider.schemas.triage_result import RiskLevel
@@ -146,48 +128,28 @@ def compute_finding_content_hash(
     line_start: int,
     line_end: int,
     finding_type: FindingType,
+    source_side: Literal["head", "base"] = "head",
 ) -> str:
     """Canonical SHA-256 hash of a finding's identity tuple per spec §8.5.
 
-    Encoding: compact JSON of `[file_path, line_start, line_end, finding_type.value]`,
-    UTF-8 bytes, SHA-256 hex digest (lowercase). JSON encoding handles
-    file paths with special characters deterministically; compact separators
-    `(",", ":")` produce a single canonical byte sequence per input tuple.
+    Validate file_path through coordinates.validate_diff_path first, so path
+    aliases share one digest (spec.md §1). Encode the canonical path, line_start,
+    line_end and finding_type.value as a compact JSON array, then hash its UTF-8
+    bytes. JSON preserves special characters without ambiguous concatenation.
+    HEAD keeps the historical array unchanged. BASE prefixes `base-source-v1`
+    so identical coordinates from different source sides cannot share a hash.
 
-    `file_path` runs through `coordinates.validate_diff_path` BEFORE
-    entering the hash payload — same shape as `compute_proposal_hash`
-    and the path-canonicalization rule in spec.md §1. Without this,
-    a caller that pre-computes the hash from a non-canonical path
-    (`"./src/foo.py"`) and then constructs a `ReviewFinding` (which
-    normalizes via the same validator) produces a `_verify_content_hash`
-    mismatch — the wrapper recomputes from the canonical form and
-    diverges from the caller's pre-computed hash. Pinning the
-    canonical floor at the recipe means alias paths to the same file
-    produce a SINGLE digest.
-
-    `line_start`, `line_end`, and `finding_type` are keyword-only —
-    `line_start`/`line_end` are adjacent same-typed `int` parameters, and
-    a positional swap would silently produce a different hash, which IS
-    the dedup key. Same misuse-resistance pattern as
-    `outrider.llm.pricing.compute_cost_usd` (token args keyword-only)
-    and `outrider.coordinates.tree_sitter_to_github` (full keyword-only).
-
-    Both the emitter (when constructing `FindingEvent`) and the
-    `_verify_content_hash` model_validator on `FindingEvent` use this
-    helper. The validator verifies the supplied hash equals the helper's
-    output — silent emitter bugs (wrong inputs, different encoding) raise
-    at event-construction time rather than producing dedup false-negatives
-    at audit-query time.
-
-    Spec §8.5 originally said "SHA-256(file_path + line_start + line_end +
-    finding_type)" with informal `+` notation; this helper pins down the
-    encoding choice so type and event agree.
+    Keyword-only line and type arguments prevent positional swaps from silently
+    changing the dedup key. FindingEvent emission and its _verify_content_hash
+    validator share this recipe, rejecting mismatches at event construction.
     """
     canonical_file_path = validate_diff_path(file_path)
-    payload = json.dumps(
-        [canonical_file_path, line_start, line_end, finding_type.value],
-        separators=(",", ":"),
-    )
+    if source_side not in {"head", "base"}:
+        raise ValueError("finding source_side must be head or base")
+    identity = [canonical_file_path, line_start, line_end, finding_type.value]
+    if source_side == "base":
+        identity.insert(0, "base-source-v1")
+    payload = json.dumps(identity, separators=(",", ":"))
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -226,29 +188,27 @@ class AuditEventBase(BaseModel):
 
 
 class ContextManifestEntry(BaseModel):
-    """One scope-unit entry inside `LLMCallEvent.context_summary`.
+    """One included source range in a recorded model call.
 
-    Frozen + extra=forbid because the outer event's `frozen=True` does
-    not propagate to nested Pydantic models. Without this, an entry
-    could be mutated post-construction (`entry.file_path = "..."`) even
-    when the containing event is frozen and the tuple is immutable.
+    Nested entries are frozen separately so the call history stays immutable.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    # `file_path` cap matches `AnalysisRound.files_examined` per-element
-    # max_length=1024. `scope_unit_name` carries a Python identifier
-    # (function/method/class name) plus optional dotted qualifier;
-    # 1024 chars accommodates deeply-nested closures while bounding
-    # the audit-row growth.
+    # Labels name scopes, module declarations or complete-module references.
     file_path: DiffPathStr
+    source_side: Literal["head", "base"] = Field(
+        default="head", exclude_if=lambda value: value == "head"
+    )
     scope_unit_name: str = Field(max_length=1024)
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
     inclusion_reason: Literal[
         "changed_scope",
+        "changed_region",
         "same_file_context",
         "trace_expansion",
+        "captured_reference",
     ]
 
     @model_validator(mode="after")
@@ -327,6 +287,11 @@ def _triad_all_set_or_all_none(
     return all(present) or not any(present)
 
 
+def _validate_selected_findings(selected: tuple[UUID, ...] | None, count: int) -> None:
+    if selected is not None and (len(selected) != count or len(set(selected)) != count):
+        raise ValueError("selected finding IDs must be unique and match the finding count")
+
+
 def _require_triad_coherence(
     profile_id: str | None,
     reasoning_enabled: bool | None,
@@ -350,26 +315,19 @@ def _require_triad_coherence(
 
 
 class DegradationReason(StrEnum):
-    """Why an analyze LLM call ran degraded — THE single source for the
-    vocabulary that previously lived in three hand-synced Literals
-    (`degradation.py`, `LLMRequest`, this module) plus the degraded prompt's
-    provenance-mapping keys. A `str` enum, so event payloads serialize the
-    same wire values as before and comparisons against raw strings still
-    hold. `PARSE_FAILED` is V1-unreachable (raw-bytes intake path, FUP-053);
-    `TREE_HAS_ERROR_NO_SCOPE` is the no-scope syntax-error case
-    (DECISIONS.md#033); `MODULE_LEVEL_OBSERVED_MATCH` (DECISIONS.md#062) is
-    the one cause that is NOT a parse defect — the parse is clean, the
-    degradation is a routing choice, and the review's FileExaminationEvent
-    truthfully reports `parse_status="clean"` while the LLMCallEvent carries
-    this reason (the cross-event pairing that distinguishes the route).
-    Adding a member: the type system now propagates it to every consumer;
-    the degraded prompt's provenance mapping (`prompts/analyze.py`) is the
-    one companion that needs a sentence, enforced by its totality test."""
+    """Why a review used bounded text instead of ordinary scope context.
+
+    Parse defects, the clean module-producer route (#062), and configuration
+    text are distinct causes. These values persist in model-call events;
+    prompts/analyze.py supplies a truthful explanation for each member.
+    """
 
     PARSE_FAILED = "parse_failed"
     TREE_HAS_ERROR_IN_CHANGED_REGIONS = "tree_has_error_in_changed_regions"
     TREE_HAS_ERROR_NO_SCOPE = "tree_has_error_no_scope"
     MODULE_LEVEL_OBSERVED_MATCH = "module_level_observed_match"
+    TEXT_ONLY_CONTEXT = "text_only_context"
+    FILE_REMOVAL = "file_removal"
 
 
 class LLMCallEvent(AuditEventBase):
@@ -390,6 +348,7 @@ class LLMCallEvent(AuditEventBase):
 
     event_type: Literal["llm_call"] = "llm_call"
     phase_key: str | None = None
+    candidate_attempt_id: UUID | None = Field(default=None, exclude_if=lambda value: value is None)
     model: str
     # The provider's normalized stop reason (`end_turn`/`refusal`/`max_tokens`/…),
     # mirrored from `LLMResponse.finish_reason` and cross-checked in the persister
@@ -432,8 +391,7 @@ class LLMCallEvent(AuditEventBase):
     # by `_enforce_degradation_reason_consistency` below. Modeled as an
     # enum rather than a bool because dropping the reason would corrupt
     # replay reconstruction.
-    # Typed by the shared `DegradationReason` enum above — the single
-    # source (previously three hand-synced Literals); wire values unchanged.
+    # The shared DegradationReason enum owns this vocabulary.
     degradation_reason: DegradationReason | None = None
     # Constrained-decoding provenance (specs/2026-06-12-constrained-decoding.md,
     # FUP-096): digest of the response schema this call was constrained to
@@ -508,6 +466,8 @@ class LLMCallEvent(AuditEventBase):
         was unguarded — request rejected `trace + degraded_mode=True`
         but the event admitted it).
         """
+        if self.candidate_attempt_id is not None and self.node_id != "trace":
+            raise ValueError("candidate_attempt_id is only valid for trace checks")
         # Rule (a): analyze-only scoping. Mirrors LLMRequest validator.
         if self.degraded_mode and self.node_id != "analyze":
             raise ValueError(
@@ -545,13 +505,8 @@ class LLMCallEvent(AuditEventBase):
     def _enforce_cache_hit_matches_cached_tokens(self) -> Self:
         """`cache_hit == (cached_tokens > 0)` — bidirectional coupling.
 
-        Category F sweep — the producer (`anthropic_provider.py:520`)
-        computes `cache_hit = (response.cache_read_tokens > 0)` and
-        stores both fields on the event independently. Without this
-        validator, the two could drift via a test fixture, a producer
-        bug, or a partial replay-row corruption; downstream cache-rate
-        metrics would silently report the wrong number. Same shape as
-        the degraded_mode ↔ degradation_reason coupling above.
+        Validate both independently stored fields so producer drift or row
+        corruption cannot silently alter downstream cache-rate metrics.
         """
         expected_hit = self.cached_tokens > 0
         if self.cache_hit != expected_hit:
@@ -711,7 +666,7 @@ class ServedTraceCandidateRef(BaseModel):
     @classmethod
     def _enforce_canonical_import_string(cls, value: str) -> str:
         """Audit-shadow of `TraceCandidate.import_string` — reruns the
-        shared two-form validator (`DECISIONS.md#024`, Amended
+        shared syntax-dispatched validator (`DECISIONS.md#024`, Amended
         2026-07-03) so the served candidate's only audit trace carries
         the same canonical bytes the state layer enforces, matching
         every sibling path/import-bearing audit field."""
@@ -1016,10 +971,13 @@ class FindingEvent(AuditEventBase):
     finding_type: FindingType
     severity: FindingSeverity
     file_path: DiffPathStr
+    source_side: Literal["head", "base"] = Field(
+        default="head", exclude_if=lambda value: value == "head"
+    )
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
     dimension: ReviewDimension
-    # SHA-256 hex per spec §8.5: SHA-256(file_path + line_start + line_end + finding_type)
+    # Identity is source-side aware; HEAD retains the historical §8.5 recipe.
     finding_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     evidence_tier: EvidenceTier
     # `max_length=200` mirrors `ReviewFinding.query_match_id`; the audit
@@ -1045,6 +1003,14 @@ class FindingEvent(AuditEventBase):
     # recipe (#025 point 3): content hash stays stable across LLM
     # phrasing variation; proposal_hash carries provenance.
     proposal_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
+
+    @model_validator(mode="after")
+    def _enforce_base_source_limits(self) -> Self:
+        if self.source_side == "base" and (
+            self.evidence_tier != EvidenceTier.JUDGED or self.query_match_id or self.trace_path
+        ):
+            raise ValueError("BASE finding events require judged evidence without structural proof")
+        return self
 
     @field_validator("proposal_hash")
     @classmethod
@@ -1168,6 +1134,7 @@ class FindingEvent(AuditEventBase):
             line_start=self.line_start,
             line_end=self.line_end,
             finding_type=self.finding_type,
+            source_side=self.source_side,
         )
         if self.finding_content_hash != expected:
             raise ValueError(
@@ -1299,7 +1266,7 @@ class TraceDecisionEvent(AuditEventBase):
     @classmethod
     def _enforce_canonical_proposed_import_strings(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         """Per-element audit-shadow `is_valid_trace_import_string` (the
-        two-form dispatcher per `DECISIONS.md#024`, Amended 2026-07-03)
+        syntax dispatcher per `DECISIONS.md#024`, Amended 2026-07-03)
         on every admitted import string + deterministic sort. Defense in
         depth against a direct emitter (replay path, test fixture, future
         callsite) bypassing `TraceCandidate.import_string`'s field
@@ -1397,10 +1364,18 @@ class HITLRequestEvent(AuditEventBase):
     event_type: Literal["hitl_request"] = "hitl_request"
     findings_requiring_approval: tuple[UUID, ...]
     auto_post_findings: tuple[UUID, ...]
+    verification_hold_finding_ids: tuple[UUID, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
     created_at: AwareDatetime
     expires_at: AwareDatetime
 
-    @field_validator("findings_requiring_approval", "auto_post_findings", mode="after")
+    @field_validator(
+        "findings_requiring_approval",
+        "auto_post_findings",
+        "verification_hold_finding_ids",
+        mode="after",
+    )
     @classmethod
     def _canonicalize_finding_tuple(cls, v: tuple[UUID, ...]) -> tuple[UUID, ...]:
         """Sort the tuple deterministically by `str(UUID)` so semantically-
@@ -1434,6 +1409,11 @@ class HITLRequestEvent(AuditEventBase):
         """Each finding appears at most once across the two tuples — mirror
         of `HITLRequest._enforce_finding_partition` at the audit-event layer.
         """
+        holds = set(self.verification_hold_finding_ids)
+        if len(holds) != len(self.verification_hold_finding_ids) or not holds.issubset(
+            self.findings_requiring_approval
+        ):
+            raise ValueError("verification holds must be unique findings requiring approval")
         if len(self.findings_requiring_approval) != len(set(self.findings_requiring_approval)):
             raise ValueError(
                 f"HITLRequestEvent.findings_requiring_approval contains duplicate ids: "
@@ -1588,6 +1568,7 @@ class PublishRoutingReason(StrEnum):
     # tree_sitter_to_github raised CoordinateError(kind=UNCHANGED_REGION).
     # Destination = REVIEW_BODY.
     UNCHANGED_REGION = "unchanged_region"
+    REMOVED_SOURCE = "removed_source"
 
     # EITHER ChangedFile registry miss (coordinates not called) OR
     # CoordinateError(kind=FILE_NOT_IN_PATCH) — registry/patch disagreement.
@@ -1879,6 +1860,9 @@ class PublishRoutingEvent(AuditEventBase):
     # this field.
     coordinate_error_kind: str | None = None
     file_path: DiffPathStr
+    source_side: Literal["head", "base"] = Field(
+        default="head", exclude_if=lambda value: value == "head"
+    )
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
     # Carried so `_verify_finding_content_hash` can recompute against the
@@ -1955,7 +1939,22 @@ class PublishRoutingEvent(AuditEventBase):
 
         kind = self.coordinate_error_kind
 
-        if self.reason is PublishRoutingReason.REVIEWABLE_DIFF_LINE:
+        if self.source_side == "base" and self.reason not in {
+            PublishRoutingReason.REMOVED_SOURCE,
+            PublishRoutingReason.COORDINATE_ERROR,
+            PublishRoutingReason.NON_DIFFED_FILE,
+        }:
+            raise ValueError("BASE routing requires removed_source or a dashboard-only failure")
+        if self.reason is PublishRoutingReason.REMOVED_SOURCE:
+            if (
+                self.source_side != "base"
+                or self.destination is not PublishDestination.REVIEW_BODY
+                or kind is not None
+            ):
+                raise ValueError(
+                    "removed_source requires BASE, REVIEW_BODY and no coordinate error"
+                )
+        elif self.reason is PublishRoutingReason.REVIEWABLE_DIFF_LINE:
             if self.destination is not PublishDestination.INLINE_COMMENT:
                 raise ValueError(
                     f"PublishRoutingEvent reason=reviewable_diff_line requires "
@@ -2032,6 +2031,7 @@ class PublishRoutingEvent(AuditEventBase):
             line_start=self.line_start,
             line_end=self.line_end,
             finding_type=self.finding_type,
+            source_side=self.source_side,
         )
         if self.finding_content_hash != expected:
             raise ValueError(
@@ -2093,6 +2093,9 @@ class PublishEligibilityEvent(AuditEventBase):
     event_type: Literal["publish_eligibility"] = "publish_eligibility"
     finding_id: UUID
     file_path: DiffPathStr
+    source_side: Literal["head", "base"] = Field(
+        default="head", exclude_if=lambda value: value == "head"
+    )
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
     finding_type: FindingType
@@ -2274,6 +2277,7 @@ class PublishEligibilityEvent(AuditEventBase):
             line_start=self.line_start,
             line_end=self.line_end,
             finding_type=self.finding_type,
+            source_side=self.source_side,
         )
         if self.finding_content_hash != expected:
             raise ValueError(
@@ -2495,6 +2499,11 @@ class AnalyzeCompletedEvent(AuditEventBase):
     n_llm_calls: int = Field(ge=0)
     n_proposals_seen: int = Field(ge=0)
     n_findings_emitted: int = Field(ge=0)
+    selected_finding_ids: tuple[UUID, ...] | None = Field(
+        default=None,
+        max_length=HITL_MAX_GATED_FINDINGS,
+        exclude_if=lambda value: value is None,
+    )
     n_findings_served: int = Field(ge=0, default=0)
     """Cache-served findings emitted this pass, also included in `n_findings_emitted`.
     They emit `FindingEvent`s but have no new model proposal, so proposal
@@ -2616,6 +2625,11 @@ class AnalyzeCompletedEvent(AuditEventBase):
         return self
 
     @model_validator(mode="after")
+    def _enforce_selected_findings(self) -> Self:
+        _validate_selected_findings(self.selected_finding_ids, self.n_findings_emitted)
+        return self
+
+    @model_validator(mode="after")
     def _enforce_proposal_accounting(self) -> Self:
         """Proposal accounting: `n_proposals_seen == (n_findings_emitted
         - n_findings_served - n_findings_observed) + n_proposals_rejected
@@ -2688,25 +2702,34 @@ class FindingProposalRejectedEvent(AuditEventBase):
     rather than the raw model string per `DECISIONS.md#014` point 1:
     every model-originated value is hostile until validated, so audit
     rows must not carry user code or prompt/completion content.
-    Cross-field validator pairs `claimed_evidence_tier` with the
+    Valid-shaped proposals pair `claimed_evidence_tier` with the
     `evidence_tier_not_in_enum` reason bidirectionally.
 
-    `proposal_hash` carries the PR/file-scoped `compute_proposal_hash`
+    Valid-shaped proposals use the file-scoped `compute_proposal_hash`
     digest per `DECISIONS.md#022`. Two analyze passes over DIFFERENT
     source files that emit logically-identical proposals produce
     DISTINCT `proposal_hash` values — preserving per-source-file
     audit provenance on the join with `TraceCandidate.source_proposal_hash`.
+    A malformed proposal instead identifies its file, exact response hash and
+    array index with the versioned `malformed-analyze-proposal-v1` recipe.
+    Type and tier metadata remain absent until proposal shape validates.
     """
 
     event_type: Literal["finding_proposal_rejected"] = "finding_proposal_rejected"
     phase_key: str | None = None
     node_id: Literal["analyze"] = "analyze"
     file_path: DiffPathStr
+    source_side: Literal["head", "base"] = Field(
+        default="head", exclude_if=lambda value: value == "head"
+    )
     proposal_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     claimed_evidence_tier: EvidenceTier | None = None
-    claimed_finding_type_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN_SHORT)]
-    claimed_finding_type_len: int = Field(ge=0, le=128)
+    claimed_finding_type_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN_SHORT)] | None
+    claimed_finding_type_len: Annotated[int, Field(ge=0, le=128)] | None
     rejection_reason: Literal[
+        "raw_proposal_invalid",
+        "evidence_quote_invalid",
+        "model_observed_not_supported",
         "query_match_id_not_in_registry",
         "trace_path_not_admissible",
         "finding_type_not_in_enum",
@@ -2743,16 +2766,20 @@ class FindingProposalRejectedEvent(AuditEventBase):
 
     @model_validator(mode="after")
     def _enforce_claimed_evidence_tier_coupling(self) -> Self:
-        """`claimed_evidence_tier is None` iff `rejection_reason == "evidence_tier_not_in_enum"`.
-
-        Bidirectional rule per §5: when the model returned a tier value
-        that didn't parse to `EvidenceTier`, there's no admitted tier to
-        record (the field is None and the reason names that exact case).
-        For ALL other rejection reasons, the model's claimed tier DID
-        parse (the rejection happened on a different axis — bad
-        query_match_id, bad span, etc.), so the parsed tier MUST be
-        recorded.
-        """
+        """Malformed entries lack classification; other rejections retain tier results."""
+        if self.rejection_reason == "raw_proposal_invalid":
+            if any(
+                value is not None
+                for value in (
+                    self.claimed_finding_type_hash,
+                    self.claimed_finding_type_len,
+                    self.claimed_evidence_tier,
+                )
+            ):
+                raise ValueError("raw_proposal_invalid requires absent type and tier metadata")
+            return self
+        if self.claimed_finding_type_hash is None or self.claimed_finding_type_len is None:
+            raise ValueError("validated proposals require finding-type hash and length")
         is_tier_failure = self.rejection_reason == "evidence_tier_not_in_enum"
         tier_is_none = self.claimed_evidence_tier is None
         if is_tier_failure and not tier_is_none:
@@ -2771,7 +2798,7 @@ class FindingProposalRejectedEvent(AuditEventBase):
 
 
 class AnalyzeResponseRejectedEvent(AuditEventBase):
-    """Response-level rejection — the LLM response failed to parse as `AnalyzeResponseRaw`.
+    """The model response has no complete, bounded findings envelope.
 
     Distinct event from `FindingProposalRejectedEvent` because that event
     presupposes a proposal; no proposal exists when the raw response
@@ -2784,6 +2811,9 @@ class AnalyzeResponseRejectedEvent(AuditEventBase):
     phase_key: str | None = None
     node_id: Literal["analyze"] = "analyze"
     file_path: DiffPathStr
+    source_side: Literal["head", "base"] = Field(
+        default="head", exclude_if=lambda value: value == "head"
+    )
     response_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     rejection_reason: Literal["raw_response_unparseable"]
     rejection_detail: Annotated[str, Field(max_length=500)]
@@ -2864,6 +2894,11 @@ class SynthesizeCompletedEvent(AuditEventBase):
     prose, not classification — `severity-set-by-policy` analog at the
     PR level)."""
     n_findings: int = Field(ge=0)
+    selected_finding_ids: tuple[UUID, ...] | None = Field(
+        default=None,
+        max_length=HITL_MAX_GATED_FINDINGS,
+        exclude_if=lambda value: value is None,
+    )
     """Total count of deduplicated findings in the `ReviewReport.findings`
     tuple. Aggregate; per-finding details are joinable via the
     upstream `FindingEvent` rows."""
@@ -2940,6 +2975,11 @@ class SynthesizeCompletedEvent(AuditEventBase):
         )
         return self
 
+    @model_validator(mode="after")
+    def _enforce_selected_findings(self) -> Self:
+        _validate_selected_findings(self.selected_finding_ids, self.n_findings)
+        return self
+
 
 class ReplayVerdictEvent(AuditEventBase):
     """Records the outcome of a replay-equivalence check over a judged prefix.
@@ -3007,6 +3047,37 @@ class ReplayVerdictEvent(AuditEventBase):
         return self
 
 
+class NativeCandidateEvent(AuditEventBase):
+    """Identify an original proposal without copying its expiring content."""
+
+    event_type: Literal["native_candidate"] = "native_candidate"
+    node_id: Literal["analyze"] = "analyze"
+    phase_key: str | None = None
+    candidate: NativeCandidateRef
+
+    @model_validator(mode="after")
+    def _enforce_candidate_review(self) -> Self:
+        if self.candidate.review_id != self.review_id:
+            raise ValueError("candidate and event must belong to the same review")
+        return self
+
+
+class CandidateCheckStartedEvent(AuditEventBase):
+    """Record a check before a model call so interruption never silently rebills."""
+
+    event_type: Literal["candidate_check_started"] = "candidate_check_started"
+    node_id: Literal["trace"] = "trace"
+    check: CandidateCheckStarted
+
+
+class CandidateAssessmentEvent(AuditEventBase):
+    """Keep an assessment's status and content reference separately from the claim."""
+
+    event_type: Literal["candidate_assessment"] = "candidate_assessment"
+    node_id: Literal["trace"] = "trace"
+    assessment: CandidateAssessmentRef
+
+
 class SlackNotificationEvent(AuditEventBase):
     """A Slack notification posted for a review (dashboard-in-Slack, V1).
 
@@ -3055,6 +3126,9 @@ AuditEvent = Annotated[
     | AnalyzeResponseRejectedEvent
     | SynthesizeCompletedEvent
     | ReplayVerdictEvent
+    | NativeCandidateEvent
+    | CandidateCheckStartedEvent
+    | CandidateAssessmentEvent
     | SlackNotificationEvent,
     Field(discriminator="event_type"),
 ]
@@ -3085,6 +3159,9 @@ AuditEventAdapter: Final[
         | AnalyzeResponseRejectedEvent
         | SynthesizeCompletedEvent
         | ReplayVerdictEvent
+        | NativeCandidateEvent
+        | CandidateCheckStartedEvent
+        | CandidateAssessmentEvent
         | SlackNotificationEvent
     ]
 ] = TypeAdapter(AuditEvent)
@@ -3099,6 +3176,8 @@ __all__ = [
     "AuditEventBase",
     "CacheLookupEvent",
     "CacheServeEvent",
+    "CandidateAssessmentEvent",
+    "CandidateCheckStartedEvent",
     "ContextManifestEntry",
     "FileExaminationEvent",
     "FindingEvent",
@@ -3106,6 +3185,7 @@ __all__ = [
     "HITLDecisionEvent",
     "HITLRequestEvent",
     "LLMCallEvent",
+    "NativeCandidateEvent",
     "ObservedSkipChangedRegion",
     "ObservedSkipCoveringMatch",
     "ObservedSkipShadowEvent",

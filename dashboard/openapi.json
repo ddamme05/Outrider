@@ -850,6 +850,15 @@
             "type": "string",
             "title": "File Path"
           },
+          "source_side": {
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Source Side",
+            "default": "head"
+          },
           "line_start": {
             "type": "integer",
             "title": "Line Start"
@@ -1241,6 +1250,22 @@
             "minimum": 0.0,
             "title": "N Findings Emitted"
           },
+          "selected_finding_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "type": "array",
+                "maxItems": 256
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Finding Ids"
+          },
           "n_findings_served": {
             "type": "integer",
             "minimum": 0.0,
@@ -1472,6 +1497,15 @@
             "maxLength": 1024,
             "title": "File Path"
           },
+          "source_side": {
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Source Side",
+            "default": "head"
+          },
           "response_hash": {
             "type": "string",
             "pattern": "^[a-f0-9]{64}$",
@@ -1498,7 +1532,7 @@
           "rejection_detail"
         ],
         "title": "AnalyzeResponseRejectedEvent",
-        "description": "Response-level rejection \u2014 the LLM response failed to parse as `AnalyzeResponseRaw`.\n\nDistinct event from `FindingProposalRejectedEvent` because that event\npresupposes a proposal; no proposal exists when the raw response\nitself fails to parse. `response_hash` is the SHA-256 of the FULL\nraw response text encoded as UTF-8 bytes (no truncation prefix).\nHash-only \u2014 no content leak per `DECISIONS.md#014`."
+        "description": "The model response has no complete, bounded findings envelope.\n\nDistinct event from `FindingProposalRejectedEvent` because that event\npresupposes a proposal; no proposal exists when the raw response\nitself fails to parse. `response_hash` is the SHA-256 of the FULL\nraw response text encoded as UTF-8 bytes (no truncation prefix).\nHash-only \u2014 no content leak per `DECISIONS.md#014`."
       },
       "CacheLookupEvent": {
         "properties": {
@@ -1707,12 +1741,492 @@
         "title": "CacheServeEvent",
         "description": "Per-file analyze-cache SERVE record \u2014 the serve-flip counterpart to\n`CacheLookupEvent` (specs/2026-06-13-analyze-cache-serve-flip.md).\n\nEmitted (in place of `CacheLookupEvent`) when `cache_mode=\"serve\"` and a live\ncache entry is served: the LLM call is skipped and the cached findings are\nreconstructed onto this review. Carries the serve DECISION + identity;\nserved-finding CONTENT rides the re-emitted `FindingEvent` stream (the\ncontent/metadata split \u2014 replay equivalence is verified through those\nFindingEvents, not this event, so it survives the source review / cache row\nbeing purged, per `DECISIONS.md#014` point 4).\n\n`cache_key` is the composed digest \u2014 the canonical fingerprint\nof every key component (`compute_analyze_cache_key`), host-qualified by the\nidentity triad (DECISIONS.md#056) so a serve never crosses host/reasoning\nboundaries \u2014 and the join to the prior `CacheLookupEvent` telemetry; carrying\nthe digest carries the components' identity, and replay never recomputes the\nanalyze key, so the individual components are not re-listed.\n`(installation_id, repo_id)` is the tenant scope\n(load-bearing, never dropped). `served_trace_candidates` carries the\nmetadata-only identity of each served trace candidate (their only audit\ntrace; `reason` excluded \u2014 content tier). `source_review_id` /\n`source_cache_created_at` are non-load-bearing provenance pointers.\n\nCarries `node_id=\"analyze\"` so replay node-containment binds it to the analyze\nphase (CacheLookupEvent precedent). A served file emits this event, one\n`FileExaminationEvent(parse_status=\"clean\")`, and one `FindingEvent` per served\nfinding that SURVIVES the per-round finding cap \u2014 and NO `LLMCallEvent`. (Per\nFUP-180 the round-level cap runs after the per-file serve and may drop a non-gated\nserved finding before emission, so `served_finding_count` here is the per-file\npre-cap count, not necessarily the emitted count.) Idempotency: event_id-PK per\n`DECISIONS.md#026`."
       },
+      "CandidateAssessmentEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "candidate_assessment",
+            "title": "Event Type",
+            "default": "candidate_assessment"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "node_id": {
+            "type": "string",
+            "const": "trace",
+            "title": "Node Id",
+            "default": "trace"
+          },
+          "assessment": {
+            "$ref": "#/components/schemas/CandidateAssessmentRef"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "assessment"
+        ],
+        "title": "CandidateAssessmentEvent",
+        "description": "Keep an assessment's status and content reference separately from the claim."
+      },
+      "CandidateAssessmentRef": {
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Candidate Id"
+          },
+          "attempt_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Attempt Id"
+          },
+          "assessment_exchange_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assessment Exchange Event Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "supports",
+              "refutes",
+              "uncertain"
+            ],
+            "title": "Status"
+          },
+          "head_assessment": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "supports",
+                  "refutes",
+                  "uncertain"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Assessment"
+          },
+          "change_assessment": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "introduced_or_worsened",
+                  "fix_attempt",
+                  "unrelated_preexisting",
+                  "uncertain"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Assessment"
+          },
+          "impact_assessment": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "supports",
+                  "refutes",
+                  "uncertain",
+                  "not_claimed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Impact Assessment"
+          },
+          "repair_assessment": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "supports",
+                  "refutes",
+                  "uncertain",
+                  "not_proposed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repair Assessment"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "interrupted",
+              "content_unavailable",
+              "invalid_response",
+              "provider_failed",
+              "budget_exhausted"
+            ],
+            "title": "Outcome"
+          },
+          "suggested_finding_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suggested_severity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingSeverity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policy_version": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+            "title": "Policy Version"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateCitationRef"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Citations",
+            "default": []
+          },
+          "reason_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Hash"
+          },
+          "reason_length": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Length"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "attempt_id",
+          "status",
+          "outcome",
+          "policy_version"
+        ],
+        "title": "CandidateAssessmentRef"
+      },
+      "CandidateCheckStarted": {
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Candidate Id"
+          },
+          "attempt_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Attempt Id"
+          },
+          "source_exchange_event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Exchange Event Id"
+          },
+          "prompt_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Prompt Hash"
+          },
+          "question_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Question Hash"
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Model"
+          },
+          "snippets": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateSnippetRef"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Snippets"
+          },
+          "response_contract": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "head-and-change-v1",
+                  "head-change-and-impact-v1",
+                  "head-change-impact-and-repair-v1"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Contract"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "attempt_id",
+          "source_exchange_event_id",
+          "prompt_hash",
+          "question_hash",
+          "model",
+          "snippets"
+        ],
+        "title": "CandidateCheckStarted"
+      },
+      "CandidateCheckStartedEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "candidate_check_started",
+            "title": "Event Type",
+            "default": "candidate_check_started"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "node_id": {
+            "type": "string",
+            "const": "trace",
+            "title": "Node Id",
+            "default": "trace"
+          },
+          "check": {
+            "$ref": "#/components/schemas/CandidateCheckStarted"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "check"
+        ],
+        "title": "CandidateCheckStartedEvent",
+        "description": "Record a check before a model call so interruption never silently rebills."
+      },
+      "CandidateCitationRef": {
+        "properties": {
+          "snippet_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Snippet Id"
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "source_side": {
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Source Side",
+            "default": "head"
+          },
+          "line_start": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line Start"
+          },
+          "line_end": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line End"
+          },
+          "quote_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Quote Hash"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "snippet_id",
+          "file_path",
+          "line_start",
+          "line_end",
+          "quote_hash"
+        ],
+        "title": "CandidateCitationRef"
+      },
+      "CandidateSnippetRef": {
+        "properties": {
+          "snippet_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Snippet Id"
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "source_side": {
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Source Side",
+            "default": "head"
+          },
+          "line_start": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line Start"
+          },
+          "line_end": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line End"
+          },
+          "source_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Source Hash"
+          },
+          "text_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Text Hash"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "snippet_id",
+          "file_path",
+          "line_start",
+          "line_end",
+          "source_hash",
+          "text_hash"
+        ],
+        "title": "CandidateSnippetRef"
+      },
       "ContextManifestEntry": {
         "properties": {
           "file_path": {
             "type": "string",
             "maxLength": 1024,
             "title": "File Path"
+          },
+          "source_side": {
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Source Side",
+            "default": "head"
           },
           "scope_unit_name": {
             "type": "string",
@@ -1733,8 +2247,10 @@
             "type": "string",
             "enum": [
               "changed_scope",
+              "changed_region",
               "same_file_context",
-              "trace_expansion"
+              "trace_expansion",
+              "captured_reference"
             ],
             "title": "Inclusion Reason"
           }
@@ -1749,7 +2265,7 @@
           "inclusion_reason"
         ],
         "title": "ContextManifestEntry",
-        "description": "One scope-unit entry inside `LLMCallEvent.context_summary`.\n\nFrozen + extra=forbid because the outer event's `frozen=True` does\nnot propagate to nested Pydantic models. Without this, an entry\ncould be mutated post-construction (`entry.file_path = \"...\"`) even\nwhen the containing event is frozen and the tuple is immutable."
+        "description": "One included source range in a recorded model call.\n\nNested entries are frozen separately so the call history stays immutable."
       },
       "CostUnpricedReason": {
         "type": "string",
@@ -1839,10 +2355,12 @@
           "parse_failed",
           "tree_has_error_in_changed_regions",
           "tree_has_error_no_scope",
-          "module_level_observed_match"
+          "module_level_observed_match",
+          "text_only_context",
+          "file_removal"
         ],
         "title": "DegradationReason",
-        "description": "Why an analyze LLM call ran degraded \u2014 THE single source for the\nvocabulary that previously lived in three hand-synced Literals\n(`degradation.py`, `LLMRequest`, this module) plus the degraded prompt's\nprovenance-mapping keys. A `str` enum, so event payloads serialize the\nsame wire values as before and comparisons against raw strings still\nhold. `PARSE_FAILED` is V1-unreachable (raw-bytes intake path, FUP-053);\n`TREE_HAS_ERROR_NO_SCOPE` is the no-scope syntax-error case\n(DECISIONS.md#033); `MODULE_LEVEL_OBSERVED_MATCH` (DECISIONS.md#062) is\nthe one cause that is NOT a parse defect \u2014 the parse is clean, the\ndegradation is a routing choice, and the review's FileExaminationEvent\ntruthfully reports `parse_status=\"clean\"` while the LLMCallEvent carries\nthis reason (the cross-event pairing that distinguishes the route).\nAdding a member: the type system now propagates it to every consumer;\nthe degraded prompt's provenance mapping (`prompts/analyze.py`) is the\none companion that needs a sentence, enforced by its totality test."
+        "description": "Why a review used bounded text instead of ordinary scope context.\n\nParse defects, the clean module-producer route (#062), and configuration\ntext are distinct causes. These values persist in model-call events;\nprompts/analyze.py supplies a truthful explanation for each member."
       },
       "EvidenceTier": {
         "type": "string",
@@ -2024,6 +2542,15 @@
             "maxLength": 1024,
             "title": "File Path"
           },
+          "source_side": {
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Source Side",
+            "default": "head"
+          },
           "line_start": {
             "type": "integer",
             "minimum": 1.0,
@@ -2165,6 +2692,15 @@
             "maxLength": 1024,
             "title": "File Path"
           },
+          "source_side": {
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Source Side",
+            "default": "head"
+          },
           "proposal_hash": {
             "type": "string",
             "pattern": "^[a-f0-9]{64}$",
@@ -2181,19 +2717,36 @@
             ]
           },
           "claimed_finding_type_hash": {
-            "type": "string",
-            "pattern": "^[a-f0-9]{16}$",
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{16}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Claimed Finding Type Hash"
           },
           "claimed_finding_type_len": {
-            "type": "integer",
-            "maximum": 128.0,
-            "minimum": 0.0,
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 128.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Claimed Finding Type Len"
           },
           "rejection_reason": {
             "type": "string",
             "enum": [
+              "raw_proposal_invalid",
+              "evidence_quote_invalid",
+              "model_observed_not_supported",
               "query_match_id_not_in_registry",
               "trace_path_not_admissible",
               "finding_type_not_in_enum",
@@ -2224,7 +2777,7 @@
           "rejection_detail"
         ],
         "title": "FindingProposalRejectedEvent",
-        "description": "Proposal-level rejection \u2014 one per model proposal that failed admission.\n\nStores `claimed_finding_type_hash` (SHA-256 short prefix) + length\nrather than the raw model string per `DECISIONS.md#014` point 1:\nevery model-originated value is hostile until validated, so audit\nrows must not carry user code or prompt/completion content.\nCross-field validator pairs `claimed_evidence_tier` with the\n`evidence_tier_not_in_enum` reason bidirectionally.\n\n`proposal_hash` carries the PR/file-scoped `compute_proposal_hash`\ndigest per `DECISIONS.md#022`. Two analyze passes over DIFFERENT\nsource files that emit logically-identical proposals produce\nDISTINCT `proposal_hash` values \u2014 preserving per-source-file\naudit provenance on the join with `TraceCandidate.source_proposal_hash`."
+        "description": "Proposal-level rejection \u2014 one per model proposal that failed admission.\n\nStores `claimed_finding_type_hash` (SHA-256 short prefix) + length\nrather than the raw model string per `DECISIONS.md#014` point 1:\nevery model-originated value is hostile until validated, so audit\nrows must not carry user code or prompt/completion content.\nValid-shaped proposals pair `claimed_evidence_tier` with the\n`evidence_tier_not_in_enum` reason bidirectionally.\n\nValid-shaped proposals use the file-scoped `compute_proposal_hash`\ndigest per `DECISIONS.md#022`. Two analyze passes over DIFFERENT\nsource files that emit logically-identical proposals produce\nDISTINCT `proposal_hash` values \u2014 preserving per-source-file\naudit provenance on the join with `TraceCandidate.source_proposal_hash`.\nA malformed proposal instead identifies its file, exact response hash and\narray index with the versioned `malformed-analyze-proposal-v1` recipe.\nType and tier metadata remain absent until proposal shape validates."
       },
       "FindingSeverity": {
         "type": "string",
@@ -2262,10 +2815,11 @@
           "ssrf",
           "ssrf_metadata",
           "open_redirect",
-          "open_redirect_authed"
+          "open_redirect_authed",
+          "correctness_bug"
         ],
         "title": "FindingType",
-        "description": "The constrained enum the LLM classifies findings under.\n\nThe retry/normalize/anomaly path that turns a model-produced string\ninto a FindingType enum value (or anomalies if no safe match) is the\nanalyze node's responsibility per `finding-type-enum-constrained`.\nThis enum is the type system; the analyze node is what bridges from\nuntrusted model output to it."
+        "description": "Categories admitted by the analyzer and used by the severity policy.\n\nThe analyzer records rejections before applying the severity policy."
       },
       "FindingView": {
         "properties": {
@@ -2293,6 +2847,15 @@
           "file_path": {
             "type": "string",
             "title": "File Path"
+          },
+          "source_side": {
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Source Side",
+            "default": "head"
           },
           "line_start": {
             "type": "integer",
@@ -2709,6 +3272,15 @@
             "type": "array",
             "title": "Auto Post Findings"
           },
+          "verification_hold_finding_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Verification Hold Finding Ids",
+            "default": []
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -2794,6 +3366,18 @@
               }
             ],
             "title": "Phase Key"
+          },
+          "candidate_attempt_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Attempt Id"
           },
           "model": {
             "type": "string",
@@ -3081,6 +3665,249 @@
         ],
         "title": "MetricDeltas",
         "description": "Current vs the immediately-prior equal-length window (frontend computes the %)."
+      },
+      "NativeCandidateEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "native_candidate",
+            "title": "Event Type",
+            "default": "native_candidate"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          },
+          "node_id": {
+            "type": "string",
+            "const": "analyze",
+            "title": "Node Id",
+            "default": "analyze"
+          },
+          "phase_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Key"
+          },
+          "candidate": {
+            "$ref": "#/components/schemas/NativeCandidateRef"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id",
+          "candidate"
+        ],
+        "title": "NativeCandidateEvent",
+        "description": "Identify an original proposal without copying its expiring content."
+      },
+      "NativeCandidateRef": {
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Candidate Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "source_exchange_event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Exchange Event Id"
+          },
+          "response_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Response Hash"
+          },
+          "proposal_index": {
+            "type": "integer",
+            "maximum": 49.0,
+            "minimum": 0.0,
+            "title": "Proposal Index"
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "File Path"
+          },
+          "source_side": {
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Source Side",
+            "default": "head"
+          },
+          "pass_index": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Pass Index"
+          },
+          "initial_disposition": {
+            "type": "string",
+            "enum": [
+              "admitted",
+              "rejected",
+              "malformed"
+            ],
+            "title": "Initial Disposition"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "raw_proposal_invalid",
+                  "query_match_id_not_in_registry",
+                  "trace_path_not_admissible",
+                  "finding_type_not_in_enum",
+                  "evidence_tier_not_in_enum",
+                  "span_outside_scope_unit",
+                  "span_outside_file",
+                  "span_outside_degraded_context",
+                  "sql_injection_on_parameterized_call",
+                  "schema_construction_failed",
+                  "evidence_quote_invalid",
+                  "model_observed_not_supported"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
+          "proposal_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Hash"
+          },
+          "finding_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finding Id"
+          },
+          "content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
+          "finding_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingSeverity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence_tier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceTier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "review_id",
+          "source_exchange_event_id",
+          "response_hash",
+          "proposal_index",
+          "file_path",
+          "pass_index",
+          "initial_disposition"
+        ],
+        "title": "NativeCandidateRef"
       },
       "ObservedSkipChangedRegion": {
         "properties": {
@@ -3691,6 +4518,15 @@
             "maxLength": 1024,
             "title": "File Path"
           },
+          "source_side": {
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Source Side",
+            "default": "head"
+          },
           "line_start": {
             "type": "integer",
             "minimum": 1.0,
@@ -3925,6 +4761,15 @@
             "maxLength": 1024,
             "title": "File Path"
           },
+          "source_side": {
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Source Side",
+            "default": "head"
+          },
           "line_start": {
             "type": "integer",
             "minimum": 1.0,
@@ -3971,6 +4816,7 @@
         "enum": [
           "reviewable_diff_line",
           "unchanged_region",
+          "removed_source",
           "non_diffed_file",
           "coordinate_error"
         ],
@@ -4085,6 +4931,15 @@
                   "$ref": "#/components/schemas/ReplayVerdictEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/NativeCandidateEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/CandidateCheckStartedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/CandidateAssessmentEvent"
+                },
+                {
                   "$ref": "#/components/schemas/SlackNotificationEvent"
                 }
               ],
@@ -4096,12 +4951,15 @@
                   "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
                   "cache_lookup": "#/components/schemas/CacheLookupEvent",
                   "cache_serve": "#/components/schemas/CacheServeEvent",
+                  "candidate_assessment": "#/components/schemas/CandidateAssessmentEvent",
+                  "candidate_check_started": "#/components/schemas/CandidateCheckStartedEvent",
                   "file_examination": "#/components/schemas/FileExaminationEvent",
                   "finding": "#/components/schemas/FindingEvent",
                   "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
                   "hitl_decision": "#/components/schemas/HITLDecisionEvent",
                   "hitl_request": "#/components/schemas/HITLRequestEvent",
                   "llm_call": "#/components/schemas/LLMCallEvent",
+                  "native_candidate": "#/components/schemas/NativeCandidateEvent",
                   "observed_skip_shadow": "#/components/schemas/ObservedSkipShadowEvent",
                   "publish": "#/components/schemas/PublishEvent",
                   "publish_attempt": "#/components/schemas/PublishAttemptEvent",
@@ -4364,6 +5222,15 @@
                   "$ref": "#/components/schemas/ReplayVerdictEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/NativeCandidateEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/CandidateCheckStartedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/CandidateAssessmentEvent"
+                },
+                {
                   "$ref": "#/components/schemas/SlackNotificationEvent"
                 }
               ],
@@ -4375,12 +5242,15 @@
                   "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
                   "cache_lookup": "#/components/schemas/CacheLookupEvent",
                   "cache_serve": "#/components/schemas/CacheServeEvent",
+                  "candidate_assessment": "#/components/schemas/CandidateAssessmentEvent",
+                  "candidate_check_started": "#/components/schemas/CandidateCheckStartedEvent",
                   "file_examination": "#/components/schemas/FileExaminationEvent",
                   "finding": "#/components/schemas/FindingEvent",
                   "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
                   "hitl_decision": "#/components/schemas/HITLDecisionEvent",
                   "hitl_request": "#/components/schemas/HITLRequestEvent",
                   "llm_call": "#/components/schemas/LLMCallEvent",
+                  "native_candidate": "#/components/schemas/NativeCandidateEvent",
                   "observed_skip_shadow": "#/components/schemas/ObservedSkipShadowEvent",
                   "publish": "#/components/schemas/PublishEvent",
                   "publish_attempt": "#/components/schemas/PublishAttemptEvent",
@@ -4479,6 +5349,15 @@
                   "$ref": "#/components/schemas/ReplayVerdictEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/NativeCandidateEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/CandidateCheckStartedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/CandidateAssessmentEvent"
+                },
+                {
                   "$ref": "#/components/schemas/SlackNotificationEvent"
                 }
               ],
@@ -4490,12 +5369,15 @@
                   "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
                   "cache_lookup": "#/components/schemas/CacheLookupEvent",
                   "cache_serve": "#/components/schemas/CacheServeEvent",
+                  "candidate_assessment": "#/components/schemas/CandidateAssessmentEvent",
+                  "candidate_check_started": "#/components/schemas/CandidateCheckStartedEvent",
                   "file_examination": "#/components/schemas/FileExaminationEvent",
                   "finding": "#/components/schemas/FindingEvent",
                   "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
                   "hitl_decision": "#/components/schemas/HITLDecisionEvent",
                   "hitl_request": "#/components/schemas/HITLRequestEvent",
                   "llm_call": "#/components/schemas/LLMCallEvent",
+                  "native_candidate": "#/components/schemas/NativeCandidateEvent",
                   "observed_skip_shadow": "#/components/schemas/ObservedSkipShadowEvent",
                   "publish": "#/components/schemas/PublishEvent",
                   "publish_attempt": "#/components/schemas/PublishAttemptEvent",
@@ -4892,6 +5774,15 @@
                   "$ref": "#/components/schemas/ReplayVerdictEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/NativeCandidateEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/CandidateCheckStartedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/CandidateAssessmentEvent"
+                },
+                {
                   "$ref": "#/components/schemas/SlackNotificationEvent"
                 }
               ],
@@ -4903,12 +5794,15 @@
                   "analyze_response_rejected": "#/components/schemas/AnalyzeResponseRejectedEvent",
                   "cache_lookup": "#/components/schemas/CacheLookupEvent",
                   "cache_serve": "#/components/schemas/CacheServeEvent",
+                  "candidate_assessment": "#/components/schemas/CandidateAssessmentEvent",
+                  "candidate_check_started": "#/components/schemas/CandidateCheckStartedEvent",
                   "file_examination": "#/components/schemas/FileExaminationEvent",
                   "finding": "#/components/schemas/FindingEvent",
                   "finding_proposal_rejected": "#/components/schemas/FindingProposalRejectedEvent",
                   "hitl_decision": "#/components/schemas/HITLDecisionEvent",
                   "hitl_request": "#/components/schemas/HITLRequestEvent",
                   "llm_call": "#/components/schemas/LLMCallEvent",
+                  "native_candidate": "#/components/schemas/NativeCandidateEvent",
                   "observed_skip_shadow": "#/components/schemas/ObservedSkipShadowEvent",
                   "publish": "#/components/schemas/PublishEvent",
                   "publish_attempt": "#/components/schemas/PublishAttemptEvent",
@@ -5498,10 +6392,11 @@
           "NO_CHANGED_SCOPE_UNITS",
           "UNSUPPORTED_LANGUAGE",
           "ALL_SCOPES_TRIVIAL",
-          "PATCH_HEAD_MISALIGNED"
+          "PATCH_HEAD_MISALIGNED",
+          "PATCH_BASE_MISALIGNED"
         ],
         "title": "SkipReason",
-        "description": "Skip-reason taxonomy across parser AND analyze-node decisions.\n\nTwo naming axes per `DECISIONS.md#018` Amended 2026-05-20 + 2026-05-21:\n- Parser-stage (rule rooted in file content OR intake decode gate):\n  `OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`, `MINIFIED`,\n  `GENERATED_BANNER`, `BINARY`. See `parser_outcome.EXCLUSION_RULES`\n  for the actual rule tuple (multiple rules may share a reason).\n  `BINARY` is set by intake's `_classify_or_reserve_decode` for\n  NUL-byte / UTF-8-decode-failure content; the other five are set\n  by `should_skip` over file content + path.\n- Analyze-stage (rule rooted in analyze's decision rationale):\n  `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,\n  `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`,\n  `ALL_SCOPES_TRIVIAL`, `PATCH_HEAD_MISALIGNED`. Set by the\n  analyze node body when it skips a file mid-pass.\n  `UNSUPPORTED_LANGUAGE` is capability-scoped: it fires for\n  extensions with no registered ast_facts adapter (the registry\n  covers Python + JS/TS/TSX); the value names \"today's analyze\n  implementation cannot review this,\" not \"Outrider forever\n  cannot.\"\n\nImported by `outrider/audit/events.py` per `DECISIONS.md#018`."
+        "description": "Skip-reason taxonomy across parser AND analyze-node decisions.\n\nTwo naming axes per `DECISIONS.md#018` Amended 2026-05-20 + 2026-05-21:\n- Parser-stage (rule rooted in file content OR intake decode gate):\n  `OVERSIZED`, `VENDORED`, `GENERATED_FILENAME`, `MINIFIED`,\n  `GENERATED_BANNER`, `BINARY`. See `parser_outcome.EXCLUSION_RULES`\n  for the actual rule tuple (multiple rules may share a reason).\n  `BINARY` is set by intake's `_classify_or_reserve_decode` for\n  NUL-byte / UTF-8-decode-failure content; the other five are set\n  by `should_skip` over file content + path.\n- Analyze-stage (rule rooted in analyze's decision rationale):\n  `COST_BUDGET_EXHAUSTED`, `NO_REVIEWABLE_CONTEXT`,\n  `NO_CHANGED_SCOPE_UNITS`, `UNSUPPORTED_LANGUAGE`,\n  `ALL_SCOPES_TRIVIAL`, `PATCH_HEAD_MISALIGNED`, `PATCH_BASE_MISALIGNED`. Set by the\n  analyze node body when it skips a file mid-pass.\n  `UNSUPPORTED_LANGUAGE` is capability-scoped: it fires for\n  extensions with no registered ast_facts adapter (the registry\n  covers Python + JS/TS/TSX); the value names \"today's analyze\n  implementation cannot review this,\" not \"Outrider forever\n  cannot.\"\n\nImported by `outrider/audit/events.py` per `DECISIONS.md#018`."
       },
       "SlackInstallURL": {
         "properties": {
@@ -5690,6 +6585,22 @@
             "type": "integer",
             "minimum": 0.0,
             "title": "N Findings"
+          },
+          "selected_finding_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "type": "array",
+                "maxItems": 256
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Finding Ids"
           },
           "n_findings_dropped_over_cap": {
             "type": "integer",

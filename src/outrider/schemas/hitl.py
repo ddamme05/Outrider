@@ -1,13 +1,9 @@
-# HITL gate envelope per docs/spec.md §6.4 + §7.4 (severity override)
-"""Immutable approval requests and reviewer decisions.
+"""Define immutable requests and decisions for human review approval.
 
-The HITL node interrupts for CRITICAL/HIGH findings. The dashboard decide
-endpoint builds HITLDecision and resumes the graph with Command(resume=...).
-Publish consumes these artifacts to validate approvals and overrides.
-
-PerFindingDecision.enforce_override_fields requires paired override fields,
-a real severity change, and a reason for every non-APPROVE outcome. Frozen
-models and tuple containers keep submitted artifacts immutable."""
+The approval node pauses with a request; the dashboard supplies a decision
+when resuming it. Overrides must describe an actual severity change and give
+a reason. Frozen models and tuples keep submitted decisions immutable.
+"""
 
 from enum import StrEnum
 from typing import Self
@@ -106,10 +102,18 @@ class HITLRequest(BaseModel):
 
     findings_requiring_approval: tuple[UUID, ...] = Field(max_length=HITL_MAX_GATED_FINDINGS)
     auto_post_findings: tuple[UUID, ...]
+    verification_hold_finding_ids: tuple[UUID, ...] = Field(
+        default=(), max_length=HITL_MAX_GATED_FINDINGS, exclude_if=lambda value: not value
+    )
     created_at: AwareDatetime
     expires_at: AwareDatetime
 
-    @field_validator("findings_requiring_approval", "auto_post_findings", mode="after")
+    @field_validator(
+        "findings_requiring_approval",
+        "auto_post_findings",
+        "verification_hold_finding_ids",
+        mode="after",
+    )
     @classmethod
     def _canonicalize_finding_tuple(cls, v: tuple[UUID, ...]) -> tuple[UUID, ...]:
         """Sort deterministically so semantically-equal sets produce
@@ -145,6 +149,11 @@ class HITLRequest(BaseModel):
                 f"findings_requiring_approval and auto_post_findings; "
                 f"overlap: {sorted(str(u) for u in overlap)!r}"
             )
+        holds = set(self.verification_hold_finding_ids)
+        if len(holds) != len(self.verification_hold_finding_ids):
+            raise ValueError("verification hold finding IDs must be unique")
+        if not holds.issubset(self.findings_requiring_approval):
+            raise ValueError("verification holds must require approval")
         return self
 
 
