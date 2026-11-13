@@ -2752,7 +2752,7 @@ class AuditPersister:
     # -- SynthesizeEventSink surface ----------------------------------------
     # Per pre-spec gate #1: synthesize uses event_id-PK idempotency
     # (NOT natural-key). The natural-key state-lockstep gate iii fails
-    # because `ReviewReport.summary` text lives in `llm_call_content`,
+    # because model-written `ReviewReport.summary` lives in `llm_call_content`,
     # not in the audit-row payload — a natural-key persister couldn't
     # return enough payload to reconstruct ReviewReport on retry.
     # Mirrors `AnalyzeCompletedEvent` shape (event_id-PK,

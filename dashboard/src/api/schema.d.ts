@@ -3347,41 +3347,21 @@ export interface components {
         };
         /**
          * SynthesizeCompletedEvent
-         * @description Per-review aggregate emitted at the end of the synthesize node.
+         * @description Record the final summary's producer, identity and measured report totals.
          *
-         *     `policy_version` mirrors the triage-captured snapshot per
-         *     DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.
-         *     See also DECISIONS.md#029 for the V2 durable-retry idempotency
-         *     + content-binding via `llm_call_event_id` (out of scope for V1).
+         *     Model summaries bind raw UTF-8 response bytes in llm_call_content. Their
+         *     display text can have outer fences removed. Historical rows omit
+         *     summary_source and keep this model/raw-hash interpretation.
          *
-         *     One per review (not per-pass like `AnalyzeCompletedEvent`). Carries
-         *     the canonical `ReviewMetrics` fields (mirror of
-         *     `outrider.schemas.review_report.ReviewMetrics`), plus the binding
-         *     metadata (`summary_content_hash`, `overall_risk`, `n_findings`)
-         *     that lets replay reconstruct what summary text + what report shape
-         *     this synthesize-node invocation produced. Replay joins the
-         *     paired `LLMCallEvent` by `review_id` + `node_id="synthesize"` —
-         *     `LLMCallEvent` carries its own `event_id` AND scans `llm_call_content`
-         *     by that key per `DECISIONS.md#016`; no explicit `llm_call_event_id`
-         *     FK is needed on this event because the synthesize node emits
-         *     exactly one LLM call per review (joinable unambiguously) and the
-         *     `summary_content_hash` here cross-validates the content match.
-         *
-         *     Metadata-only per `DECISIONS.md#016`: the summary prose lives in
-         *     `llm_call_content` (audit-side TTL) AND in the LangGraph checkpoint
-         *     payload (operational-side; see spec gate #6 option (c) retention
-         *     model). `summary_content_hash` is the sha256 of the RAW LLM
-         *     `response.text` (matches the canon `llm_call_content.completion`
-         *     persister stores — see synthesize.py `_compute_summary_content_hash`
-         *     docstring for the display-vs-canon split rationale). Within the
-         *     LLM-content TTL window, replay can reconstruct prose by joining on
-         *     this hash; outside the window, metadata-only replay is the
-         *     canonical claim.
+         *     Empty reports use the immutable empty-findings-v1 renderer, make no summary
+         *     model call and bind the rendered bytes. Audit can validate that template
+         *     from metadata without reconstructing expired model content. Other exchanges
+         *     and checkpoints keep their existing independent retention rules.
          *
          *     Idempotency: event_id-PK (default per `DECISIONS.md#026`). Natural-
          *     key was rejected at pre-spec gate #1 because the natural-key
          *     persister cannot return enough payload to reconstruct
-         *     `ReviewReport` (the summary text lives in `llm_call_content`, not
+         *     `ReviewReport` (model-written summary text lives in `llm_call_content`, not
          *     in the audit-row payload) — state-lockstep gate iii fails. The
          *     event_id-PK contract catches CONCURRENT re-emit of the same logical
          *     event (e.g., dispatcher fires twice for one checkpoint state) but
@@ -3433,6 +3413,12 @@ export interface components {
              * @constant
              */
             node_id: "synthesize";
+            /**
+             * Summary Source
+             * @default model
+             * @enum {string}
+             */
+            summary_source: "model" | "empty-findings-v1";
             /** Summary Content Hash */
             summary_content_hash: string;
             overall_risk: components["schemas"]["RiskLevel"];
@@ -3464,7 +3450,7 @@ export interface components {
             /** Policy Version */
             policy_version: string;
             /** Synthesize Model */
-            synthesize_model: string;
+            synthesize_model: string | null;
             /** Profile Id */
             profile_id?: string | null;
             /** Reasoning Enabled */

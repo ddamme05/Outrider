@@ -40,13 +40,24 @@ _SEVERITY_SORT_KEY: Final[Mapping[FindingSeverity, int]] = MappingProxyType(
 # `ReviewReport(...)`, the schema constraint is the defense-in-depth backstop.
 MAX_FINDINGS_PER_REPORT: Final[int] = 200
 
+# Persisted summary sources name immutable renderers so audit can verify them.
+EMPTY_FINDINGS_SUMMARY_SOURCE: Final = "empty-findings-v1"
+
+
+def render_empty_findings_summary(overall_risk: RiskLevel) -> str:
+    """State the retained count and upstream risk without inferring clean code."""
+    return (
+        "This review retained no findings. "
+        f"Triage classified the pull request as {overall_risk.value} risk."
+    )
+
 
 class ReviewMetrics(BaseModel):
     """Per-review statistics computed in synthesize, per spec.md:1106-1114.
 
     All fields derived deterministically from audit_events + analysis_rounds
     + node wall-clock measurement. NOT computed by the LLM call; the
-    summary call produces only the summary prose. ge=0 floors match the
+    optional summary call produces only summary prose. ge=0 floors match the
     LLMCallEvent pricing-field convention (input_tokens, output_tokens,
     cost_usd) at audit/events.py:320-323.
     """
@@ -102,12 +113,9 @@ class ReviewReport(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    # PROSE, not an audit-counting surface: numbers inside the summary are
-    # model-written and may drift on DERIVED counts (the prompt supplies a
-    # precomputed n_findings, but e.g. distinct-file counts are re-derived
-    # by the model — both Sonnet and Haiku miscounted one in the 2026-06-10
-    # side-by-side). Renderers display exact counts from `metrics` /
-    # the audit stream; never parse them out of this text.
+    # Empty reports state the retained count and upstream risk with a fixed
+    # template. Model-written prose can miscount, so render exact metrics from
+    # metrics and the audit stream rather than parsing them from summary text.
     summary: str = Field(max_length=2000)
     overall_risk: RiskLevel
     # max_length is the HARD runaway ceiling (MAX_FINDINGS_HARD_CAP), NOT the soft

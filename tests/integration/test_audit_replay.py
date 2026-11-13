@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -20,12 +22,14 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from outrider.agent.nodes.synthesize import synthesize
 from outrider.audit.events import (
     RESERVED_HISTORICAL_PROPOSAL_HASH,
     AuditEventBase,
     FindingEvent,
     LLMCallEvent,
     ReviewPhaseEvent,
+    SynthesizeCompletedEvent,
     compute_finding_content_hash,
 )
 from outrider.audit.replay import (
@@ -34,6 +38,7 @@ from outrider.audit.replay import (
     ReplayMode,
     ReplayReviewNotFoundError,
 )
+from outrider.llm.host_profiles import resolve_host_identity
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import (
     SEVERITY_POLICY,
@@ -42,6 +47,7 @@ from outrider.policy.severity import (
 )
 from outrider.schemas import ReviewDimension
 from outrider.schemas.review_finding import ReviewFinding
+from outrider.schemas.review_state import ReviewState
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -665,3 +671,69 @@ async def test_full_mode_through_production_persister(
     assert [p.node_id for p in review.phases] == ["triage", "analyze"]
 
     await replayer.assert_replay_equivalent(review_id)  # no raise
+
+
+@pytest.mark.parametrize("case_index", [0, 1], ids=["trio-2938", "trio-3394"])
+async def test_recorded_empty_summary_persists_without_a_model_exchange(
+    persister_setup: PersisterTestSetup, case_index: int
+) -> None:
+    """Save and reconstruct the same two empty-result cases through production sinks."""
+    fixture = json.loads(
+        (Path(__file__).parents[1] / "fixtures" / "empty_summary_live_20261112.json").read_text()
+    )
+    case = fixture["cases"][case_index]
+    state = ReviewState.model_validate(
+        {
+            **case["state_projection"],
+            "review_id": persister_setup.review_id,
+            "is_eval": False,
+            "pr_context": {
+                **case["pr_metadata"],
+                "installation_id": persister_setup.installation_id,
+                "changed_files": [],
+            },
+        }
+    )
+    provider = AsyncMock()
+    provider.complete.side_effect = AssertionError("Empty summary made a model call")
+    anomaly_sink = AsyncMock()
+    profile_id, reasoning, digest = resolve_host_identity("anthropic", reasoning=False)
+    result = await synthesize(
+        state,
+        provider=provider,
+        synthesize_model=case["request"]["model"],
+        patch_model=case["request"]["model"],
+        profile_id=profile_id,
+        reasoning_enabled=reasoning,
+        profile_contract_digest=digest,
+        patches_enabled=True,
+        max_suggestions=3,
+        phase_event_sink=persister_setup.persister,
+        synthesize_event_sink=persister_setup.persister,
+        anomaly_sink=anomaly_sink,
+    )
+    async with persister_setup.engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE reviews SET status = 'completed' WHERE id = :rid"),
+            {"rid": state.review_id},
+        )
+    replayer = AuditReplayer(
+        session_factory=async_sessionmaker(persister_setup.engine, expire_on_commit=False)
+    )
+    reconstructed = await replayer.reconstruct(state.review_id)
+    assert reconstructed.mode == ReplayMode.FULL
+    assert reconstructed.llm_exchanges == ()
+    assert reconstructed.findings == ()
+    assert [phase.node_id for phase in reconstructed.phases] == ["synthesize"]
+    completed = [
+        event for event in reconstructed.events if isinstance(event, SynthesizeCompletedEvent)
+    ]
+    [event] = completed
+    report = result["review_report"]
+    assert event.summary_source == "empty-findings-v1"
+    assert event.synthesize_model is None
+    assert event.summary_content_hash == hashlib.sha256(report.summary.encode("utf-8")).hexdigest()
+    assert event.llm_calls_made == report.metrics.llm_calls_made == 0
+    provider.complete.assert_not_awaited()
+    anomaly_sink.emit_anomaly.assert_not_awaited()
+    await replayer.assert_replay_equivalent(state.review_id)

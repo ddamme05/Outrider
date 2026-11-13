@@ -6995,6 +6995,15 @@
             "title": "Node Id",
             "default": "synthesize"
           },
+          "summary_source": {
+            "type": "string",
+            "enum": [
+              "model",
+              "empty-findings-v1"
+            ],
+            "title": "Summary Source",
+            "default": "model"
+          },
           "summary_content_hash": {
             "type": "string",
             "pattern": "^[a-f0-9]{64}$",
@@ -7106,7 +7115,14 @@
             "title": "Policy Version"
           },
           "synthesize_model": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Synthesize Model"
           },
           "profile_id": {
@@ -7159,7 +7175,7 @@
           "synthesize_model"
         ],
         "title": "SynthesizeCompletedEvent",
-        "description": "Per-review aggregate emitted at the end of the synthesize node.\n\n`policy_version` mirrors the triage-captured snapshot per\nDECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult.\nSee also DECISIONS.md#029 for the V2 durable-retry idempotency\n+ content-binding via `llm_call_event_id` (out of scope for V1).\n\nOne per review (not per-pass like `AnalyzeCompletedEvent`). Carries\nthe canonical `ReviewMetrics` fields (mirror of\n`outrider.schemas.review_report.ReviewMetrics`), plus the binding\nmetadata (`summary_content_hash`, `overall_risk`, `n_findings`)\nthat lets replay reconstruct what summary text + what report shape\nthis synthesize-node invocation produced. Replay joins the\npaired `LLMCallEvent` by `review_id` + `node_id=\"synthesize\"` \u2014\n`LLMCallEvent` carries its own `event_id` AND scans `llm_call_content`\nby that key per `DECISIONS.md#016`; no explicit `llm_call_event_id`\nFK is needed on this event because the synthesize node emits\nexactly one LLM call per review (joinable unambiguously) and the\n`summary_content_hash` here cross-validates the content match.\n\nMetadata-only per `DECISIONS.md#016`: the summary prose lives in\n`llm_call_content` (audit-side TTL) AND in the LangGraph checkpoint\npayload (operational-side; see spec gate #6 option (c) retention\nmodel). `summary_content_hash` is the sha256 of the RAW LLM\n`response.text` (matches the canon `llm_call_content.completion`\npersister stores \u2014 see synthesize.py `_compute_summary_content_hash`\ndocstring for the display-vs-canon split rationale). Within the\nLLM-content TTL window, replay can reconstruct prose by joining on\nthis hash; outside the window, metadata-only replay is the\ncanonical claim.\n\nIdempotency: event_id-PK (default per `DECISIONS.md#026`). Natural-\nkey was rejected at pre-spec gate #1 because the natural-key\npersister cannot return enough payload to reconstruct\n`ReviewReport` (the summary text lives in `llm_call_content`, not\nin the audit-row payload) \u2014 state-lockstep gate iii fails. The\nevent_id-PK contract catches CONCURRENT re-emit of the same logical\nevent (e.g., dispatcher fires twice for one checkpoint state) but\ndoes NOT catch crash-recovery re-emit (Synthesize body crashes\nAFTER this event lands but BEFORE node return \u2192 resume mints a\nfresh UUID \u2192 second row lands). V1's in-process BackgroundTasks\ndispatcher does not durably retry; V2 Celery + Redis adds durable\nretry semantics and will need a natural-key add-on before durable\nretry lands (sibling of `emit_phase` which already keys natural).\nPer-review-aggregate dashboard queries should DISTINCT ON\n`(review_id, event_type)` or use MAX(timestamp) to be robust.\n\nNo content-hash binding on findings here (unlike `FindingEvent`):\nevery finding in the deduplicated `ReviewReport.findings` is already\nrecorded as its own `FindingEvent` upstream. `n_findings` is the\naggregate; replay can join to per-finding events via `review_id`."
+        "description": "Record the final summary's producer, identity and measured report totals.\n\nModel summaries bind raw UTF-8 response bytes in llm_call_content. Their\ndisplay text can have outer fences removed. Historical rows omit\nsummary_source and keep this model/raw-hash interpretation.\n\nEmpty reports use the immutable empty-findings-v1 renderer, make no summary\nmodel call and bind the rendered bytes. Audit can validate that template\nfrom metadata without reconstructing expired model content. Other exchanges\nand checkpoints keep their existing independent retention rules.\n\nIdempotency: event_id-PK (default per `DECISIONS.md#026`). Natural-\nkey was rejected at pre-spec gate #1 because the natural-key\npersister cannot return enough payload to reconstruct\n`ReviewReport` (model-written summary text lives in `llm_call_content`, not\nin the audit-row payload) \u2014 state-lockstep gate iii fails. The\nevent_id-PK contract catches CONCURRENT re-emit of the same logical\nevent (e.g., dispatcher fires twice for one checkpoint state) but\ndoes NOT catch crash-recovery re-emit (Synthesize body crashes\nAFTER this event lands but BEFORE node return \u2192 resume mints a\nfresh UUID \u2192 second row lands). V1's in-process BackgroundTasks\ndispatcher does not durably retry; V2 Celery + Redis adds durable\nretry semantics and will need a natural-key add-on before durable\nretry lands (sibling of `emit_phase` which already keys natural).\nPer-review-aggregate dashboard queries should DISTINCT ON\n`(review_id, event_type)` or use MAX(timestamp) to be robust.\n\nNo content-hash binding on findings here (unlike `FindingEvent`):\nevery finding in the deduplicated `ReviewReport.findings` is already\nrecorded as its own `FindingEvent` upstream. `n_findings` is the\naggregate; replay can join to per-finding events via `review_id`."
       },
       "TimelineFindingContentView": {
         "properties": {

@@ -1903,10 +1903,22 @@ source coverage or whether more tracing was needed.
 
 **Decision.** The synthesis prompt receives only capped accepted finding details
 and upstream risk. Review metrics stay in the deterministic report and audit
-event. One bounded summary call per review remains. The final metrics query
-follows the completed call; the pre-call query and metric prompt fields are
-removed. Findings, severity policy, metric schemas and historical records keep
-their existing contracts.
+event. Reports with accepted findings make one bounded summary call. Empty
+reports use the fixed `empty-findings-v1` summary and make no summary call.
+The final metrics query follows all completed model work; the pre-call query
+and metric prompt fields are removed. Findings, severity policy, metric schemas
+and historical records keep their existing contracts.
+
+The 2026-11-12 empty-report amendment follows two recorded live workflow results.
+Both model summaries added advice beyond their findings-and-risk input. The
+fixed summary states only that no findings were retained and repeats upstream
+risk. It makes no claim that the change is safe or exhaustively reviewed.
+`SynthesizeCompletedEvent.summary_source` identifies the versioned template,
+`synthesize_model` is null, and `summary_content_hash` binds its exact UTF-8
+bytes. Model-written and historical summaries keep raw-response hashes and
+model identities; omitted `summary_source` means `model`. No model exchange is
+invented for a template. Reconstructing its text does not restore expired model
+content or change replay mode or checkpoint retention.
 
 This supersedes only the synthesis-metrics egress category in the 2026-07-16
 amendments to #013 and #015. The public privacy statement drops "and metrics"
@@ -1917,7 +1929,7 @@ storage and metadata-only audit rules are unchanged.
 **Consequences.** Prompt version v5 identifies the reduced input. The canonical
 privacy text and its mirror checks reflect the narrower egress. Model-output
 accuracy still needs separate evaluation; removing input fields does not prove
-that future summaries avoid unsupported coverage claims.
+that future model-written summaries avoid unsupported coverage claims.
 
 **Referenced from.** `src/outrider/prompts/synthesize.py`,
 `src/outrider/agent/nodes/synthesize.py`, `docs/spec.md`,

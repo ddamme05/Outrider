@@ -1,0 +1,186 @@
+{
+  "note": "Saved native requests and replies are unchanged. The harness projects triage and empty analysis rounds from the saved state. It omits source bodies and later graph state because summary generation does not consume them. This is a saved-response node regression, not a fresh model result or whole-workflow replay.",
+  "cases": [
+    {
+      "case": "trio-2938",
+      "origin": ".refactor/sonnet-live-workflow-20261112/run-001/trio-2938",
+      "source_sha256": {
+        ".refactor/sonnet-live-workflow-20261112/run-001/trio-2938/graph-state.json": "750a0a2873bbecbe21b45ba059d81327a51dc8766ebd79eb0118fcdc6315dba3",
+        ".refactor/sonnet-live-workflow-20261112/run-001/trio-2938/logical/0004.request.json": "a0439988bfbb5f7c3b47ec9774aecf8025286539237b385c4a1df5c7778011fd",
+        ".refactor/sonnet-live-workflow-20261112/run-001/trio-2938/logical/0004.response.json": "679f1e77eb3d8122ccc7831872df54244c15bce20a9aa1d4e60620672747eb3b"
+      },
+      "request": {
+        "system_prompt": "You are the synthesis layer of an automated PR-review agent. Your job is\nto write a concise summary of the review's findings for a human reviewer.\n\nYou receive:\n  - The PR-level overall_risk classification (low / medium / high / critical)\n    set upstream by the triage layer; you do NOT re-classify it.\n  - A deduplicated list of findings already classified by severity and\n    dimension (you do NOT re-classify these \u2014 `severity-set-by-policy`\n    pins the severity from finding_type upstream).\n\nYour job: write a 2-5 sentence prose summary that helps the human\nreviewer prioritize their attention. Lead with what matters most. Be\nspecific about themes when patterns emerge across findings (e.g., \"three\nSQL-injection findings in user-input handlers\").\n\nCRITICAL CONSTRAINTS:\n\n- Plain prose only. No markdown headers, no bullet lists, no code fences.\n  The output is rendered into the review report shown to the reviewer;\n  presentation structure is the rendering layer's responsibility, not yours.\n- 2000 character maximum (the schema cap rejects anything longer).\n- Do NOT classify severity. Do NOT recommend severity overrides. Do NOT\n  invent findings that aren't in the input list.\n- Do NOT include LLM call counts, token counts, cost, or elapsed time in the\n  summary.\n- Do NOT make claims about pipeline behavior, including gating, HITL,\n  publishing, auto-publish, review submission, or what happens next.\n  Describe only the findings, risk, and remediation themes present in\n  the input.\n- Do NOT include any markdown links, URLs, or @-mentions (these are\n  composed by the publisher from finding metadata).\n- Write in third person. \"This PR introduces ...\" not \"I observed ...\".\n",
+        "user_prompt": "Overall risk: high\n\nFindings (0 total):\n(no findings)\n\nWrite the summary now.\n",
+        "messages": null,
+        "model": "claude-haiku-5-5",
+        "max_tokens": 1024,
+        "cache_control": true,
+        "temperature": 0.3,
+        "response_schema_json": null,
+        "review_id": "f474bb05-d09f-45fc-ac03-129e4581abe4",
+        "node_id": "synthesize",
+        "is_eval": true,
+        "context_summary": [],
+        "prompt_template_version": "synthesize-v5",
+        "degraded_mode": false,
+        "degradation_reason": null,
+        "phase_key": null
+      },
+      "response": {
+        "text": "The automated review of this pull request classified its overall risk as high, but no individual findings were recorded in the review output. Because the risk classification was assigned upstream without any supporting findings in the input, the reviewer should treat the high rating as unexplained and check the triage inputs directly before relying on this summary. No specific security, correctness, or maintainability issues can be described from the findings provided.",
+        "model": "claude-haiku-5-5",
+        "input_tokens": 36,
+        "output_tokens": 122,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 594,
+        "finish_reason": "end_turn",
+        "latency_ms": 1384,
+        "exchange_event_id": "5b7dc0d1-2fcc-4175-b46e-9c69ff835aa5",
+        "exchange_recorded_at": "2026-11-12T05:35:32.391074Z",
+        "profile_id": "anthropic",
+        "reasoning_enabled": false,
+        "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+        "billed_prompt_tokens": null,
+        "service_tier_actual": null
+      },
+      "state_projection": {
+        "review_id": "f474bb05-d09f-45fc-ac03-129e4581abe4",
+        "received_at": "2026-11-12T05:35:16.813576Z",
+        "is_eval": true,
+        "triage_result": {
+          "file_tiers": {
+            "src/trio/_core/_run.py": "deep",
+            "src/trio/_core/_tests/test_run.py": "standard"
+          },
+          "overall_risk": "high",
+          "relevant_dimensions": [
+            "best_practices",
+            "code_quality",
+            "test_coverage"
+          ],
+          "reasoning": "The change rewrites exception-group unwrapping inside Nursery.start, a core concurrency and error-propagation path, so it gets deep review. The accompanying test is a standard-tier review of coverage for the new TrioInternalError branch.",
+          "policy_version": "1.3.0"
+        },
+        "analysis_rounds": [
+          {
+            "round_id": "59a9e2719d7cb4b7c8109f3e90281810475f17237bbb59389c64194f98901042",
+            "pass_index": 0,
+            "findings": [],
+            "files_examined": [
+              "src/trio/_core/_run.py",
+              "src/trio/_core/_tests/test_run.py"
+            ],
+            "files_skipped": [],
+            "started_at": "2026-11-12T05:35:19.152550Z",
+            "ended_at": "2026-11-12T05:35:30.990156Z"
+          }
+        ]
+      },
+      "pr_metadata": {
+        "installation_id": 9740,
+        "owner": "python-trio",
+        "repo": "trio",
+        "pr_number": 2938,
+        "pr_title": "Replace usage of strict_exception_groups=False in Nursery.start",
+        "pr_body": "In preparation for eventual deprecation of `strict_exception_groups=False` (https://github.com/jakkdl/trio/tree/deprecate_exceptiongroups_false) we probably shouldn't rely on it ourselves in the internal code.\r\n\r\n#2611 - the original issue where errors raised before `task_status.started()` got double-wrapped\r\n#1599 - for why the old nursery *can* have multiple tasks.\r\n#2844 - the regression error that occured after my initial fix for #2611 in #2826\r\n\r\nFairly straightforward implementation, other than perhaps exactly what to raise when multiple exceptions do occur. The main code that tests this is `test_trio_run_strict_before_started`, I added the new test after it only to trigger the case where multiple exceptions do pop up in the old nursery.",
+        "base_sha": "7cb15ea5bf9a27342e7c409fd336777add89809e",
+        "head_sha": "03fee2612de1636c28e935125f89c5de6f770133",
+        "author": "jakkdl",
+        "total_additions": 40,
+        "total_deletions": 13
+      }
+    },
+    {
+      "case": "trio-3394",
+      "origin": ".refactor/sonnet-live-workflow-20261112/run-001/trio-3394",
+      "source_sha256": {
+        ".refactor/sonnet-live-workflow-20261112/run-001/trio-3394/graph-state.json": "cce0490a5ce0594dac7b07828d4228c0c5f7095fc6c0d4b7c2f894d7cf2cc773",
+        ".refactor/sonnet-live-workflow-20261112/run-001/trio-3394/logical/0004.request.json": "10feab9b65778376e225013faeb2072b906649e218b0b97c982974f4ee83c329",
+        ".refactor/sonnet-live-workflow-20261112/run-001/trio-3394/logical/0004.response.json": "4f355466ac109eadf87f9506f3d75ad12ef58881751d6edca1074fdfec9a3de2"
+      },
+      "request": {
+        "system_prompt": "You are the synthesis layer of an automated PR-review agent. Your job is\nto write a concise summary of the review's findings for a human reviewer.\n\nYou receive:\n  - The PR-level overall_risk classification (low / medium / high / critical)\n    set upstream by the triage layer; you do NOT re-classify it.\n  - A deduplicated list of findings already classified by severity and\n    dimension (you do NOT re-classify these \u2014 `severity-set-by-policy`\n    pins the severity from finding_type upstream).\n\nYour job: write a 2-5 sentence prose summary that helps the human\nreviewer prioritize their attention. Lead with what matters most. Be\nspecific about themes when patterns emerge across findings (e.g., \"three\nSQL-injection findings in user-input handlers\").\n\nCRITICAL CONSTRAINTS:\n\n- Plain prose only. No markdown headers, no bullet lists, no code fences.\n  The output is rendered into the review report shown to the reviewer;\n  presentation structure is the rendering layer's responsibility, not yours.\n- 2000 character maximum (the schema cap rejects anything longer).\n- Do NOT classify severity. Do NOT recommend severity overrides. Do NOT\n  invent findings that aren't in the input list.\n- Do NOT include LLM call counts, token counts, cost, or elapsed time in the\n  summary.\n- Do NOT make claims about pipeline behavior, including gating, HITL,\n  publishing, auto-publish, review submission, or what happens next.\n  Describe only the findings, risk, and remediation themes present in\n  the input.\n- Do NOT include any markdown links, URLs, or @-mentions (these are\n  composed by the publisher from finding metadata).\n- Write in third person. \"This PR introduces ...\" not \"I observed ...\".\n",
+        "user_prompt": "Overall risk: medium\n\nFindings (0 total):\n(no findings)\n\nWrite the summary now.\n",
+        "messages": null,
+        "model": "claude-haiku-5-5",
+        "max_tokens": 1024,
+        "cache_control": true,
+        "temperature": 0.3,
+        "response_schema_json": null,
+        "review_id": "4f710fc0-ef31-4d88-8d96-ffe02f5eb3dd",
+        "node_id": "synthesize",
+        "is_eval": true,
+        "context_summary": [],
+        "prompt_template_version": "synthesize-v5",
+        "degraded_mode": false,
+        "degradation_reason": null,
+        "phase_key": null
+      },
+      "response": {
+        "text": "This pull request was assessed at medium overall risk, but the review produced no findings to support specific remediation priorities. No issues were identified across the analyzed dimensions, so the reviewer should weigh the medium classification against the context of the change itself rather than against any listed defects.",
+        "model": "claude-haiku-5-5",
+        "input_tokens": 37,
+        "output_tokens": 87,
+        "cache_read_tokens": 594,
+        "cache_write_tokens": 0,
+        "finish_reason": "end_turn",
+        "latency_ms": 1043,
+        "exchange_event_id": "2ee8d9ba-ad50-42ff-9931-57d87e7f6319",
+        "exchange_recorded_at": "2026-11-12T05:35:50.108229Z",
+        "profile_id": "anthropic",
+        "reasoning_enabled": false,
+        "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+        "billed_prompt_tokens": null,
+        "service_tier_actual": null
+      },
+      "state_projection": {
+        "review_id": "4f710fc0-ef31-4d88-8d96-ffe02f5eb3dd",
+        "received_at": "2026-11-12T05:35:32.876488Z",
+        "is_eval": true,
+        "triage_result": {
+          "file_tiers": {
+            "newsfragments/3261.bugfix.rst": "skim",
+            "src/trio/_core/_run.py": "deep",
+            "src/trio/_core/_tests/test_run.py": "standard"
+          },
+          "overall_risk": "medium",
+          "relevant_dimensions": [
+            "best_practices",
+            "code_quality",
+            "test_coverage"
+          ],
+          "reasoning": "The newsfragment is a docs-only changelog entry. The _run.py change swaps a raise for a context-preserving helper in nursery start error handling, which is core control flow and warrants deep review, and the regression test is standard-tier.",
+          "policy_version": "1.3.0"
+        },
+        "analysis_rounds": [
+          {
+            "round_id": "59a9e2719d7cb4b7c8109f3e90281810475f17237bbb59389c64194f98901042",
+            "pass_index": 0,
+            "findings": [],
+            "files_examined": [
+              "src/trio/_core/_run.py",
+              "src/trio/_core/_tests/test_run.py"
+            ],
+            "files_skipped": [],
+            "started_at": "2026-11-12T05:35:35.166219Z",
+            "ended_at": "2026-11-12T05:35:49.050508Z"
+          }
+        ]
+      },
+      "pr_metadata": {
+        "installation_id": 9740,
+        "owner": "python-trio",
+        "repo": "trio",
+        "pr_number": 3394,
+        "pr_title": "Fix exception cause/context lost before task_status.started()",
+        "pr_body": "## Summary\n\nFixes #3261.\n\nWhen a task raises an exception before calling `task_status.started()`, `Nursery.start()` unwraps it from the internal `ExceptionGroup` using:\n```python\nraise exc.exceptions[0] from None\n```\n\nThe `from None` explicitly sets `__cause__` to `None` and `__suppress_context__` to `True`, destroying any cause or context the original exception carried.\n\n### Fix\n\nReplace the bare `raise ... from None` with `raise_saving_context()`, which preserves both `__cause__` and `__context__`. This is the same utility already used by `raise_single_exception_from_group()` for the same pattern.\n\n### Before\n```python\n>>> excgroup.exceptions[0].__cause__   # should be SyntaxError, was None\n>>> excgroup.exceptions[0].__context__ # should be TypeError, was the ExceptionGroup\n```\n\n### After\n```python\n>>> excgroup.exceptions[0].__cause__   # SyntaxError(\"bar\")\n>>> excgroup.exceptions[0].__context__ # TypeError(\"baz\")\n```\n\n### Test plan\n\n- [x] New regression test `test_start_exception_preserves_cause_and_context`\n- [x] All 28 start-related tests pass\n- [x] All 154 `test_run.py` tests pass",
+        "base_sha": "6deaf2a94d3d54437606ba031a06be79362c82f6",
+        "head_sha": "48aadaf9c7f9eb1a958476357cc4e4fbbc71675d",
+        "author": "worksbyfriday",
+        "total_additions": 25,
+        "total_deletions": 2
+      }
+    }
+  ]
+}

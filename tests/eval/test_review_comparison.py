@@ -322,8 +322,11 @@ def test_scripted_full_workflow_candidate_checks_retain_unknowns_in_both_modes(t
         }
     )
 
+    requested_nodes = []
+
     class NativeScript(_FixtureScriptedProvider):
         async def complete(self, request):
+            requested_nodes.append(request.node_id)
             if request.node_id == "analyze":
                 self._responses["analyze"] = [unknown]
             elif request.node_id == "trace":
@@ -354,6 +357,7 @@ def test_scripted_full_workflow_candidate_checks_retain_unknowns_in_both_modes(t
             return await super().complete(request)
 
     for enabled in (False, True):
+        requested_nodes.clear()
         diagnostics = []
         result = eval_driver.run_review(
             fixture_path,
@@ -378,7 +382,8 @@ def test_scripted_full_workflow_candidate_checks_retain_unknowns_in_both_modes(t
             assert result.candidate_assessments[0].outcome == "completed"
             assert result.candidate_assessments[0].suggested_finding_type is None
             assert sum(event["event_type"] == "candidate_assessment" for event in diagnostics) == 1
-        assert result.review_metrics.llm_calls_made == 3 + int(enabled)
+        assert requested_nodes == ["triage", "analyze"] + (["trace"] if enabled else [])
+        assert result.review_metrics.llm_calls_made == len(requested_nodes)
 
 
 @pytest.mark.parametrize("supplemental_context", [False, True])

@@ -6,6 +6,7 @@ DECISIONS.md#030, and FUP-093."""
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 from uuid import uuid4
 
@@ -191,3 +192,61 @@ def test_historical_null_aggregates_round_trip_through_adapter() -> None:
     assert isinstance(reconstructed, SynthesizeCompletedEvent)
     assert reconstructed.llm_calls_made is None
     assert reconstructed.total_cost_usd is None
+
+
+@pytest.mark.parametrize("risk", list(RiskLevel))
+def test_empty_summary_source_binds_the_exact_template(risk: RiskLevel) -> None:
+    summary = (
+        "This review retained no findings. "
+        f"Triage classified the pull request as {risk.value} risk."
+    )
+    event = SynthesizeCompletedEvent(
+        **_completed_kwargs(
+            summary_source="empty-findings-v1",
+            overall_risk=risk,
+            synthesize_model=None,
+            summary_content_hash=hashlib.sha256(summary.encode("utf-8")).hexdigest(),
+        )
+    )
+    payload = event.model_dump(mode="json")
+    assert payload["summary_source"] == "empty-findings-v1"
+    assert payload["synthesize_model"] is None
+    assert AuditEventAdapter.validate_python(payload) == event
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"summary_source": "unknown"}, "Input should be"),
+        ({"synthesize_model": None}, "model summary requires synthesize_model"),
+        (
+            {"summary_source": "empty-findings-v1"},
+            "requires zero findings and no summary model",
+        ),
+        (
+            {"summary_source": "empty-findings-v1", "synthesize_model": None, "n_findings": 1},
+            "requires zero findings and no summary model",
+        ),
+        (
+            {"summary_source": "empty-findings-v1", "synthesize_model": None},
+            "summary hash does not match its risk",
+        ),
+    ],
+)
+def test_summary_source_rejects_inconsistent_metadata(
+    overrides: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        AuditEventAdapter.validate_python(
+            {"event_type": "synthesize_completed", **_completed_kwargs(**overrides)}
+        )
+
+
+def test_historical_summary_payload_keeps_its_model_identity() -> None:
+    original = SynthesizeCompletedEvent(**_completed_kwargs()).model_dump(mode="json")
+    assert "summary_source" not in original
+    restored = AuditEventAdapter.validate_python(original)
+    assert restored.summary_source == "model"
+    assert restored.summary_content_hash == "a" * 64
+    assert restored.synthesize_model == "claude-sonnet-4-6"
+    assert restored.model_dump(mode="json") == original
