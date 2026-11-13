@@ -1,40 +1,8 @@
-# CI workflow per `DECISIONS.md#008` Amended 2026-04-30.
-#
-# Runs the tracked-file-safe subset of pre-commit hooks + pytest as a
-# secondary gate. Pre-commit (local) is the primary drift gate; CI catches
-# drift at PR time when contributors skip `pre-commit install`.
-#
-# Excluded from CI: `invariants-in-sync` — the hook runs
-# `extract_invariants.py --check`, which defaults to `docs/spec.md` /
-# `docs/invariants.md` (both gitignored per `.gitignore` `docs/`). Those
-# paths don't exist in a CI checkout, so the hook would fail. Local-side
-# discipline gates that hook; future hooks that depend on gitignored paths
-# join the same excluded list.
-#
-# Jobs (CI gates):
-#   1. lint          — ruff check + ruff format --check
-#   1b. boundary-lint — scripts/check_import_boundaries.py: the deterministic
-#                       trust-boundary floor (FUP-005 / DECISIONS.md#038). Fails on a vendor-SDK
-#                       import in the wrong wrapper folder, or shell-exec in
-#                       src/outrider/. Allowlists mirror the
-#                       check-trust-boundaries skill.
-#   2. types         — mypy --strict src
-#   3. unit          — pytest tests/unit
-#   4. integration   — pytest tests/integration against postgres-test brought
-#                       up via `docker compose up -d --wait postgres-test`
-#                       (NOT GitHub Actions native services: — that doesn't
-#                       support tmpfs / arbitrary Postgres args)
-#   5. eval — pytest tests/eval --is-eval against postgres-test (the
-#                       eval-harness integration-tier test uses the eval_db
-#                       fixture). Runs the full eval tier today; only the
-#                       real-CVE scenario (test_real_cve_fix_pr, FUP-109) is
-#                       skip-marked, pending a CVE fixture + ground truth.
-#   6. dashboard     — npm ci + build (tsc --noEmit && vite build) + vitest run
-#                       for the React SPA under dashboard/ (Node toolchain, not uv).
-#   7. pre-commit-tracked-only — runs the subset of pre-commit hooks that
-#                       depend ONLY on tracked files: ruff, ruff-format,
-#                       decision-refs-resolve, decision-refs-tests-pass,
-#                       extractor-tests-pass, boundary-lint-tests-pass.
+# Run lint, type, boundary, backend, evaluation and dashboard checks on changes.
+# Database tests use the isolated postgres-test service, not the development DB.
+# CI also runs hooks that need only tracked files. The invariants-in-sync hook
+# stays local because its input documents are not included in a checkout.
+# See DECISIONS.md#008 and DECISIONS.md#038 (FUP-005).
 
 name: CI
 
@@ -57,11 +25,22 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  dependency-audit:
+    name: dependency audit
+    uses: ./.github/workflows/dependencies.yml
+
   lint:
+    needs: dependency-audit
+    if: ${{ !cancelled() }}
     name: lint
     runs-on: ubuntu-latest
     steps:
+      - name: Require dependency audit success
+        if: needs.dependency-audit.result != 'success'
+        run: exit 1
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - name: Install uv + Python
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
@@ -72,26 +51,35 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           activate-environment: true
-      - name: uv sync --frozen
-        run: uv sync --dev --frozen
+          version: "0.13.7"
+      - name: uv sync --locked
+        run: uv sync --dev --locked
       - name: ruff check
         run: ruff check
       - name: ruff format --check
         run: ruff format --check
 
   boundary-lint:
+    needs: dependency-audit
+    if: ${{ !cancelled() }}
     name: boundary-lint (trust-boundary imports)
     runs-on: ubuntu-latest
     steps:
+      - name: Require dependency audit success
+        if: needs.dependency-audit.result != 'success'
+        run: exit 1
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - name: Install uv + Python
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           activate-environment: true
-      - name: uv sync --frozen
-        run: uv sync --dev --frozen
+          version: "0.13.7"
+      - name: uv sync --locked
+        run: uv sync --dev --locked
       # FUP-005: the deterministic floor for the AST-firewall / LLM-provider /
       # GitHub-SDK / shell-exec boundaries (`docs/trust-boundaries.md`). The
       # in-session `check-trust-boundaries` skill catches Claude-authored edits;
@@ -101,18 +89,26 @@ jobs:
         run: python scripts/check_import_boundaries.py
 
   types:
+    needs: dependency-audit
+    if: ${{ !cancelled() }}
     name: types (mypy --strict)
     runs-on: ubuntu-latest
     steps:
+      - name: Require dependency audit success
+        if: needs.dependency-audit.result != 'success'
+        run: exit 1
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - name: Install uv + Python
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           activate-environment: true
-      - name: uv sync --frozen
-        run: uv sync --dev --frozen
+          version: "0.13.7"
+      - name: uv sync --locked
+        run: uv sync --dev --locked
       - name: Cache .mypy_cache
         # Cold mypy --strict on 70 src files is ~2m30s; warm incremental
         # runs are typically <30s. Key invalidates on Python interpreter
@@ -136,22 +132,32 @@ jobs:
         run: mypy --strict src
 
   unit:
+    needs: dependency-audit
+    if: ${{ !cancelled() }}
     name: unit (pytest tests/unit)
     runs-on: ubuntu-latest
     steps:
+      - name: Require dependency audit success
+        if: needs.dependency-audit.result != 'success'
+        run: exit 1
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - name: Install uv + Python
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           activate-environment: true
-      - name: uv sync --frozen
-        run: uv sync --dev --frozen
+          version: "0.13.7"
+      - name: uv sync --locked
+        run: uv sync --dev --locked
       - name: pytest tests/unit
         run: pytest tests/unit
 
   integration:
+    needs: dependency-audit
+    if: ${{ !cancelled() }}
     name: integration (postgres-test container)
     runs-on: ubuntu-latest
     # Job-level env block per the eval-harness spec: all steps in this
@@ -176,15 +182,21 @@ jobs:
       TEST_POSTGRES_PORT: 5433
       TEST_DATABASE_URL: postgresql+psycopg://outrider:ci-ephemeral-test-password-not-a-secret@127.0.0.1:5433/outrider_test
     steps:
+      - name: Require dependency audit success
+        if: needs.dependency-audit.result != 'success'
+        run: exit 1
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - name: Install uv + Python
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           activate-environment: true
-      - name: uv sync --frozen
-        run: uv sync --dev --frozen
+          version: "0.13.7"
+      - name: uv sync --locked
+        run: uv sync --dev --locked
       - name: Bring up postgres-test (tmpfs, fsync=off, port 5433)
         # `docker compose up -d --wait` blocks until the service's
         # compose-defined healthcheck reports healthy, eliminating the
@@ -196,6 +208,8 @@ jobs:
         run: pytest tests/integration
 
   eval:
+    needs: dependency-audit
+    if: ${{ !cancelled() }}
     name: eval (harness-internal + scaffolded scenarios)
     runs-on: ubuntu-latest
     # Same env block as the integration job — this job runs the eval-harness
@@ -214,15 +228,21 @@ jobs:
       TEST_POSTGRES_PORT: 5433
       TEST_DATABASE_URL: postgresql+psycopg://outrider:ci-ephemeral-test-password-not-a-secret@127.0.0.1:5433/outrider_test
     steps:
+      - name: Require dependency audit success
+        if: needs.dependency-audit.result != 'success'
+        run: exit 1
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - name: Install uv + Python
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           activate-environment: true
-      - name: uv sync --frozen
-        run: uv sync --dev --frozen
+          version: "0.13.7"
+      - name: uv sync --locked
+        run: uv sync --dev --locked
       - name: Bring up postgres-test (tmpfs, fsync=off, port 5433)
         run: docker compose up -d --wait postgres-test
       - name: pytest tests/eval --is-eval
@@ -239,23 +259,33 @@ jobs:
         run: pytest tests/eval --is-eval
 
   dashboard:
+    needs: dependency-audit
+    if: ${{ !cancelled() }}
     name: dashboard (typecheck + build + vitest)
     runs-on: ubuntu-latest
     # Frontend SPA under dashboard/ — isolated toolchain (npm, not uv). Runs
     # `npm run build` (tsc --noEmit && vite build) + `vitest run`. Vite 8 needs
-    # Node ^20.19 || >=22.12; Node 26 (current) satisfies it. npm ci installs
+    # Node ^20.19 || >=22.12; Node 24 LTS satisfies it and matches the production build. npm ci installs
     # from the committed package-lock.json (lockfile-exact, no resolution drift).
     steps:
+      - name: Require dependency audit success
+        if: needs.dependency-audit.result != 'success'
+        run: exit 1
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Install Node 26
+        with:
+          persist-credentials: false
+      - name: Install Node 24 LTS
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "26"
+          node-version: "24.22.3"
           cache: npm
           cache-dependency-path: dashboard/package-lock.json
       - name: npm ci
         working-directory: dashboard
-        run: npm ci
+        run: npm ci --ignore-scripts
+      - name: Verify downloaded package signatures and available provenance
+        working-directory: dashboard
+        run: npm audit signatures
       # FUP-200: enforce the schema.d.ts mirror is fresh vs openapi.json. The Python job enforces
       # the other link (openapi.json vs create_app().openapi()); together both generated mirrors
       # are CI-enforced. This job has the node toolchain (openapi-typescript); the Python job does
@@ -274,18 +304,26 @@ jobs:
         run: npm test
 
   pre-commit-tracked-only:
+    needs: dependency-audit
+    if: ${{ !cancelled() }}
     name: pre-commit-tracked-only
     runs-on: ubuntu-latest
     steps:
+      - name: Require dependency audit success
+        if: needs.dependency-audit.result != 'success'
+        run: exit 1
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - name: Install uv + Python
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           activate-environment: true
-      - name: uv sync --frozen
-        run: uv sync --dev --frozen
+          version: "0.13.7"
+      - name: uv sync --locked
+        run: uv sync --dev --locked
       # Run only the hooks that depend on tracked files. invariants-in-sync
       # is excluded because extract_invariants.py --check defaults to
       # docs/spec.md / docs/invariants.md (gitignored). Per DECISIONS#008

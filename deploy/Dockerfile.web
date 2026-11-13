@@ -1,5 +1,5 @@
 # Build the dashboard SPA, then serve it (and proxy /api) via Caddy.
-FROM node:24.18.0-slim AS build
+FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS build
 WORKDIR /dashboard
 COPY dashboard/package.json dashboard/package-lock.json ./
 RUN npm ci
@@ -8,6 +8,6 @@ COPY dashboard/ ./
 # to the app. (src/api/client.ts reads VITE_API_BASE_URL, default "".)
 RUN VITE_API_BASE_URL="" npm run build
 
-FROM caddy:2.11.4
+FROM caddy:2.11.9@sha256:e40b94d0a43b5ff69cb20568d73f10c70703df7b0ffc2298eb3d723cdc9d0bd1
 COPY --from=build /dashboard/dist /srv/dashboard
 COPY deploy/Caddyfile /etc/caddy/Caddyfile

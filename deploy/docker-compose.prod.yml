@@ -1,23 +1,11 @@
-# Production self-host (DECISIONS.md#069): ONE Outrider application image (FastAPI serving
-# the built SPA) + PostgreSQL + a one-shot migration runner. Distinct from the keyless
-# docker-compose.demo.yml (three containers, no credentials).
-#
-#   Existing-ingress mode (default):
-#     docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml up -d --build
-#     → app on 127.0.0.1:${OUTRIDER_HTTP_PORT:-8000} (LOOPBACK ONLY, never 0.0.0.0 — reachable
-#       only from THIS host). Front it with a host-local HTTPS reverse proxy or a colocated
-#       tunnel agent. A remote cloud LB / k8s ingress can't reach loopback — use --profile tls.
-#   Bundled-Caddy mode (auto-HTTPS):
-#     docker compose --env-file deploy/.env --profile tls -f deploy/docker-compose.prod.yml up -d --build
-#     → Caddy publishes 80/443 and reverse-proxies app:8000 over the internal network.
-#
-# `--env-file deploy/.env` is REQUIRED, not optional: the `${...}` values below are interpolated
-# from it (Compose otherwise reads `.env` in your CWD, so a bare `up` from the repo root fails
-# the `:?` guards with a misleading "set POSTGRES_USER" error). Config lives in deploy/.env —
-# `cp .env.example deploy/.env` and fill it (see .env.example for the full var list).
-#
-# Either way the app serves plain HTTP and never publishes on a public interface; an HTTPS
-# terminator in front is required (Outrider production-security policy, DECISIONS.md#069).
+# Run the production app, database and one-time migration step (DECISIONS.md#069).
+# From the repository root:
+#   docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml up -d --build
+# Create deploy/.env from .env.example first; --env-file is required.
+# The app is exposed only on this host's loopback address. Put an HTTPS proxy
+# on the same host, or add --profile tls for bundled Caddy on ports 80/443.
+# The keyless public demo uses docker-compose.demo.yml instead.
+
 name: outrider
 
 x-app-image: &app-image
@@ -39,7 +27,7 @@ services:
   # External-to-the-image PostgreSQL. For a MANAGED database, delete this service and point
   # DATABASE_URL / the migrate+app env at your managed host instead.
   postgres:
-    image: postgres:18.3-bookworm
+    image: postgres:18.7-bookworm@sha256:ece55f7868da684e400f82f1030a050718adbdd65c23aa500c486f6e2950dc0f
     security_opt: ["no-new-privileges:true"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
@@ -105,7 +93,7 @@ services:
   # 80/443 and reverse-proxies to the app over the internal network (the app keeps no public
   # port of its own). Set OUTRIDER_DOMAIN to your domain for automatic Let's Encrypt certs.
   caddy:
-    image: caddy:2.11.4
+    image: caddy:2.11.9@sha256:e40b94d0a43b5ff69cb20568d73f10c70703df7b0ffc2298eb3d723cdc9d0bd1
     profiles: [tls]
     security_opt: ["no-new-privileges:true"]
     environment:

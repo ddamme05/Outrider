@@ -723,16 +723,20 @@ penetration tested.
 
 ## Development
 
+Use Python 3.13.18, Node 24.22.3 LTS and uv 0.13.7 or later. The project rejects
+older uv versions. CI and container builds pin the reviewed uv 0.13.7 release.
+
 ```bash
-uv sync --dev
+uv sync --dev --locked
 .venv/bin/pre-commit install --install-hooks
 cp .env.example .env                        # fill POSTGRES_* and TEST_POSTGRES_* for the DB containers
 docker compose up -d postgres-test          # isolated tmpfs Postgres for the test tiers (port 5433)
 export TEST_DATABASE_URL="$(grep -E '^TEST_DATABASE_URL=' .env | cut -d= -f2-)"
-uv run pytest tests/unit                    # fast, no DB, needs no env
-uv run pytest tests/integration             # real Postgres, mocked externals
-uv run pytest tests/eval --is-eval          # eval harness (--is-eval is mandatory)
-npm --prefix dashboard ci                   # install dashboard deps
+uv run --locked pytest tests/unit                    # fast, no DB, needs no env
+uv run --locked pytest tests/integration             # real Postgres, mocked externals
+uv run --locked pytest tests/eval --is-eval          # eval harness (--is-eval is mandatory)
+npm --prefix dashboard ci --ignore-scripts  # install without package lifecycle scripts
+npm --prefix dashboard audit signatures    # verify registry signatures and available provenance
 npm --prefix dashboard run test             # dashboard (vitest)
 ```
 
@@ -741,8 +745,10 @@ tests without loading the application environment.
 The [eval guide](tests/eval/README.md) maps the suite and explains saved evidence
 and paid runs.
 
-CI runs eight jobs on every push to main and every pull request: lint, mypy (strict), the
-trust-boundary import lint, unit, integration, eval, dashboard, and pre-commit checks. The import check
+CI audits both lockfiles before installing dependencies for lint, strict mypy,
+trust-boundary imports, unit, integration, eval, dashboard and pre-commit checks.
+It rejects stale Python locks and verifies dashboard package signatures before
+running frontend tools. The same dependency audit also runs weekly. The import check
 ([`scripts/check_import_boundaries.py`](scripts/check_import_boundaries.py)) enforces
 where external libraries can be used. CI fails on an `anthropic` import
 outside `llm/`, a `tree_sitter` import outside `ast_facts/` and `queries/`, or shell
