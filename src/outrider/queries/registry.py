@@ -1,53 +1,13 @@
-# Tree-sitter query registry per
-# specs/2026-04-30-ast-facts-module.md Internal contracts, as amended by
-# DECISIONS.md#061 (the spec's "semantic change requires a new id" ledger
-# trigger is superseded: ids name claims; the ledger fires on claim
-# retirement, not on every semantic body edit).
-"""Query-id registry and execution surface.
+"""Find and run structural source checks by their stable identifiers.
 
-Owns:
-  * The `query_match_id` → query-body mapping (file-stem decoupled
-    per Internal contracts: renaming a `.scm` file does not churn ids).
-  * The compiled `tree_sitter.Query` cache (built at module load),
-    language-keyed since the JS/TS OBSERVED catalog
-    (specs/2026-07-03-js-ts-observed-query-catalog.md): each query
-    compiles under every grammar of its `QueryLanguage` — python
-    queries under the python grammar; javascript-family queries under
-    javascript, typescript, AND tsx (one catalog, three dialects).
-  * The extension → (query language, grammar) selection maps, derived
-    from the `ast_facts` registry's extension groups so query
-    selection can never disagree with adapter dispatch. An extension
-    absent from the maps means "registered language with no catalog":
-    the selectors return None/empty and the OBSERVED producer stays
-    inert — fail-SAFE by construction (no query set → no OBSERVED
-    claim possible), which is why there is deliberately no totality
-    assert here, unlike analyze's fence/trace-form tables where a
-    missing entry would be a wrong-ADMISSION bug.
-  * Public functions:
-      - `get_query_source(id) -> str` for documentation / audit-trail use.
-      - `match(id, source, grammar=...) -> tuple[QueryMatchSpan, ...]`
-        for replay and analyze-node use; returns fully domain-modeled
-        results so no `tree_sitter.Query`/`Node`/`QueryCursor` ever
-        leaves `queries/` per `docs/trust-boundaries.md` §4 (AST
-        firewall). The grammar picks the parser + compiled variant;
-        a grammar the query was not compiled for raises (a python
-        query can never run over JS bytes, and vice versa).
-      - `query_language_for_path` / `grammar_for_path` /
-        `observed_queries_for` / `structural_query_ids_for` — the
-        per-file selection surface the analyze node consumes.
+The registry compiles queries, validates captures and returns domain spans
+rather than raw parser nodes. A language with no catalog returns no matches;
+no totality assertion is needed because absence cannot create a proof claim.
+Query IDs name the claim being checked; renaming or retiring them must preserve
+verification of saved evidence (DECISIONS.md#061).
 
-Mandatory-capture rejection runs at module-load time per Internal
-contracts: a registered pattern with zero `@` captures, or with all
-captures quantified as optional (`?`/`*`), has an undefined envelope
-and raises `ValueError` at import, not at runtime. The check requires
-at least one MANDATORY capture (quantifier `''` or `'+'`) per pattern.
-
-Sort order per Internal contracts:
-  * Within a match, captures are flattened sorted by
-    `(byte_start, byte_end, name)` ascending.
-  * Across matches, the returned tuple is sorted by
-    `(byte_start, byte_end)` ascending, with a primitive-projection
-    tiebreaker on the captures (Pydantic models lack `__lt__`).
+See specs/2026-04-30-ast-facts-module.md and
+specs/2026-07-03-js-ts-observed-query-catalog.md.
 """
 
 from __future__ import annotations
@@ -136,17 +96,10 @@ _GRAMMAR_BY_EXTENSION: Final[dict[str, GrammarKind]] = {
     **TYPESCRIPT_DIALECT_BY_EXTENSION,
 }
 
-# Parse memo (FUP-182). `match()` -- and every OBSERVED / structural / trivial-scope
-# sweep that calls it -- re-parsed byte-identical source per query: up to ~12
-# full-file parses of one file per review. Memoize the parse so a clean file is
-# parsed ONCE across all sweeps (the firewall keeps the parse inside `queries/`,
-# so this registry-internal cache is the only place cross-sweep sharing can live).
-# Keyed by (source, grammar) since the JS/TS catalog: the same bytes parsed
-# under two grammars are two distinct trees. Bounded LRU so trees don't
-# accumulate; sized for moderate concurrency (V1.5 parallel-analyze may tune it
-# to its file fan-out). A tree-sitter `Tree` is immutable after parse, so reuse
-# across QueryCursor runs -- including concurrent reads -- is safe;
-# `lru_cache`'s own lock makes the memo itself thread-safe.
+# Share immutable parse trees across query sweeps without crossing the firewall
+# (FUP-182). Key by source and grammar: identical bytes can have different trees.
+# The bounded LRU limits retained trees; its lock protects cache access, and
+# separate QueryCursors can read the same immutable tree concurrently.
 _PARSE_CACHE_SIZE: Final = 16
 
 
@@ -171,13 +124,9 @@ _QUERIES_DIR_BY_LANGUAGE: Final[dict[QueryLanguage, Path]] = {
 # `'?'` = zero-or-one, `'*'` = zero-or-more.
 _MANDATORY_QUANTIFIERS: Final[frozenset[str]] = frozenset({"", "+"})
 
-# Structural queries (scope/import extraction citations), per catalog
-# language. The javascript entry is deliberately EMPTY in this arc: the JS/TS
-# catalog ships OBSERVED security queries only, so the structural
-# LLM-citation admission set for a JS/TS file is the empty set — model
-# OBSERVED claims on those files keep rejecting at admission exactly as the
-# dispatch spec pinned, now by per-language registration instead of a
-# hardcoded Python gate.
+# The JS/TS catalog contains producer security queries, not structural citations
+# for model proposals. Its empty structural set rejects model-cited OBSERVED
+# claims while leaving deterministic production available.
 _STRUCTURAL_QUERY_FILES_BY_LANGUAGE: Final[dict[QueryLanguage, dict[str, str]]] = {
     "python": {
         "python.function_definition": "function_definition.scm",
@@ -197,17 +146,10 @@ _QUERY_ID_TO_FILENAME: Final[dict[str, str]] = {
     for query_id, filename in files.items()
 }
 
-# Deprecated-id ledger (see DECISIONS.md#061): a query id names a CLAIM,
-# not a byte-exact pattern. Claim-preserving precision edits evolve the
-# `.scm` body IN PLACE under the stable id (`QUERY_REGISTRY_DIGEST` pins
-# the body epoch; git history of the tracked `.scm` files is the body
-# archive). This ledger is populated only on CLAIM RETIREMENT — an id
-# whose claim stops being produced — so historical reviews' ids keep
-# resolving for membership replay. A claim SPLIT mints a new id for the
-# split-out claim and needs no ledger while the old id's narrowed claim
-# is still produced (the tls_env precedent: both ids live, ledger empty).
-# Future source-rematch replay (#031) needs a body-versioning surface
-# before it can re-run old reviews under old bodies.
+# Retired claim IDs remain resolvable for membership replay (DECISIONS.md#061).
+# Precision edits keep the stable ID and change QUERY_REGISTRY_DIGEST; a split
+# gets a new ID without retiring a still-produced original claim. Source-rematch
+# replay (#031) additionally needs versioned bodies; this ledger does not supply them.
 _DEPRECATED_QUERY_ID_TO_BODY: Final[dict[str, str]] = {}
 
 
@@ -407,16 +349,9 @@ def _compile_and_validate(
             f"Query {query_id!r}{where} has pattern_count=0; the body "
             f"must define at least one pattern."
         )
-    # Per-pattern check: each pattern must have at least one MANDATORY
-    # capture. Optional quantifiers (`'?'`/`'*'`) might fire zero times
-    # at runtime, leaving an empty captures tuple, which crashes
-    # `QueryMatchSpan`'s envelope `min`/`max` over empty captures.
-    # Per Internal contracts' optional-captures residual edge: V1's
-    # non-empty-match guarantee depends on mandatory captures. A pattern
-    # whose captures are ALL optional fails registration here rather
-    # than crashing at first match. Absent-from-pattern captures probe
-    # None via `_capture_quantifier_or_none` (the shared by-design
-    # negative; see its docstring for the exception-set rationale).
+    # Every pattern needs a mandatory capture so a match has a nonempty span
+    # envelope. Optional-only patterns could make min/max fail at first match.
+    # _capture_quantifier_or_none returns None for captures absent from a pattern.
     for p in range(pattern_count):
         pattern_mandatory_count = 0
         for c in range(capture_count):
@@ -469,34 +404,16 @@ def _registry_digest(
     observed: Mapping[str, ObservedQuery],
     value_predicates: Mapping[str, ValuePredicate],
 ) -> str:
-    """Length-prefixed SHA-256 over the sorted (id, body) pairs PLUS the
-    routing-and-output metadata of OBSERVED queries PLUS any value-predicate
-    contract token.
+    """Hash sorted query IDs, bodies, OBSERVED metadata and predicate contracts.
 
-    The analyze-cache key component that pins query SEMANTICS AND emitted
-    output. A pattern edit that keeps its id changes this digest — AND so
-    does a change to ANY OBSERVED output/routing field (today language /
-    class / finding_type / title / description, but derived from the model minus
-    `_DIGEST_EXCLUDED_OBSERVED_FIELDS` so a future field auto-folds, FUP-181),
-    each of which alters routing or the emitted finding (and the cached
-    payload) while living OUTSIDE the `.scm` body. Folding them
-    here keeps cached OBSERVED findings from being served under metadata
-    that no longer produced them (specs/2026-06-11-file-hash-analyze-cache.md
-    + FUP-166; the Cost Lever 3 round-3 review; `DECISIONS.md#048`).
+    This pins cache semantics beyond pattern bytes (FUP-166; DECISIONS.md#048;
+    specs/2026-06-11-file-hash-analyze-cache.md). New model fields enter by default,
+    except _DIGEST_EXCLUDED_OBSERVED_FIELDS (FUP-181).
 
-    A value-predicate's `contract_token` is folded the same way (DECISIONS.md#057):
-    the token encodes the predicate identity and every verdict-changing *parameter*
-    (e.g. the key-size threshold), so a threshold change invalidates cached analyze
-    rows. NOTE the asymmetry vs the `.scm` bodies: the body bytes are hashed
-    verbatim (any edit auto-moves the digest), but only the predicate's *token* is
-    hashed, not its function source — a change to the predicate's evaluation LOGIC
-    that is not encoded in a token parameter requires a manual
-    `VALUE_PREDICATE_CONTRACT_VERSION` bump (the `SHAPER_CONTRACT_VERSION`
-    discipline), not an automatic move.
-
-    Length-prefixing makes the field boundaries unambiguous — the
-    `llm/base.py::_canonical_prompt_hash` precedent. Covers deprecated
-    ledger bodies too: strictly safer, and ledger changes are rare.
+    Predicate parameters enter via contract_token (DECISIONS.md#057). Function
+    source is not hashed: evaluation-logic changes require an explicit
+    VALUE_PREDICATE_CONTRACT_VERSION bump. Include deprecated bodies too, and
+    length-prefix every field to keep boundaries unambiguous.
     """
     h = hashlib.sha256()
     for query_id in sorted(bodies):
@@ -506,14 +423,8 @@ def _registry_digest(
         h.update(qid_bytes)
         h.update(f"{len(body_bytes)}:".encode())
         h.update(body_bytes)
-        # OBSERVED queries fold their routing-and-output metadata: a change to
-        # any of these alters emitted findings / routing without touching the
-        # .scm body, so it must move the digest (invalidate stale cache). Derived
-        # from the model (NOT a hardcoded tuple) so a future field auto-folds
-        # (FUP-181); excludes `_DIGEST_EXCLUDED_OBSERVED_FIELDS`. Sorted +
-        # field-named + length-prefixed for an order-stable, unambiguous fold;
-        # json.dumps serializes any field type (enum->value, str, future int/list)
-        # deterministically.
+        # Fold metadata by sorted field name, not a closed list (FUP-181), so new
+        # output/routing fields invalidate stale cache unless explicitly excluded.
         oq = observed.get(query_id)
         if oq is not None:
             dumped = oq.model_dump(mode="json")
@@ -705,17 +616,10 @@ def match(
             )
         )
 
-    # Value-predicate filter: an OBSERVED query may carry a deterministic
-    # post-structure filter (queries/value_predicates.py) that drops matches
-    # whose captured literal fails a numeric test tree-sitter's native
-    # predicates cannot express (e.g. RSA key size >= 2048). Most queries have
-    # no predicate and pass through unchanged. The predicate reads only the
-    # QueryMatchSpan + source bytes (no raw node), so the AST firewall is
-    # unaffected; its contract_token rides into QUERY_REGISTRY_DIGEST so a
-    # threshold (parameter) change invalidates cached analyze rows -- a
-    # predicate-LOGIC change instead needs a manual VALUE_PREDICATE_CONTRACT_VERSION
-    # bump (the token, not the function source, is hashed). See
-    # DECISIONS.md#057 + docs/trust-boundaries.md §1.
+    # Value predicates apply numeric gates unavailable in tree-sitter queries,
+    # using domain spans and source bytes (DECISIONS.md#057; trust-boundaries §1).
+    # Parameters enter QUERY_REGISTRY_DIGEST through contract_token; logic changes
+    # need a VALUE_PREDICATE_CONTRACT_VERSION bump because source code is not hashed.
     predicate = VALUE_PREDICATES.get(query_match_id)
     if predicate is not None:
         filtered_matches: list[QueryMatchSpan] = []

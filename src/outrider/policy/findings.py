@@ -1,29 +1,10 @@
-# Proof-boundary validator per docs/trust-boundaries.md §1
-"""Proof-boundary admission rules and the EvidenceTier classification.
+"""Validate the evidence required for each finding tier.
 
-Every ReviewFinding carries an `evidence_tier` that classifies the
-nature of the claim. OBSERVED findings must carry a `query_match_id`
-pointing to a real entry in the queries registry. INFERRED findings
-must carry a `trace_path` listing the scope units walked. JUDGED
-findings carry neither — they are model interpretations that don't
-claim structural evidence.
-
-This module exposes:
-
-  - ``EvidenceTier`` enum: the three valid classifications
-  - ``ProofBoundaryViolationError``: typed exception with the missing
-    field name in the message
-  - ``enforce_proof_boundary``: validator function that raises on
-    OBSERVED-without-query_match_id or INFERRED-without-trace_path
-
-Replay-time verification of these artifacts is application-layer work in
-``audit/replay.py``: V1 re-verifies that ``query_match_id`` resolves in the
-queries registry and recomputes ``finding_content_hash`` (verify-only). The
-stronger check — that the query actually matches the stored evidence span,
-a tree-sitter re-run against source bytes — is future scope per
-``DECISIONS.md#031`` (it needs a durable source store, not checkpoint
-state). This module covers the admission gate; replay covers the integrity
-gate.
+OBSERVED findings need a nonempty query-match ID. INFERRED findings need a
+nonempty trace_path of scope IDs. JUDGED findings need neither artifact.
+These checks validate artifact shape, not whether a query fired or a traversal
+occurred. Replay checks saved evidence without rerunning source queries
+(DECISIONS.md#031).
 """
 
 from enum import StrEnum

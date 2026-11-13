@@ -1,14 +1,8 @@
-# Unit tests for the synthesize patch pass (DECISIONS.md#040).
-"""Adversarial coverage for `agent/nodes/patch_generation.py` — the trust surface
-where model output becomes a one-click-applyable GitHub suggestion.
+"""Check validation and generation of suggested fixes (DECISIONS.md#040).
 
-The pure helpers (`select_eligible_findings`, `extract_target_lines`,
-`_is_valid_replacement`, `apply_patch_batch`, `set_suggested_fix`) carry the
-fail-closed contract: a malformed batch yields ZERO suggestions; a bad item drops
-alone. `generate_patches` is the async orchestration, exercised with a scripted
-fake provider (no SDK, no network) — gate-off / nothing-eligible / no-target /
-provider-error all ship findings UNPATCHED; the happy path sets `suggested_fix`.
-"""
+Malformed batches yield no suggestions; invalid individual items are dropped.
+Use a scripted provider to cover disabled, empty, failed, and successful calls
+without network access."""
 
 from __future__ import annotations
 
@@ -56,9 +50,12 @@ def _make_finding(
     line_start: int = 2,
     line_end: int = 2,
     proposal_hash: str = "a" * 64,
+    source_side: str = "head",
 ) -> ReviewFinding:
     finding_type = _FINDING_TYPE_BY_SEVERITY[severity]
+    side_fields = {"source_side": source_side} if source_side == "base" else {}
     return ReviewFinding(
+        **side_fields,
         finding_id=uuid4(),
         review_id=uuid4(),
         installation_id=42,
@@ -78,6 +75,7 @@ def _make_finding(
             line_start=line_start,
             line_end=line_end,
             finding_type=finding_type,
+            **side_fields,
         ),
         proposal_hash=proposal_hash,
     )
@@ -186,6 +184,12 @@ def test_select_eligible_excludes_multiline() -> None:
     single = _make_finding(severity=FindingSeverity.HIGH, line_start=2, line_end=2)
     eligible = select_eligible_findings((multi, single), max_suggestions=10)
     assert eligible == (single,)
+
+
+def test_removed_base_does_not_consume_a_patch_slot():
+    base = _make_finding(severity=FindingSeverity.CRITICAL, source_side="base")
+    head = _make_finding(severity=FindingSeverity.HIGH)
+    assert select_eligible_findings((base, head), max_suggestions=1) == (head,)
 
 
 def test_select_eligible_critical_first_then_capped() -> None:

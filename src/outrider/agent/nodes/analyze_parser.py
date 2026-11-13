@@ -1,35 +1,41 @@
-# See specs/2026-05-19-analyze-node.md §6
-"""Admit model-proposed findings through deterministic proof and location checks.
+"""Check model responses before accepting findings or related-file requests.
 
-This pure parser returns findings, trace candidates, rejection payloads, and
-counters. The analyze node owns persistence and state updates.
+parse_analyze_response validates response shape, evidence and source locations.
+It returns accepted data and rejection details; analyze.py saves the results.
+Rejecting one finding can still leave its related-file candidates available.
 
-Candidates survive proposal rejection, but a rejected response has no proposals
-to collect from. OBSERVED and INFERRED require supplied query or trace proof
-beyond the model's tier label.
+See specs/2026-05-19-analyze-node.md §6.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic_core import from_json
 
+from outrider.agent.nodes.finding_evidence import quote_rejection_detail
 from outrider.audit.events import compute_finding_content_hash
 from outrider.coordinates import (
+    is_python_relative_import_form,
     is_valid_import_string,
+    is_valid_python_relative_import_string,
     is_valid_relative_specifier,
+    python_relative_trace_candidate_paths,
     relative_specifier_candidate_paths,
+    validate_diff_path,
 )
 from outrider.coordinates.errors import CoordinateError
 from outrider.coordinates.spans import (
     line_range_to_span,
     line_range_vetoed_by_parameterized_call,
     line_range_within_scope_unit,
+    scope_unit_source_span,
     span_is_nonempty,
     span_within_degraded_context,
     span_within_file,
@@ -44,7 +50,7 @@ from outrider.policy.dimensions import FINDING_TYPE_TO_DIMENSION
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import SEVERITY_POLICY, FindingType
 from outrider.schemas import ReviewFinding, TraceCandidate
-from outrider.schemas.llm.analyze import AnalyzeResponseRaw
+from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw, TraceCandidateProposalRaw
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -52,7 +58,6 @@ if TYPE_CHECKING:
 
     from outrider.ast_facts.models import ImportRef, ScopeUnit
     from outrider.ast_facts.parameterized_calls import ParameterizedCallScan
-    from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw
 
 # Versions the findings and trace candidates stored in the analyze cache
 # (specs/2026-06-11-file-hash-analyze-cache.md; FUP-166).
@@ -64,11 +69,14 @@ if TYPE_CHECKING:
 # SUBSUMES_DIGEST and from_import_map_digest separately key the subsumption
 # relation and import map; this version covers the rules that use them.
 # Keep this version beside the parser, never injected through configuration.
-ANALYZE_PARSER_VERSION: Final = "analyze-parser-v7"
+ANALYZE_PARSER_VERSION: Final = "analyze-parser-v12"
 
 # Keep these values aligned with `FindingProposalRejectedEvent.rejection_reason`
 # in `audit/events.py`; the node lifts parser rejections into that event.
 _ProposalRejectionReason = Literal[
+    "raw_proposal_invalid",
+    "evidence_quote_invalid",
+    "model_observed_not_supported",
     "query_match_id_not_in_registry",
     "trace_path_not_admissible",
     "finding_type_not_in_enum",
@@ -81,28 +89,30 @@ _ProposalRejectionReason = Literal[
 ]
 
 
+class _AnalyzeResponseEnvelope(BaseModel):
+    """Bound the complete response before validating individual proposals."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    findings: tuple[object, ...] = Field(max_length=50)
+
+
 @dataclass(frozen=True, slots=True)
 class ProposalRejection:
-    """Parser output for a proposal that failed admission.
+    """A bounded rejection record; the node adds its audit identity.
 
-    Lifted to `FindingProposalRejectedEvent` by the node body. The
-    parser produces these fields; the node adds audit-context
-    (`review_id`, `event_id`, `timestamp`, `sequence_number`,
-    `is_eval`, `node_id`, `event_type`) at lift time.
-
-    Frozen + slots: positional unpacking raises `TypeError` (dataclass
-    is not a tuple); attribute reassignment raises
-    `dataclasses.FrozenInstanceError`. Same swap-impossibility
-    discipline as `AnalyzePromptParts` and `TriagePromptParts`.
+    Malformed entries have no validated category or tier. Their hash identifies
+    an occurrence in the exact response rather than a valid proposal shape.
     """
 
     proposal_hash: str
     file_path: str
-    claimed_finding_type_hash: str
-    claimed_finding_type_len: int
+    claimed_finding_type_hash: str | None
+    claimed_finding_type_len: int | None
     claimed_evidence_tier: EvidenceTier | None
     rejection_reason: _ProposalRejectionReason
     rejection_detail: str
+    source_side: Literal["head", "base"] = "head"
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +126,7 @@ class ResponseRejection:
     response_hash: str
     rejection_reason: Literal["raw_response_unparseable"]
     rejection_detail: str
+    source_side: Literal["head", "base"] = "head"
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +216,9 @@ def parse_analyze_response(
     import_refs: tuple[ImportRef, ...] = (),
     collect_trace_candidates: bool = True,
     trace_candidate_form: Literal["module", "specifier"] = "module",
+    primary_line_ranges: tuple[tuple[int, int], ...] = (),
+    degraded_evidence_byte_ranges: tuple[tuple[int, int], ...] = (),
+    source_side: Literal["head", "base"] = "head",
 ) -> ParserResult:
     """Validate the response envelope, then admit proposals in their original order.
 
@@ -212,24 +226,58 @@ def parse_analyze_response(
     parameterized-call veto, and finding schema. The node persists the returned
     rejection payloads and supplies all file context and the policy version.
 
-    Clean locations use the included scope units' line ranges. Degraded locations
+    Clean locations use included scopes or explicitly served primary HEAD ranges.
+    Whole-file removals use explicitly labeled primary BASE ranges, text-only.
+    A location outside real scopes is JUDGED-only. Supplemental references never
+    expand these admission bounds. Degraded locations
     use full source, its precomputed UTF-8 byte length, and deterministic diff-byte
     ranges; an empty degraded context admits no findings. Degraded callers must
     supply no parameterized-call scan because their parse tree is untrustworthy.
 
     Pass 0 collects trace candidates unless disabled and rejects INFERRED claims.
     Later INFERRED claims require a valid trace-path shape and every element to match an
-    exact rendered scope-unit label in valid_trace_path_elements. OBSERVED claims
-    require an ID in the supplied query-match registry set.
+    exact rendered scope-unit label in valid_trace_path_elements. Model OBSERVED
+    claims are unsupported: structural findings come from the separate producer.
+    Every model quote must occur exactly in served primary source and overlap
+    the claimed location. Degraded callers supply actual rendered evidence ranges,
+    separate from their changed-line admission ranges.
     """
     # Reject negative pass indexes before parsing or admitting structural evidence.
     if pass_index < 0:
         raise ValueError(f"pass_index must be >= 0; got {pass_index}")
+    if source_side == "base" and (
+        not degraded_mode or included_scope_units or query_match_id_set or pass_index != 0
+    ):
+        raise ValueError("removed BASE evidence requires a first-pass text-only review")
+    primary_byte_ranges: list[tuple[int, int]] = []
+    for start, end in primary_line_ranges:
+        primary_span = line_range_to_span(start, end, file_content)
+        if not span_is_nonempty(primary_span) or not span_within_file(
+            primary_span, file_byte_length=file_byte_length
+        ):
+            raise ValueError("primary source ranges must contain supplied source within the file")
+        primary_byte_ranges.append((primary_span.byte_start, primary_span.byte_end))
+    if degraded_mode:
+        evidence_byte_ranges = degraded_evidence_byte_ranges
+    else:
+        # Scope bodies are fenced with one appended LF. Count it only if HEAD
+        # actually has that same LF immediately after the extracted body.
+        source_bytes = file_content.encode("utf-8")
+        scope_spans = tuple(
+            scope_unit_source_span(scope, source_bytes, include_trailing_newline=True)
+            for scope in included_scope_units
+        )
+        evidence_byte_ranges = tuple((span.byte_start, span.byte_end) for span in scope_spans)
+    evidence_byte_ranges += tuple(primary_byte_ranges)
 
     try:
         # Normalize only an outer fence; malformed envelopes remain response rejections.
-        raw_response = AnalyzeResponseRaw.model_validate_json(strip_outer_json_fence(response_text))
-    except ValidationError as e:
+        raw_response = _AnalyzeResponseEnvelope.model_validate(
+            from_json(
+                strip_outer_json_fence(response_text), allow_inf_nan=False, allow_partial=False
+            )
+        )
+    except ValueError as error:
         # Name token truncation directly; otherwise record bounded schema-error metadata.
         if finish_reason == "max_tokens":
             rejection_detail = (
@@ -238,12 +286,17 @@ def parse_analyze_response(
                 "narrow the per-file analysis scope."
             )
         else:
-            rejection_detail = _format_validation_error_detail(e)
+            rejection_detail = (
+                _format_validation_error_detail(error)
+                if isinstance(error, ValidationError)
+                else "json_syntax x1"
+            )
         return ParserResult(
             admitted_findings=(),
             trace_candidates=(),
             proposal_rejections=(),
             response_rejection=ResponseRejection(
+                source_side=source_side,
                 file_path=file_path,
                 response_hash=compute_response_hash(response_text),
                 rejection_reason="raw_response_unparseable",
@@ -293,6 +346,7 @@ def parse_analyze_response(
                 rejection_reason=rejection_reason,
                 rejection_detail=rejection_detail,
                 claimed_evidence_tier=claimed_evidence_tier,
+                source_side=source_side,
             )
         )
         trace_candidates.extend(candidates)
@@ -301,7 +355,7 @@ def parse_analyze_response(
         proposal: AnalyzeFindingProposalRaw,
         evidence_tier: EvidenceTier,
     ) -> tuple[_ProposalRejectionReason, str] | None:
-        """Require registry proof for OBSERVED and trace proof for INFERRED.
+        """Reject unsupported model OBSERVED and require trace proof for INFERRED.
 
         JUDGED needs no structural artifact. Return safe rejection metadata;
         the main loop owns recording the rejection and retaining candidates.
@@ -314,6 +368,7 @@ def parse_analyze_response(
                     "query_match_id_not_in_registry",
                     _sanitize_query_match_id_for_detail(claimed_id),
                 )
+            return "model_observed_not_supported", "structural_findings_require_producer"
         elif evidence_tier == EvidenceTier.INFERRED:
             inferred_rejection_detail: str | None = None
             if pass_index == 0:
@@ -338,12 +393,34 @@ def parse_analyze_response(
                 return "trace_path_not_admissible", inferred_rejection_detail
         return None
 
-    for raw_proposal in raw_response.findings:
+    response_hash = compute_response_hash(response_text)
+    for index, candidate in enumerate(raw_response.findings):
         n_proposals_seen += 1
+        try:
+            raw_proposal = AnalyzeFindingProposalRaw.model_validate(candidate)
+        except ValidationError as error:
+            proposal_rejections.append(
+                ProposalRejection(
+                    proposal_hash=_malformed_proposal_hash(
+                        file_path, response_hash, index, source_side=source_side
+                    ),
+                    file_path=file_path,
+                    source_side=source_side,
+                    claimed_finding_type_hash=None,
+                    claimed_finding_type_len=None,
+                    claimed_evidence_tier=None,
+                    rejection_reason="raw_proposal_invalid",
+                    rejection_detail=_format_validation_error_detail(
+                        error, prefix=("findings", index)
+                    ),
+                )
+            )
+            continue
 
         # One hash joins this raw proposal's finding/rejection and trace candidates.
         proposal_hash = compute_proposal_hash(
             source_file_path=file_path,
+            source_side=source_side,
             finding_type=raw_proposal.finding_type,
             evidence_tier=raw_proposal.evidence_tier,
             query_match_id=raw_proposal.query_match_id,
@@ -459,16 +536,32 @@ def parse_analyze_response(
         elif not any(
             line_range_within_scope_unit(line_start, line_end, su) for su in included_scope_units
         ):
-            # Clean ranges outside all included units share this reason, including past EOF.
-            reject_proposal(
-                proposal=raw_proposal,
-                proposal_hash=proposal_hash,
-                candidates=proposal_trace_candidates,
-                rejection_reason="span_outside_scope_unit",
-                rejection_detail=f"({line_start},{line_end})",
-                claimed_evidence_tier=evidence_tier,
+            in_primary_region = evidence_tier is EvidenceTier.JUDGED and any(
+                start <= line_start <= line_end <= end for start, end in primary_line_ranges
             )
-            continue
+            if not in_primary_region:
+                reject_proposal(
+                    proposal=raw_proposal,
+                    proposal_hash=proposal_hash,
+                    candidates=proposal_trace_candidates,
+                    rejection_reason="span_outside_scope_unit",
+                    rejection_detail=f"({line_start},{line_end})",
+                    claimed_evidence_tier=evidence_tier,
+                )
+                continue
+            span = line_range_to_span(line_start, line_end, file_content)
+            if not span_is_nonempty(span) or not span_within_file(
+                span, file_byte_length=file_byte_length
+            ):
+                reject_proposal(
+                    proposal=raw_proposal,
+                    proposal_hash=proposal_hash,
+                    candidates=proposal_trace_candidates,
+                    rejection_reason="span_outside_file",
+                    rejection_detail=f"({line_start},{line_end})",
+                    claimed_evidence_tier=evidence_tier,
+                )
+                continue
 
         # Veto JUDGED SQL injection on a provably parameterized call (FUP-162).
         # Run after proof/location gates; degraded callers supply no trusted scan.
@@ -490,6 +583,24 @@ def parse_analyze_response(
             )
             continue
 
+        citation_rejection = quote_rejection_detail(
+            raw_proposal.evidence,
+            file_content,
+            line_start=line_start,
+            line_end=line_end,
+            visible_byte_ranges=evidence_byte_ranges,
+        )
+        if citation_rejection is not None:
+            reject_proposal(
+                proposal=raw_proposal,
+                proposal_hash=proposal_hash,
+                candidates=proposal_trace_candidates,
+                rejection_reason="evidence_quote_invalid",
+                rejection_detail=citation_rejection,
+                claimed_evidence_tier=evidence_tier,
+            )
+            continue
+
         # Steps 6-9: preserve raw lines; derive severity and dimension from policy.
         # Mapping totality is guarded at import time, so missing keys must propagate.
         try:
@@ -502,6 +613,7 @@ def parse_analyze_response(
                 severity=SEVERITY_POLICY[finding_type],
                 evidence_tier=evidence_tier,
                 file_path=file_path,
+                source_side=source_side,
                 line_start=line_start,
                 line_end=line_end,
                 title=raw_proposal.title,
@@ -516,6 +628,7 @@ def parse_analyze_response(
                     line_start=line_start,
                     line_end=line_end,
                     finding_type=finding_type,
+                    source_side=source_side,
                 ),
             )
         except ValidationError as exc:
@@ -564,6 +677,9 @@ _CLAIMED_FINDING_TYPE_HASH_WIDTH: Final[int] = 16
 # `max_length=256` — no pattern. This regex enforces the spec-promised
 # safety class as a parser-side sanitization step.
 _QUERY_MATCH_ID_SAFE_CLASS: Final = re.compile(r"[^A-Za-z0-9_./:\-]")
+_VALIDATION_FIELD_NAMES: Final = frozenset(
+    {"findings", *AnalyzeFindingProposalRaw.model_fields, *TraceCandidateProposalRaw.model_fields}
+)
 
 
 def _trace_path_elements_not_in_proof(
@@ -625,6 +741,26 @@ def _sanitize_query_match_id_for_detail(claimed_id: str | None) -> str:
     return _QUERY_MATCH_ID_SAFE_CLASS.sub("?", claimed_id)
 
 
+def _malformed_proposal_hash(
+    file_path: str,
+    response_hash: str,
+    index: int,
+    *,
+    source_side: Literal["head", "base"] = "head",
+) -> str:
+    """Identify a rejected array occurrence without pretending it is a valid proposal."""
+    payload = {
+        "recipe": "malformed-analyze-proposal-v1",
+        "source_file_path": validate_diff_path(file_path),
+        "response_hash": response_hash,
+        "proposal_index": index,
+    }
+    if source_side == "base":
+        payload["source_side"] = "base"
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _hash_claimed_finding_type(raw_value: str) -> str:
     """sha256(raw_value.encode("utf-8")).hexdigest()[:16] — short-prefix
     hash for `ProposalRejection.claimed_finding_type_hash`. Lifted to
@@ -641,6 +777,7 @@ def _build_proposal_rejection(
     rejection_reason: _ProposalRejectionReason,
     rejection_detail: str,
     claimed_evidence_tier: EvidenceTier | None,
+    source_side: Literal["head", "base"] = "head",
 ) -> ProposalRejection:
     """Construct a `ProposalRejection` from a raw proposal + admission outcome.
 
@@ -653,6 +790,7 @@ def _build_proposal_rejection(
     `claimed_finding_type_hash` / `_len` per `DECISIONS.md#014`.
     """
     return ProposalRejection(
+        source_side=source_side,
         proposal_hash=proposal_hash,
         file_path=file_path,
         claimed_finding_type_hash=_hash_claimed_finding_type(raw.finding_type),
@@ -765,7 +903,7 @@ def _collect_trace_candidates_for(
     Candidate IDs bind content to source_proposal_hash whether the parent is admitted
     or rejected (spec §6 step 10). Response-level rejection has no proposals here.
 
-    Python admits dotted modules; JS/TS admits leading-dot specifiers. Wrong forms
+    Python admits absolute and relative dotted modules; JS/TS admits path specifiers. Wrong forms
     and specifiers escaping the repository count as malformed (DECISIONS.md#024,
     Amended 2026-07-03). Probe construction checks containment again.
 
@@ -779,7 +917,17 @@ def _collect_trace_candidates_for(
     for raw_cand in raw.trace_candidates:
         try:
             if candidate_form == "module":
-                canonical_import = is_valid_import_string(raw_cand.import_string_raw)
+                if is_python_relative_import_form(raw_cand.import_string_raw):
+                    canonical_import = is_valid_python_relative_import_string(
+                        raw_cand.import_string_raw
+                    )
+                    if not python_relative_trace_candidate_paths(
+                        canonical_import, source_file_path, 0
+                    ):
+                        n_dropped_malformed += 1
+                        continue
+                else:
+                    canonical_import = is_valid_import_string(raw_cand.import_string_raw)
             else:
                 canonical_import = is_valid_relative_specifier(raw_cand.import_string_raw)
         except ValueError:
@@ -813,7 +961,7 @@ def _collect_trace_candidates_for(
 
         # Add a corrected module sibling; the trailing-name match is a heuristic,
         # so keep the original for the probe ladder (DECISIONS.md#024).
-        if candidate_form != "module":
+        if candidate_form != "module" or is_python_relative_import_form(canonical_import):
             continue
         suggested_module = _correct_against_from_imports(canonical_import, from_import_modules)
         if suggested_module is not None:
@@ -844,7 +992,9 @@ def _collect_trace_candidates_for(
 _REJECTION_DETAIL_MAX_LEN: Final[int] = 500
 
 
-def _format_validation_error_detail(error: ValidationError) -> str:
+def _format_validation_error_detail(
+    error: ValidationError, *, prefix: tuple[str | int, ...] = ()
+) -> str:
     """Render a `ValidationError` as JSON-pointer paths + per-path counts.
 
     Per `DECISIONS.md#014` point 1: audit rows must not carry user code
@@ -863,7 +1013,7 @@ def _format_validation_error_detail(error: ValidationError) -> str:
     """
     path_counts: dict[str, int] = {}
     for err in error.errors():
-        loc = _format_loc(err["loc"])
+        loc = _format_loc((*prefix, *err["loc"]))
         if not loc:
             # Root-level error (empty location) — name it by error TYPE, which
             # only this caller has: `json_invalid` is a JSON-SYNTAX failure
@@ -899,7 +1049,7 @@ def _format_loc(loc: tuple[str | int, ...]) -> str:
             else:
                 parts.append(f"[{seg}]")
         else:
-            parts.append(str(seg))
+            parts.append(seg if seg in _VALIDATION_FIELD_NAMES else "extra_field")
     return ".".join(parts)
 
 

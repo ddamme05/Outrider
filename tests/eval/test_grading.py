@@ -1,17 +1,12 @@
-"""Tests for the deterministic model-tier grading gate (tests/eval/grading.py).
+"""Check finding matching, quality scores and model-comparison acceptance rules.
 
-The gate is what stops the analyze STANDARD->Haiku flip from shipping a silent recall
-regression (specs/2026-06-08-analyze-tiered-model-routing.md step 2). These tests prove
-the machinery itself: the match contract (type+file+line-window+severity), recall /
-precision / severity scoring, greedy one-to-one matching (no double-claiming), and that
-`compare(...)` FAILS on a recall drop or a false-positive balloon and PASSES on a hold.
-Pure — no DB, no LLM, no spend.
-"""
+Use supplied findings and expectations; no database or model calls are needed."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 from uuid import uuid4
+
+import pytest
 
 from outrider.audit.events import compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
@@ -26,9 +21,6 @@ from .grading import (
     finding_matches,
     grade,
 )
-
-if TYPE_CHECKING:
-    import pytest
 
 # severity -> finding_type, so the `severity-set-by-policy` validator on ReviewFinding is
 # satisfied (severity must equal SEVERITY_POLICY[finding_type]).
@@ -90,6 +82,30 @@ def _expected(
 # ---------------------------------------------------------------------------
 # finding_matches — the declared match contract
 # ---------------------------------------------------------------------------
+
+
+def test_base_finding_is_unsupported_even_at_identical_head_coordinates():
+    head = _finding()
+    base = ReviewFinding.model_validate(
+        {
+            **head.model_dump(),
+            "source_side": "base",
+            "content_hash": compute_finding_content_hash(
+                head.file_path,
+                line_start=head.line_start,
+                line_end=head.line_end,
+                finding_type=head.finding_type,
+                source_side="base",
+            ),
+        }
+    )
+    for score in (
+        lambda: finding_matches(base, _expected()),
+        lambda: grade([base], [_expected()]),
+        lambda: grade([base], []),
+    ):
+        with pytest.raises(ValueError, match="HEAD-only.*BASE"):
+            score()
 
 
 def test_exact_match() -> None:

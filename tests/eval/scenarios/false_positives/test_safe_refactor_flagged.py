@@ -1,15 +1,7 @@
-"""False-positive eval scenario: safe refactor wrongly flagged as security change.
+"""Exercise the no-findings graph path for a harmless refactor.
 
-Per spec §11.2: PR refactors safe code (e.g., reorders parameters,
-renames a variable inside a function) without introducing any security
-issue; expected: zero security findings. Asserts the agent doesn't
-hallucinate findings on cosmetic changes.
-
-Driven by the eval graph driver (`run_review`) against
-`tests/eval/fixtures/mock_github/safe_refactor.json`. The scripted analyze
-response is deliberately empty; see `test_eval_in_test_fixture` for the
-no-findings-vs-dimension-filter note.
-"""
+The empty model response is scripted, so passing checks the workflow rather
+than proving that a real model will recognize safe code."""
 
 from outrider.schemas import ReviewDimension
 

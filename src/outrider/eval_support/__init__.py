@@ -1,12 +1,8 @@
-"""Shared eval/test database lifecycle and isolation checks.
+"""Database setup and isolation checks shared by evaluation runners.
 
-Eval drivers live in src and cannot import tests (docs/conventions.md). Drivers,
-test fixtures and the smoke runner therefore share these create/migrate/drop
-helpers; see `specs/2026-06-01-eval-graph-driver.md` (resolution A).
-
-Database lifecycle helpers require test URL markers: port 5433 and "test" in the
-database name. Eval-only entry points additionally require OUTRIDER_IS_EVAL=1.
-The post-run integrity check rejects rows whose is_eval flag is not True."""
+Helpers accept only isolated test database URLs. Evaluation entry points must
+also set OUTRIDER_IS_EVAL=1 and mark their records as evaluation data.
+"""
 
 from outrider.eval_support.db_lifecycle import (
     EVAL_DB_NAME_PREFIX,

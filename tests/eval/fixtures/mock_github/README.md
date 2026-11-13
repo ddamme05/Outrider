@@ -7,6 +7,38 @@ Each `*.json` here is one **`EvalFixture`** (the Pydantic model in
 drives the real 7-node graph against it (real Postgres, scripted LLM + fake
 GitHub at the two network boundaries), and returns an `EvalRunResult`.
 
+## Supplemental model-comparison holdouts
+
+`test_model_comparison.py` keeps a separate pool of two SQL-injection forms
+(`string.Template.substitute`, `str.join`) and two safe forms (psycopg SQL
+composition with `sql.Literal`, SQLAlchemy `select().where()` expressions).
+The corresponding `*_unseen_*.json` fixtures enter the existing optional
+STANDARD-model comparison and Sonnet comparison reports as `holdout-recall`
+and `holdout-safe`. Together they add four scenarios, or eight model calls,
+to a future explicitly enabled comparison. No paid result is claimed yet.
+
+These are distinct forms, not merely additional examples of demonstrated
+placeholder styles. Their novelty is manually reviewed against the clean
+pass-zero prompt: `SYSTEM_PROMPT_STABLE_PREFIX`, `FILE_CONTEXT_TEMPLATE` and
+`USER_TEMPLATE`. The explicit JSON list of those three strings is hashed with
+SHA-256 into a separate review stamp. This is not the frozen grading identity.
+Changing any of these strings stops comparison before calls until each form
+is reviewed again. If a form is now demonstrated, replace it with another
+unseen form, verify real admission and model visibility, then update the
+review stamp. Each track must retain at least two distinct reviewed forms.
+
+Imports needed to recognize the APIs appear inside changed functions because
+pass-zero context does not include module-level imports. Offline checks prove
+recall findings are admitted and disappear with an empty model, safe code is
+actually reviewed, and a scripted SQL false positive on either safe call
+remains visible rather than being hidden by the parameterized-call veto.
+Scripted results establish instrumentation, not model quality.
+
+The original recall/safe pools still define the frozen 32-fixture suite-v2.
+Its identity, grading gates, prior fixtures and saved paid evidence remain
+unchanged. The exemplar, GLM and OpenAI collection protocols do not acquire
+these supplemental rows automatically.
+
 ## Schema
 
 ```jsonc
@@ -52,27 +84,28 @@ GitHub at the two network boundaries), and returns an `EvalRunResult`.
   // tests/integration/test_e2e_smoke.py (_triage_response / _analyze_response).
   "llm_responses": {
     "triage": ["{\"file_tiers\": {\"app/views.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"…\"}"],
-    "analyze": ["{\"findings\": [{\"finding_type\": \"sql_injection\", \"evidence_tier\": \"observed\", \"query_match_id\": \"…\", \"trace_path\": null, \"title\": \"…\", \"description\": \"…\", \"evidence\": \"…\", \"line_start\": 4, \"line_end\": 4, \"trace_candidates\": []}]}"],
+    "analyze": ["{\"findings\": [{\"finding_type\": \"sql_injection\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"…\", \"description\": \"…\", \"evidence\": \"…\", \"line_start\": 4, \"line_end\": 4, \"trace_candidates\": []}]}"],
     "synthesize": ["Free-form summary prose."]
   }
 }
 ```
 
-## Proof boundary: `OBSERVED` findings need a real `query_match_id`
+## Proof boundary for scripted model responses
 
-An analyze finding with `evidence_tier="observed"` MUST carry a `query_match_id`
-that is in the set of structural queries that fired on the file —
-otherwise the parser rejects it (`query_match_id_not_in_registry`). The set is
-computed by `agent/nodes/analyze._build_query_match_id_set(content_bytes)` from
-the `.scm` queries in `src/outrider/queries/python/` (function/class/import
-definitions). To author an OBSERVED fixture: write `content_head`, then discover
-a real id empirically rather than fabricating a format:
+A scripted analyze response plays the model's role. Use `evidence_tier="judged"`
+with `query_match_id=null` for model interpretations. The current parser rejects
+model-produced `observed` claims, even if the named query fired. Structural
+`OBSERVED` findings come from Outrider's independent producer and require its
+vulnerability-specific proof; a generic function/class/import match does not
+establish a bug. Post-trace `inferred` findings need the supported trace path.
 
-```bash
-uv run python -c "from outrider.agent.nodes.analyze import _build_query_match_id_set as q; print(q(open('PATH').read().encode()))"
-```
-
-`JUDGED` findings carry `query_match_id=null`; `INFERRED` carry a `trace_path`.
+`pygoat_sql_injection.json` remains part of the frozen 32-fixture suite and
+historical captures. Do not rewrite its scripted response or prior hashes.
+`pygoat_sql_injection_judged.json` preserves the same source, diff and warning
+claim, changing only the scripted tier/query fields for active workflow and
+host-gating tests. Model-refresh tests retain the legacy case for their separate
+model-contribution and invalid-proof checks; the derived fixture does not join
+the frozen benchmark pool.
 
 ## Patch wire shape
 

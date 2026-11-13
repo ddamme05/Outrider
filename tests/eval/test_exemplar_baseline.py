@@ -1,23 +1,13 @@
-"""Offline unit tests for the analyze-EXEMPLARS baseline harness DETERMINISTIC CORE
-(`tests/eval/exemplar_baseline.py`) PLUS the opt-in PAID runner that drives the four real providers
-and freezes / gates the baseline.
+"""Check frozen-baseline rules offline and provide explicitly enabled paid collectors.
 
-The offline tests pin the pre-registered contract so the accept rule cannot drift: N=3, the exact
-acceptance set, ≥2/3 majority, the run/provider comparability (fixture identity + SEMANTIC digests,
-per-type totals, model/profile identity, role), the fail-closed prompt-identity gate, the persisted
-token evidence, and the role-aware ε=0 gate. They run with no models.
-
-The PAID runner (`_collect_real_observations` + `test_freeze_exemplar_baseline` /
-`test_gate_shrunk_prompt_against_frozen_baseline`) is gated on `OUTRIDER_EVAL_REAL_MODELS=1` exactly
-like `tests/eval/test_glm_scorecard.py`; it spends API tokens and must run under `op run`.
-
-Run offline: uv run pytest tests/eval/test_exemplar_baseline.py --is-eval -v
-"""
+Offline tests cover comparable runs, majority votes, prompt identities, token
+evidence and acceptance rules. Paid collection requires
+OUTRIDER_EVAL_REAL_MODELS=1 and credentials through op run; it spends API tokens.
+Run offline with pytest tests/eval/test_exemplar_baseline.py --is-eval."""
 
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import os
 from collections import Counter
@@ -35,14 +25,17 @@ from .exemplar_baseline import (
     FIXTURE_SUITE_VERSION,
     MEASUREMENT_CONTRACT,
     PRECISION,
+    PROMPT_IDENTITY_RECIPE,
     RECALL,
     REQUIRED_REPS,
+    SCHEMA_VERSION,
     SUPPORTING,
     Observation,
     ProviderMeta,
     RunMeta,
     TokenUsage,
     aggregate,
+    analyze_prompt_identity,
     authoritative_attempt,
     compare,
     cost_objective,
@@ -151,7 +144,7 @@ def test_majority_threshold_is_two_thirds_ceil() -> None:
 
 def test_aggregate_stores_provenance_and_majority() -> None:
     base = _run(_meta("v10"), {CLAUDE_DEEP: (2, 0), CLAUDE_STANDARD: (1, 2)})
-    assert base["schema_version"] == 4
+    assert base["schema_version"] == SCHEMA_VERSION
     assert base["measurement_contract"] == MEASUREMENT_CONTRACT
     assert base["fixture_suite"] == FIXTURE_SUITE_VERSION
     assert base["harness_digest"] == "h-digest"
@@ -892,6 +885,7 @@ def _as_v2(data: dict) -> dict:
     """Strip a v3 run down to the exact v2 shape (what aggregate() emitted before the bump)."""
     v2 = copy.deepcopy(data)
     v2["schema_version"] = 2
+    del v2["prompt_identity_recipe"]
     del v2["harness_digest"]
     del v2["measurement_contract"]
     del v2["fixture_suite"]
@@ -914,7 +908,7 @@ def test_read_baseline_upgrades_v2_in_memory_never_on_disk(tmp_path, monkeypatch
     # upgraded in memory: new fields exist as None = UNRECORDED (distinct from a measured
     # zero) — except measurement_contract / fixture_suite, which are the reviewed LITERAL
     # declarations of what v2 evidence was collected under (mc-1 semantics, suite-v1 fixtures)
-    assert up["schema_version"] == 4
+    assert up["schema_version"] == SCHEMA_VERSION
     assert up["measurement_contract"] == "exemplar-mc-1"
     assert up["fixture_suite"] == "suite-v1"
     assert up["harness_digest"] is None
@@ -984,6 +978,7 @@ def _as_v3(data: dict) -> dict:
     harness_digest + structured_output present; fixture_suite + extra_findings absent)."""
     v3 = copy.deepcopy(data)
     v3["schema_version"] = 3
+    del v3["prompt_identity_recipe"]
     del v3["fixture_suite"]
     for p in v3["providers"].values():
         for fx in p["per_fixture"].values():
@@ -1002,7 +997,7 @@ def test_read_baseline_upgrades_v3_in_memory_never_on_disk(tmp_path, monkeypatch
     raw = json.dumps(v3, indent=2, sort_keys=True)
     (tmp_path / "frozen-v3.json").write_text(raw, encoding="utf-8")
     up = read_baseline("frozen-v3")
-    assert up["schema_version"] == 4
+    assert up["schema_version"] == SCHEMA_VERSION
     assert up["measurement_contract"] == "exemplar-mc-1"  # recorded in-artifact, NOT refilled
     assert up["fixture_suite"] == "suite-v1"  # the declaration: v3 predates the expanded suite
     assert up["harness_digest"] == "h-digest"  # v3 recorded it; the upgrade must not None it
@@ -1017,7 +1012,7 @@ def test_frozen_v10_artifact_reads_under_current_schema_and_is_unchanged_on_disk
     raw = json.loads((BASELINE_DIR / "analyze-v10.json").read_text(encoding="utf-8"))
     assert raw["schema_version"] == 2  # the on-disk artifact is still v2 — never rewritten
     up = read_baseline("analyze-v10")
-    assert up["schema_version"] == 4
+    assert up["schema_version"] == SCHEMA_VERSION
     assert up["measurement_contract"] == "exemplar-mc-1"  # the reviewed LITERAL declaration
     assert up["fixture_suite"] == "suite-v1"
     assert up["harness_digest"] is None
@@ -1027,14 +1022,20 @@ def test_frozen_v10_artifact_reads_under_current_schema_and_is_unchanged_on_disk
     assert all(m["structured_output"] is None for m in up["providers"].values())
 
 
-def test_frozen_suite_v2_bar_reads_natively_at_v4() -> None:
+def test_frozen_suite_v2_bar_preserves_legacy_prompt_identity() -> None:
     # pin against the LIVE bar: schema metadata 4 (corrected on review — the shape shipped
     # mislabeled as 3), mc-2 semantics, suite-v2, exactly the three acceptance providers, and
     # the extras/yield evidence present on every applicable cell
     raw = json.loads((BASELINE_DIR / "analyze-v10+suite-v2.json").read_text(encoding="utf-8"))
     assert raw["schema_version"] == 4  # native — no upgrade path involved
     bar = read_baseline("analyze-v10+suite-v2")
-    assert bar == raw  # v4 reads verbatim
+    expected = dict(
+        raw, schema_version=SCHEMA_VERSION, prompt_identity_recipe="analyze-system-prefix-v1"
+    )
+    assert bar == expected
+    assert any(
+        "prompt_identity_recipe" in reason for reason in preflight_comparability(bar, _meta("v11"))
+    )
     assert bar["measurement_contract"] == "exemplar-mc-2"
     assert bar["fixture_suite"] == "suite-v2"
     assert set(bar["providers"]) == {CLAUDE_DEEP, CLAUDE_STANDARD, FIREWORKS_GLM}
@@ -1045,6 +1046,46 @@ def test_frozen_suite_v2_bar_reads_natively_at_v4() -> None:
             for fx in m["per_fixture"].values()
         )
         assert m["structured_output"]["attempts"] == 96
+
+
+@pytest.mark.parametrize(
+    "segment", ["SYSTEM_PROMPT_STABLE_PREFIX", "FILE_CONTEXT_TEMPLATE", "USER_TEMPLATE"]
+)
+def test_prompt_identity_covers_each_rendered_segment(
+    segment: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from outrider.prompts import analyze as prompt
+
+    before_version, before_digest = _prompt_identity()
+    monkeypatch.setattr(prompt, segment, getattr(prompt, segment) + "\nchanged instructions")
+    after_version, after_digest = _prompt_identity()
+    assert after_version == before_version
+    assert after_digest != before_digest
+
+
+def test_legacy_prompt_recipe_is_readable_but_cannot_compare(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from . import exemplar_baseline as mod
+
+    legacy = _run(_meta("v10"))
+    legacy["schema_version"] = 4
+    del legacy["prompt_identity_recipe"]
+    raw = json.dumps(legacy)
+    path = tmp_path / "legacy.json"
+    path.write_text(raw)
+    monkeypatch.setattr(mod, "BASELINE_DIR", tmp_path)
+    restored = read_baseline("legacy")
+    assert path.read_text() == raw
+    assert restored["prompt_identity_recipe"] == "analyze-system-prefix-v1"
+    assert any(
+        "prompt_identity_recipe" in reason
+        for reason in preflight_comparability(restored, _meta("v11"))
+    )
+    assert any(
+        "prompt_identity_recipe" in row["detail"]
+        for row in compare(restored, _run(_meta("v11")))["regressions"]
+    )
 
 
 def test_baseline_round_trips_to_tracked_dir(tmp_path, monkeypatch) -> None:
@@ -1203,24 +1244,20 @@ def _prompt_identity() -> tuple[str, str]:
     Computable before the paid run so both paid tests can pre-flight their "this identity is already
     decided" guards without first burning the paid calls.
     """
-    from outrider.prompts import analyze as analyze_prompt  # noqa: PLC0415
-
-    # Same recipe as llm.base._canonical_system_prompt_hash.
-    digest = hashlib.sha256(analyze_prompt.SYSTEM_PROMPT_STABLE_PREFIX.encode("utf-8")).hexdigest()
-    return analyze_prompt.VERSION, digest
+    return analyze_prompt_identity()
 
 
 def _freeze_label(version: str) -> str:
     """Baseline label: prompt identity + suite identity. A suite change gets a new immutable
     artifact without a prompt-VERSION bump (`analyze-v10+suite-v2.json` beside the untouched
     legacy `analyze-v10.json`)."""
-    return f"{version}+{FIXTURE_SUITE_VERSION}"
+    return f"{version}+{FIXTURE_SUITE_VERSION}+{PROMPT_IDENTITY_RECIPE}"
 
 
 def _candidate_prefix(version: str, digest: str) -> str:
     """Attempt label prefix, content-addressed by the candidate's prompt identity + the suite it
     was measured under (first-VALID-attempt-wins is per prompt identity per suite)."""
-    return f"{version}-{digest[:12]}-{FIXTURE_SUITE_VERSION}-candidate"
+    return f"{version}-{digest[:12]}-{FIXTURE_SUITE_VERSION}-{PROMPT_IDENTITY_RECIPE}-candidate"
 
 
 class _InputSideTokenRecorder:
@@ -1247,17 +1284,10 @@ class _InputSideTokenRecorder:
 
 
 def _build_run_context() -> tuple[list[tuple], RunMeta]:
-    """Everything the paid loop needs, built with NO SPEND: the three acceptance providers +
-    their recorders,
-    the semantic fixture digests, and the full `RunMeta`.
+    """Check live targets, then build providers and comparison metadata without spending.
 
-    Split from the paid loop so every STATIC field (schema/N contract, fixture + ground-truth
-    digests, provider set, roles, model ids, profile-contract digests, token-accounting modes) is
-    known BEFORE the paid calls (3 providers × REQUIRED_REPS × the fixture registry) —
-    `preflight_comparability()` can then reject a drifted run for free instead of surfacing it
-    as an integrity regression after the spend.
-
-    Skips (not fails) if any provider key is missing/unresolved.
+    Retired targets fail before credential lookup or SDK construction. Missing
+    credentials skip collection. Static metadata lets comparability fail free.
     """
     from pydantic import SecretStr  # noqa: PLC0415
 
@@ -1267,6 +1297,7 @@ def _build_run_context() -> tuple[list[tuple], RunMeta]:
         ANTHROPIC_CONTRACT_DIGEST,
         FIREWORKS_PROFILE,
         TokenAccounting,
+        validate_available_models,
     )
     from outrider.llm.openai_compatible_provider import (  # noqa: PLC0415
         OpenAICompatibleProvider,
@@ -1277,6 +1308,10 @@ def _build_run_context() -> tuple[list[tuple], RunMeta]:
         _SAFE_CODE_FIXTURES,
     )
 
+    cfg = ModelConfig()
+    fw_model = ModelConfig.for_host("fireworks").analyze_model
+    validate_available_models("fireworks", (fw_model,))
+
     keys = {
         "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY"),
         "FIREWORKS_API_KEY": os.environ.get("FIREWORKS_API_KEY"),
@@ -1284,9 +1319,6 @@ def _build_run_context() -> tuple[list[tuple], RunMeta]:
     for name, val in keys.items():
         if not val or val.startswith("op://"):
             pytest.skip(f"{name} (resolved, not an op:// ref) required; run under `op run`")
-
-    cfg = ModelConfig()
-    fw_model = ModelConfig.for_host("fireworks").analyze_model  # accounts/fireworks/models/glm-5p2
 
     # Each logical provider gets its OWN instance + token recorder, so per-rep input_tokens
     # attribute cleanly by snapshot-slicing the recorder around each run. CLAUDE_DEEP and
@@ -1615,7 +1647,15 @@ async def test_gate_shrunk_prompt_against_frozen_baseline() -> None:
 # constructor drift (the FUP-140 class: a wiring break the eval tier catches when
 # unit+integration stay green) without an API call.
 @pytest.mark.asyncio
-async def test_paid_runner_wiring_is_valid_without_spend(monkeypatch) -> None:
+@pytest.mark.parametrize("live_availability", [True, False], ids=["retired", "offline-historical"])
+async def test_paid_runner_wiring_is_valid_without_spend(
+    monkeypatch, live_availability: bool
+) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from outrider.llm import anthropic_provider, host_profiles, openai_compatible_provider
+
     from . import model_comparison as mc  # noqa: PLC0415
     from .test_grading import _finding  # noqa: PLC0415
     from .test_model_comparison import (  # noqa: PLC0415
@@ -1623,6 +1663,23 @@ async def test_paid_runner_wiring_is_valid_without_spend(monkeypatch) -> None:
         _SAFE_CODE_FIXTURES,
     )
 
+    if live_availability:
+        credentials = MagicMock()
+        credentials.get.return_value = "test-key-not-used"
+        constructor = MagicMock()
+        monkeypatch.setitem(
+            _build_run_context.__globals__, "os", SimpleNamespace(environ=credentials)
+        )
+        monkeypatch.setattr(anthropic_provider, "AnthropicProvider", constructor)
+        monkeypatch.setattr(openai_compatible_provider, "OpenAICompatibleProvider", constructor)
+        with pytest.raises(ValueError, match="GLM-5.2 serverless is retired"):
+            _build_run_context()
+        credentials.get.assert_not_called()
+        constructor.assert_not_called()
+        return
+
+    # This historical wiring check substitutes every generation call below.
+    monkeypatch.setattr(host_profiles, "validate_available_models", lambda *_args: None)
     n_fx = len(_GROUND_TRUTH_BY_FIXTURE) + len(_SAFE_CODE_FIXTURES)
 
     # Key on the PROVIDER INSTANCE (+ resolved model), never the model alone: each logical provider
@@ -1657,6 +1714,7 @@ async def test_paid_runner_wiring_is_valid_without_spend(monkeypatch) -> None:
 
     # 3 acceptance providers x REQUIRED_REPS reps x the full fixture registry
     assert len(observations) == 3 * REQUIRED_REPS * n_fx
+    assert {observation.dimension for observation in observations} == {RECALL, PRECISION}
     # N=3 must mean THREE separate invocations — not one call reused for the other two. One call
     # per observation, and each of the THREE distinct providers ran every fixture x REQUIRED_REPS.
     # Combined with aggregate()'s exactly-REQUIRED_REPS-per-(provider,fixture) check below, that
@@ -1667,14 +1725,14 @@ async def test_paid_runner_wiring_is_valid_without_spend(monkeypatch) -> None:
     assert len(by_provider) == 3  # three distinct (instance, model) identities, none conflated
     assert set(by_provider.values()) == {REQUIRED_REPS * n_fx}
     assert meta.prompt_version  # analyze VERSION resolved
-    assert len(meta.prompt_digest) == 64  # sha256 hex of SYSTEM_PROMPT_STABLE_PREFIX
+    assert len(meta.prompt_digest) == 64  # three-segment clean pass-zero identity
     assert len(meta.fixture_digests) == n_fx
     assert set(meta.providers) == {CLAUDE_DEEP, CLAUDE_STANDARD, FIREWORKS_GLM}  # no Baseten
     assert meta.providers[CLAUDE_DEEP].role == ACCEPTANCE
     assert meta.fixture_suite == FIXTURE_SUITE_VERSION
     # the runner's output must satisfy the freeze-time contract end-to-end
     data = aggregate(observations, meta)
-    assert data["schema_version"] == 4
+    assert data["schema_version"] == SCHEMA_VERSION
     assert data["measurement_contract"] == MEASUREMENT_CONTRACT
     assert data["fixture_suite"] == FIXTURE_SUITE_VERSION
     assert data["harness_digest"] == harness_source_digest()  # the artifact self-records its code

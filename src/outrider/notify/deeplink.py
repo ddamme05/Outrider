@@ -1,9 +1,7 @@
-"""Dashboard deep-link builder for Slack notifications.
+"""Build review-dashboard links from the configured public base URL.
 
-A pure helper: `base_url` (the deployed dashboard's public URL) is passed in by
-the composition root, so this module stays free of config/IO. The review_id /
-finding_id are internal UUIDs (unguessable, no path validation needed — the
-deep-link is an entry point, not a credential; auth is the dashboard's job).
+Links contain review identifiers, never dashboard access tokens. The dashboard
+still applies its normal authentication checks when a link is opened.
 """
 
 from __future__ import annotations

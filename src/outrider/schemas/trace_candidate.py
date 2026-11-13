@@ -1,15 +1,11 @@
-# See specs/2026-05-19-analyze-foundation.md §1 and specs/2026-05-23-trace-node.md.
-"""Analyze's request to inspect code outside the current file set.
+"""Describe a request to inspect a file related to a finding.
 
-Trace resolves import_string and decides whether to fetch. candidate_id is
-content-derived via policy.canonical.compute_candidate_id and deduplicates
-replay emissions. source_proposal_hash joins rejected or admitted proposal
-provenance per `DECISIONS.md#022`; its identity includes the source file.
+Each candidate links an import string to its source finding. The trace node
+validates and resolves the repository path before fetching it. Stable IDs
+support deduplication and replay.
 
-Per `DECISIONS.md#024`, dotted Python imports use the suffix-strip API probe
-ladder (FUP-209), while JS/TS relative specifiers use
-coordinates.relative_specifier_candidate_paths. Every probe path is
-validated before fetch. Actual fetched files deduplicate by path in state."""
+See DECISIONS.md#022, #024 and FUP-209.
+"""
 
 from __future__ import annotations
 
@@ -24,16 +20,12 @@ from outrider.policy.canonical import SHA256_HEX_PATTERN, compute_candidate_id
 class TraceCandidate(BaseModel):
     """One trace-candidate request from analyze to trace.
 
-    `import_string` carries one of two syntactic forms per
-    `DECISIONS.md#024` (Amended 2026-07-03): a dotted Python import
-    string (e.g. `foo.bar`, module form) or a JS/TS relative specifier
-    (e.g. `../db`, leading-dot form). The schema-side field validator
-    runs `coordinates.is_valid_trace_import_string` — the shared
-    two-form dispatcher (NFC normalization + per-form shape rules +
-    shell-metachar / Trojan-Source rejection) — so the value reaching
-    the trace node is canonical for its form. The raw model-proposed
-    form lives on `TraceCandidateProposalRaw` (sister analyze-impl
-    spec §7); this admitted form is what reaches the trace node.
+    `import_string` carries an absolute or package-relative Python module
+    (e.g. `app.auth` or `..auth`) or a JS/TS relative path (e.g. `../auth`).
+    Shared coordinate validation canonicalizes identifiers and Unicode and
+    rejects unsafe syntax. Admission checks the import form against the source
+    language. Probes check repository containment; Python-relative probes also
+    require a `.py` source anchor. Raw model bytes stay in the retained exchange.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -48,15 +40,10 @@ class TraceCandidate(BaseModel):
     def _enforce_canonical_import_string(cls, value: str) -> str:
         """Reject values that aren't `coordinates.is_valid_trace_import_string` output.
 
-        `candidate_id` is content-derived from the candidate's payload.
-        Non-canonical import strings produce non-deterministic IDs
-        across producers, defeating replay idempotency of the dedup-by-
-        `candidate_id` reducer. Pushing the rule down to the schema
-        floor catches drift at every construction site; the shared
-        two-form dispatcher guarantees the schema validator and the
-        resolution surfaces (`resolve_candidate_paths` module-form,
-        `relative_specifier_candidate_paths` specifier-form) agree on
-        the admit set for both forms.
+        Canonical bytes must agree across candidate, state and audit validators.
+        Context-aware admission checks language. Probe construction checks repository
+        containment, and Python-relative probes require a `.py` source anchor.
+        Accepted syntax alone does not prove runtime resolution.
         """
         return is_valid_trace_import_string(value)
 

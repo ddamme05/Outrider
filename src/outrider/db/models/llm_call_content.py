@@ -1,14 +1,7 @@
-# See DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only
-"""Retained model exchanges paired with metadata-only audit events.
+"""Store model requests and responses until their retention deadline.
 
-The persister inserts the LLMCallEvent and this content row in one transaction
-(DECISIONS.md#016; tests/integration/test_llm_content_single_transaction.py).
-event_id references the append-only audit parent with NO ACTION. Retention deletes
-the content child directly while the audit row survives, leaving metadata-only
-replay (DECISIONS.md#014).
-
-Installation RESTRICT requires explicit content purge before installation deletion.
-See docs/schema.md, "Content-table foreign-key semantics".
+The content and its audit event commit in one transaction. Expiry removes this
+row while preserving the event's metadata (DECISIONS.md#014, #016).
 """
 
 from datetime import datetime

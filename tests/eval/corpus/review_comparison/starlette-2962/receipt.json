@@ -1,0 +1,69 @@
+{
+  "schema": "pr-capture-v1",
+  "source": {
+    "repo": "Kludex/starlette",
+    "pr": 2962,
+    "url": "https://github.com/Kludex/starlette/pull/2962",
+    "base_sha": "540ff5f076468eb69f827e76cb020e21fb39b3ca",
+    "target_base_sha": "540ff5f076468eb69f827e76cb020e21fb39b3ca",
+    "head_sha": "50ae503979834a125b5a98e91781d30b17cd7b31",
+    "merge_sha": "9f7ec2eb512fcc3fe90b43cb9dd9e1d08696bec1",
+    "created_at": "2025-07-10T14:23:42Z",
+    "updated_at": "2025-07-20T22:55:36Z",
+    "merged_at": "2025-07-20T17:24:02Z",
+    "captured_at": "2026-11-01T01:47:18.238998+00:00"
+  },
+  "fixture_sha256": "aa9f56b9433f16db395037b3aa8655f7a03fd8615dab5a6123f3e4cc38ac65d9",
+  "license": {
+    "path": "LICENSE.md",
+    "sha256": "dcb95677a02240243187e964f941847d19b17821cf99e5afae684fab328c19bf",
+    "commit": "50ae503979834a125b5a98e91781d30b17cd7b31",
+    "url": "https://github.com/Kludex/starlette/blob/50ae503979834a125b5a98e91781d30b17cd7b31/LICENSE.md",
+    "blob_sha": "d16a60ec5b9963ef86b35a52ac92227014618e6c"
+  },
+  "files": [
+    {
+      "path": "starlette/datastructures.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "b2c07f776eb555a03fb3aca37ed0f988e934e8a537e3492adfbe04fd8dbcf273",
+        "commit": "540ff5f076468eb69f827e76cb020e21fb39b3ca",
+        "url": "https://github.com/Kludex/starlette/blob/540ff5f076468eb69f827e76cb020e21fb39b3ca/starlette/datastructures.py",
+        "blob_sha": "70dacd024c2c0871982e34b0b4636fba8adc352f"
+      },
+      "head": {
+        "sha256": "ce16c619c99e45507a3aebedf47c2807c8122bd9396e21f7cd48636f9715fa8c",
+        "commit": "50ae503979834a125b5a98e91781d30b17cd7b31",
+        "url": "https://github.com/Kludex/starlette/blob/50ae503979834a125b5a98e91781d30b17cd7b31/starlette/datastructures.py",
+        "blob_sha": "38eabec52743cb04dde53b17fdc19fe074a12841"
+      }
+    },
+    {
+      "path": "tests/test_formparsers.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "53d9f162490f28041358d29df6744c684b1692e156fd5700232ed2f8dddc3763",
+        "commit": "540ff5f076468eb69f827e76cb020e21fb39b3ca",
+        "url": "https://github.com/Kludex/starlette/blob/540ff5f076468eb69f827e76cb020e21fb39b3ca/tests/test_formparsers.py",
+        "blob_sha": "35681e78d392f8802483a9d059790b92ac83deeb"
+      },
+      "head": {
+        "sha256": "cef5171c44a51d526eee47b200cf8e945da2e62a3d0a31b513a30cf8925ee0e8",
+        "commit": "50ae503979834a125b5a98e91781d30b17cd7b31",
+        "url": "https://github.com/Kludex/starlette/blob/50ae503979834a125b5a98e91781d30b17cd7b31/tests/test_formparsers.py",
+        "blob_sha": "58f6a0c738814e00a7e095c0ce9346773c1c5df6"
+      }
+    }
+  ],
+  "context_files": [],
+  "raw_files": {
+    "fixture.json": "aa9f56b9433f16db395037b3aa8655f7a03fd8615dab5a6123f3e4cc38ac65d9",
+    "LICENSE": "dcb95677a02240243187e964f941847d19b17821cf99e5afae684fab328c19bf",
+    "raw/pr.json": "93e69232371faf2058fc1b786d22f36adfe0eabf07b5698d2d544958cdd31c26",
+    "raw/files.json": "df2af8d955940e35d60e0fc0a001a92bbaecdbf01f4ce888429e935a424bb976",
+    "raw/compare.json": "8e076d62ce31850355de02a377d949ac1f3466b5da38d98c2937038cc27b3ce9"
+  },
+  "notes": "Parsed REST JSON, not HTTP wire capture. Complete UTF-8 source; no model answers or labels. Installation identity is an eval placeholder."
+}

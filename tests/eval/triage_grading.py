@@ -1,37 +1,10 @@
-"""Deterministic triage-tier grading for the triage model-tier quality gate.
+"""Compare triage results with declared expectations without another model judge.
 
-Step 2 of the eval arc — parallel to `grading.py` (analyze finding-grading) +
-`model_comparison.py` (the analyze runner). Grades a triage node's `TriageResult`
-against hand-authored `ExpectedTriage`, then applies an asymmetric gate. So
-grading is STRUCTURAL, not LLM-as-judge — same trust-aligned choice as
-`grading.py` (no model validating a model).
-
-The metrics, keyed on the ANALYSIS FLOOR (analyze admits only DEEP/STANDARD;
-SKIM/SKIP never reach it — see `agent/nodes/analyze.py`):
-  - `n_dropped_from_analysis` — the SAFETY metric: an expected-analyzed file
-    (DEEP or STANDARD) the candidate pushed BELOW the floor (to SKIM/SKIP) leaves
-    the review set entirely. This is the triage analogue of analyze recall loss.
-  - `n_deep_downgraded` — softer: expected DEEP, candidate STANDARD. The file is
-    still reviewed, by the cheaper model; tracked, not a hard safety fail.
-  - `n_overtiered` — the COST metric: expected SKIM/SKIP, candidate DEEP/STANDARD
-    (a file that shouldn't be analyzed is — wasted spend).
-  - `dimension_recall` / `dimension_precision` — review-dimension set overlap.
-  - `risk_correct` + `under_risked` — `overall_risk` exact match, and whether the
-    candidate's risk is BELOW the expected (under-risking — a safety failure).
-
-`compare_triage()` then applies the gate: the candidate passes only if the
-BASELINE itself is clean (0 drops, not under-risked — the vacuous-pass guard,
-same shape as `grading.compare`'s `baseline_valid`), the candidate adds NO new
-drops and is not under-risked, dimension recall does not regress, and over-tiering
-stays bounded.
-
-Pure functions over a validated `TriageResult` + `ExpectedTriage`;
-`run_triage_under_model` runs the real triage node (provider-injected, audit
-discarded via `_NullSink`) to produce the `TriageResult` to grade — the caller
-supplies a provider that does not persist (scripted in CI / a no-op
-`LLMExchangePersister` on the real path), since the triage node's
-`provider.complete()` is what would write LLM events.
-"""
+Check whether files still reach analysis, risk is understated and dimensions
+are missed. A baseline must itself be valid before a candidate can pass;
+extra review work is bounded separately. The runner accepts an injected
+provider and discards node audit output, so callers supply a provider that
+does not persist exchanges."""
 
 from __future__ import annotations
 

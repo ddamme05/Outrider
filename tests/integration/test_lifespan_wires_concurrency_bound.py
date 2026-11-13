@@ -1,19 +1,8 @@
-# See DECISIONS.md#045 — V1 per-process concurrent-review ceiling (FUP-164).
-"""Production wiring guard — lifespan installs the concurrency bound on run_graph.
+"""Check that the application installs the concurrent-review limit.
 
-Pins the FUP-164 / DECISIONS.md#045 production contract: `app.state.run_graph`
-must be the semaphore-BOUNDED wrapper, not the bare closure. The unit tests for
-`concurrency_limited` prove the wrapper works; they do NOT prove the lifespan
-installs it at the load-bearing seam. A future edit could build the wrapper but
-stash bare `run_graph` (or drop the wrap entirely) and every helper test would
-still pass — the same silent-wiring class already guarded for `AnalyzeCacheStore`.
-
-The guard is behavioral, not structural: it sets the ceiling to 1, injects a fake
-compiled graph whose `ainvoke` blocks, and drives two concurrent invocations
-through `app.state.run_graph`. A correctly-bounded wrapper serializes them (only
-one enters `ainvoke` at a time); a bare closure would let both run concurrently
-and the assertion fires.
-"""
+With the ceiling set to one, drive two calls through app.state.run_graph and
+hold the first inside a fake graph. The second must wait before entering.
+See DECISIONS.md#045 and FUP-164."""
 
 from __future__ import annotations
 

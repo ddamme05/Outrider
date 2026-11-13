@@ -1,10 +1,7 @@
-"""Emitter serialization contract: JSON-mode dump excluding sequence_number, then replay merge.
+"""Check audit payload serialization and sequence-number reconstruction.
 
-The emitter writes payload-only JSONB rows; sequence_number lives on the
-audit_events row as a DB-assigned BIGSERIAL column. Replay reconstructs
-by merging the row metadata with the payload before validating through
-the discriminated union.
-"""
+The database assigns sequence_number outside the JSON payload; replay merges
+it back before validating the event."""
 
 from datetime import datetime
 from typing import Any

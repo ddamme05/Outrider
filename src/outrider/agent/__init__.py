@@ -1,14 +1,11 @@
-"""The review graph and fixture-driven eval entry points.
+"""Build review workflows and expose fixture-based review runners.
 
-`graph.py` builds intake → triage → analyze ⇄ trace → synthesize → hitl → publish.
-These are seven review phases; analyze uses a planner, per-file workers and an
-aggregate node. Runtime dependencies stay in closures, and `state.py` re-exports
-ReviewState (docs/conventions.md "File organization").
+graph.py connects the review steps. The test runners in eval_driver.py load
+on demand and can create a temporary database or use one supplied by the caller.
+state.py provides the shared ReviewState import.
 
-Eval drivers load on demand from `eval_driver.py`: `run_review` owns an ephemeral
-database; `run_review_persisting` retains a caller-owned database; and
-`run_review_with_resume` rebuilds the graph before explicitly approving a saved
-HITL request. See `specs/2026-06-01-eval-graph-driver.md`."""
+See specs/2026-06-01-eval-graph-driver.md and docs/conventions.md.
+"""
 
 from typing import TYPE_CHECKING, Any
 

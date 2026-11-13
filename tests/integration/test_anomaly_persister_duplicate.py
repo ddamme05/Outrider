@@ -1,21 +1,6 @@
-"""AnomalyPersister duplicate-emit idempotency — DB-touching contract pin.
+"""Check that repeated anomaly emissions create one row per review and rule.
 
-Per CR-1 (CodeRabbit, F8 round): `AnomalyPersister.emit_anomaly` must
-collapse duplicate `(review_id, rule_name='hitl_timeout')` emissions to
-exactly one row via the partial unique index
-`uq_anomalies_hitl_timeout_natural_key`. Without explicit
-`index_elements=["review_id"]` + a LITERAL `index_where`
-(`_RULE_NAME_INDEX_WHERE[rule_name]` → `sa_text("rule_name =
-'hitl_timeout'")`) on `on_conflict_do_nothing()`, PostgreSQL's
-conflict-arbiter inference is unreliable when a `WHERE`-clause index
-is involved — silent INSERT-duplicate is the failure mode this test
-exists to catch.
-
-Tier: integration (real Postgres, real migration, real on-conflict).
-Companion to the unit-level `test_anomaly_sink.py` which exercises the
-in-memory recording double; this file exercises the durable persister
-against the partial unique index from `33f8fe051bec_hitl_node_indexes.py`.
-"""
+Exercise the persister and its partial unique index against PostgreSQL."""
 
 from __future__ import annotations
 

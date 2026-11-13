@@ -1,18 +1,8 @@
-"""Parallel fan-out concurrency scenario (increment 6 of
-specs/2026-07-05-parallel-analyze.md) — the driver's concurrency-safety
-proof, opt-in per fixture.
+"""Check concurrent file analysis through the real graph with scripted responses.
 
-Three DEEP files run through the REAL graph with `analyze_max_concurrency=4`
-and file-keyed scripted responses (`analyze_responses_by_path`, served via
-the worker's `LLMRequest.phase_key`) — correct under ANY worker completion
-order, which is the property the index-keyed `llm_responses["analyze"]`
-list cannot give. Covers: per-file finding attribution under concurrency,
-the HITL gate on a concurrent round, interrupt → restart → resume with a
-parallel-produced round (reducer idempotence across process boundaries),
-replay-equivalence over the persisted interleaved keyed stream, concurrent
-same-review cache writes on distinct file keys, and the fail-loud guard on
-the unsafe index-keyed + concurrency combination.
-"""
+Responses are keyed by file, not call order. Cover correct file attribution,
+approval pause/resume, saved-history replay and separate cache writes.
+Reject index-keyed responses when workers may finish in a different order."""
 
 from __future__ import annotations
 

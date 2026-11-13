@@ -1,22 +1,11 @@
-# PRContext + ChangedFile cross-boundary models per docs/spec.md §7.2
-# See DECISIONS.md#020 — Webhook receiver constructs seed PRContext; intake enriches
-"""PR metadata and enriched changed files shared by the review pipeline.
+"""Describe the pull request and changed files supplied to a review.
 
-The webhook seeds PRContext; intake replaces it with fetched ChangedFile
-content; triage classifies files; analyze reads source; publish uses PR
-coordinates. Fixed templates render these fields as data, never as format
-strings (docs/trust-boundaries.md #5 sub-rule 2). Triage sends title and
-file metadata/patches; analyze sends selected source. pr_body and author
-are retained but not prompted (#013 Amended 2026-07-16).
-
-installation_id permits synthetic eval IDs; webhook validation owns live
-GitHub ID semantics. Frozen models and tuple changed_files prevent
-in-place mutation across checkpoints.
-
-A missing patch means GitHub supplied no textual diff, not an empty diff.
-Present GitHub patches are hunks-only; coordinates.diff_parser adds the
-headers needed by unidiff. ChangedFile validates post-intake content sides,
-counts, and rename paths per `DECISIONS.md#020`."""
+The webhook builds PRContext. Intake adds changed files after fetching their
+content and validating paths. PR body and author data stay local rather than
+entering model prompts
+(DECISIONS.md#013, #020). GitHub file patches contain hunks without file headers;
+a missing patch is distinct from an empty one.
+"""
 
 from typing import Literal, Self
 

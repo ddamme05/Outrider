@@ -1,6 +1,6 @@
-"""OpenAI-host research spikes (wire probes, refusal discovery, Arc 2 strict schema).
+"""Research tools for OpenAI request formats, refusals and strict schemas.
 
-NOTE: this package is `spikes.openai`, NOT the vendor `openai` SDK. Nothing here
-imports that SDK — trust boundary #8 confines it to `src/outrider/llm/`, and these
-spikes reach the wire through `outrider.llm.raw_openai_capture`.
+spikes.openai is this project's experiment package, separate from the vendor
+openai SDK. Calls go through outrider.llm.raw_openai_capture; trust boundary #8
+keeps SDK use in the application wrapper.
 """

@@ -1,12 +1,4 @@
-"""Structural eval scenario: multi-line function signatures with type hints.
-
-Per spec §11.2: multi-line function signatures with type hints resolve
-byte-spans correctly (line_start covers the `def` line; line_end covers
-the last line of the function body, not just the signature).
-
-V1: live (flipped on the ast_facts/ V1 spec landing). Calls `parse_python`
-directly and gates current ast_facts behavior for multi-line signatures.
-"""
+"""Check that multiline function signatures have correct whole-function spans."""
 
 from unittest.mock import MagicMock
 

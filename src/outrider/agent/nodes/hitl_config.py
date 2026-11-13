@@ -1,11 +1,12 @@
-"""Startup settings for human-approval expiry (docs/spec.md §4.1.6 and §16).
+"""Load the time limit for human approval.
 
-V1 accepts only expire_only. The enum reserves auto_post, but construction
-rejects it to preserve `hitl-gates-high-severity`.
+Only expire_only is accepted: expiry cannot automatically publish critical
+or high findings (hitl-gates-high-severity). Expiry is measured from the review's
+received_at time so retries keep the same deadline.
 
-build_graph injects these settings (`nodes-receive-deps-via-closure`). HITL
-derives expiry from state.received_at plus timeout_minutes, so retries keep
-the same request window (Q4 of the spec)."""
+Startup injects these settings (nodes-receive-deps-via-closure).
+See docs/spec.md §4.1.6 and §16.
+"""
 
 from __future__ import annotations
 

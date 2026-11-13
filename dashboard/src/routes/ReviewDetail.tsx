@@ -1,9 +1,9 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
+import { CandidatePanel } from "../components/CandidatePanel";
 import { FindingCard } from "../components/FindingCard";
 import { PipelineStrip } from "../components/PipelineStrip";
 import { PolicyModal } from "../components/PolicyModal";
@@ -13,15 +13,8 @@ import { StatusPill } from "../components/StatusPill";
 import { useDemoStatus } from "../lib/demo";
 import { expiresLabel, formatReviewCost } from "../lib/format";
 import { SEVERITY_ORDER } from "../lib/metrics";
-import {
-  type DecisionDraft,
-  EMPTY_DRAFT,
-  RESUME_WINDOW_MS,
-  decideErrorMessage,
-  isActionable,
-  isDraftValid,
-  toPayload,
-} from "../lib/hitl";
+import { decideErrorMessage, isActionable, isDraftValid } from "../lib/hitl";
+import { useReviewApproval } from "./useReviewApproval";
 
 // Null means synthesis has not recorded a duration yet.
 function fmtDuration(seconds: number | null): string {
@@ -55,28 +48,8 @@ export function ReviewDetail() {
   });
 
   // Hooks must run unconditionally, before the early returns below.
-  const queryClient = useQueryClient();
   const [showPolicy, setShowPolicy] = useState(false);
   const [showReplayInfo, setShowReplayInfo] = useState(false);
-  const [drafts, setDrafts] = useState<Record<string, DecisionDraft>>({});
-  const [submitted, setSubmitted] = useState(false);
-  const decisionMutation = $api.useMutation("post", "/reviews/{review_id}/decide");
-
-  const [submitSeq, setSubmitSeq] = useState(0);
-  const [stuck, setStuck] = useState(false);
-  // Retries must resend the accepted payload: changed decisions conflict with its
-  // audit record. Editing stays locked until a reload gives us fresh state.
-  const [submittedPayload, setSubmittedPayload] = useState<ReturnType<typeof toPayload>[] | null>(
-    null,
-  );
-
-  // An accepted submit starts a new window for detecting a stuck background resume.
-  useEffect(() => {
-    if (submitSeq === 0) return;
-    setStuck(false);
-    const resumeTimer = setTimeout(() => setStuck(true), RESUME_WINDOW_MS);
-    return () => clearTimeout(resumeTimer);
-  }, [submitSeq]);
 
   // Copy before sorting so cached data stays untouched; ties keep server order.
   const sortedFindings = useMemo(() => {
@@ -105,6 +78,7 @@ export function ReviewDetail() {
     () => (actionable ? sortedFindings.filter((finding) => gatedFindingIds.has(finding.finding_id)) : []),
     [actionable, sortedFindings, gatedFindingIds],
   );
+  const approval = useReviewApproval({ actionable, gatedFindings, productionConfirmed });
 
   if (!enabled) {
     return <p className="error">No review id in the URL.</p>;
@@ -141,37 +115,8 @@ export function ReviewDetail() {
   const gatedCount = approvalSnapshot == null ? null : approvalSnapshot.length;
   const gatedCountLabel = approvalSnapshot == null ? "—" : String(approvalSnapshot.length);
 
-  const getDraft = (findingId: string): DecisionDraft => drafts[findingId] ?? EMPTY_DRAFT;
-  const setDraft = (findingId: string, nextDraft: DecisionDraft) =>
-    setDrafts((currentDrafts) => ({ ...currentDrafts, [findingId]: nextDraft }));
-  const decidedCount = gatedFindings.filter(
-    (finding) => isDraftValid(getDraft(finding.finding_id), finding),
-  ).length;
-  const allGatedValid = gatedFindings.length > 0 && decidedCount === gatedFindings.length;
-  const resumed = submitted && !actionable;
-  const canSubmit =
-    productionConfirmed && actionable && allGatedValid && !decisionMutation.isPending && (!submitted || stuck);
   // Reserve bottom space whenever the fixed decision bar is visible.
-  const showHitlBar = submitted || (actionable && gatedFindings.length > 0);
-
-  const onSubmit = () => {
-    // Reuse accepted decisions on retries; otherwise build them from the drafts.
-    const decisions = submittedPayload ?? gatedFindings.map(
-      (finding) => toPayload(getDraft(finding.finding_id), finding),
-    );
-    decisionMutation.mutate(
-      { params: { path: { review_id: reviewId } }, body: { decisions } },
-      {
-        onSuccess: () => {
-          setSubmitted(true);
-          setSubmittedPayload(decisions);
-          setSubmitSeq((sequence) => sequence + 1);
-          // The 202 resumes work in the background; polling tracks its progress.
-          void queryClient.invalidateQueries();
-        },
-      },
-    );
-  };
+  const showHitlBar = approval.submitted || (actionable && gatedFindings.length > 0);
 
   return (
     <section className={showHitlBar ? "has-sticky-bar" : undefined}>
@@ -319,16 +264,22 @@ export function ReviewDetail() {
                   key={finding.finding_id}
                   finding={finding}
                   wasGated={wasGated}
-                  decision={decidable ? getDraft(finding.finding_id) : undefined}
+                  decision={decidable ? approval.getDraft(finding.finding_id) : undefined}
                   // Retrying a stuck submit must preserve the accepted decisions.
-                  disabled={!productionConfirmed || decisionMutation.isPending || submitted}
-                  onDecisionChange={decidable ? (nextDraft) => setDraft(finding.finding_id, nextDraft) : undefined}
+                  disabled={!productionConfirmed || approval.isPending || approval.submitted}
+                  onDecisionChange={
+                    decidable
+                      ? (nextDraft) => approval.setDraft(finding.finding_id, nextDraft)
+                      : undefined
+                  }
                 />
               );
             })
           )}
         </div>
       </div>
+
+      <CandidatePanel reviewId={review.id} />
 
       <div className="panel">
         <div className="panel-h">
@@ -356,47 +307,51 @@ export function ReviewDetail() {
               <b>Read-only demo — decisions are disabled on this deployment.</b>
             ) : demoChecking ? (
               <b>Checking deployment status — decisions are unavailable until it resolves.</b>
-            ) : resumed ? (
+            ) : approval.resumed ? (
               <b>Decision submitted — review is now {review.status}.</b>
-            ) : submitted && stuck ? (
+            ) : approval.submitted && approval.stuck ? (
               <b>Resume hasn't completed yet — refresh to check, or re-submit.</b>
-            ) : submitted ? (
+            ) : approval.submitted ? (
               <b>Decision submitted — resuming the review…</b>
             ) : (
               <>
                 <b>
-                  {decidedCount} / {gatedFindings.length}
+                  {approval.decidedCount} / {gatedFindings.length}
                 </b>{" "}
                 gated findings decided
               </>
             )}
           </span>
-          {gatedFindings.length > 0 && !submitted && productionConfirmed ? (
+          {gatedFindings.length > 0 && !approval.submitted && productionConfirmed ? (
             <span className="hs-pips" aria-hidden="true">
               {gatedFindings.map((finding) => (
                 <span
                   key={finding.finding_id}
-                  className={`hs-pip ${isDraftValid(getDraft(finding.finding_id), finding) ? "done" : ""}`}
+                  className={`hs-pip ${isDraftValid(approval.getDraft(finding.finding_id), finding) ? "done" : ""}`}
                 />
               ))}
             </span>
           ) : null}
-          {decisionMutation.error ? (
+          {approval.error ? (
             <span className="error" role="alert">
-              {decideErrorMessage(decisionMutation.error)}
+              {decideErrorMessage(approval.error)}
             </span>
           ) : null}
           <span className="hs-right">
-            {submitted && !resumed ? (
+            {approval.submitted && !approval.resumed ? (
               <button className="btn" onClick={() => void detailQuery.refetch()}>
                 Refresh status
               </button>
             ) : null}
-            {!resumed && productionConfirmed ? (
-              <button className="btn primary" disabled={!canSubmit} onClick={onSubmit}>
-                {decisionMutation.isPending
+            {!approval.resumed && productionConfirmed ? (
+              <button
+                className="btn primary"
+                disabled={!approval.canSubmit}
+                onClick={() => approval.submit(reviewId)}
+              >
+                {approval.isPending
                   ? "Submitting…"
-                  : submitted && stuck
+                  : approval.submitted && approval.stuck
                     ? "Re-submit"
                     : "Submit decision"}
               </button>

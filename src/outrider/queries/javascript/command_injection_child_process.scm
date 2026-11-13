@@ -1,23 +1,9 @@
-; Shell command built from dynamic strings at an exec sink. Two patterns:
-; the bare form (`exec`/`execSync` from a destructured require/import) and
-; the namespace member form (`child_process.exec` / `cp.execSync`). Both
-; require the first argument to be a `+` concatenation or a template literal
-; WITH a substitution — a constant command string is not injectable, and a
-; bare identifier argument on the bare form would over-claim unrelated `exec`
-; functions.
+; Match concatenated or interpolated arguments to exec/execSync.
 ;
-; Anchor-capture protocol (BindingRule mode="anchor_import"): the member arm
-; captures its receiver as @_recv; the producer admits a match only when
-; @_recv (else the bare @_fn) is bound by an import from the query's module
-; set. The import join replaces the previous literal `child_process`
-; receiver check, so aliased namespaces (`const cp = require('child_process');
-; cp.exec(...)`) are now provable instead of a recall gap. Forms with no
-; provable binding do not match (JUDGED covers each; FUP-214): nested /
-; inline-require / parenthesized / `this.`-qualified / TS non-null
-; receivers, member-chain require (`const exec =
-; require('child_process').exec`) and dynamic `await import()` (neither
-; yields an ImportRef), and aliased NAMED imports
-; (`import { exec as run }` — the literal name anchor never sees `run`).
+; The producer must bind @_recv (member calls) or @_fn (bare calls) to a
+; child_process import. Simple namespace aliases work. Nested or inline
+; receivers and renamed function imports are not covered and need model review
+; (FUP-214). Plain literal command strings do not match.
 (call_expression
   function: (identifier) @_fn
   arguments: (arguments

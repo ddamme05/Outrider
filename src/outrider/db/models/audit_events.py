@@ -1,24 +1,8 @@
-# See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
-# See also DECISIONS.md#026 — natural-key idempotency mode (partial unique
-# indexes per event_type for retry-safe re-emission).
-"""AUDIT_EVENTS.
+"""Store permanent review-history metadata in append-only rows.
 
-Append-only forever per #014. The append-only trigger on this table is added by
-migration 0001 (separate DDL); SQLAlchemy doesn't model triggers in the metadata
-so the trigger is invisible at the ORM layer but its absence in tests would be
-caught by `tests/integration/test_audit_append_only_trigger.py`.
-
-`review_id` is a plain UUID with NO foreign key per `every-audit-event-has-review-id`
-+ docs/schema.md "AUDIT_EVENTS.review_id is a logical reference, not a DB FK." No
-cascade behavior fits both append-only-forever (parent purges) AND the always-non-null
-invariant. After a review purges, joins return no row — that's the metadata-only
-replay state per #014 point 4, by design.
-
-`sequence_number` is a BIGINT IDENTITY column (PG 10+ replacement for BIGSERIAL).
-The `UNIQUE(review_id, sequence_number)` constraint catches application bugs
-that would otherwise produce a non-deterministic replay traversal. `payload` is
-JSONB; per #014 it is metadata-only (no prompt/completion text — that lives in
-LLM_CALL_CONTENT), enforced at the Pydantic discriminated-union layer not by DB.
+Payloads contain no review or model content. sequence_number is assigned by
+the database. review_id deliberately has no foreign key so history survives
+review deletion (DECISIONS.md#014, #026; every-audit-event-has-review-id).
 """
 
 from datetime import datetime

@@ -1,14 +1,10 @@
-# Logging filter that rejects records carrying LLM content.
-# See specs/2026-05-05-llm-provider-wrapper.md and DECISIONS.md #013/#016.
-"""Reject log records that carry model-call content or credentials.
+"""Filter log records for model content and known secret fields.
 
-Schema serializers redact by default; this filter covers raw objects and
-ad-hoc containers. It rejects content-bearing model types on any logger,
-explicit content/secret keys globally, and generic `text`/`content` keys
-under `outrider.llm`. Nested values are checked; the depth limit fails closed.
+Install the filter on handlers so it also covers records propagated from
+other loggers. Package import and application startup both install it because
+handlers can be added between those points.
 
-Install on handlers with `register_filter_on_all_handlers`, because
-logger filters do not see propagated records (`DECISIONS.md#013/#016`).
+See DECISIONS.md#013, #016.
 """
 
 import logging
@@ -62,11 +58,8 @@ _TIER_1_KEYS: Final[frozenset[str]] = frozenset(
 # Generic-named so cannot be Tier-1 globally without false positives.
 _TIER_2_KEYS: Final[frozenset[str]] = frozenset({"text", "content"})
 
-# Bound to prevent pathological self-referential structures from hanging
-# the filter. Records nesting deeper than this are REJECTED
-# (fail-closed) — defense-in-depth means we'd rather drop a record than
-# ship content from beyond the recursion bound. The earlier fail-open
-# behavior was the real bug.
+# Bound cycles and excessive nesting. Reject deeper records so unchecked
+# nested content cannot escape the filter.
 _RECURSION_DEPTH_LIMIT: Final[int] = 8
 
 _LLM_LOGGER_PREFIX: Final[str] = "outrider.llm"

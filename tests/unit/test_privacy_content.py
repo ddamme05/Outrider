@@ -1,14 +1,8 @@
-"""B3 — the public /privacy page renders the mandated #013/#015/#016 statement,
-CONFIG-AWARE so the disclosure matches runtime egress + attestation.
+"""Check that privacy disclosures match configured egress and retention claims.
 
-Drop-protection note: the guard against silently deleting a mandated disclosure is the
-hand-maintained fact lists below (`_NEUTRAL_FACTS`, `_ANTHROPIC_DEFAULT_FACTS`,
-`_ANTHROPIC_ZDR_FACTS`), matched against the RENDERED page per matrix cell. They are a
-SEPARATE source from the clause tuples the renderer reads, so deleting or rewording-away
-a clause fails a fact assertion (unlike a test that loops the same tuple it renders).
-`_README_FACTS` additionally binds the mandated facts to README.md:5 so the two canonical
-copies cannot drift apart.
-"""
+Independent fact lists check the rendered page and README, rather than reuse
+the renderer's own clauses. Removing a required claim must fail.
+See DECISIONS.md#013, #015, #016, and #073."""
 
 from __future__ import annotations
 
@@ -84,7 +78,7 @@ _README_FACTS = (
 )
 
 
-# --- Egress-contract categories (DECISIONS #013 + #015, Amended 2026-07-16) that must appear
+# --- Egress-contract categories (#013/#015, narrowed by #073) that must appear
 # VERBATIM in BOTH the rendered page and README.md, one substring per contract category, so
 # neither public copy can silently drop a sent category or an explicitly-unsent field. These
 # pin the PROSE mirror only — they do not prove prompt code matches the prose. Agreement
@@ -100,7 +94,7 @@ _EGRESS_SENT_FACTS = (
     "scope bodies from uniquely resolved related files",
     "finding identifiers, metadata, titles, descriptions, and evidence",
     "target source lines used for suggested fixes",
-    "risk classification and metrics",
+    "risk classification used to generate the final summary",
 )
 # Slack + checkpoint-store disclosures, pinned verbatim in both the page and the
 # README (Slack setup section / opening retention paragraph).

@@ -1,17 +1,8 @@
-# See specs/2026-05-23-trace-node.md (Q3) and DECISIONS.md#017 × #024.
-"""`TraceDecision` schema (state-layer mirror of `TraceDecisionEvent`).
+"""Check immutable trace decisions stored in graph state.
 
-Pins the schema discipline: frozen + extra="forbid", parallel
-proposed_import_strings + resolved_candidate_paths tuples per #024
-amendment, three-rule cross-field validator, split uniqueness
-validators, audit-shadow validate_diff_path on target_file +
-resolved_candidate_paths per-element per #024 point 6.
-
-The state-layer mirror's tests run independently of the audit-event
-tests — same shape, different consumer (state-side reducer vs.
-append-only audit log) — so a producer that constructs one but not the
-other is caught at fixture-construction time, not at lift-to-audit time.
-"""
+Validate proposed imports, resolved paths, uniqueness, and target/status agreement
+independently of the audit-event model. See specs/2026-05-23-trace-node.md Q3
+and DECISIONS.md#017 and #024."""
 
 from __future__ import annotations
 

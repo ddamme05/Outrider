@@ -1,11 +1,7 @@
-"""enforce_proof_boundary admits OBSERVED only with a non-empty query_match_id.
+"""Check that OBSERVED proof requires a non-empty query-match ID.
 
-Backs ``evidence-tier-schema-enforced``. The OBSERVED tier is the
-structural-evidence claim — a tree-sitter query in the registry fired
-on the finding's location, and its id is recorded. Without a non-empty
-``query_match_id``, the LLM is claiming structural evidence it didn't
-produce; the validator rejects it.
-"""
+This validates the required artifact, not whether the named query actually fired
+(``evidence-tier-schema-enforced``)."""
 
 import pytest
 

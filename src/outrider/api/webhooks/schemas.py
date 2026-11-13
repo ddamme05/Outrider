@@ -1,14 +1,12 @@
-# Raw-payload Pydantic models for the GitHub pull_request webhook.
-"""Translate signed GitHub payloads into the fields Outrider consumes.
+"""Read the GitHub payload fields Outrider uses.
 
-Raw adapter models ignore extra fields so GitHub payload additions do not break
-parsing. This is the narrow input-boundary carve-out in
-specs/2026-05-17-intake-and-webhook.md; canonical state and audit models retain
-extra="forbid" (docs/conventions.md). See docs/trust-boundaries.md#5-input-boundary.
+These input models allow extra fields so GitHub can add payload data without
+breaking delivery. Other state and audit models still reject unknown fields.
+The router checks signatures, actions and access separately. GitHub strings
+remain data, never commands or prompt templates
+(webhook-strings-are-data-not-format-strings).
 
-Validators check field shape. The router owns signature, action, installation,
-and idempotency checks. GitHub strings remain structured data, never prompt
-templates or shell commands (webhook-strings-are-data-not-format-strings).
+See specs/2026-05-17-intake-and-webhook.md and docs/trust-boundaries.md#5-input-boundary.
 """
 
 from __future__ import annotations
@@ -42,14 +40,8 @@ class WebhookUser(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    # Pattern is ASCII alphanumeric + hyphen, length 1-39 (GitHub's own
-    # cap). The fully-correct GitHub-username rule also forbids leading
-    # hyphens and consecutive hyphens, but Pydantic's regex engine
-    # (rust-regex) doesn't support lookaheads. The looser pattern still
-    # closes the input-boundary attack surfaces this commit targets:
-    # empty, slashed, control-char, shell-metachar, and unbounded-length
-    # logins. Leading-hyphen / consecutive-hyphen would 404 at the GitHub
-    # API anyway; not a security-relevant gap.
+    # rust-regex has no lookaheads for GitHub's hyphen-placement rules. This
+    # bounded ASCII subset still excludes slashes, controls and shell metacharacters.
     login: str = Field(min_length=1, max_length=39, pattern=r"^[A-Za-z0-9-]+$")
     id: int = Field(ge=1)
 
@@ -91,22 +83,14 @@ class RepositoryRef(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     id: int = Field(ge=1)
-    # full_name = "<owner>/<name>". Both halves use the GitHub repo /
-    # owner character class (alphanumeric + `.` `_` `-`) — the prior
-    # `[^/]+` was too permissive, admitting whitespace, control chars,
-    # and shell metachars that flow into URL segments and audit
-    # rendering. Max length 200 covers the worst case (39-char login
-    # + "/" + 100-char repo-name + small margin).
+    # Bound both URL segments to repository-name characters. The 200-char cap
+    # covers a 39-char login, slash and 100-char repo name with margin.
     full_name: str = Field(
         min_length=3,
         max_length=200,
         pattern=r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
     )
-    # GitHub caps repo names at 100 chars server-side. Character class
-    # matches what GitHub permits: alphanumeric + `.` `_` `-`. The
-    # prior `[^/]+` admitted whitespace / control / shell-meta which
-    # would flow into URL segments (`repos/{owner}/{name}/...`) and
-    # prompts.
+    # Exclude slashes, whitespace and shell metacharacters before URL/prompt use.
     name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._-]+$")
     owner: WebhookUser
 
@@ -247,17 +231,14 @@ class PullRequestEventPayload(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Installation-lifecycle events (Arc B2 install-event dispatch, DECISIONS.md#065)
+# Installation-lifecycle events (DECISIONS.md#065)
 #
 # Under #065 the local install tables are a CACHE, not the authorization
 # authority (GitHub is checked live at intake/publish). These events maintain
 # cache / retention / display state via simple upserts — never a security
-# decision. `action` is `str` + a handler-side allowlist (unknown -> 2xx no-op),
-# NOT a Literal: only `created` and `installation_repositories.added` are
-# doc-pinned in the 2026-03-10 github-rest-api mirror; `deleted` / `suspend` /
-# `unsuspend` / `removed` are inferred present-tense (spec round-12) and confirmed
-# only against a real wire fixture. `extra="ignore"` tolerates GitHub's full
-# payload; only the fields the cache upserts are modelled.
+# decision. Keep action as str and allowlist it in the handler: unknown actions
+# receive a 2xx no-op. extra="ignore" tolerates GitHub's full payload; only the
+# cache's consumed fields are modeled here.
 # ---------------------------------------------------------------------------
 
 
@@ -324,11 +305,9 @@ class InstallationEventPayload(BaseModel):
     """`installation` webhook event — App lifecycle (`created` / `deleted` / `suspend` /
     `unsuspend`).
 
-    `action` is `str` (allowlisted handler-side, unknown -> 2xx no-op) per the spec's
-    round-12 finding: only `created` is doc-pinned; `deleted` / `suspend` / `unsuspend` are
-    inferred present-tense. `repositories` is present on `created` (the repos the install can
-    access — seeded into `installation_repositories` for a `selected` install); empty for the
-    other actions. `installation` is required (App-only flow).
+    The handler allowlists actions and ignores unknown ones with a 2xx response.
+    repositories seeds membership for selected installs on created; it defaults
+    to empty for other actions. installation is required for this App-only flow.
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
@@ -343,9 +322,8 @@ class InstallationRepositoriesEventPayload(BaseModel):
 
     Every event re-persists `repository_selection` on the install. `repositories_added` /
     `repositories_removed` carry the deltas; the handler upserts membership with re-add
-    semantics (`removed_at = NULL` on add, `now()` on remove). Only `added` is doc-pinned;
-    `removed` is inferred present-tense (spec round-12). Under #065 this is cache maintenance
-    only — the authoritative repo-access decision is intake's live GitHub check.
+    semantics (`removed_at = NULL` on add, `now()` on remove). Under #065 this
+    maintains cache hints; intake's live GitHub check decides repository access.
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True)

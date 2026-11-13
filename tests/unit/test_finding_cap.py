@@ -1,11 +1,7 @@
-# Tests for agent/nodes/finding_cap.py (FUP-180).
-"""Pin the gated-aware, severity-ordered finding-cap helper.
+"""Check severity-ordered, deterministic finding limits (FUP-180).
 
-The load-bearing property (FUP-180 review design call): a HITL-gated
-(CRITICAL/HIGH) finding is NEVER dropped to fit the soft cap — only non-gated
-findings drop down to `soft_cap`, and only the `hard_cap` runaway backstop can
-drop a gated finding. Selection is content-deterministic (replay-stable).
-"""
+The soft limit must retain findings that require approval. Exceeding the hard
+limit with those findings raises an error rather than dropping them."""
 
 from __future__ import annotations
 
@@ -13,7 +9,11 @@ from uuid import uuid4
 
 import pytest
 
-from outrider.agent.nodes.finding_cap import FindingCapOverflowError, cap_findings_by_severity
+from outrider.agent.nodes.finding_cap import (
+    FindingCapOverflowError,
+    _collapse_by_content_hash,
+    cap_findings_by_severity,
+)
 from outrider.audit.events import compute_finding_content_hash
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.dimensions import lookup_dimension
@@ -63,6 +63,15 @@ def test_within_soft_cap_keeps_all() -> None:
     kept, dropped = cap_findings_by_severity(findings, soft_cap=5, hard_cap=100)
     assert dropped == []
     assert {f.content_hash for f in kept} == {f.content_hash for f in findings}
+
+
+def test_duplicate_content_cannot_hide_conflicting_policy_versions() -> None:
+    first = _finding(FindingSeverity.MEDIUM, 1)
+    conflicting = ReviewFinding.model_validate(
+        {**first.model_dump(), "finding_id": uuid4(), "policy_version": "9.0.0"}
+    )
+    with pytest.raises(RuntimeError, match="conflicting severity or policy"):
+        _collapse_by_content_hash((first, conflicting))
 
 
 def test_empty_input() -> None:

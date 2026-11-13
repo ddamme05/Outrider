@@ -1,23 +1,8 @@
-"""Structural eval scenario: the module-scope admission arm on the TLS kill switch.
+"""Check review routing for an added, top-level TLS verification override.
 
-Per DECISIONS.md#062: the kill switch's canonical
-real-world form — `process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"` at module top
-level, an inert parse fixture here (SYNTHETIC coverage; the vendored Juice Shop
-corpus carries no upstream kill-switch file) — historically got ZERO review: a
-module-only diff skipped at `NO_CHANGED_SCOPE_UNITS` before the OBSERVED producer
-ran, and the containment gate dropped module-level matches otherwise.
-
-LLM-free, exercising the real surfaces end-to-end:
-- `coordinates.added_line_byte_ranges` — the diff anchor (the same ranges the
-  degraded JUDGED admission gates against).
-- `analyze_observed.module_level_observed_matches` — the routing sweep,
-  delegating to the producer's own admission chain (matches reused on the route).
-- `agent/nodes/degradation.decide_degradation` — the module-only diff degrades
-  (`module_level_observed_match`, parse_status truthfully `clean`) instead of
-  skipping; parse-error precedence keeps the error branch first.
-- `run_observed_matches` + `produce_observed_findings` — the module-level
-  OBSERVED finding, proof anchored on the changed lines.
-"""
+Use a synthetic parser input, never executable vulnerable code. Real source
+coordinates and query checks must admit the module-level finding without a
+model, while syntax errors keep precedence (DECISIONS.md#062)."""
 
 from __future__ import annotations
 

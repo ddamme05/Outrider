@@ -1,15 +1,7 @@
-# See DECISIONS.md#012-data-retention-ttls-configurable-purge-on-installationdeleted
-# See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
-"""Permanent evidence of content purge and installation hard-delete.
+"""Keep a permanent record of retention deletions.
 
-Migration 0001 enforces append-only storage. installation_id is a loose reference:
-this trail must survive the installation it describes (DECISIONS.md#012 and #014;
-docs/schema.md, "PURGE_AUDIT.installation_id is a loose reference, not an FK").
-
-Each row names one target table. Retention records each content-table purge;
-installation purge records nonempty content tables plus the installation deletion,
-even when no content existed. Rows from a purge commit together; there is no
-explicit sweep_run_id.
+Each row records the target table and deletion count. These records survive
+installation deletion and contain no purged content (DECISIONS.md#012, #014).
 """
 
 from datetime import datetime

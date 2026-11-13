@@ -2,41 +2,18 @@
 # ================================================================
 #  Outrider — diagnose what the model actually saw for one review
 # ================================================================
-"""Read-only forensic dump of a single review's analyze context.
+"""Show which code and prompts were recorded for one review's analysis.
 
-Answers "why did the review miss finding X?" from the audit stream alone —
-the observability story the pitch leans on. For the given review_id it prints:
+Read file outcomes, model context summaries and analysis totals from the database.
+--show-prompt and --grep also inspect retained prompt text. Triage's file tiers
+live in graph checkpoints and are not displayed here (DECISIONS.md#018).
+This tool only reads data; it makes no model or GitHub calls.
 
-  - per analyze ⇄ trace pass: the `AnalyzeCompletedEvent` aggregate counts
-    (files analyzed / skipped, findings emitted, LLM calls)
-  - per file: the analyze-side `FileExaminationEvent` parse_status + skip_reason
-    (did the file reach a full pass, or get skipped — DECISIONS.md#018)
-  - every analyze `LLMCallEvent`'s `context_summary` (the (file_path,
-    scope_unit_name) scope window the model's prompt included; empty for
-    degraded calls, whose file + hunks live in the prompt text instead)
-  - optionally (--show-prompt / --grep) the prompt text from `llm_call_content`,
-    so you can grep it for a specific symbol (e.g. `time.sleep`, `async def`,
-    `import time`) and see whether the model COULD have made an inference at
-    all, vs. had the context and missed it.
+Run with DATABASE_URL configured:
+    uv run python scripts/diagnose_review_context.py --review-id UUID
 
-Note: triage tier (DEEP/STANDARD/SKIM/SKIP) is NOT printed — it lives on
-`TriageResult.file_tiers` in graph state / the LangGraph checkpoint, not in the
-audit-events stream this reader queries. Per-file analyze reach is shown instead
-via FileExaminationEvent (a file absent from that section was SKIM/SKIP at
-triage; analyze only examines DEEP/STANDARD).
-
-This is purely a READER over the append-only audit_events + content tables
-(no mutation, no LLM call, no GitHub call) — the same surface `audit/replay.py`
-reconstructs from. It does not import the graph; it queries the tables directly.
-
-Run:
-  op run --env-file=.env -- uv run python scripts/diagnose_review_context.py \\
-    --review-id <uuid> [--file app/handlers.py] [--show-prompt] [--grep "time.sleep"]
-
-If --review-id is omitted, prints the most recent non-eval review's id + PR and
-exits, so you don't have to look it up by hand.
-
-Exit codes: 0 = dumped; 2 = setup error (missing DATABASE_URL, review not found).
+Without --review-id, show the latest non-evaluation review ID instead.
+Exit 0 means success; exit 2 reports a setup error or missing review.
 """
 
 from __future__ import annotations

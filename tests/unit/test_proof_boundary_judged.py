@@ -1,13 +1,8 @@
 """enforce_proof_boundary admits JUDGED with neither artifact.
 
-Backs ``evidence-tier-schema-enforced``. JUDGED is the explicit
-no-structural-claim tier — a model interpretation that doesn't ride on
-a tree-sitter query or an ast_facts traversal. The validator admits
-JUDGED unconditionally; downstream confidence is lower-by-construction
-because the tier itself signals that lower confidence.
-
-The complement to test_proof_boundary_{observed,inferred}: those test
-the tiers that REQUIRE artifacts; this tests the tier that DOES NOT.
+Backs ``evidence-tier-schema-enforced``. JUDGED makes no structural claim, so it
+admits with any artifact combination. OBSERVED and INFERRED requirements are
+covered in their dedicated proof-boundary modules.
 """
 
 from outrider.policy import EvidenceTier, enforce_proof_boundary

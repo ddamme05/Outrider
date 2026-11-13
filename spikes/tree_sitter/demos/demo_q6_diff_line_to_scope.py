@@ -1,21 +1,8 @@
-"""Q6 — diff-line → innermost containing scope.
+"""Find the innermost scope containing a changed source line.
 
-python-source-analysis.md prescribes the algorithm in one sentence:
-"Convert PR added lines to one-based target-side lines, then pick the
-innermost containing scope." This demo validates that prescription on the
-edge cases coordinates.diff_line_to_scope() will hit:
-
-- line is a decorator line above a method → expect method scope (per Q2,
-  decorated_definition range starts at the decorator, so the innermost
-  "function-like" scope covers decorators).
-- line is the first line of a function body → expect that function.
-- line is the last line of a nested function → expect the nested function,
-  not its outer.
-- line is a class-body line between two methods → expect the class, not
-  a method.
-- line is a module-level comment → expect None (no owning scope).
-- line is outside the file's line range → the mapper must handle it
-  deterministically (we return None here).
+Check decorators, function bodies, nested functions, class-body lines and lines
+outside any scope. Module-level and out-of-range lines return None here. This
+exercises the mapping described in python-source-analysis.md.
 """
 
 from pathlib import Path

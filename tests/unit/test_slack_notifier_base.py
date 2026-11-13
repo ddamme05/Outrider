@@ -1,11 +1,7 @@
-"""SlackNotifier boundary contract — result shape, exception tree, Protocol.
+"""Check Slack result models, typed errors, and notifier protocol membership.
 
-Pins SlackPostResult (frozen, extra=forbid), the typed exception hierarchy
-(every failure is a SlackNotifyError; rate-limit carries retry_after; api-response
-carries error_code), and that SlackNotifier is runtime_checkable. The concrete
-slack_sdk-backed provider is tested separately. See
-specs/2026-06-15-slack-dashboard-in-slack.md.
-"""
+Rate-limit errors retain retry timing; API errors retain error codes.
+See specs/2026-06-15-slack-dashboard-in-slack.md."""
 
 from __future__ import annotations
 

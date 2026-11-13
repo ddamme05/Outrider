@@ -1,31 +1,10 @@
-"""HITL-resume eval scenario: graph interrupt + checkpoint + resume + replay-equivalence.
+"""Resume a saved review and publish a critical finding only after approval.
 
-Per spec §11.2 (the not-optional scenario): process a PR with a guaranteed
-CRITICAL finding → the graph interrupts at `hitl` and checkpoints to Postgres →
-a fresh graph instance + a fresh checkpointer on the SAME DB resume via
-`Command(resume=decision)` → assert `len(analysis_rounds) == 1` (reducer
-idempotence) + published comments + `completed` status → run replay-equivalence
-over the full audit log.
-
-`len(analysis_rounds) == 1` proves the resume continued the ORIGINAL interrupted
-run and its single analysis round survived rehydration — a fresh run (e.g. a
-thread_id mismatch) would re-enter analyze, re-hit the gate, and never reach
-publish. It pins single-round structure across resume; it does NOT by itself
-exercise dedup-vs-concat, because resume re-enters the `hitl` node and analyze does
-not re-execute — the reducer's idempotence-under-replay is covered by
-`append_with_dedup_by`'s own tests, not inferred from this count.
-
-The boundary invariant it guards (trust boundary #6): the base `run_review` never
-approves — it stops at the gate (asserted by the negative-half test below). Here
-`run_review_with_resume` approves EXPLICITLY, through the same `Command(resume=...)`
-path production uses, and publish runs only after that decision — so the gated
-finding's comment is non-empty only post-resume.
-
-Driven by `run_review_with_resume` against
-`tests/eval/fixtures/mock_github/hitl_resume_critical.json` (a SQL-injection PR
-whose finding policy-maps to CRITICAL). Two sequential `AsyncPostgresSaver`s prove
-the suspended state lives in Postgres, not a Python object.
-"""
+Pause the real graph, close its PostgreSQL checkpointer, then resume with a
+fresh graph and checkpointer on the same database. Check publication, review
+status and replay. The negative case stops without an explicit decision.
+A single retained analysis round shows continuation of the original review;
+it does not by itself prove the reducers handle repeated writes correctly."""
 
 from __future__ import annotations
 

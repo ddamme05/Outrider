@@ -1,22 +1,7 @@
-"""True-positive eval scenario: MD5 password hashing -> weak_password_hash.
+"""Check the password-hashing finding type and policy severity for an MD5 example.
 
-The flagship case for the dual-mode security taxonomy (DECISIONS.md#053).
-The PR #8 coverage smoke showed MD5-for-passwords force-mapped to
-`deprecated_api` -> INFO, badly understating a real vuln. With the 1.2.0
-taxonomy the model can name `weak_password_hash` directly, and the
-deterministic policy assigns CRITICAL (`severity-set-by-policy`).
-
-Dual-mode: `weak_password_hash` is a JUDGED finding here — it is a
-contextual call (a query can't tell a password hash from a cache-key
-hash), so the model carries the proof via `evidence_tier="judged"` with
-no structural artifact. No OBSERVED .scm producer exists for the
-contextual 1.2.0 types (spec non-goal), so nothing else fires on this
-file.
-
-Driver-backed: drives the real graph via `run_review` against
-`mock_github/weak_password_hash_md5.json`. Severity is asserted via
-`lookup_severity` (set by policy, not the model).
-"""
+Drive the graph with a scripted contextual finding. No structural query proves
+that the hash is used for passwords; the evidence here is model judgment."""
 
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType, lookup_severity
 

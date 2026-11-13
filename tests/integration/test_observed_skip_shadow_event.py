@@ -1,12 +1,7 @@
-"""AuditPersister.emit_observed_skip_shadow() — persist + replay the OBSERVED
-skip-shadow telemetry (Cost Lever 3, DECISIONS.md#049).
+"""Check stored and replayed OBSERVED skip-shadow events (DECISIONS.md#049).
 
-Pins that the shadow event's coverage envelope (`covering_matches`) + `blockers`
-+ `changed_regions` survive the JSONB round-trip and reconstruct via
-`AuditEventAdapter` (replay-equivalence) with side + spans intact, and that
-`is_eval` threads to the row's top-level column. Mirrors
-`test_audit_persister_emit_file_examination.py`.
-"""
+Coverage, blockers, changed regions, sides, spans, and evaluation flags must
+survive the PostgreSQL JSONB round trip."""
 
 from __future__ import annotations
 

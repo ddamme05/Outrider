@@ -1,10 +1,7 @@
-"""SlackSettings + SlackOAuthSettings (env config) + build_review_deeplink (pure helper).
+"""Check Slack and OAuth settings plus dashboard review links.
 
-Pins the SecretStr bot-token guards (empty / placeholder rejected), the
-channel-id guard, frozen + extra=forbid, the OAuth client-credential +
-redirect-uri guards, and the deep-link shape (/reviews/{id}[?finding={fid}],
-trailing-slash tolerant). See specs/2026-06-15-slack-dashboard-in-slack.md.
-"""
+Cover rejected example secrets, channel IDs, redirect URLs, strict models, and
+finding anchors. See specs/2026-06-15-slack-dashboard-in-slack.md."""
 
 from __future__ import annotations
 

@@ -34,11 +34,6 @@ EXCLUSION_RULES: Final[tuple[ExclusionRule, ...]] = (
     ExclusionRule(
         reason=SkipReason.GENERATED_FILENAME, kind="filename_suffix", pattern="_pb2_grpc.py"
     ),
-    ExclusionRule(reason=SkipReason.GENERATED_FILENAME, kind="filename_suffix", pattern=".pyi"),
-    # TypeScript declaration files — the `.pyi` analog, all three emit variants.
-    ExclusionRule(reason=SkipReason.GENERATED_FILENAME, kind="filename_suffix", pattern=".d.ts"),
-    ExclusionRule(reason=SkipReason.GENERATED_FILENAME, kind="filename_suffix", pattern=".d.mts"),
-    ExclusionRule(reason=SkipReason.GENERATED_FILENAME, kind="filename_suffix", pattern=".d.cts"),
     ExclusionRule(reason=SkipReason.MINIFIED, kind="filename_suffix", pattern=".min.py"),
     ExclusionRule(reason=SkipReason.MINIFIED, kind="filename_suffix", pattern=".min.js"),
     ExclusionRule(reason=SkipReason.MINIFIED, kind="filename_suffix", pattern=".min.mjs"),
@@ -86,12 +81,7 @@ def should_skip(file_path: str, source: bytes) -> SkipReason | None:
     # the kind/pattern type pairing at construction time, so the casts
     # below are typing-only narrowing for mypy/ruff.
     for rule in EXCLUSION_RULES:
-        # `>` per canonical §5.5 wording ("source byte length exceeding
-        # `MAX_PARSE_BYTES`") and the approved ast_facts/ spec
-        # (`len(source) > MAX_PARSE_BYTES`). A file of exactly
-        # MAX_PARSE_BYTES bytes (1 MiB) passes through. If the boundary
-        # case ever needs OVERSIZED treatment, that's a canonical
-        # amendment routed via DECISIONS.md, not a silent code change.
+        # Canonical §5.5 uses "exceeding": exactly MAX_PARSE_BYTES (1 MiB) is allowed.
         if rule.kind == "size" and len(source) > cast("int", rule.pattern):
             return rule.reason
         if rule.kind == "path_prefix" and file_path.startswith(cast("str", rule.pattern)):

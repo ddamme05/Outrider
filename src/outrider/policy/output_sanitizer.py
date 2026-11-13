@@ -1,55 +1,10 @@
-# Output sanitizer per docs/spec.md §4.1.7 + docs/trust-boundaries.md §5/§6.
-"""Sanitize finding text before it reaches the GitHub comment-body surface.
+"""Prepare untrusted review text for display in GitHub comments.
 
-Every string that lands in a `POST /repos/.../reviews` body field is
-attacker-controlled at the source (PR title, file contents, evidence
-spans quoted into prompts) and must pass through this module first. The
-publisher node calls these helpers via `InlineComment.from_finding(...)`;
-the trust-boundary checklist (boundary #6) names this as the single
-production construction path.
+Helpers escape display text, fence code, reject forbidden suggestion content
+and enforce configured output limits. Text is treated as data, never as
+instructions. Size-limit handling can read HMAC configuration and raise.
 
-Five concerns this module owns:
-
-1. **Codepoint stripping** — bidi-override (Trojan Source), ZWJ, ANSI
-   CSI sequences, NUL, lone surrogates. Each carries known display-layer
-   or terminal-rendering attacks; we strip rather than escape because
-   GitHub's markdown renderer doesn't honor an escape syntax for them.
-
-2. **Fence neutralization for fenced content** (`evidence` and
-   similar code-quoting fields) — the outer fence is ALWAYS backticks
-   for deterministic shape; the fence count is
-   `max(longest_backtick_run_in_content, 2) + 1` so the content never
-   breaks out. Computed AFTER truncation so the marker can't push the
-   inner content past the fence boundary. (`suggested_fix` is the
-   exception — it renders into a FIXED GitHub ```suggestion fence that
-   cannot be neutralized without killing the Apply button, so it is
-   REJECTED-not-transformed via `is_safe_suggestion_replacement`.)
-
-3. **Markdown-semantic neutralization for prose content** (`title`,
-   `description` and similar narrative fields) — escape `@`, `#`, `!`,
-   `[`, `]`, `(`, `)`, `<`, `>`, and leading list/block markers
-   (`>`, `-`, `*`, `+`, `1.`, `2.`, etc.). Stops mention-pinging,
-   issue-link-spawning, ref-spawning, HTML-injection, and block-quote
-   exploitation.
-
-4. **Size cap** — `GITHUB_COMMENT_BODY_MAX = 65_536` UTF-8 bytes,
-   measured INCLUDING the truncation marker and any closing fences the
-   marker re-injects. Outrider policy cap, not vendor-derived (see
-   DECISIONS.md #023 append-only contract; the 4a sandbox observed
-   acceptance through 70,000 chars under apiVersion 2026-03-10 but
-   did not establish the actual vendor maximum). The cap is in
-   BYTES not codepoints because the existing truncation marker uses
-   bytes wording (`[truncated, original N bytes · <hmac8>]`) and
-   non-ASCII content (CJK, emoji, RTL) is the edge case ASCII probes
-   hide.
-
-5. **HMAC-tagged truncation marker** — an 8-char HMAC keyed by the
-   `OUTRIDER_TRUNCATION_HMAC_SECRET` env var binds the claimed original
-   byte count to the deployment secret. Marker-shaped input is removed
-   unconditionally after control-codepoint normalization; `_apply_byte_cap`
-   alone appends a legitimate marker afterward. The HMAC is short (8 hex
-   chars = 32 bits) because preimage resistance, not collision resistance,
-   is the goal.
+See DECISIONS.md#023 and webhook-strings-are-data-not-format-strings.
 """
 
 from __future__ import annotations
@@ -60,6 +15,10 @@ import re
 from hashlib import sha256
 from typing import Final
 from urllib.parse import urlparse
+
+from outrider.policy.secret_placeholders import (
+    SECRET_PLACEHOLDERS as _PLACEHOLDER_TRUNCATION_SECRETS,
+)
 
 # ---------------------------------------------------------------------------
 # Public constants
@@ -91,25 +50,8 @@ TRUNCATION_HMAC_SECRET_ENV: Final[str] = "OUTRIDER_TRUNCATION_HMAC_SECRET"  # no
 # threat model — the secret never leaves the deploy environment).
 _TRUNCATION_HMAC_LEN: Final[int] = 8
 
-# Known non-secret placeholders rejected at read time so a verbatim `.env.example`
-# copy (which ships `replace-me-with-a-long-random-secret`) cannot become the live
-# marker-signing key. The published placeholder is ~36 chars — ABOVE the length
-# floor below — so an explicit set is required in addition to the floor. Mirrors
-# `github/config._PLACEHOLDER_SECRETS` / `notify/oauth_state._PLACEHOLDER_SECRETS`;
-# kept as a local copy per the same "keep in sync" convention those carry.
-_PLACEHOLDER_TRUNCATION_SECRETS: Final[frozenset[str]] = frozenset(
-    {
-        "replace-me",
-        "replace-me-with-a-long-random-secret",
-        "change-me",
-        "changeme",
-        "secret",
-        "password",
-        "your-secret-here",
-    }
-)
 # Minimum length (chars). A short, non-placeholder value (e.g. "x") slips past the
-# set above but has too little entropy to be a credible marker-unforgeability root.
+# placeholder check but has too little entropy to be a credible marker-unforgeability root.
 # 32 is the floor a `secrets.token_urlsafe(32)` value (≈43 chars) clears comfortably
 # — mirrors the `notify/oauth_state._MIN_STATE_SECRET_LEN` HMAC-key discipline.
 _MIN_TRUNCATION_SECRET_LEN: Final[int] = 32
@@ -154,22 +96,9 @@ _BIDI_OVERRIDE_CHARS: Final[frozenset[str]] = frozenset("‪‫‬‭‮⁦⁧�
 # is no legitimate use of ZWJ/ZWNJ in a security-review comment body.
 _ZERO_WIDTH_CHARS: Final[frozenset[str]] = frozenset("​‌‍﻿")
 
-# ANSI Control Sequence Introducer + OS-command sequences. Markdown
-# itself doesn't render ANSI, but if the body is ever piped through a
-# terminal viewer (gh CLI, GitHub mobile push notifications on terminal
-# theming, log files) the sequences become live control codes. Strip
-# the whole CSI/OSC sequence; replacing with a placeholder would
-# preserve the attacker-chosen byte count and still confuse some
-# renderers.
-#
-# Pattern matches:
-#   ESC [  ... [@-~]    — CSI sequence (color, cursor movement)
-#   ESC ]  ... (BEL | ESC \)  — OSC sequence (window title, hyperlinks)
-#   ESC P  ... ESC \    — DCS sequence
-#   ESC X  ... ESC \    — SOS sequence
-#   ESC ^  ... ESC \    — PM sequence
-#   ESC _  ... ESC \    — APC sequence
-#   bare ESC            — naked escape (no legitimate use in comment body)
+# Strip complete ANSI sequences so text remains safe in terminal viewers as
+# well as Markdown: CSI controls movement/color; OSC controls titles/links;
+# DCS/SOS/PM/APC carry control strings. Remove bare escapes too.
 _ANSI_CONTROL_REGEX: Final[re.Pattern[str]] = re.compile(
     "\x1b\\[[0-?]*[ -/]*[@-~]"  # CSI
     "|\x1b\\][^\x07\x1b]*(\x07|\x1b\\\\)"  # OSC

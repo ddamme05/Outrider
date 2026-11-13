@@ -1,18 +1,8 @@
-# See specs/2026-05-19-analyze-foundation.md §3.
-"""`ReviewState.analysis_rounds` + `ReviewState.trace_candidates` reducer tests.
+"""Check state reducers for analysis rounds and trace candidates.
 
-The §3 commit adds two slots, each consuming `append_with_dedup_by(key_fn)`
-from `agent/reducers.py`. The reducer itself is exercised in
-`tests/unit/test_agent_reducers.py`; this file pins the integration —
-that the reducer is wired into `ReviewState` with the right merge key
-and survives checkpoint-replay re-application idempotently.
-
-Per `docs/conventions.md` "LangGraph specifics" + §3 of the foundation
-spec: replay re-application of the same delta must not double-count.
-The `round_id` and `candidate_id` fields are content-derived SHA-256
-hex digests; re-emission of the same logical item produces the same
-key and is dropped on merge.
-"""
+Content-derived keys must make repeated checkpoint deltas harmless rather than
+double-count results. See specs/2026-05-19-analyze-foundation.md §3
+and docs/conventions.md's LangGraph rules."""
 
 from __future__ import annotations
 

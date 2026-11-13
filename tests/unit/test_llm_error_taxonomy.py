@@ -1,16 +1,6 @@
-"""Exception hierarchy tests — see AC for `LLMProviderError` shape.
+"""Check LLM error classes, retry declarations, and typed Anthropic error mappings.
 
-Covers:
-  - Direct instantiation of `LLMProviderError` raises (abstract-by-construction)
-  - `__init_subclass__` enforces `retry_at_layer` presence at class-def
-  - `__init_subclass__` enforces `retry_at_layer` value membership
-  - All 15 concrete subclasses have correct `retry_at_layer`
-    (round-21 added `LLMConflictError` for 409, in the SDK's
-    default-retry set alongside 408/429/5xx; the Sonnet 5 migration
-    added `LLMRefusalError` for stop_reason="refusal" — terminal)
-  - `LLMUnknownError` exists for the Anthropic-fall-through path
-  - Anthropic exception → Outrider mapping table is complete and well-typed
-"""
+HTTP 408/409/429/5xx errors may retry; structured refusal is terminal."""
 
 from __future__ import annotations
 
@@ -121,7 +111,7 @@ def test_subclass_with_wrong_case_retry_at_layer_value_raises() -> None:
         (LLMUnknownError, "none"),
         (LLMTimeoutError, "node"),
         (LLMRateLimitError, "node"),
-        (LLMConflictError, "node"),  # round-21: 409 in SDK retry set
+        (LLMConflictError, "node"),  # HTTP 409 is retry-eligible.
         (LLMUpstreamError, "node"),
         (LLMAuthError, "none"),
         (LLMInvalidRequestError, "none"),
@@ -143,17 +133,10 @@ def test_retry_at_layer_per_subclass(cls: type[LLMProviderError], expected_layer
 
 
 def test_provider_error_docstring_names_every_node_layer_class() -> None:
-    """Pins the round-30 codex audit fold: `LLMProviderError.__doc__`'s
-    `retry_at_layer` semantics section MUST name every concrete subclass
-    where `retry_at_layer == "node"`. Otherwise the doc drifts behind
-    the actual taxonomy as new retry-eligible classes are added.
+    """Keep documented retry semantics complete as the taxonomy grows (FUP-025).
 
-    This is the same class-omission bug pattern FUP-025 has been
-    defending against — round-14 caught `LLMConflictError` missing from
-    the retry-eligible list when 409 was promoted to `"node"`; round-30
-    caught the same omission in this docstring. The test fails-loud the
-    moment a new `"node"`-layer class is added without updating the
-    docstring.
+    LLMProviderError.__doc__ must name every concrete subclass whose
+    retry_at_layer is "node".
     """
     from outrider.llm.base import LLMProviderError
 
@@ -167,17 +150,9 @@ def test_provider_error_docstring_names_every_node_layer_class() -> None:
             result.update(_all_subclasses(sub))
         return result
 
-    # Use `getattr(..., None)` not `cls.retry_at_layer` directly: the
-    # failing-subclass tests above (`test_subclass_missing_retry_at_layer_*`)
-    # define orphan classes inside `pytest.raises` whose definitions raise
-    # in `__init_subclass__`. Python registers them in
-    # `LLMProviderError.__subclasses__()` via weakref BEFORE
-    # `__init_subclass__` runs (registration happens in `type.__new__`;
-    # `__init_subclass__` runs in `type.__init__`). The orphans live in
-    # the subclass registry until GC, which is non-deterministic across
-    # pytest test orderings — locally they may GC before this test runs,
-    # in CI they may not. Filter defensively so missing-attribute orphans
-    # don't crash the walk; `None != "node"` excludes them naturally.
+    # Rejected class definitions may remain in __subclasses__ until garbage
+    # collection and lack retry_at_layer. Read defensively so test order and
+    # collection timing cannot break this walk.
     node_layer_classes = {
         cls
         for cls in _all_subclasses(LLMProviderError)

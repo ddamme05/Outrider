@@ -1,16 +1,10 @@
-# Vendor wrapper for githubkit's GitHub App installation authentication.
-# See DECISIONS.md#065-authorization-is-a-live-github-check-the-local-install-db-is-a-cache
-"""Construct GitHub clients from the selected credential provider.
+"""Create authenticated GitHub clients from the selected App credentials.
 
-The lifespan binds a provider once; the installation factory resolves its current
-credentials and creates a fresh client per operation. This keeps short-lived
-installation tokens isolated and lets database-mode onboarding activate without
-a restart (DECISIONS.md#070). githubkit handles token minting and refresh.
+Each operation takes a fresh credentials snapshot so rotation cannot mix App
+identities within a request. Installation tokens and App authentication use
+their respective clients.
 
-auth.py owns the SDK authentication strategies (vendor-sdks-only-in-wrappers).
-App-JWT clients are separate from installation clients and are context-managed
-per live authorization check (DECISIONS.md#065).
-Each deployment has its own App identity (DECISIONS.md#066).
+See DECISIONS.md#065, #066, #070 and docs/trust-boundaries.md.
 """
 
 from __future__ import annotations
@@ -33,29 +27,16 @@ __all__ = [
 ]
 
 
-# Explicit per-operation timeouts on the githubkit GitHub client.
-# Default is `timeout=None` (no timeout — requests hang indefinitely on
-# upstream stalls). Intake runs in a background task post-webhook-ACK;
-# a stalled API call would otherwise pin the whole review pipeline.
-# Shape mirrors `llm/anthropic_provider.py`'s explicit-httpx-Timeout
-# pattern so the two SDK-wrapping surfaces have consistent operational
-# behavior. Values: connect timeout is short (TCP handshake or auth
-# resolution), read is the dominant cost (paginated file fetches), write
-# matches read, pool covers connection-pool acquisition contention.
-# A future operator-tunable shape can move these to `GitHubAppSettings`;
-# tracked at FUP-034 alongside other input-boundary configuration.
+# githubkit defaults to no timeout; an upstream stall could pin a review after
+# the webhook ACK. Bound each HTTP phase here, as in llm/anthropic_provider.py.
+# Operator configuration is tracked separately under FUP-034.
 _GITHUB_CLIENT_TIMEOUT: Final[httpx.Timeout] = httpx.Timeout(
     connect=5.0, read=30.0, write=30.0, pool=10.0
 )
 
 
-# Type alias for a GitHub client authenticated as a specific installation.
-# Defined here (not in `github/__init__.py`) so that `auth.py` remains
-# the only file in the codebase importing `githubkit.AppInstallationAuthStrategy`
-# per the intake-and-webhook spec. `github/__init__.py` re-exports the
-# alias for ergonomic import from `outrider.github`; downstream
-# consumers (`agent/`, etc.) import via `outrider.github` and never
-# touch `githubkit` directly.
+# Own the SDK strategy type here and re-export the client alias from
+# github/__init__.py so downstream consumers need no githubkit import.
 InstallationGitHubClient = GitHub[AppInstallationAuthStrategy]
 
 # Type alias for a GitHub client authenticated AS THE APP (App-JWT), not as an

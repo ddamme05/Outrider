@@ -1,15 +1,7 @@
-"""Structural eval scenario: the FUP-162 parameterized-call veto chain.
+"""Check when a parameterized SQL call can rule out a model proposal.
 
-Per specs/2026-06-12-sqli-parameterized-call-veto.md: LLM-free
-validation of the full deterministic chain — source bytes →
-`ast_facts.parameterized_calls.scan_parameterized_calls` →
-`coordinates.line_range_vetoed_by_parameterized_call` — the layer that
-must hold regardless of prompt wording or model version. The unit tier
-pins the detection shape matrix; this scenario pins the composed veto
-decision on realistic file shapes, including the spec-pinned indented
-single-line execute that byte-frame containment would have silently
-missed.
-"""
+Use real parsing and line containment, including indented execute calls.
+No model runs; unit tests cover the individual call-shape variations."""
 
 from __future__ import annotations
 

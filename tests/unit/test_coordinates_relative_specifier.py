@@ -1,12 +1,7 @@
-"""Security battery for the JS/TS relative-specifier coordinates surfaces.
+"""Check safe JS/TS relative imports and candidate-path resolution.
 
-Covers `is_valid_relative_specifier`, `is_valid_trace_import_string`,
-`relative_specifier_candidate_paths`, and `resolve_specifier_candidate_paths`
-per `DECISIONS.md#024` (Amended 2026-07-03) and
-`specs/2026-07-03-js-ts-trace-resolver.md`. Negative properties are scripted
-as explicit attacks asserting the rejected outcome (raise or empty return),
-never as absence-on-benign-input.
-"""
+Explicit invalid inputs must raise or return no candidates.
+See DECISIONS.md#024 and specs/2026-07-03-js-ts-trace-resolver.md."""
 
 from __future__ import annotations
 
@@ -123,7 +118,7 @@ class TestIsValidRelativeSpecifier:
 
 
 class TestIsValidTraceImportString:
-    """Leading-dot dispatcher: the two forms partition the value space."""
+    """Absolute/relative Python modules and JS/TS paths have separate syntax."""
 
     def test_module_form_dispatches_to_import_string_rules(self) -> None:
         assert is_valid_trace_import_string("svc.db") == "svc.db"
@@ -131,12 +126,8 @@ class TestIsValidTraceImportString:
     def test_specifier_form_dispatches_to_relative_rules(self) -> None:
         assert is_valid_trace_import_string("../db") == "../db"
 
-    def test_leading_dot_python_relative_import_rejected(self) -> None:
-        # `.foo` is a Python relative-import spelling, NOT a valid JS
-        # specifier and NOT a valid dotted module string. The dispatcher
-        # routes it to the specifier validator, which rejects the shape.
-        with pytest.raises(ValueError, match="must begin with"):
-            is_valid_trace_import_string(".foo")
+    def test_python_relative_module_form_is_admitted(self) -> None:
+        assert is_valid_trace_import_string(".foo") == ".foo"
 
     def test_slash_bearing_module_form_rejected(self) -> None:
         with pytest.raises(ValueError, match="path separators"):
@@ -300,18 +291,18 @@ class TestResolveSpecifierCandidatePaths:
 
 
 class TestIsRelativeSpecifierForm:
-    """The exported two-form discriminator — one partition rule."""
+    """The JS/TS path discriminator leaves Python dotted-relative imports separate."""
 
-    def test_leading_dot_forms_are_specifier(self) -> None:
+    def test_js_relative_path_forms_are_specifiers(self) -> None:
         from outrider.coordinates import is_relative_specifier_form
 
-        for value in (".", "..", "./db", "../db", ".foo"):
+        for value in (".", "..", "./db", "../db"):
             assert is_relative_specifier_form(value) is True
 
-    def test_dotless_forms_are_module(self) -> None:
+    def test_other_forms_are_not_js_specifiers(self) -> None:
         from outrider.coordinates import is_relative_specifier_form
 
-        for value in ("svc.db", "express", "src/db", ""):
+        for value in ("svc.db", "express", "src/db", "", ".foo"):
             assert is_relative_specifier_form(value) is False
 
 

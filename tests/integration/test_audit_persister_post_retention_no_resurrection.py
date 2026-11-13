@@ -1,17 +1,4 @@
-"""AuditPersister content-resurrection guard — purged-content re-emit is no-op.
-
-Pins the spec's "Post-retention content-resurrection guard": when the
-retention sweep has purged a `llm_call_content` row but the parent
-`audit_events` row remains (per #014 append-only), a producer-side
-re-emit MUST NOT resurrect raw prompt/completion content.
-
-Threat model: retention contract guarantees content is purged after
-TTL. A naive ON CONFLICT DO NOTHING re-insert (no resurrection guard)
-would find no PK conflict on `llm_call_content` (the row was deleted)
-and SUCCEED — resurrecting content the retention sweep deliberately
-removed. The guard checks content-row existence on audit-row conflict
-and returns as no-op if absent.
-"""
+"""Check that audit retries do not recreate content removed by retention."""
 
 from __future__ import annotations
 

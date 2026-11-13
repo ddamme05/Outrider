@@ -1,11 +1,8 @@
-"""Unit tests for the #065 live-authorization check (`github/authz.py`).
+"""Check live installation and repository authorization with scripted GitHub calls.
 
-Every case is driven through a fake `arequest` client — no real GitHub. Confirms the two
-ordered checks (GET installation → POST repo-scoped token by IMMUTABLE repo_id), the exact
-request shapes #065 prescribes, and the fail-closed classification: only active-install +
-repo-accessible returns `authorized`; suspended / uninstalled / repo-removed all fail closed,
-and 401 / 429 / 5xx / network / missing-field are UNCERTAIN (fail closed but not mislabelled).
-"""
+Installation lookup precedes repo-scoped token creation using the immutable repo
+ID. Suspended or missing access fails closed; uncertain failures must remain
+distinct from confirmed removal. See DECISIONS.md#065."""
 
 from __future__ import annotations
 

@@ -1,29 +1,8 @@
-# See DECISIONS.md#065-authorization-is-a-live-github-check-the-local-install-db-is-a-cache
-"""Live GitHub authorization check (DECISIONS.md#065).
+"""Check GitHub's live installation and repository access before serving data.
 
-The local install tables are a cache; GitHub is the authorization authority, checked
-LIVE at intake. As the App (App-JWT), this module confirms — for a given
-`(installation_id, repo_id)` — that:
-
-  1. the installation still exists and is NOT suspended
-     (`GET /app/installations/{id}` → 200 with `suspended_at` null; 404 → uninstalled), and
-  2. the target repo is still accessible
-     (`POST /app/installations/{id}/access_tokens` scoped to the repo → 201).
-
-Authorization keys on the IMMUTABLE `repo_id` (via `repository_ids`), not the mutable repo
-name: a rename must not silently deny (or, worse, mis-authorize) a still-covered repo.
-
-Per #065 the two checks fail CLOSED: any non-affirmative result — suspended, uninstalled,
-repo-removed, OR a network error / uncertainty — collapses to `authorized == False` (the
-caller drives the review to `skipped`). The local cache is never consulted for the answer.
-It is the GitHub-authority counterpart to the DB-cache `active_repo_membership()` gate on
-the webhook path.
-
-Lives under `github/` (the only subsystem that may touch githubkit). It calls the App-level
-endpoints through the injected `AppGitHubClient`'s `arequest` escape hatch — githubkit has no
-confirmed generated method for these `/app/*` endpoints (`docs/mcp-usage.md`), and the raw
-call is the same pattern `github/publisher.py` uses. Consumers (intake) receive an
-`InstallationAuthorizer` closure via `build_graph`/`lifespan` and never import githubkit.
+An installation must exist, be active and contain the requested repository's
+immutable ID. Missing or uncertain access is denied; a local database row
+cannot grant access by itself. See DECISIONS.md#065.
 """
 
 from __future__ import annotations

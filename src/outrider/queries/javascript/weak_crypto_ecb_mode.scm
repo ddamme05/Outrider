@@ -1,15 +1,8 @@
-; Cipher constructed in ECB mode: `createCipheriv`/`createCipher` with a
-; literal algorithm name ending in `-ecb` (`aes-128-ecb`, `des-ecb`, ...).
-; Suffix-anchored so `-ecb` mid-name does not fire. A `des-ecb` literal fires
-; this AND the broken-cipher query — same FindingType + line, so the
-; producer's content-hash collapse keeps one finding. Encryption-construction
-; sites only (matching the broken-cipher anchor set).
+; Match createCipheriv/createCipher with a literal algorithm ending in -ecb.
 ;
-; Anchor-capture protocol (BindingRule mode="anchor_import"): the member arm
-; captures its receiver as @_recv; the producer admits a match only when
-; @_recv (else the bare @_fn) is bound by an import from the query's module
-; set. Nested receivers have no provable binding and do not match (JUDGED
-; covers them).
+; The suffix match is case-insensitive and intentionally overlaps broken-cipher
+; matches such as des-ecb. The producer must bind @_recv or @_fn to an allowed
+; import; nested receivers and nonliteral names still need model review.
 (call_expression
   function: [
     (identifier) @_fn

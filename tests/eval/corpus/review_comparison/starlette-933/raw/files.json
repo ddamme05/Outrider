@@ -1,0 +1,38 @@
+[
+  {
+    "sha": "4061b395561f398d420b82c94afed46b4d8e09cc",
+    "filename": "requirements.txt",
+    "status": "modified",
+    "additions": 1,
+    "deletions": 0,
+    "changes": 1,
+    "blob_url": "https://github.com/Kludex/starlette/blob/f638a61dcbf9207c284c326868ef911996d34a21/requirements.txt",
+    "raw_url": "https://github.com/Kludex/starlette/raw/f638a61dcbf9207c284c326868ef911996d34a21/requirements.txt",
+    "contents_url": "https://api.github.com/repos/Kludex/starlette/contents/requirements.txt?ref=f638a61dcbf9207c284c326868ef911996d34a21",
+    "patch": "@@ -16,6 +16,7 @@ isort\n mypy\n pytest\n pytest-cov\n+pytest-asyncio\n \n # Documentation\n mkdocs"
+  },
+  {
+    "sha": "8dad7b0b50c49f4da4b23dd64dabd4858f7c1566",
+    "filename": "starlette/datastructures.py",
+    "status": "modified",
+    "additions": 20,
+    "deletions": 4,
+    "changes": 24,
+    "blob_url": "https://github.com/Kludex/starlette/blob/f638a61dcbf9207c284c326868ef911996d34a21/starlette%2Fdatastructures.py",
+    "raw_url": "https://github.com/Kludex/starlette/raw/f638a61dcbf9207c284c326868ef911996d34a21/starlette%2Fdatastructures.py",
+    "contents_url": "https://api.github.com/repos/Kludex/starlette/contents/starlette%2Fdatastructures.py?ref=f638a61dcbf9207c284c326868ef911996d34a21",
+    "patch": "@@ -433,17 +433,33 @@ def __init__(\n             file = tempfile.SpooledTemporaryFile(max_size=self.spool_max_size)\n         self.file = file\n \n+    @property\n+    def _in_memory(self) -> bool:\n+        rolled_to_disk = getattr(self.file, \"_rolled\", True)\n+        return not rolled_to_disk\n+\n     async def write(self, data: typing.Union[bytes, str]) -> None:\n-        await run_in_threadpool(self.file.write, data)\n+        if self._in_memory:\n+            self.file.write(data)  # type: ignore\n+        else:\n+            await run_in_threadpool(self.file.write, data)\n \n-    async def read(self, size: int = None) -> typing.Union[bytes, str]:\n+    async def read(self, size: int = -1) -> typing.Union[bytes, str]:\n+        if self._in_memory:\n+            return self.file.read(size)\n         return await run_in_threadpool(self.file.read, size)\n \n     async def seek(self, offset: int) -> None:\n-        await run_in_threadpool(self.file.seek, offset)\n+        if self._in_memory:\n+            self.file.seek(offset)\n+        else:\n+            await run_in_threadpool(self.file.seek, offset)\n \n     async def close(self) -> None:\n-        await run_in_threadpool(self.file.close)\n+        if self._in_memory:\n+            self.file.close()\n+        else:\n+            await run_in_threadpool(self.file.close)\n \n \n class FormData(ImmutableMultiDict):"
+  },
+  {
+    "sha": "87a7967875c7b0b0beaa963b399fffd49662cc74",
+    "filename": "tests/test_datastructures.py",
+    "status": "modified",
+    "additions": 17,
+    "deletions": 0,
+    "changes": 17,
+    "blob_url": "https://github.com/Kludex/starlette/blob/f638a61dcbf9207c284c326868ef911996d34a21/tests%2Ftest_datastructures.py",
+    "raw_url": "https://github.com/Kludex/starlette/raw/f638a61dcbf9207c284c326868ef911996d34a21/tests%2Ftest_datastructures.py",
+    "contents_url": "https://api.github.com/repos/Kludex/starlette/contents/tests%2Ftest_datastructures.py?ref=f638a61dcbf9207c284c326868ef911996d34a21",
+    "patch": "@@ -1,5 +1,7 @@\n import io\n \n+import pytest\n+\n from starlette.datastructures import (\n     URL,\n     CommaSeparatedStrings,\n@@ -8,6 +10,7 @@\n     MultiDict,\n     MutableHeaders,\n     QueryParams,\n+    UploadFile,\n )\n \n \n@@ -210,6 +213,20 @@ def test_queryparams():\n     assert QueryParams(q) == q\n \n \n+class TestUploadFile(UploadFile):\n+    spool_max_size = 1024\n+\n+\n+@pytest.mark.asyncio\n+async def test_upload_file():\n+    big_file = TestUploadFile(\"big-file\")\n+    await big_file.write(b\"big-data\" * 512)\n+    await big_file.write(b\"big-data\")\n+    await big_file.seek(0)\n+    assert await big_file.read(1024) == b\"big-data\" * 128\n+    await big_file.close()\n+\n+\n def test_formdata():\n     upload = io.BytesIO(b\"test\")\n     form = FormData([(\"a\", \"123\"), (\"a\", \"456\"), (\"b\", upload)])"
+  }
+]

@@ -1,12 +1,7 @@
-"""Runner for the tree-sitter spike.
+"""Run the tree-sitter demos with the current Python interpreter.
 
-Runs every demo as a subprocess with the project venv's Python. Exits 0 iff
-every demo exits 0. Prints the number of demos that passed and the offending
-demo on first failure, then stops.
-
-This is the mechanical verification for NOTES.md — if every claim in NOTES
-has a demo here, and run_all.py exits 0, the claims reproduce on the pinned
-versions.
+Stop on the first nonzero exit and print the demo results. NOTES.md records
+the experiment's findings on its pinned dependency versions.
 """
 
 from __future__ import annotations

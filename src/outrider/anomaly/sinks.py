@@ -1,9 +1,8 @@
-"""Typed, closure-injected seam for durable anomaly emission.
+"""Define how review code records an operator alert.
 
-`AnomalyPersister` owns idempotency through per-rule partial unique indexes.
-The enums catch producer typos; mandatory `is_eval` keeps eval emissions
-out of the production queue. Text columns avoid database enum migrations,
-but every new rule requires a matching partial-index migration.
+AnomalyPersister implements the writer. Callers supply severity and is_eval
+explicitly so test alerts stay separate from production alerts. Each new rule
+needs a database index to prevent duplicate alerts.
 """
 
 from __future__ import annotations

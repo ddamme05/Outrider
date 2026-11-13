@@ -1,20 +1,9 @@
-"""analyze_file_cache: the lever-8 per-file analyze outcome cache.
+"""Store reusable per-file analysis results.
 
-A CACHE, not audit (specs/2026-06-11-file-hash-analyze-cache.md): rows
-delete legally via TTL, retention sweep, and installation purge — the
-append-only discipline lives on the companion audit events. The table
-joins the DECISIONS.md#014 content-retention regime: `source_review_id`
-FK CASCADE couples cache rows to their source review's purge,
-`installation_id` FK RESTRICT forces purge-before-delete (with
-purge_audit), and `retention_expires_at` carries the
-min(TTL, source retention) write-time bound. `cache_key` (the
-length-prefixed multi-component digest from
-`cache/key.py::compute_analyze_cache_key` — see its docstring for the
-component list) is the PK and the conflict arbiter for concurrent same-key
-writes (live rows first-writer-win; expired rows refresh via
-`DO UPDATE ... WHERE` expired).
-
-Plain (non-concurrent) DDL: brand-new table, nothing to lock.
+Cache rows hold a result, its model and policy versions, and an expiry time.
+They can be replaced after expiry or deleted during retention cleanup; they
+are not the append-only audit record. Deleting a source review removes its
+cache rows (DECISIONS.md#014).
 """
 
 from collections.abc import Sequence

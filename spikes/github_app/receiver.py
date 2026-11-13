@@ -1,21 +1,10 @@
-"""Minimal FastAPI webhook receiver for the GitHub App spike.
+"""Experimental receiver for POST /webhooks/github.
 
-One route: POST /webhooks/github. No dispatcher, no database, no agent —
-just the primitives spec §6.3 says must work before anything downstream:
-
-1. Read the raw body (bytes, pre-JSON-decode) so signature verification
-   operates on the exact bytes GitHub signed.
-2. Verify X-Hub-Signature-256 using time-constant comparison (see
-   webhook-signature-constant-time-compare invariant in
-   docs/invariants.md). 401 on any failure.
-3. Parse the body into a githubkit Pydantic model keyed on X-GitHub-Event.
-4. Log the event shape (action, key identifiers) and ACK 202 with a
-   correlation ID.
-
-The ACK is the operational contract from spec §6.3: under 10 seconds,
-ideally well under a second, with downstream work dispatched separately.
-In the spike we don't dispatch — Q5's demo asserts the ACK is fast; the
-full dispatcher seam is Month 2 work.
+Verify the signature on the original request bytes, parse the event with
+githubkit, log its basic fields and acknowledge it. There is no database,
+review graph or background dispatcher here. See the Q5 demo for local HTTP
+checks and spec §6.3 for the production acknowledgement requirement.
+Signature checks follow webhook-signature-constant-time-compare.
 """
 
 from __future__ import annotations

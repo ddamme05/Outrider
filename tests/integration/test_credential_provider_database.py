@@ -1,10 +1,7 @@
-"""Integration tests for `DatabaseCredentialProvider` against a real Postgres (#070).
+"""Check database-backed GitHub credentials against PostgreSQL (DECISIONS.md#070).
 
-Covers what the unit tests can't (they cover env mode + mode resolution): the DB read + decrypt
-round-trip, zero-row fail-closed, wrong-key/tamper fail-closed, the multiple-active-row integrity
-guard, and `is_configured()` reading the authoritative `setup_state.status` — the four gaps the
-security review flagged on the foundation.
-"""
+Cover decryption, missing or corrupt credentials, multiple active rows, and
+configuration status read from setup_state."""
 
 from __future__ import annotations
 

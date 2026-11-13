@@ -1,39 +1,7 @@
-"""AuditPersister natural-key idempotency — DB-touching contract pin.
+"""Check trace-decision retries by review and source finding.
 
-Per specs/2026-05-23-trace-node.md M7 (b) + DECISIONS.md#026 (first
-instance: trace's TraceDecisionEvent). The identity subset is
-`{source_finding_id, target_file, resolution_status, is_eval}` —
-`resolved_candidate_paths` is EXCLUDED per #026 point 3 because it
-is derived from LLM-ranking-order-variant `proposed_import_strings`
-and would defeat the lockstep contract on legitimate retries.
-
-Verifies the three load-bearing paths through
-`_persist_keyed_by_natural_key`:
-
-  1. **Insert path** — first emission with a fresh
-     `(review_id, source_finding_id)` writes the row and returns the
-     incoming event verbatim.
-  2. **No-op path** — second emission with the SAME
-     `(review_id, source_finding_id)` BUT differing per-emission fields
-     (event_id, timestamp, reason, proposed_import_strings,
-     resolved_candidate_paths) writes NO new row and returns the
-     ORIGINALLY-PERSISTED event (identity-subset comparison succeeds).
-     Pins the M7 (b) audit-first emission lockstep-recovery contract:
-     state is built from the returned event, so state and audit stay
-     aligned even when per-emission fields diverge across retries.
-  3. **Conflict path** — second emission with the same natural-key but
-     a DIFFERENT `target_file` (one of the identity-subset fields) raises
-     `AuditPersisterNaturalKeyConflict` carrying both `event_id`s,
-     `review_id`, `source_finding_id`, and `mismatched_fields=('target_file',)`.
-
-Plus three companion checks:
-  - emit_trace_decision routes through the helper (returns the same
-    canonical event as a direct call would).
-  - Mode-mixing: a `FindingEvent` with the same `(review_id,
-    source_finding_id)` does NOT collide (partial-WHERE narrow scope).
-  - is_eval divergence is treated as conflict per M7 (c) — invariant
-    per review.
-"""
+An identical retry returns the original stored event. Changed target or evaluation
+scope conflicts; narrative and ranking order do not define the decision's identity."""
 
 from __future__ import annotations
 

@@ -1,0 +1,946 @@
+{
+  "url": "https://api.github.com/repos/Kludex/starlette/compare/540ff5f076468eb69f827e76cb020e21fb39b3ca...50ae503979834a125b5a98e91781d30b17cd7b31",
+  "html_url": "https://github.com/Kludex/starlette/compare/540ff5f076468eb69f827e76cb020e21fb39b3ca...50ae503979834a125b5a98e91781d30b17cd7b31",
+  "permalink_url": "https://github.com/Kludex/starlette/compare/Kludex:540ff5f...Kludex:50ae503",
+  "diff_url": "https://github.com/Kludex/starlette/compare/540ff5f076468eb69f827e76cb020e21fb39b3ca...50ae503979834a125b5a98e91781d30b17cd7b31.diff",
+  "patch_url": "https://github.com/Kludex/starlette/compare/540ff5f076468eb69f827e76cb020e21fb39b3ca...50ae503979834a125b5a98e91781d30b17cd7b31.patch",
+  "base_commit": {
+    "sha": "540ff5f076468eb69f827e76cb020e21fb39b3ca",
+    "node_id": "C_kwDOCELT_NoAKDU0MGZmNWYwNzY0NjhlYjY5ZjgyN2U3NmNiMDIwZTIxZmIzOWIzY2E",
+    "commit": {
+      "author": {
+        "name": "dependabot[bot]",
+        "email": "49699333+dependabot[bot]@users.noreply.github.com",
+        "date": "2025-07-12T06:19:17Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2025-07-12T06:19:17Z"
+      },
+      "message": "Bump the python-packages group with 7 updates (#2957)\n\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Marcelo Trylesinski <marcelotryle@gmail.com>",
+      "tree": {
+        "sha": "2dcf1e60934bb2b622ea4a023e391cec05000947",
+        "url": "https://api.github.com/repos/Kludex/starlette/git/trees/2dcf1e60934bb2b622ea4a023e391cec05000947"
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/git/commits/540ff5f076468eb69f827e76cb020e21fb39b3ca",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJocf5lCRC1aQ7uu5UhlAAAK8cQADDXVyd6+l8FgkmJ2flonGdJ\ncN3L5ZrCap2UN9gIIf6oQGZS3JfUL1xHldcPsDrxA7VyMXDSa8y9/1Sk+uFWZMzU\n7W1Hu3OuUUZCOftBL9z1PNNuFI3hyk+9VXbc9R+M1pNuawAXm9g2qIn75+U8nQBD\nMpYaS0XaU1DDOq5WM5pj6BGB0iVLNtlRI04nQWLa00LMjKVplScErY1sZdvgaYq+\nUnivvmZwBxDzGhYFu88OeOVMhMz/ZhSzqMYSzae3PqEJWpDcuweI/0sPwwGUxM4y\nYKaSeF6N7Jtnk0nVAkuTEU0CLQ0eD4N0VnanR5xt4NrTSigF7vW2U96sk1RyA5hx\ntBQ7QhEe3Ejy7BhHwY5lM0RccNaY2traSHFL9oK+jlopBcdzepDuwgSLMlBK+sU6\nYATqb17belAeufYWyKIXcqNqiemliMfQfenqJR9VYmHMSa3Z5dGS/LjDjB6sMnYe\n3dSXP1strOTG91+MZIPagJO84hYOh4RWU5YqBNF3dNDh1Vc+wT2xT12ciq62Zs7w\nPFca4H9OrHMzusZIikTwe5Gac+ctUvJ4p5KxsM28yVn17abtnXqPoVDjVeAfqQRZ\nQVAr/8SDKAGyiVhliZa2TD6NOX7ySVEkpm7ELjxsd4JH3AibLkLnDsuIGks/u6iM\nExZK6wNyRykppkfaRSlj\n=Ubvv\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 2dcf1e60934bb2b622ea4a023e391cec05000947\nparent d4dd545a406f11c5fe94e29583138cb1887288c6\nauthor dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com> 1752301157 +0000\ncommitter GitHub <noreply@github.com> 1752301157 +0000\n\nBump the python-packages group with 7 updates (#2957)\n\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Marcelo Trylesinski <marcelotryle@gmail.com>\n",
+        "verified_at": "2025-07-12T06:19:17Z"
+      }
+    },
+    "url": "https://api.github.com/repos/Kludex/starlette/commits/540ff5f076468eb69f827e76cb020e21fb39b3ca",
+    "html_url": "https://github.com/Kludex/starlette/commit/540ff5f076468eb69f827e76cb020e21fb39b3ca",
+    "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/540ff5f076468eb69f827e76cb020e21fb39b3ca/comments",
+    "author": {
+      "login": "dependabot[bot]",
+      "id": 49699333,
+      "node_id": "MDM6Qm90NDk2OTkzMzM=",
+      "avatar_url": "https://avatars.githubusercontent.com/in/29110?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dependabot%5Bbot%5D",
+      "html_url": "https://github.com/apps/dependabot",
+      "followers_url": "https://api.github.com/users/dependabot%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/dependabot%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dependabot%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dependabot%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dependabot%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/dependabot%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/dependabot%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/dependabot%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dependabot%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "d4dd545a406f11c5fe94e29583138cb1887288c6",
+        "url": "https://api.github.com/repos/Kludex/starlette/commits/d4dd545a406f11c5fe94e29583138cb1887288c6",
+        "html_url": "https://github.com/Kludex/starlette/commit/d4dd545a406f11c5fe94e29583138cb1887288c6"
+      }
+    ]
+  },
+  "merge_base_commit": {
+    "sha": "540ff5f076468eb69f827e76cb020e21fb39b3ca",
+    "node_id": "C_kwDOCELT_NoAKDU0MGZmNWYwNzY0NjhlYjY5ZjgyN2U3NmNiMDIwZTIxZmIzOWIzY2E",
+    "commit": {
+      "author": {
+        "name": "dependabot[bot]",
+        "email": "49699333+dependabot[bot]@users.noreply.github.com",
+        "date": "2025-07-12T06:19:17Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2025-07-12T06:19:17Z"
+      },
+      "message": "Bump the python-packages group with 7 updates (#2957)\n\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Marcelo Trylesinski <marcelotryle@gmail.com>",
+      "tree": {
+        "sha": "2dcf1e60934bb2b622ea4a023e391cec05000947",
+        "url": "https://api.github.com/repos/Kludex/starlette/git/trees/2dcf1e60934bb2b622ea4a023e391cec05000947"
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/git/commits/540ff5f076468eb69f827e76cb020e21fb39b3ca",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJocf5lCRC1aQ7uu5UhlAAAK8cQADDXVyd6+l8FgkmJ2flonGdJ\ncN3L5ZrCap2UN9gIIf6oQGZS3JfUL1xHldcPsDrxA7VyMXDSa8y9/1Sk+uFWZMzU\n7W1Hu3OuUUZCOftBL9z1PNNuFI3hyk+9VXbc9R+M1pNuawAXm9g2qIn75+U8nQBD\nMpYaS0XaU1DDOq5WM5pj6BGB0iVLNtlRI04nQWLa00LMjKVplScErY1sZdvgaYq+\nUnivvmZwBxDzGhYFu88OeOVMhMz/ZhSzqMYSzae3PqEJWpDcuweI/0sPwwGUxM4y\nYKaSeF6N7Jtnk0nVAkuTEU0CLQ0eD4N0VnanR5xt4NrTSigF7vW2U96sk1RyA5hx\ntBQ7QhEe3Ejy7BhHwY5lM0RccNaY2traSHFL9oK+jlopBcdzepDuwgSLMlBK+sU6\nYATqb17belAeufYWyKIXcqNqiemliMfQfenqJR9VYmHMSa3Z5dGS/LjDjB6sMnYe\n3dSXP1strOTG91+MZIPagJO84hYOh4RWU5YqBNF3dNDh1Vc+wT2xT12ciq62Zs7w\nPFca4H9OrHMzusZIikTwe5Gac+ctUvJ4p5KxsM28yVn17abtnXqPoVDjVeAfqQRZ\nQVAr/8SDKAGyiVhliZa2TD6NOX7ySVEkpm7ELjxsd4JH3AibLkLnDsuIGks/u6iM\nExZK6wNyRykppkfaRSlj\n=Ubvv\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 2dcf1e60934bb2b622ea4a023e391cec05000947\nparent d4dd545a406f11c5fe94e29583138cb1887288c6\nauthor dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com> 1752301157 +0000\ncommitter GitHub <noreply@github.com> 1752301157 +0000\n\nBump the python-packages group with 7 updates (#2957)\n\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Marcelo Trylesinski <marcelotryle@gmail.com>\n",
+        "verified_at": "2025-07-12T06:19:17Z"
+      }
+    },
+    "url": "https://api.github.com/repos/Kludex/starlette/commits/540ff5f076468eb69f827e76cb020e21fb39b3ca",
+    "html_url": "https://github.com/Kludex/starlette/commit/540ff5f076468eb69f827e76cb020e21fb39b3ca",
+    "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/540ff5f076468eb69f827e76cb020e21fb39b3ca/comments",
+    "author": {
+      "login": "dependabot[bot]",
+      "id": 49699333,
+      "node_id": "MDM6Qm90NDk2OTkzMzM=",
+      "avatar_url": "https://avatars.githubusercontent.com/in/29110?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/dependabot%5Bbot%5D",
+      "html_url": "https://github.com/apps/dependabot",
+      "followers_url": "https://api.github.com/users/dependabot%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/dependabot%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/dependabot%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/dependabot%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/dependabot%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/dependabot%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/dependabot%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/dependabot%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/dependabot%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "d4dd545a406f11c5fe94e29583138cb1887288c6",
+        "url": "https://api.github.com/repos/Kludex/starlette/commits/d4dd545a406f11c5fe94e29583138cb1887288c6",
+        "html_url": "https://github.com/Kludex/starlette/commit/d4dd545a406f11c5fe94e29583138cb1887288c6"
+      }
+    ]
+  },
+  "status": "ahead",
+  "ahead_by": 9,
+  "behind_by": 0,
+  "total_commits": 9,
+  "commits": [
+    {
+      "sha": "0aff77a0635f7dac0ffeb2e536a868880c3f50a8",
+      "node_id": "C_kwDOCELT_NoAKDBhZmY3N2EwNjM1ZjdkYWMwZmZlYjJlNTM2YTg2ODg4MGMzZjUwYTg",
+      "commit": {
+        "author": {
+          "name": "Michael Honaker",
+          "email": "mchonaker@gmail.com",
+          "date": "2025-07-10T14:16:15Z"
+        },
+        "committer": {
+          "name": "Michael Honaker",
+          "email": "mchonaker@gmail.com",
+          "date": "2025-07-10T14:16:15Z"
+        },
+        "message": "Make UploadFile check for future rollover\n\nSigned-off-by: Michael Honaker <mchonaker@gmail.com>",
+        "tree": {
+          "sha": "48b295bd58d95d8a12c42e8975178cce891e2f65",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/48b295bd58d95d8a12c42e8975178cce891e2f65"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/0aff77a0635f7dac0ffeb2e536a868880c3f50a8",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/0aff77a0635f7dac0ffeb2e536a868880c3f50a8",
+      "html_url": "https://github.com/Kludex/starlette/commit/0aff77a0635f7dac0ffeb2e536a868880c3f50a8",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/0aff77a0635f7dac0ffeb2e536a868880c3f50a8/comments",
+      "author": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "fa5355442753f794965ae1af0f87f9fec1b9a3de",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/fa5355442753f794965ae1af0f87f9fec1b9a3de",
+          "html_url": "https://github.com/Kludex/starlette/commit/fa5355442753f794965ae1af0f87f9fec1b9a3de"
+        }
+      ]
+    },
+    {
+      "sha": "4fcf16e82474e595276224ea37c9a74639bb17df",
+      "node_id": "C_kwDOCELT_NoAKDRmY2YxNmU4MjQ3NGU1OTUyNzYyMjRlYTM3YzlhNzQ2MzliYjE3ZGY",
+      "commit": {
+        "author": {
+          "name": "Michael Honaker",
+          "email": "mchonaker@gmail.com",
+          "date": "2025-07-10T14:31:01Z"
+        },
+        "committer": {
+          "name": "Michael Honaker",
+          "email": "mchonaker@gmail.com",
+          "date": "2025-07-10T14:31:01Z"
+        },
+        "message": "Fix Linting/MyPy Errors\n\nSigned-off-by: Michael Honaker <mchonaker@gmail.com>",
+        "tree": {
+          "sha": "46028165dc892b56d40ebf1f581617e90737d965",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/46028165dc892b56d40ebf1f581617e90737d965"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/4fcf16e82474e595276224ea37c9a74639bb17df",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/4fcf16e82474e595276224ea37c9a74639bb17df",
+      "html_url": "https://github.com/Kludex/starlette/commit/4fcf16e82474e595276224ea37c9a74639bb17df",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/4fcf16e82474e595276224ea37c9a74639bb17df/comments",
+      "author": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "0aff77a0635f7dac0ffeb2e536a868880c3f50a8",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/0aff77a0635f7dac0ffeb2e536a868880c3f50a8",
+          "html_url": "https://github.com/Kludex/starlette/commit/0aff77a0635f7dac0ffeb2e536a868880c3f50a8"
+        }
+      ]
+    },
+    {
+      "sha": "6fc62ab696938e35925f99c68bb68671d6f84e9f",
+      "node_id": "C_kwDOCELT_NoAKDZmYzYyYWI2OTY5MzhlMzU5MjVmOTljNjhiYjY4NjcxZDZmODRlOWY",
+      "commit": {
+        "author": {
+          "name": "Michael Honaker",
+          "email": "mchonaker@gmail.com",
+          "date": "2025-07-10T14:37:26Z"
+        },
+        "committer": {
+          "name": "Michael Honaker",
+          "email": "mchonaker@gmail.com",
+          "date": "2025-07-10T14:37:26Z"
+        },
+        "message": "Add test for large multi-part file\n\nSigned-off-by: Michael Honaker <mchonaker@gmail.com>",
+        "tree": {
+          "sha": "09e0f6f922b33b834c1ee64898256952e8030c62",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/09e0f6f922b33b834c1ee64898256952e8030c62"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/6fc62ab696938e35925f99c68bb68671d6f84e9f",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/6fc62ab696938e35925f99c68bb68671d6f84e9f",
+      "html_url": "https://github.com/Kludex/starlette/commit/6fc62ab696938e35925f99c68bb68671d6f84e9f",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/6fc62ab696938e35925f99c68bb68671d6f84e9f/comments",
+      "author": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "4fcf16e82474e595276224ea37c9a74639bb17df",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/4fcf16e82474e595276224ea37c9a74639bb17df",
+          "html_url": "https://github.com/Kludex/starlette/commit/4fcf16e82474e595276224ea37c9a74639bb17df"
+        }
+      ]
+    },
+    {
+      "sha": "e3cffca44d27451e9b5be7e19bdf1277450ad940",
+      "node_id": "C_kwDOCELT_NoAKGUzY2ZmY2E0NGQyNzQ1MWU5YjViZTdlMTliZGYxMjc3NDUwYWQ5NDA",
+      "commit": {
+        "author": {
+          "name": "Michael Honaker",
+          "email": "mchonaker@gmail.com",
+          "date": "2025-07-10T14:40:20Z"
+        },
+        "committer": {
+          "name": "Michael Honaker",
+          "email": "mchonaker@gmail.com",
+          "date": "2025-07-10T14:40:20Z"
+        },
+        "message": "Fix Coverage Lines\n\nSigned-off-by: Michael Honaker <mchonaker@gmail.com>",
+        "tree": {
+          "sha": "9a897af0eb5126bd77da38efd3652fc81ddf2b3c",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/9a897af0eb5126bd77da38efd3652fc81ddf2b3c"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/e3cffca44d27451e9b5be7e19bdf1277450ad940",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/e3cffca44d27451e9b5be7e19bdf1277450ad940",
+      "html_url": "https://github.com/Kludex/starlette/commit/e3cffca44d27451e9b5be7e19bdf1277450ad940",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/e3cffca44d27451e9b5be7e19bdf1277450ad940/comments",
+      "author": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "6fc62ab696938e35925f99c68bb68671d6f84e9f",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/6fc62ab696938e35925f99c68bb68671d6f84e9f",
+          "html_url": "https://github.com/Kludex/starlette/commit/6fc62ab696938e35925f99c68bb68671d6f84e9f"
+        }
+      ]
+    },
+    {
+      "sha": "f14ee57f3ad4659a0496e509f9fa9ef08baf5697",
+      "node_id": "C_kwDOCELT_NoAKGYxNGVlNTdmM2FkNDY1OWEwNDk2ZTUwOWY5ZmE5ZWYwOGJhZjU2OTc",
+      "commit": {
+        "author": {
+          "name": "Michael Honaker",
+          "email": "mchonaker@gmail.com",
+          "date": "2025-07-10T22:52:42Z"
+        },
+        "committer": {
+          "name": "Michael Honaker",
+          "email": "mchonaker@gmail.com",
+          "date": "2025-07-10T22:52:42Z"
+        },
+        "message": "Slightly improve efficency of Size Check\n\nSigned-off-by: Michael Honaker <mchonaker@gmail.com>",
+        "tree": {
+          "sha": "874c5ef3113a623f7de784f7d1c5f11db2b8ec20",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/874c5ef3113a623f7de784f7d1c5f11db2b8ec20"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/f14ee57f3ad4659a0496e509f9fa9ef08baf5697",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/f14ee57f3ad4659a0496e509f9fa9ef08baf5697",
+      "html_url": "https://github.com/Kludex/starlette/commit/f14ee57f3ad4659a0496e509f9fa9ef08baf5697",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/f14ee57f3ad4659a0496e509f9fa9ef08baf5697/comments",
+      "author": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "e3cffca44d27451e9b5be7e19bdf1277450ad940",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/e3cffca44d27451e9b5be7e19bdf1277450ad940",
+          "html_url": "https://github.com/Kludex/starlette/commit/e3cffca44d27451e9b5be7e19bdf1277450ad940"
+        }
+      ]
+    },
+    {
+      "sha": "753e790fde6bac8f5cbce690dfd6f88846c24328",
+      "node_id": "C_kwDOCELT_NoAKDc1M2U3OTBmZGU2YmFjOGY1Y2JjZTY5MGRmZDZmODg4NDZjMjQzMjg",
+      "commit": {
+        "author": {
+          "name": "Michael Honaker",
+          "email": "mchonaker@gmail.com",
+          "date": "2025-07-11T07:54:44Z"
+        },
+        "committer": {
+          "name": "Michael Honaker",
+          "email": "mchonaker@gmail.com",
+          "date": "2025-07-11T07:54:44Z"
+        },
+        "message": "Update test to actually test the bug\n\nSigned-off-by: Michael Honaker <mchonaker@gmail.com>",
+        "tree": {
+          "sha": "0a518bf4cfae0a71bcce443cf5eecc07e86a7da7",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/0a518bf4cfae0a71bcce443cf5eecc07e86a7da7"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/753e790fde6bac8f5cbce690dfd6f88846c24328",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/753e790fde6bac8f5cbce690dfd6f88846c24328",
+      "html_url": "https://github.com/Kludex/starlette/commit/753e790fde6bac8f5cbce690dfd6f88846c24328",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/753e790fde6bac8f5cbce690dfd6f88846c24328/comments",
+      "author": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "f14ee57f3ad4659a0496e509f9fa9ef08baf5697",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/f14ee57f3ad4659a0496e509f9fa9ef08baf5697",
+          "html_url": "https://github.com/Kludex/starlette/commit/f14ee57f3ad4659a0496e509f9fa9ef08baf5697"
+        }
+      ]
+    },
+    {
+      "sha": "297c09e26edf58d5ce64903c7d08ed3d3c5027b2",
+      "node_id": "C_kwDOCELT_NoAKDI5N2MwOWUyNmVkZjU4ZDVjZTY0OTAzYzdkMDhlZDNkM2M1MDI3YjI",
+      "commit": {
+        "author": {
+          "name": "Michael Honaker",
+          "email": "mchonaker@gmail.com",
+          "date": "2025-07-11T07:59:43Z"
+        },
+        "committer": {
+          "name": "Michael Honaker",
+          "email": "mchonaker@gmail.com",
+          "date": "2025-07-11T08:02:57Z"
+        },
+        "message": "Fix test mypy issues\n\nSigned-off-by: Michael Honaker <mchonaker@gmail.com>",
+        "tree": {
+          "sha": "ce38dfd2f5fa34019156d464d034916e5dfab717",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/ce38dfd2f5fa34019156d464d034916e5dfab717"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/297c09e26edf58d5ce64903c7d08ed3d3c5027b2",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/297c09e26edf58d5ce64903c7d08ed3d3c5027b2",
+      "html_url": "https://github.com/Kludex/starlette/commit/297c09e26edf58d5ce64903c7d08ed3d3c5027b2",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/297c09e26edf58d5ce64903c7d08ed3d3c5027b2/comments",
+      "author": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "753e790fde6bac8f5cbce690dfd6f88846c24328",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/753e790fde6bac8f5cbce690dfd6f88846c24328",
+          "html_url": "https://github.com/Kludex/starlette/commit/753e790fde6bac8f5cbce690dfd6f88846c24328"
+        }
+      ]
+    },
+    {
+      "sha": "f1fee10953ab123215c72b3af6b02610f18ec261",
+      "node_id": "C_kwDOCELT_NoAKGYxZmVlMTA5NTNhYjEyMzIxNWM3MmIzYWY2YjAyNjEwZjE4ZWMyNjE",
+      "commit": {
+        "author": {
+          "name": "Michael Honaker",
+          "email": "37811263+HonakerM@users.noreply.github.com",
+          "date": "2025-07-15T06:19:55Z"
+        },
+        "committer": {
+          "name": "GitHub",
+          "email": "noreply@github.com",
+          "date": "2025-07-15T06:19:55Z"
+        },
+        "message": "Merge branch 'master' into fix_upload_file_hang",
+        "tree": {
+          "sha": "6ee77dc1e3bac4d4dd4cf657d524f90889808d18",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/6ee77dc1e3bac4d4dd4cf657d524f90889808d18"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/f1fee10953ab123215c72b3af6b02610f18ec261",
+        "comment_count": 0,
+        "verification": {
+          "verified": true,
+          "reason": "valid",
+          "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJodfMLCRC1aQ7uu5UhlAAA6h8QAISzxlnGmmgguFz0t1fZwgPo\nzQla9iTX+bw/XNJLi0PuIoCaTwByBQtpPv/FDuW1/8jtK8vZwvPMAn74p6mqifqc\nLdh2jUcImgJnkSiQToJq7Qg3Rk76kw7+hY4f++A8El08FOMcr+M/BF6E4FFIwCIR\nV4U+6u9gCPNdInEjs0r0RQgA2yM3bMh6QHsP4zfHHu3AMHaQPTe8SCCGfKCqHhBU\ntlbuYKOIGHIbDxLwtHVh/yJ0ndxBl1UFDTVlKmazmauHRmuGiQFIwBXucKbgDgPh\nU2aqcJrprGV1tb/hc6Cw50krq/x0ItwGTZgosoaqLlXte/PIUVwN/gzsZzChFy9r\nCPKlVHL/ZlCYAu6m4W5O+25TcTB2NobTPVkCjkW0ac477b7GbpbeEc5ZHd65D2Xx\nbtHY1uZB1Utf/FSXmtoXIdl+ba8NmwCtyMnXiqu9ARsV1z4K1zPB3JXrDKVgnGcp\n43wvhlWfbAYiJyUamAhVel2NK81jw2Y781Yfi3TrxUh72bp4mQyxhN6vJxFdX4tM\nSvsSAZ0uT48obJrAkoFAcPiZXzwI40qucycla/JqGg4j+k9kVaZ5M/XnQP5DgMSJ\njdy0ydBh6LOMXSHkhNaKIehaUBCywC97asIyyTrFeMoxrY5pZDxGWYgFbI5cHiH8\npVGwnLLg7yUs7xn4QUgb\n=1K1z\n-----END PGP SIGNATURE-----\n",
+          "payload": "tree 6ee77dc1e3bac4d4dd4cf657d524f90889808d18\nparent 297c09e26edf58d5ce64903c7d08ed3d3c5027b2\nparent 540ff5f076468eb69f827e76cb020e21fb39b3ca\nauthor Michael Honaker <37811263+HonakerM@users.noreply.github.com> 1752560395 +0900\ncommitter GitHub <noreply@github.com> 1752560395 +0900\n\nMerge branch 'master' into fix_upload_file_hang",
+          "verified_at": "2025-07-15T06:19:56Z"
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/f1fee10953ab123215c72b3af6b02610f18ec261",
+      "html_url": "https://github.com/Kludex/starlette/commit/f1fee10953ab123215c72b3af6b02610f18ec261",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/f1fee10953ab123215c72b3af6b02610f18ec261/comments",
+      "author": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "web-flow",
+        "id": 19864447,
+        "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+        "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/web-flow",
+        "html_url": "https://github.com/web-flow",
+        "followers_url": "https://api.github.com/users/web-flow/followers",
+        "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+        "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+        "organizations_url": "https://api.github.com/users/web-flow/orgs",
+        "repos_url": "https://api.github.com/users/web-flow/repos",
+        "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/web-flow/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "297c09e26edf58d5ce64903c7d08ed3d3c5027b2",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/297c09e26edf58d5ce64903c7d08ed3d3c5027b2",
+          "html_url": "https://github.com/Kludex/starlette/commit/297c09e26edf58d5ce64903c7d08ed3d3c5027b2"
+        },
+        {
+          "sha": "540ff5f076468eb69f827e76cb020e21fb39b3ca",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/540ff5f076468eb69f827e76cb020e21fb39b3ca",
+          "html_url": "https://github.com/Kludex/starlette/commit/540ff5f076468eb69f827e76cb020e21fb39b3ca"
+        }
+      ]
+    },
+    {
+      "sha": "50ae503979834a125b5a98e91781d30b17cd7b31",
+      "node_id": "C_kwDOCELT_NoAKDUwYWU1MDM5Nzk4MzRhMTI1YjVhOThlOTE3ODFkMzBiMTdjZDdiMzE",
+      "commit": {
+        "author": {
+          "name": "Marcelo Trylesinski",
+          "email": "marcelotryle@gmail.com",
+          "date": "2025-07-20T13:25:13Z"
+        },
+        "committer": {
+          "name": "Marcelo Trylesinski",
+          "email": "marcelotryle@gmail.com",
+          "date": "2025-07-20T13:25:13Z"
+        },
+        "message": "modify opinionated changes",
+        "tree": {
+          "sha": "fcf30a658518f017bd570f9d857c571529316787",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/fcf30a658518f017bd570f9d857c571529316787"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/50ae503979834a125b5a98e91781d30b17cd7b31",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/50ae503979834a125b5a98e91781d30b17cd7b31",
+      "html_url": "https://github.com/Kludex/starlette/commit/50ae503979834a125b5a98e91781d30b17cd7b31",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/50ae503979834a125b5a98e91781d30b17cd7b31/comments",
+      "author": {
+        "login": "Kludex",
+        "id": 7353520,
+        "node_id": "MDQ6VXNlcjczNTM1MjA=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/7353520?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/Kludex",
+        "html_url": "https://github.com/Kludex",
+        "followers_url": "https://api.github.com/users/Kludex/followers",
+        "following_url": "https://api.github.com/users/Kludex/following{/other_user}",
+        "gists_url": "https://api.github.com/users/Kludex/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/Kludex/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/Kludex/subscriptions",
+        "organizations_url": "https://api.github.com/users/Kludex/orgs",
+        "repos_url": "https://api.github.com/users/Kludex/repos",
+        "events_url": "https://api.github.com/users/Kludex/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/Kludex/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "Kludex",
+        "id": 7353520,
+        "node_id": "MDQ6VXNlcjczNTM1MjA=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/7353520?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/Kludex",
+        "html_url": "https://github.com/Kludex",
+        "followers_url": "https://api.github.com/users/Kludex/followers",
+        "following_url": "https://api.github.com/users/Kludex/following{/other_user}",
+        "gists_url": "https://api.github.com/users/Kludex/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/Kludex/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/Kludex/subscriptions",
+        "organizations_url": "https://api.github.com/users/Kludex/orgs",
+        "repos_url": "https://api.github.com/users/Kludex/repos",
+        "events_url": "https://api.github.com/users/Kludex/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/Kludex/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "f1fee10953ab123215c72b3af6b02610f18ec261",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/f1fee10953ab123215c72b3af6b02610f18ec261",
+          "html_url": "https://github.com/Kludex/starlette/commit/f1fee10953ab123215c72b3af6b02610f18ec261"
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "sha": "38eabec52743cb04dde53b17fdc19fe074a12841",
+      "filename": "starlette/datastructures.py",
+      "status": "modified",
+      "additions": 18,
+      "deletions": 4,
+      "changes": 22,
+      "blob_url": "https://github.com/Kludex/starlette/blob/50ae503979834a125b5a98e91781d30b17cd7b31/starlette%2Fdatastructures.py",
+      "raw_url": "https://github.com/Kludex/starlette/raw/50ae503979834a125b5a98e91781d30b17cd7b31/starlette%2Fdatastructures.py",
+      "contents_url": "https://api.github.com/repos/Kludex/starlette/contents/starlette%2Fdatastructures.py?ref=50ae503979834a125b5a98e91781d30b17cd7b31",
+      "patch": "@@ -428,6 +428,10 @@ def __init__(\n         self.size = size\n         self.headers = headers or Headers()\n \n+        # Capture max size from SpooledTemporaryFile if one is provided. This slightly speeds up future checks.\n+        # Note 0 means unlimited mirroring SpooledTemporaryFile's __init__\n+        self._max_mem_size = getattr(self.file, \"_max_size\", 0)\n+\n     @property\n     def content_type(self) -> str | None:\n         return self.headers.get(\"content-type\", None)\n@@ -438,14 +442,24 @@ def _in_memory(self) -> bool:\n         rolled_to_disk = getattr(self.file, \"_rolled\", True)\n         return not rolled_to_disk\n \n+    def _will_roll(self, size_to_add: int) -> bool:\n+        # If we're not in_memory then we will always roll\n+        if not self._in_memory:\n+            return True\n+\n+        # Check for SpooledTemporaryFile._max_size\n+        future_size = self.file.tell() + size_to_add\n+        return bool(future_size > self._max_mem_size) if self._max_mem_size else False\n+\n     async def write(self, data: bytes) -> None:\n+        new_data_len = len(data)\n         if self.size is not None:\n-            self.size += len(data)\n+            self.size += new_data_len\n \n-        if self._in_memory:\n-            self.file.write(data)\n-        else:\n+        if self._will_roll(new_data_len):\n             await run_in_threadpool(self.file.write, data)\n+        else:\n+            self.file.write(data)\n \n     async def read(self, size: int = -1) -> bytes:\n         if self._in_memory:"
+    },
+    {
+      "sha": "58f6a0c738814e00a7e095c0ce9346773c1c5df6",
+      "filename": "tests/test_formparsers.py",
+      "status": "modified",
+      "additions": 64,
+      "deletions": 2,
+      "changes": 66,
+      "blob_url": "https://github.com/Kludex/starlette/blob/50ae503979834a125b5a98e91781d30b17cd7b31/tests%2Ftest_formparsers.py",
+      "raw_url": "https://github.com/Kludex/starlette/raw/50ae503979834a125b5a98e91781d30b17cd7b31/tests%2Ftest_formparsers.py",
+      "contents_url": "https://api.github.com/repos/Kludex/starlette/contents/tests%2Ftest_formparsers.py?ref=50ae503979834a125b5a98e91781d30b17cd7b31",
+      "patch": "@@ -1,15 +1,20 @@\n from __future__ import annotations\n \n import os\n+import threading\n+from collections.abc import Generator\n from contextlib import AbstractContextManager, nullcontext as does_not_raise\n+from io import BytesIO\n from pathlib import Path\n-from typing import Any\n+from tempfile import SpooledTemporaryFile\n+from typing import Any, ClassVar\n+from unittest import mock\n \n import pytest\n \n from starlette.applications import Starlette\n from starlette.datastructures import UploadFile\n-from starlette.formparsers import MultiPartException, _user_safe_decode\n+from starlette.formparsers import MultiPartException, MultiPartParser, _user_safe_decode\n from starlette.requests import Request\n from starlette.responses import JSONResponse\n from starlette.routing import Mount\n@@ -104,6 +109,22 @@ async def app_read_body(scope: Scope, receive: Receive, send: Send) -> None:\n     await response(scope, receive, send)\n \n \n+async def app_monitor_thread(scope: Scope, receive: Receive, send: Send) -> None:\n+    \"\"\"Helper app to monitor what thread the app was called on.\n+\n+    This can later be used to validate thread/event loop operations.\n+    \"\"\"\n+    request = Request(scope, receive)\n+\n+    # Make sure we parse the form\n+    await request.form()\n+    await request.close()\n+\n+    # Send back the current thread id\n+    response = JSONResponse({\"thread_ident\": threading.current_thread().ident})\n+    await response(scope, receive, send)\n+\n+\n def make_app_max_parts(max_files: int = 1000, max_fields: int = 1000, max_part_size: int = 1024 * 1024) -> ASGIApp:\n     async def app(scope: Scope, receive: Receive, send: Send) -> None:\n         request = Request(scope, receive)\n@@ -303,6 +324,47 @@ def test_multipart_request_mixed_files_and_data(tmpdir: Path, test_client_factor\n     }\n \n \n+class ThreadTrackingSpooledTemporaryFile(SpooledTemporaryFile[bytes]):\n+    \"\"\"Helper class to track which threads performed the rollover operation.\n+\n+    This is not threadsafe/multi-test safe.\n+    \"\"\"\n+\n+    rollover_threads: ClassVar[set[int | None]] = set()\n+\n+    def rollover(self) -> None:\n+        ThreadTrackingSpooledTemporaryFile.rollover_threads.add(threading.current_thread().ident)\n+        super().rollover()\n+\n+\n+@pytest.fixture\n+def mock_spooled_temporary_file() -> Generator[None]:\n+    try:\n+        with mock.patch(\"starlette.formparsers.SpooledTemporaryFile\", ThreadTrackingSpooledTemporaryFile):\n+            yield\n+    finally:\n+        ThreadTrackingSpooledTemporaryFile.rollover_threads.clear()\n+\n+\n+def test_multipart_request_large_file_rollover_in_background_thread(\n+    mock_spooled_temporary_file: None, test_client_factory: TestClientFactory\n+) -> None:\n+    \"\"\"Test that Spooled file rollovers happen in background threads.\"\"\"\n+    data = BytesIO(b\" \" * (MultiPartParser.spool_max_size + 1))\n+\n+    client = test_client_factory(app_monitor_thread)\n+    response = client.post(\"/\", files=[(\"test_large\", data)])\n+    assert response.status_code == 200\n+\n+    # Parse the event thread id from the API response and ensure we have one\n+    app_thread_ident = response.json().get(\"thread_ident\")\n+    assert app_thread_ident is not None\n+\n+    # Ensure the app thread was not the same as the rollover one and that a rollover thread exists\n+    assert app_thread_ident not in ThreadTrackingSpooledTemporaryFile.rollover_threads\n+    assert len(ThreadTrackingSpooledTemporaryFile.rollover_threads) == 1\n+\n+\n def test_multipart_request_with_charset_for_filename(tmpdir: Path, test_client_factory: TestClientFactory) -> None:\n     client = test_client_factory(app)\n     response = client.post("
+    }
+  ]
+}

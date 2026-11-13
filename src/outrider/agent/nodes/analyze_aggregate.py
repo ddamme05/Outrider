@@ -1,18 +1,12 @@
 # Aggregate fold for the parallel-analyze fan-out per specs/2026-07-05-parallel-analyze.md.
-"""Combine worker outcomes into one `AnalysisRound` and its event inputs.
+"""Collect file results into one analysis round.
 
-`fold_worker_outcomes` is pure; `analyze_aggregate` emits the resulting
-events and anomalies. Workers do not create rounds (DECISIONS.md#063).
+`fold_worker_outcomes` combines findings, removes duplicates and applies the
+finding limit. It processes files in path order so worker completion timing
+cannot change which duplicate survives.
 
-Sorted path order makes duplicate winners and output order independent
-of worker completion order. Admission deduplicates by `(content_hash,
-proposal_hash)`, then keeps the first finding per content hash before
-applying the severity cap. Round identity sorts the examined/skipped paths
-and retained content hashes, so reordering the same inputs keeps the same ID.
-
-Counters classify findings by recorded producer and cache provenance,
-not evidence tier. Kept findings use `ReviewFinding.validated_clone()`
-to rerun validation and avoid sharing objects with worker outcomes.
+`analyze_aggregate` records the retained findings and the round's totals
+(DECISIONS.md#063).
 """
 
 from __future__ import annotations
@@ -33,6 +27,7 @@ from outrider.ast_facts.models import SkipReason
 from outrider.audit.events import AnalyzeCompletedEvent, ReviewPhaseEvent
 from outrider.llm.pricing import PRICING_VERSION
 from outrider.policy.canonical import compute_phase_id, compute_round_id
+from outrider.policy.publish_eligibility import verification_hold_finding_ids
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.schemas.analysis_round import (
     MAX_FINDINGS_HARD_CAP,
@@ -42,6 +37,9 @@ from outrider.schemas.analysis_round import (
 from outrider.schemas.triage_result import ReviewTier
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+    from uuid import UUID
+
     from pydantic import AwareDatetime
 
     from outrider.anomaly.sinks import AnomalySink
@@ -108,6 +106,7 @@ def fold_worker_outcomes(
     pass_index: int,
     started_at: AwareDatetime,
     ended_at: AwareDatetime,
+    protected_finding_ids: Collection[UUID] = (),
 ) -> AggregateFold:
     """Fold one pass in sorted path order, regardless of completion order.
 
@@ -130,8 +129,8 @@ def fold_worker_outcomes(
     admitted_finding_keys: set[tuple[str, str]] = set()
     trace_candidates: list[TraceCandidate] = []
     subsumed_matches: list[ObservedSubsumedMatch] = []
-    served_content_hashes: set[str] = set()
-    producer_content_hashes: set[str] = set()
+    served_finding_ids: set[UUID] = set()
+    producer_finding_ids: set[UUID] = set()
     n_llm_calls = 0
     n_proposals_seen = 0
     n_proposals_rejected = 0
@@ -167,9 +166,24 @@ def fold_worker_outcomes(
         n_trace_candidates_dropped_malformed += outcome.n_trace_candidates_dropped_malformed
         admitted_count_before_dedup += len(outcome.admitted_findings)
         served_count_before_dedup += len(outcome.served_content_hashes)
-        producer_count_before_dedup += len(outcome.producer_observed_hashes)
-        served_content_hashes.update(outcome.served_content_hashes)
-        producer_content_hashes.update(outcome.producer_observed_hashes)
+        producer_count_before_dedup += (
+            len(outcome.producer_finding_ids)
+            if outcome.producer_finding_ids
+            else len(outcome.producer_observed_hashes)
+        )
+        served_finding_ids.update(
+            finding.finding_id
+            for finding in outcome.admitted_findings
+            if finding.content_hash in outcome.served_content_hashes
+        )
+        producer_finding_ids.update(
+            outcome.producer_finding_ids
+            or tuple(
+                finding.finding_id
+                for finding in outcome.admitted_findings
+                if finding.content_hash in outcome.producer_observed_hashes
+            )
+        )
         input_tokens += outcome.input_tokens
         output_tokens += outcome.output_tokens
         cache_read_tokens += outcome.cache_read_tokens
@@ -180,26 +194,29 @@ def fold_worker_outcomes(
         trace_candidates.extend(outcome.trace_candidates)
         subsumed_matches.extend(outcome.subsumed_matches)
 
-    # Different proposals can share a content hash; AnalysisRound requires
-    # unique content hashes, so keep the first finding in path order.
+    # Select one original representative per content hash, retaining the strongest
+    # admitted tier. Equal-strength variants keep deterministic path/input order.
     unique_findings = _collapse_by_content_hash(admitted_findings)
 
-    # Keep gated findings beyond the soft cap (hitl-gates-high-severity).
-    # More gated findings than the hard ceiling raises before round creation.
+    # Keep severity-gated and known held findings beyond the soft cap.
+    # Too many protected findings raises before round creation.
     kept_findings, dropped_findings = cap_findings_by_severity(
-        unique_findings, soft_cap=MAX_FINDINGS_PER_ROUND, hard_cap=MAX_FINDINGS_HARD_CAP
+        unique_findings,
+        soft_cap=MAX_FINDINGS_PER_ROUND,
+        hard_cap=MAX_FINDINGS_HARD_CAP,
+        protected_finding_ids=protected_finding_ids,
     )
 
     # Recount kept findings by provenance: served, then producer-observed,
-    # then model proposals. Served findings take precedence over producer hashes.
+    # then model proposals, using the selected originals' IDs.
     kept_served_count = sum(
-        1 for finding in kept_findings if finding.content_hash in served_content_hashes
+        1 for finding in kept_findings if finding.finding_id in served_finding_ids
     )
     kept_producer_count = sum(
         1
         for finding in kept_findings
-        if finding.content_hash not in served_content_hashes
-        and finding.content_hash in producer_content_hashes
+        if finding.finding_id not in served_finding_ids
+        and finding.finding_id in producer_finding_ids
     )
     kept_proposal_count = len(kept_findings) - kept_served_count - kept_producer_count
     admitted_proposal_count_before_dedup = (
@@ -312,6 +329,12 @@ async def analyze_aggregate(
         pass_index=pass_index,
         started_at=started_at,
         ended_at=ended_at,
+        protected_finding_ids=verification_hold_finding_ids(
+            [finding for outcome in outcomes for finding in outcome.admitted_findings],
+            state.native_candidates,
+            state.candidate_assessments,
+            policy_version=active_policy_version,
+        ),
     )
 
     # Validate accounting before anomalies and findings can be emitted.
@@ -324,6 +347,7 @@ async def analyze_aggregate(
         n_llm_calls=fold.n_llm_calls,
         n_proposals_seen=fold.n_proposals_seen,
         n_findings_emitted=fold.n_findings_emitted,
+        selected_finding_ids=tuple(finding.finding_id for finding in fold.round.findings),
         n_findings_served=fold.n_findings_served,
         n_findings_observed=fold.n_findings_observed,
         n_proposals_superseded_by_observed=fold.n_proposals_superseded_by_observed,
@@ -408,4 +432,9 @@ async def analyze_aggregate(
     return {
         "analysis_rounds": [fold.round],
         "trace_candidates": list(fold.trace_candidates),
+        "native_candidates": [
+            ref
+            for outcome in sorted(outcomes, key=lambda item: item.path)
+            for ref in outcome.native_candidates
+        ],
     }

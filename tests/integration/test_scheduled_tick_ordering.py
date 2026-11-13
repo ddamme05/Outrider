@@ -1,18 +1,8 @@
-"""End-to-end: the production tick reconciles BEFORE the #012 install hard-delete.
+"""Check that reconciliation restores live installations before deletion runs.
 
-Regression for the tick-ordering data-loss bug (Arc B2, DECISIONS.md#012/#065): the scheduler
-hard-deleted expired tombstones (`purge_expired_installations`) in the SAME tick, so a user who
-reinstalled during the grace window — whose `installation.created` deliberately does NOT clear the
-tombstone — could be purged before the reconcile janitor confirmed liveness. `run_scheduled_tick`
-runs reconcile FIRST, so the janitor CLEARS the tombstone on a GitHub-listed install before the
-hard-delete runs; the once-expired install survives the complete tick.
-
-Only the install lifecycle runs for real (reconcile + `purge_expired_installations`); the unrelated
-sweep sub-jobs (hitl-expiry, the TTL review purge's own work, replay-verdict) are stubbed to no-ops
-so the test needs no HITL graph. The install-purge still RUNS (reconcile confirmed liveness) — it
-just finds nothing due, because the restore beat it. That is the guarantee: even with the
-hard-delete enabled, reconcile-first protects the reinstalled install.
-"""
+Run the installation lifecycle against PostgreSQL with unrelated sweep jobs
+stubbed. A reinstalled installation must survive the complete tick even if its
+old deletion deadline has passed. See DECISIONS.md#012 and #065."""
 
 from __future__ import annotations
 

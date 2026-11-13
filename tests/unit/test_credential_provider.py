@@ -1,10 +1,7 @@
-"""Unit tests for `github.credentials` — the credential-source mode + provider (#070).
+"""Check credential-source selection and environment-backed credentials.
 
-Covers mode resolution (default env / database / invalid / case-insensitive), the env-mode
-snapshot + always-configured, and the fail-loud selected-source validation in
-`build_credential_provider`. The `database` provider's DB read + decrypt + fail-closed is an
-integration test (real Postgres) — see tests/integration/test_credential_provider_database.py.
-"""
+Database reads and decryption use real PostgreSQL in
+integration/test_credential_provider_database.py. See DECISIONS.md#070."""
 
 from __future__ import annotations
 

@@ -1,23 +1,8 @@
-"""Arc 2 — the verdict classifier is TOTAL, prose-blind, and bound to its bytes.
+"""Check probe verdicts for transport failures and captured responses.
 
-Three properties under test, each of which was a review finding before it was code:
-
-1. **Totality over BOTH arms.** Transport (any HTTP status, any timeout) AND
-   capture (any envelope, including malformed and ambiguous ones). An earlier
-   draft closed the transport arm and left the response arm open, so a both-null
-   envelope could have counted toward `PARK` — evidence of absence manufactured
-   from a malformed response.
-2. **Structure-only.** Request rejection is decided POSITIONALLY (which row),
-   never by reading vendor prose, because an invalid-schema 400 and any other 400
-   are indistinguishable from the fields the boundary exposes.
-3. **Every fact bound to the bytes it came from.** A row is one `EvaluatedRow`.
-   The previous shape passed the envelope, the finding assessment, and the
-   zero-findings flag as independent arguments, so a caller could pair
-   `{"findings":[]}` with `returned_any_finding=True` — an impossible observation
-   that still produced a positive verdict.
-
-See `specs/2026-07-20-arc2-strict-schema-feasibility.md`.
-"""
+Classification uses structured observations, not vendor prose. Each derived fact
+must stay bound to its captured bytes; malformed or mismatched evidence must not
+produce a positive verdict. See specs/2026-07-20-arc2-strict-schema-feasibility.md."""
 
 from __future__ import annotations
 

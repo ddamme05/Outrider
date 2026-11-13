@@ -1,18 +1,8 @@
-"""Arc 2 — the derived strict schema encodes the tier/proof contract at the wire.
+"""Check tier/proof shapes with the reference JSON Schema validator.
 
-The arc's central claim is that a strict `json_schema` makes invalid tier/proof
-shapes UNREPRESENTABLE rather than merely parser-rejected. These tests validate
-that claim with the reference JSON Schema implementation.
-
-**What a pass here does and does not mean.** `jsonschema` agreeing is evidence
-the encoding is well-formed and discriminating; it is NOT evidence that OpenAI's
-strict-subset validator agrees, and it is not evidence about authenticity (that
-a `query_match_id` names a query that actually fired — a parser concern, see
-`test_arc2_strict_parser_contract.py`). Wire acceptance is exactly what the one
-paid probe row exists to answer.
-
-See `specs/2026-07-20-arc2-strict-schema-feasibility.md`.
-"""
+Passing here proves neither OpenAI wire acceptance nor proof authenticity;
+the paid probe and parser checks cover those separately.
+See specs/2026-07-20-arc2-strict-schema-feasibility.md."""
 
 from __future__ import annotations
 

@@ -1,21 +1,8 @@
-"""Replay-verdict idempotency: partial unique index on audit_events.
+"""Keep one saved replay verdict per review.
 
-One `replay_verdict` event per review — the read-side idempotency for the
-background replay-verdict projector (`sweep/replay_verdict.py`), keyed on
-`review_id` and scoped to `event_type = 'replay_verdict'` so every other event
-type keeps its `event_id`-PK idempotency (DECISIONS.md#026). The projector's
-`emit_replay_verdict` `on_conflict_do_nothing(index_where="event_type =
-'replay_verdict'")` must mirror this WHERE clause exactly, or the conflict-arbiter
-falls through to a seq scan and idempotency breaks.
-
-Built `CONCURRENTLY` in an autocommit block (no SHARE lock on the hot append-only
-table), with a fail-loud post-build `indisvalid AND indisready` verification —
-mirror of the `4b9f1c5a7e21` / `33f8fe051bec` natural-key index migrations.
-`replay_verdict` is a brand-new event type, so no rows can pre-exist; no
-duplicate-group pre-flight is needed.
-
-The append-only trigger binds `BEFORE UPDATE OR DELETE` only (genesis
-`af138edd4b57`), so appending verdict rows is permitted (trust-boundary #7).
+A unique index prevents duplicate replay_verdict events for the same review.
+The migration builds it concurrently and checks validity before finishing.
+Follow its recovery instructions if an earlier build left an invalid index.
 """
 
 from collections.abc import Sequence

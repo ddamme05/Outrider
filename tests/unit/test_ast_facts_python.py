@@ -585,7 +585,7 @@ def scope_b():
 
 
 def test_exclusion_rules_exact_shape() -> None:
-    """Pin the full 17-rule tuple in declared precedence order (the
+    """Pin the full 13-rule tuple in declared precedence order (the
     JS/TS suffixes joined per specs/2026-07-02-js-ts-tree-sitter-adapters.md)."""
     from outrider.ast_facts.models import ExclusionRule
 
@@ -600,10 +600,6 @@ def test_exclusion_rules_exact_shape() -> None:
         ExclusionRule(reason=SkipReason.VENDORED, kind="path_prefix", pattern="venv/"),
         ExclusionRule(reason=_gen, kind="filename_suffix", pattern="_pb2.py"),
         ExclusionRule(reason=_gen, kind="filename_suffix", pattern="_pb2_grpc.py"),
-        ExclusionRule(reason=_gen, kind="filename_suffix", pattern=".pyi"),
-        ExclusionRule(reason=_gen, kind="filename_suffix", pattern=".d.ts"),
-        ExclusionRule(reason=_gen, kind="filename_suffix", pattern=".d.mts"),
-        ExclusionRule(reason=_gen, kind="filename_suffix", pattern=".d.cts"),
         ExclusionRule(reason=_min, kind="filename_suffix", pattern=".min.py"),
         ExclusionRule(reason=_min, kind="filename_suffix", pattern=".min.js"),
         ExclusionRule(reason=_min, kind="filename_suffix", pattern=".min.mjs"),
@@ -627,7 +623,7 @@ def test_exclusion_rules_exact_shape() -> None:
         ("venv/foo.py", b"pass", SkipReason.VENDORED),
         ("foo_pb2.py", b"pass", SkipReason.GENERATED_FILENAME),
         ("foo_pb2_grpc.py", b"pass", SkipReason.GENERATED_FILENAME),
-        ("foo.pyi", b"pass", SkipReason.GENERATED_FILENAME),
+        ("foo.pyi", b"pass", None),
         ("foo.min.py", b"pass", SkipReason.MINIFIED),
         ("foo.py", b"# DO NOT EDIT\n", SkipReason.GENERATED_BANNER),
         ("normal.py", b"def x(): pass\n", None),

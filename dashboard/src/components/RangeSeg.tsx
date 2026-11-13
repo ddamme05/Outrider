@@ -1,5 +1,6 @@
-// Select Overview's analytics window. The caller owns the value and uses it
-// in metric query keys; this control does not change filters on other routes.
+// Choose the time range for Overview's charts. The page owns the selection
+// and data queries; this control does not change filters on other pages.
+
 export type MetricsWindow = "24h" | "7d" | "30d";
 
 const WINDOWS: MetricsWindow[] = ["24h", "7d", "30d"];

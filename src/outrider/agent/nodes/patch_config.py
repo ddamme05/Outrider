@@ -1,10 +1,10 @@
-# See DECISIONS.md#040 — suggested-patch generation feature flags.
-"""Startup settings for suggested fixes (DECISIONS.md#040).
+"""Load the enable flag and per-review limit for suggested fixes.
 
-build_graph injects the enable flag and per-review suggestion cap into synthesis
-(`nodes-receive-deps-via-closure`). ModelConfig owns the patch model selection.
-Disabled generation makes no patch call; enabled generation selects at most the
-configured number of single-line HIGH/CRITICAL findings, CRITICAL first."""
+Startup passes these settings into synthesis (nodes-receive-deps-via-closure).
+ModelConfig selects the model. Disabled generation makes no fix request.
+
+See DECISIONS.md#040.
+"""
 
 from __future__ import annotations
 

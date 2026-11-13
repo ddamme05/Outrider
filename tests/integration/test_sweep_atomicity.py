@@ -1,18 +1,7 @@
-"""Multi-table purge is atomic — partial failures roll back ALL deletes.
+"""Check that a failed multi-table purge rolls back content and purge records.
 
-The schema-layer spec requires the sweep job to wrap its multi-table
-delete in a single transaction so that a failure during, say, the
-findings delete rolls back any llm_call_content delete that already
-happened. Without this, a partial sweep would silently lose content
-without writing the per-table purge_audit row, breaking the forensic
-trail.
-
-Approach: monkeypatch ``_write_purge_audit`` to raise after the second
-call. The deletes happen first (all four retention tables); writes to
-purge_audit happen after. By raising mid-purge_audit-write, the test
-verifies the whole transaction rolls back — both content rows AND any
-purge_audit rows that landed before the failure.
-"""
+Raise during purge-audit writes after content deletes have run, then verify
+that the entire transaction was rolled back."""
 
 from typing import Any
 

@@ -1,38 +1,10 @@
-"""Trace admission instrument for the openai host (openai-native-host spec).
+"""Grade trace ranking, candidate emission and resolution without paid calls here.
 
-Frozen pass predicate (spec "Gates before any production-shaped use"),
-covered across THREE surfaces because no single exchange carries it:
-
-  - RANKING (the trace model's own call): the expected candidate ranked
-    first, valid permutation, no fabricated candidate id, zero rejected
-    responses — graded by the PRODUCTION `parse_trace_ranking`.
-  - EMISSION (the analyze model proposing candidates — FUP-236's actual
-    failure surface, which the finding-graded scorecard does not cover):
-    graded through the PRODUCTION chain — real admission incl. the #024
-    corrected sibling, join to an ADMITTED finding, deterministic ladder
-    resolution. The honest bare-symbol form passes via its sibling; a
-    fabricated module ("app.user_store" for a DI'd parameter) fails. An
-    all-red emission result does NOT admit the host: change the production
-    context and rerun, approve a spec amendment, or do not ship.
-  - RESOLUTION: deterministic probe code, exercised end-to-end here by the
-    real-node test (scripted ranking -> probe ladder -> resolved
-    TraceDecision), not a model surface.
-
-PRODUCTION-REACHABLE scenario: both ranking candidates share ONE finding's
-provenance — production buckets candidates per finding and SKIPS the ranking
-call when every bucket is a singleton, so cross-finding candidates would
-capture a request the real node never sends. The real-node test below proves
-the provider IS invoked for this exact scenario.
-
-ONE canonical paid path: the paid rows live in the wire probe
-(`<model>:trace` for node-capable models, `<model>:trace_emission` for all
-full-matrix models). This file never spends: scripted negative twins prove
-the graders can fail, and the fixture-graded halves resolve captures THROUGH
-THE VERIFIED MANIFEST (`verified_capture_fixture` — versions, hashes, row
-verdicts, adjudication all checked; a stale fixture left behind by a failed
-rerun cannot grade). Scenario constants are duplicated in the probe
-deliberately; drift fails loud through the parsers.
-"""
+Use production parsers and real node checks with scripted negative examples.
+Ranking candidates share one finding so the scenario actually reaches the
+ranking call. Captured responses must come through the verified manifest;
+stale or unverified files cannot establish readiness. Paid requests belong
+to the separate wire probe. An all-failing emission result cannot admit a host."""
 
 from __future__ import annotations
 
@@ -425,6 +397,8 @@ def test_emission_grader_negative_twins() -> None:
     finding has none), a missing expected finding, and a non-conforming
     response are each caught; the tied real-import emission passes."""
 
+    source_lines = _EMISSION_FILE_CONTENT.splitlines()
+
     def _finding_dict(
         candidates: list[dict[str, str]],
         *,
@@ -436,7 +410,7 @@ def test_emission_grader_negative_twins() -> None:
             "evidence_tier": "judged",
             "title": "SQL concat from request parameter",
             "description": "owner concatenated into the orders query",
-            "evidence": "run_query(...)",
+            "evidence": source_lines[line - 1],
             "line_start": line,
             "line_end": line,
             "trace_candidates": candidates,
@@ -474,15 +448,9 @@ def test_emission_grader_negative_twins() -> None:
     forensic = _analyze_response(
         [
             {
-                "finding_type": "sql_injection",
+                **_finding_dict(real),
                 "evidence_tier": "inferred",
                 "trace_path": ["app/db.py"],
-                "title": "SQL concat from request parameter",
-                "description": "owner concatenated into the orders query",
-                "evidence": "run_query(...)",
-                "line_start": _EMISSION_TAINT_LINE,
-                "line_end": _EMISSION_TAINT_LINE,
-                "trace_candidates": real,
             }
         ]
     )
@@ -539,6 +507,7 @@ def test_emission_grader_negative_twins() -> None:
             _finding_dict(real, finding_type="missing_error_handling", line=3),
         ]
     )
+    assert len(_emission_parse(untied).admitted_findings) == 2
     verdict, _ = _grade_emission(untied)
     assert verdict == "none_emitted"
 

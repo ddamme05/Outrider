@@ -1,13 +1,11 @@
-# AST-facts public surface per specs/2026-04-30-ast-facts-module.md.
-"""Expose domain models eagerly and load parsers only when requested.
+"""Read source structure without exposing parser objects to the rest of Outrider.
 
-Models, Protocols, errors, and enums import without tree-sitter. Parse entry
-points and triviality helpers load their owning grammar through __getattr__
-(DECISIONS.md#018 point 6). Adapter classes stay in their own modules; callers
-can construct them through registry.get_adapter_factory.
+Models and errors import immediately. Parser entry points load on demand;
+registry.get_adapter_factory provides factories for constructing adapters.
+Importing this package must not load a grammar (DECISIONS.md#018).
 
-tests/integration/test_ast_facts_query_registry.py checks the import-light
-contract in a fresh subprocess, including audit consumers of SkipReason.
+See specs/2026-04-30-ast-facts-module.md and the AST firewall in
+docs/trust-boundaries.md.
 """
 
 from outrider.ast_facts.base import ImportPathResolver, LanguageAdapter

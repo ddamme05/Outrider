@@ -1,11 +1,8 @@
-"""SlackWebClientNotifier — the slack_sdk-backed provider.
+"""Check Slack posting, updates, and typed errors with a fake SDK client.
 
-Pins the post→ts / update flow against an injected fake AsyncWebClient, the
-empty-token guard, and the SlackApiError → typed-exception translation
-(auth / channel / rate-limit / transient / api-response). Importing slack_sdk's
-SlackApiError here is the documented surface-tier test exception (wrapper test).
-See specs/2026-06-15-slack-dashboard-in-slack.md.
-"""
+Cover invalid tokens and auth, channel, rate-limit, transient, and API failures.
+SlackApiError is permitted in this wrapper test.
+See specs/2026-06-15-slack-dashboard-in-slack.md."""
 
 from __future__ import annotations
 

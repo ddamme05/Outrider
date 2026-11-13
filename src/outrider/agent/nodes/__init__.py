@@ -1,5 +1,5 @@
-"""Review phases and per-file workers for the LangGraph review graph.
+"""Review steps called by the workflow in agent/graph.py.
 
-Async bodies receive ReviewState plus closure-injected dependencies. They return
-state deltas; intake and the analyze planner also return routing Commands.
-`agent/graph.py` wires the seven review phases and analyze's fan-out workers."""
+Each async function receives saved review data and injected services, then
+returns updated fields. Intake and analysis can also choose the next step.
+"""

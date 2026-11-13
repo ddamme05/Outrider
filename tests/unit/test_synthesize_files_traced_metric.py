@@ -1,27 +1,8 @@
-# See specs/2026-05-28-synthesize-node.md §Audit append-only.
-# See DECISIONS.md#030-reviewreport-tuple-not-list-findings-field
-# (the canonical-record anchor for the metric's union recipe semantic;
-# this file is the executable contract pin in #030's Referenced from line).
-"""Unit tests for `_compute_files_traced_beyond_diff`.
+"""Check the count of traced files outside the PR's changed-file set.
 
-Pins the union semantic CodeRabbit 2026-05-28 catch + Codex narrowing
-codified at `agent/nodes/synthesize.py:391-432`:
-
-  files_traced_beyond_diff =
-      | { decision.target_file for d in state.trace_decisions
-                                if d.target_file is not None }
-      | { p for d in state.trace_decisions for p in d.resolved_candidate_paths }
-      | { f.path for f in state.trace_fetched_files }
-      - { cf.path for cf in state.pr_context.changed_files }
-
-"Beyond diff" = "outside the PR's changed-files set" — NOT
-"Phase-2-fetched specifically." Per Pass-1 multi-lens audit
-(adversarial F1): the rewritten union has THREE input sources but
-the prior implementation only fed one, so the new branches need
-direct regression-pin coverage. Otherwise a future refactor
-that drops `resolved_candidate_paths` or `trace_fetched_files` from
-the union would silently pass CI.
-"""
+Count the union of decision targets, resolved candidate paths, and fetched files,
+then remove changed PR files. It is not just a count of fetched files.
+See specs/2026-05-28-synthesize-node.md and DECISIONS.md#030."""
 
 from __future__ import annotations
 

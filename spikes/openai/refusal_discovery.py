@@ -1,53 +1,15 @@
-"""Bounded refusal-elicitation discovery for the openai native host — a
-FREE-STANDING probe that isolates the ONE wire behavior the main probe's
-refusal row exists to admit: a non-null structured `message.refusal` under
-production json_object mode.
+"""Look for structured refusals using production-shaped OpenAI requests.
 
-Why this is separate from `probe.py`. The probe's v4 refusal row used an
-adversarial ransomware elicitation that conflated TWO independent vendor
-safety layers, so its two red outcomes proved nothing about the wire the
-provider actually normalizes:
-  - Sol → OpenAI's API-LEVEL cybersecurity screen returned HTTP 400
-    (`cyber_policy`) BEFORE the model ran. The request never produced a
-    `choices[0].message` at all.
-  - Luna → complied IN-BAND: valid JSON, `message.refusal` null,
-    `finish_reason="stop"`, a polite decline written into a refusal-typed
-    finding. The structured-refusal wire never fired.
-The provider's `_extract_assistant_text` normalizes a non-empty
-`message.refusal` (`finish_reason="stop"` → `"refusal"`,
-openai_compatible_provider.py) — the pre-ship gate is meant to prove THAT
-path against the real host. A single conflated prompt cannot; hence this
-bounded matrix over NON-cyber refusal categories, on the exact production
-json_object request shape.
+The default mode can make paid calls over a bounded model/prompt matrix.
+--dry-run builds requests without network access; --self-test checks local logic.
+The tested signal is a populated message.refusal, rather than refusal prose
+inside an ordinary response (DECISIONS.md#056).
 
-Isolation guarantees (why running this can never taint an admission):
-  - It writes ONLY under `spikes/openai/refusal_discovery_out/` (gitignored),
-    NEVER `fixtures/` and NEVER `manifest.json`. An import-time guard (a real
-    `raise`, not an assert) pins the output dir OUTSIDE the fixtures dir, so a
-    copy/paste that repointed it at fixtures would fail before any call.
-  - It produces NO manifest and sets no admission state; the scorecard gate
-    is blind to it. Its only product is console evidence + per-row raw JSON
-    for the operator to inspect.
-
-Outcome → action (admission is PER MODEL, #056 — each model reported independently):
-  - EVERY model COVERED (a non-null `message.refusal` on some candidate) → success.
-    Freeze the shared/per-model map into `probe.py::_REFUSAL_ELICITATIONS`, flip
-    `_REFUSAL_ELICITATIONS_FROZEN = True`, rerun the full probe.
-  - A model that CLEANLY reaches `message.refusal` on NO candidate (every call
-    completed) → CLEAN-UNCOVERED: legitimate amendment/no-ship evidence FOR THAT
-    MODEL under the current gate.
-  - A model with no winner but ANY errored candidate (401/permission/transient) →
-    INCONCLUSIVE: a FAILED observation, not proof of unreachability (the
-    untrusted-arm rule) — resolve the error and re-run THAT model.
-  A mixed run reports every model on its own line; an inconclusive model never
-  invalidates a peer's clean evidence. Act on the clean-uncovered models; re-run
-  the inconclusive ones. Do NOT amend on an inconclusive model.
-
-Run (PAID, bounded — |models| × |candidates| short single-shot calls; default
-  models Sol + Luna, `--models=gpt-5.6-terra` for the on-demand Terra fallback):
-  op run --env-file=.env -- uv run --no-sync python spikes/openai/refusal_discovery.py
-Dry  (free): uv run --no-sync python spikes/openai/refusal_discovery.py --dry-run
-Self-test (free, pins the selector + parser): ... refusal_discovery.py --self-test
+Results go only to refusal_discovery_out/, never the admission fixtures or their
+manifest. A model with no observed refusal and any failed request remains
+inconclusive. Clean completed runs can establish that none of the tested prompts
+elicited the signal. After reviewing a winner, freeze its prompt in probe.py and
+rerun the full capture; discovery does not admit a model by itself.
 """
 
 from __future__ import annotations

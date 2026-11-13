@@ -1,13 +1,7 @@
-"""Unit tests for `coordinates.diff_line_to_scope`.
+"""Check diff-line mapping to scopes, including decorators and nested boundaries.
 
-Per docs/spec.md §5.6 — covers the six edge cases enumerated in the Month 0
-spike `spikes/tree_sitter/demos/demo_q6_diff_line_to_scope.py` (decorator
-line, first/last line of nested function, class-body line between methods,
-module-level comment, line outside file range), plus the multi-file
-scope-list disambiguation case and the repeated-call idempotence property.
-
-See DECISIONS.md#006-two-month-0-spikes-not-five for the test discipline.
-"""
+Cover file disambiguation and repeated calls. See docs/spec.md §5.6,
+spikes/tree_sitter/demos/demo_q6_diff_line_to_scope.py, and DECISIONS.md#006."""
 
 from __future__ import annotations
 

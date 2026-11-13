@@ -1,30 +1,11 @@
-# See DECISIONS.md#070 — the durable singleton setup state machine (CAS transitions + recovery).
-"""The App-Manifest onboarding state machine (`DECISIONS.md#070`).
+"""Save and recover the progress of GitHub App setup.
 
-A durable, DB-enforced **singleton** (`setup_state` id=1) that owns the onboarding lifecycle:
+Only one setup attempt can be active. Database updates check the expected
+status so concurrent requests cannot both advance it. Callback consumption and
+credential activation each happen atomically with their related state change.
 
-    UNCONFIGURED → AWAITING_CALLBACK → CONVERTING → CONFIGURED   (+ ORPHANED)
-
-Every transition is a **compare-and-swap on `status`** (`UPDATE ... WHERE status=<from>`), never a
-SELECT-then-act — so concurrency is resolved by Postgres row locks, not application checks (spec
-§Setup state machine). Recovery is **lazy** (folded into the next `POST /setup`), plus a startup
-check for the stale-`CONVERTING` crash case; an abandoned `AWAITING_CALLBACK` clears via the lazy
-path only. There is no periodic sweep.
-
-Transition summary:
-- `begin_setup` — atomic `UNCONFIGURED → AWAITING_CALLBACK` CAS + nonce insert, preceded by lazy
-  repair (expired `AWAITING_CALLBACK → UNCONFIGURED`, stale `CONVERTING → ORPHANED`). A concurrent
-  second init loses the CAS → `SetupConflictError`.
-- `consume_callback` — atomic delete-on-consume of the nonce + `AWAITING_CALLBACK → CONVERTING`,
-  returning the attempt binding for the caller to verify the conversion response against.
-- `mark_configured` — credential insert (under the single-active-row index) + `CONVERTING →
-  CONFIGURED`, in ONE transaction (F5): a crash leaves neither active-creds-without-CONFIGURED nor
-  the inverse.
-- `orphan` — `CONVERTING → ORPHANED` on any conversion failure (the App likely already exists).
-- `reset` — admin `ORPHANED → UNCONFIGURED` after the operator confirms GitHub-side cleanup.
-- `recover_stale_converting` — the standalone startup form of the stale-`CONVERTING` timeout.
-
-Dependencies (the session factory) are injected, not global; state lives only in the DB.
+The next setup request repairs expired attempts; startup also repairs stale
+conversions. No periodic worker runs here. See DECISIONS.md#070.
 """
 
 from __future__ import annotations

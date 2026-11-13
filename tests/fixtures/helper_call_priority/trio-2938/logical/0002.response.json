@@ -1,0 +1,17 @@
+{
+  "text": "{\"findings\":[]}",
+  "model": "claude-sonnet-5-5",
+  "input_tokens": 2122,
+  "output_tokens": 9,
+  "cache_read_tokens": 0,
+  "cache_write_tokens": 11516,
+  "finish_reason": "end_turn",
+  "latency_ms": 2392,
+  "exchange_event_id": "05e55500-67eb-4d94-b9c7-7c72b3b5a0f3",
+  "exchange_recorded_at": "2026-11-12T05:35:30.541331Z",
+  "profile_id": "anthropic",
+  "reasoning_enabled": false,
+  "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+  "billed_prompt_tokens": null,
+  "service_tier_actual": null
+}

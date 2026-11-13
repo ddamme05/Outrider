@@ -1,0 +1,510 @@
+{
+  "schema": "model-role-selection-v1",
+  "date": "2026-10-31",
+  "host": "anthropic",
+  "purpose": "Role-selection evidence; does not replace the frozen analyze prompt baselines.",
+  "measurement_contract": "refresh-judged-origin-excluded-three-reps-v1",
+  "pricing_version": "v8",
+  "cost_note": "Observed token usage priced at v8 rates, not provider invoices. Uncertain reservations are not recorded charges.",
+  "known_usage_based_total_usd": "1.482433650",
+  "runs": {
+    "haiku": {
+      "directory": "reports/model-refresh/20261031T175134Z-bf6fb496584a",
+      "plan_sha256": "0c4ecd2be855e1a2b53a9b6fb0e334d7d0f49d12ca3817d11c8965eb1caf13b4",
+      "results_sha256": "1978336e91cd42d2d4002d69899758802fad8f6c0d548ada57b7b4483135218e",
+      "paid_calls": 300,
+      "known_usage_based_usd": "0.325574720",
+      "uncertain_budget_upper_usd": "0E-8",
+      "target_status": [
+        {
+          "model": "claude-haiku-5-5",
+          "status": "completed"
+        },
+        {
+          "model": "claude-haiku-4-5",
+          "status": "completed"
+        }
+      ]
+    },
+    "sonnet": {
+      "directory": "reports/model-refresh/20261031T180339Z-28b42c6b1dc7",
+      "plan_sha256": "b2d2b066e6c383f027476a213e0a173753794bfb457e93c9d46dbfb875600796",
+      "results_sha256": "83920eb0138d78d1bcf48972101703453e1aadb8a24adeb11010e9345f0e8f22",
+      "paid_calls": 222,
+      "known_usage_based_usd": "1.0751750",
+      "uncertain_budget_upper_usd": "0E-8",
+      "target_status": [
+        {
+          "model": "claude-sonnet-5-5",
+          "status": "completed"
+        },
+        {
+          "model": "claude-sonnet-5",
+          "status": "completed"
+        }
+      ]
+    },
+    "glm": {
+      "directory": "reports/model-refresh/20261031T183221Z-a5bb4d49a0c9",
+      "plan_sha256": "711a69d70c3c537deddf749dafeabbbcd1f87ca5d34643225c661831d47dab4f",
+      "results_sha256": "06d51a9f3adffc2c00f0d9d09c910d6b8da5f01735ab91eea3ef44ea8d95301b",
+      "paid_calls": 45,
+      "known_usage_based_usd": "0.08168393",
+      "uncertain_budget_upper_usd": "1.50405120",
+      "target_status": [
+        {
+          "model": "accounts/fireworks/models/glm-5p2",
+          "status": "incompatible-or-failed"
+        },
+        {
+          "model": "accounts/fireworks/models/glm-5p3-flash",
+          "status": "incompatible-or-failed"
+        }
+      ]
+    }
+  },
+  "selected_roles": {
+    "trace_model": {
+      "previous": "claude-haiku-4-5",
+      "selected": "claude-haiku-5-5",
+      "scenario": "trace/ranking",
+      "candidate_passes": "3/3",
+      "baseline_passes": "3/3",
+      "candidate": {
+        "calls": 3,
+        "usage_usd": "0.000355145",
+        "latency_ms_median": 907
+      },
+      "baseline": {
+        "calls": 3,
+        "usage_usd": "0.003864",
+        "latency_ms_median": 1179
+      }
+    },
+    "patch_model": {
+      "previous": "claude-haiku-4-5",
+      "selected": "claude-haiku-5-5",
+      "scenario": "patch/safe-yaml-loader",
+      "candidate_passes": "3/3",
+      "baseline_passes": "3/3",
+      "candidate": {
+        "calls": 3,
+        "usage_usd": "0.0003177",
+        "latency_ms_median": 789
+      },
+      "baseline": {
+        "calls": 3,
+        "usage_usd": "0.002817",
+        "latency_ms_median": 1126
+      }
+    }
+  },
+  "retained_roles": {
+    "analyze_model": {
+      "selected": "claude-sonnet-5",
+      "reason": "Sonnet 5.5 failed the unchanged shipping-test location check. It recognized the issue in all three responses but anchored at line 9, outside the accepted lines 3-7. Do not widen the grader after the run."
+    },
+    "standard_analyze_model": {
+      "selected": "claude-haiku-4-5",
+      "reason": "Haiku 5.5 lost the missing-error-handling and missing-test expectations in all three runs each, and produced one rejected SSRF response."
+    },
+    "triage_model": {
+      "selected": "claude-haiku-4-5",
+      "reason": "Haiku 5.5 understated missing-error-handling risk in 2/3 runs and lost an expected dimension in 1/3."
+    },
+    "synthesize_model": {
+      "selected": "claude-haiku-4-5",
+      "reason": "Haiku 5.5 passed all 18 mechanical checks but one adversarial summary made a prohibited claim about pipeline behavior. Separate AI-agent prose review did not waive the constraint; the baseline also has summary weaknesses."
+    }
+  },
+  "incomplete_comparison": {
+    "host": "fireworks",
+    "baseline": "accounts/fireworks/models/glm-5p2",
+    "candidate": "accounts/fireworks/models/glm-5p3-flash",
+    "baseline_failure": "First request raised LLMInvalidRequestError with no saved exchange or usage. Exact HTTP details were not retained. Fireworks documents GLM-5.2 serverless retirement.",
+    "candidate_failure": "Call 45 ended with max_tokens, output_tokens=2048 and empty text during safe_refactor triage; JSON parsing failed. No complete three-repetition comparison exists.",
+    "availability_source": "https://fireworks.ai/models/fireworks/glm-5p2",
+    "selection": "No GLM replacement selected. Reject known retired serverless model before spending; no automatic retry or output-budget change."
+  },
+  "limits": [
+    "Trace covers one fixed two-candidate ranking/resolution scenario; patch covers one reviewed yaml.load to yaml.safe_load replacement, each repeated three times. No general quality claim.",
+    "Targets ran sequentially in one batch. Latencies and costs describe these inputs and cache conditions, not a randomized performance experiment.",
+    "The v1 surviving-producer-origin metric gives a model-dependent denominator for one Haiku f-string fixture. Offline replay confirms identical structural detection and product hits 3/3 for both models. Keep the comparability warning and fix independent coverage in a separately declared measurement contract.",
+    "Analyze extras are advisory unless separately adjudicated; they are not automatically false alarms.",
+    "Raw runs remain local under reports/model-refresh; hashes bind this compact extraction to them. Old tracked baselines are unchanged."
+  ],
+  "selected_role_calls": [
+    {
+      "model": "claude-haiku-5-5",
+      "scenario": "nodes:0:trace/ranking",
+      "exchange": "reports/model-refresh/20261031T175134Z-bf6fb496584a/calls/000051.exchange.json",
+      "exchange_sha256": "6d9d8995f9d3784ebc98bf3cc3aa09977c347392a3ed972ece1de6bfdd76a506",
+      "attempt_sha256": "356a8c746ac5ce9688dcf910c31924dc080456468651bb204fe6488a49af357c",
+      "request_sha256": "2ee00b4c51ffc1ab17dfba2758c111e6996fd99c93510dcb6bad34ff2b1acf4e",
+      "prompt_version": "trace-v1",
+      "grade": {
+        "ranking": "pass",
+        "detail": "app.db",
+        "resolved": true
+      },
+      "issues": [],
+      "response": {
+        "text": "{\"ranked_candidate_ids\": [\"13e4f5f2477d6f5d0a03f6cca7cafe98b950228edda67fb3dd66467233bf2d5d\", \"a2e03cd1ce22d39fe23674093f14792719d568a37a969febe3c9c37326e3103f\"]}",
+        "model": "claude-haiku-5-5",
+        "input_tokens": 286,
+        "output_tokens": 106,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 761,
+        "finish_reason": "end_turn",
+        "latency_ms": 906,
+        "profile_id": "anthropic",
+        "reasoning_enabled": false,
+        "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+        "billed_prompt_tokens": null,
+        "service_tier_actual": null
+      },
+      "usage_based_usd": "0.000176725",
+      "wall_ms": 907
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "scenario": "nodes:0:patch/safe-yaml-loader",
+      "exchange": "reports/model-refresh/20261031T175134Z-bf6fb496584a/calls/000052.exchange.json",
+      "exchange_sha256": "1f16305e769407bdd319d89e78b7b1ef5b5cbdb352170e1f35e694fd8d7952f3",
+      "attempt_sha256": "1a7c872261f6214b608c172b44c6a46d53dab4b8f883df27055ef9c21a151e71",
+      "request_sha256": "6e8dd840c6b0b3f8f5d0da5d027019d2b8b93e0cd19e45702f36e3d34101b3d9",
+      "prompt_version": "patch-v1",
+      "grade": {
+        "correct_replacement": true
+      },
+      "issues": [],
+      "response": {
+        "text": "{\"items\": [{\"finding_id\": \"00000000-0000-0000-0000-0000000000f1\", \"original_line\": \"    return yaml.load(stream)\", \"replacement_line\": \"    return yaml.safe_load(stream)\", \"reason\": null}]}",
+        "model": "claude-haiku-5-5",
+        "input_tokens": 639,
+        "output_tokens": 84,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "finish_reason": "end_turn",
+        "latency_ms": 788,
+        "profile_id": "anthropic",
+        "reasoning_enabled": false,
+        "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+        "billed_prompt_tokens": null,
+        "service_tier_actual": null
+      },
+      "usage_based_usd": "0.0001059",
+      "wall_ms": 789
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "scenario": "nodes:1:trace/ranking",
+      "exchange": "reports/model-refresh/20261031T175134Z-bf6fb496584a/calls/000100.exchange.json",
+      "exchange_sha256": "439f330365d8cfd776c600ac6cd0dd732c1664447ad0d68b144ec23073dc2e31",
+      "attempt_sha256": "4c50a3667c406ff7f0866334b77d0a2d5491127ac533dfa317e6490f6cf2d946",
+      "request_sha256": "2ee00b4c51ffc1ab17dfba2758c111e6996fd99c93510dcb6bad34ff2b1acf4e",
+      "prompt_version": "trace-v1",
+      "grade": {
+        "ranking": "pass",
+        "detail": "app.db",
+        "resolved": true
+      },
+      "issues": [],
+      "response": {
+        "text": "{\"ranked_candidate_ids\": [\"13e4f5f2477d6f5d0a03f6cca7cafe98b950228edda67fb3dd66467233bf2d5d\", \"a2e03cd1ce22d39fe23674093f14792719d568a37a969febe3c9c37326e3103f\"]}",
+        "model": "claude-haiku-5-5",
+        "input_tokens": 286,
+        "output_tokens": 106,
+        "cache_read_tokens": 761,
+        "cache_write_tokens": 0,
+        "finish_reason": "end_turn",
+        "latency_ms": 872,
+        "profile_id": "anthropic",
+        "reasoning_enabled": false,
+        "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+        "billed_prompt_tokens": null,
+        "service_tier_actual": null
+      },
+      "usage_based_usd": "8.921e-05",
+      "wall_ms": 873
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "scenario": "nodes:1:patch/safe-yaml-loader",
+      "exchange": "reports/model-refresh/20261031T175134Z-bf6fb496584a/calls/000101.exchange.json",
+      "exchange_sha256": "ff791189149fa8a818a8ba26330a00dc2516cd049a687a77980c751b89319970",
+      "attempt_sha256": "bc0490c153f7b0f4be76b53dce27d05224c8e44c22451d8032088eb6bffd82a3",
+      "request_sha256": "6e8dd840c6b0b3f8f5d0da5d027019d2b8b93e0cd19e45702f36e3d34101b3d9",
+      "prompt_version": "patch-v1",
+      "grade": {
+        "correct_replacement": true
+      },
+      "issues": [],
+      "response": {
+        "text": "{\"items\": [{\"finding_id\": \"00000000-0000-0000-0000-0000000000f1\", \"original_line\": \"    return yaml.load(stream)\", \"replacement_line\": \"    return yaml.safe_load(stream)\", \"reason\": null}]}",
+        "model": "claude-haiku-5-5",
+        "input_tokens": 639,
+        "output_tokens": 84,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "finish_reason": "end_turn",
+        "latency_ms": 739,
+        "profile_id": "anthropic",
+        "reasoning_enabled": false,
+        "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+        "billed_prompt_tokens": null,
+        "service_tier_actual": null
+      },
+      "usage_based_usd": "0.0001059",
+      "wall_ms": 740
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "scenario": "nodes:2:trace/ranking",
+      "exchange": "reports/model-refresh/20261031T175134Z-bf6fb496584a/calls/000149.exchange.json",
+      "exchange_sha256": "1ba69b87a93b0a0150ef5e1f3ef827af9da02c09d5bfb5cc10b9355ee62df135",
+      "attempt_sha256": "d1f94f281dc52b35c99b9331d9950d018ec6b3898a2f07aa765bc000e257d9d0",
+      "request_sha256": "2ee00b4c51ffc1ab17dfba2758c111e6996fd99c93510dcb6bad34ff2b1acf4e",
+      "prompt_version": "trace-v1",
+      "grade": {
+        "ranking": "pass",
+        "detail": "app.db",
+        "resolved": true
+      },
+      "issues": [],
+      "response": {
+        "text": "{\"ranked_candidate_ids\": [\"13e4f5f2477d6f5d0a03f6cca7cafe98b950228edda67fb3dd66467233bf2d5d\", \"a2e03cd1ce22d39fe23674093f14792719d568a37a969febe3c9c37326e3103f\"]}",
+        "model": "claude-haiku-5-5",
+        "input_tokens": 286,
+        "output_tokens": 106,
+        "cache_read_tokens": 761,
+        "cache_write_tokens": 0,
+        "finish_reason": "end_turn",
+        "latency_ms": 1045,
+        "profile_id": "anthropic",
+        "reasoning_enabled": false,
+        "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+        "billed_prompt_tokens": null,
+        "service_tier_actual": null
+      },
+      "usage_based_usd": "8.921e-05",
+      "wall_ms": 1046
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "scenario": "nodes:2:patch/safe-yaml-loader",
+      "exchange": "reports/model-refresh/20261031T175134Z-bf6fb496584a/calls/000150.exchange.json",
+      "exchange_sha256": "2667d7559314ad5a48e5869a81c106c4163b477fdd4fa704bccbfa8dca25e4b9",
+      "attempt_sha256": "be46c8244905525d782e3dd32f557c738a38c881bae87f278fbfa652bd169331",
+      "request_sha256": "6e8dd840c6b0b3f8f5d0da5d027019d2b8b93e0cd19e45702f36e3d34101b3d9",
+      "prompt_version": "patch-v1",
+      "grade": {
+        "correct_replacement": true
+      },
+      "issues": [],
+      "response": {
+        "text": "{\"items\": [{\"finding_id\": \"00000000-0000-0000-0000-0000000000f1\", \"original_line\": \"    return yaml.load(stream)\", \"replacement_line\": \"    return yaml.safe_load(stream)\", \"reason\": null}]}",
+        "model": "claude-haiku-5-5",
+        "input_tokens": 639,
+        "output_tokens": 84,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "finish_reason": "end_turn",
+        "latency_ms": 874,
+        "profile_id": "anthropic",
+        "reasoning_enabled": false,
+        "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+        "billed_prompt_tokens": null,
+        "service_tier_actual": null
+      },
+      "usage_based_usd": "0.0001059",
+      "wall_ms": 875
+    },
+    {
+      "model": "claude-haiku-4-5",
+      "scenario": "nodes:0:trace/ranking",
+      "exchange": "reports/model-refresh/20261031T175134Z-bf6fb496584a/calls/000201.exchange.json",
+      "exchange_sha256": "1f8edca1ae43d3b19cd628aa90f28555a84ac546124cc1fe02178d1d2e5c68e7",
+      "attempt_sha256": "0d4f332bd3b47eacf23faaf9195be65e9fce63330104da08313c10b8743817d6",
+      "request_sha256": "35ae96122be5cfda0c32b97601e0e51ab5a72f1d8f036c8b8a2d4a606f8b4974",
+      "prompt_version": "trace-v1",
+      "grade": {
+        "ranking": "pass",
+        "detail": "app.db",
+        "resolved": true
+      },
+      "issues": [],
+      "response": {
+        "text": "```json\n{\n  \"ranked_candidate_ids\": [\n    \"13e4f5f2477d6f5d0a03f6cca7cafe98b950228edda67fb3dd66467233bf2d5d\",\n    \"a2e03cd1ce22d39fe23674093f14792719d568a37a969febe3c9c37326e3103f\"\n  ]\n}\n```",
+        "model": "claude-haiku-4-5-20251001",
+        "input_tokens": 748,
+        "output_tokens": 108,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "finish_reason": "end_turn",
+        "latency_ms": 1172,
+        "profile_id": "anthropic",
+        "reasoning_enabled": false,
+        "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+        "billed_prompt_tokens": null,
+        "service_tier_actual": null
+      },
+      "usage_based_usd": "0.001288",
+      "wall_ms": 1173
+    },
+    {
+      "model": "claude-haiku-4-5",
+      "scenario": "nodes:0:patch/safe-yaml-loader",
+      "exchange": "reports/model-refresh/20261031T175134Z-bf6fb496584a/calls/000202.exchange.json",
+      "exchange_sha256": "f970a59559965bc18c01bbbd27c2ded8bd6ae532f31b838289fd73de8a1e1d53",
+      "attempt_sha256": "bd38c289a666eb5889c01776daebea91c8dbc1363e441de369d8d76973964df6",
+      "request_sha256": "a7c37b9f55bad665b95de836c0ea9d46deaf694ffa9fac2f38c8fa4354649fff",
+      "prompt_version": "patch-v1",
+      "grade": {
+        "correct_replacement": true
+      },
+      "issues": [],
+      "response": {
+        "text": "```json\n{\n  \"items\": [\n    {\n      \"finding_id\": \"00000000-0000-0000-0000-0000000000f1\",\n      \"original_line\": \"    return yaml.load(stream)\",\n      \"replacement_line\": \"    return yaml.safe_load(stream)\",\n      \"reason\": null\n    }\n  ]\n}\n```",
+        "model": "claude-haiku-4-5-20251001",
+        "input_tokens": 469,
+        "output_tokens": 94,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "finish_reason": "end_turn",
+        "latency_ms": 1108,
+        "profile_id": "anthropic",
+        "reasoning_enabled": false,
+        "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+        "billed_prompt_tokens": null,
+        "service_tier_actual": null
+      },
+      "usage_based_usd": "0.000939",
+      "wall_ms": 1109
+    },
+    {
+      "model": "claude-haiku-4-5",
+      "scenario": "nodes:1:trace/ranking",
+      "exchange": "reports/model-refresh/20261031T175134Z-bf6fb496584a/calls/000250.exchange.json",
+      "exchange_sha256": "76527eab1a26e6551ec915e253fe9ed5290613b2f8f33b046c10d9462624ea66",
+      "attempt_sha256": "ac4e0232d8379ce5ad262adaeacaf3794031ee30a74aeda626571519716a0ee8",
+      "request_sha256": "35ae96122be5cfda0c32b97601e0e51ab5a72f1d8f036c8b8a2d4a606f8b4974",
+      "prompt_version": "trace-v1",
+      "grade": {
+        "ranking": "pass",
+        "detail": "app.db",
+        "resolved": true
+      },
+      "issues": [],
+      "response": {
+        "text": "```json\n{\n  \"ranked_candidate_ids\": [\n    \"13e4f5f2477d6f5d0a03f6cca7cafe98b950228edda67fb3dd66467233bf2d5d\",\n    \"a2e03cd1ce22d39fe23674093f14792719d568a37a969febe3c9c37326e3103f\"\n  ]\n}\n```",
+        "model": "claude-haiku-4-5-20251001",
+        "input_tokens": 748,
+        "output_tokens": 108,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "finish_reason": "end_turn",
+        "latency_ms": 1178,
+        "profile_id": "anthropic",
+        "reasoning_enabled": false,
+        "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+        "billed_prompt_tokens": null,
+        "service_tier_actual": null
+      },
+      "usage_based_usd": "0.001288",
+      "wall_ms": 1179
+    },
+    {
+      "model": "claude-haiku-4-5",
+      "scenario": "nodes:1:patch/safe-yaml-loader",
+      "exchange": "reports/model-refresh/20261031T175134Z-bf6fb496584a/calls/000251.exchange.json",
+      "exchange_sha256": "a3b45abe375ed17c2a06340d0e7348404558798a556ae6f0975530f8c7a4a010",
+      "attempt_sha256": "8e8dbca1664bf5885666ef5aab536803c2852585111fe6ab7df909cf4fc383e6",
+      "request_sha256": "a7c37b9f55bad665b95de836c0ea9d46deaf694ffa9fac2f38c8fa4354649fff",
+      "prompt_version": "patch-v1",
+      "grade": {
+        "correct_replacement": true
+      },
+      "issues": [],
+      "response": {
+        "text": "```json\n{\n  \"items\": [\n    {\n      \"finding_id\": \"00000000-0000-0000-0000-0000000000f1\",\n      \"original_line\": \"    return yaml.load(stream)\",\n      \"replacement_line\": \"    return yaml.safe_load(stream)\",\n      \"reason\": null\n    }\n  ]\n}\n```",
+        "model": "claude-haiku-4-5-20251001",
+        "input_tokens": 469,
+        "output_tokens": 94,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "finish_reason": "end_turn",
+        "latency_ms": 1125,
+        "profile_id": "anthropic",
+        "reasoning_enabled": false,
+        "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+        "billed_prompt_tokens": null,
+        "service_tier_actual": null
+      },
+      "usage_based_usd": "0.000939",
+      "wall_ms": 1126
+    },
+    {
+      "model": "claude-haiku-4-5",
+      "scenario": "nodes:2:trace/ranking",
+      "exchange": "reports/model-refresh/20261031T175134Z-bf6fb496584a/calls/000299.exchange.json",
+      "exchange_sha256": "3f2536a7ff01f82d0e1b48ea62c4ec215640bf696de1530f721d555370a05dbd",
+      "attempt_sha256": "54aad2a697120a9693a68af8e263d28e42f96b6cb6321310478fb63faa49c0f5",
+      "request_sha256": "35ae96122be5cfda0c32b97601e0e51ab5a72f1d8f036c8b8a2d4a606f8b4974",
+      "prompt_version": "trace-v1",
+      "grade": {
+        "ranking": "pass",
+        "detail": "app.db",
+        "resolved": true
+      },
+      "issues": [],
+      "response": {
+        "text": "```json\n{\n  \"ranked_candidate_ids\": [\n    \"13e4f5f2477d6f5d0a03f6cca7cafe98b950228edda67fb3dd66467233bf2d5d\",\n    \"a2e03cd1ce22d39fe23674093f14792719d568a37a969febe3c9c37326e3103f\"\n  ]\n}\n```",
+        "model": "claude-haiku-4-5-20251001",
+        "input_tokens": 748,
+        "output_tokens": 108,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "finish_reason": "end_turn",
+        "latency_ms": 1196,
+        "profile_id": "anthropic",
+        "reasoning_enabled": false,
+        "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+        "billed_prompt_tokens": null,
+        "service_tier_actual": null
+      },
+      "usage_based_usd": "0.001288",
+      "wall_ms": 1197
+    },
+    {
+      "model": "claude-haiku-4-5",
+      "scenario": "nodes:2:patch/safe-yaml-loader",
+      "exchange": "reports/model-refresh/20261031T175134Z-bf6fb496584a/calls/000300.exchange.json",
+      "exchange_sha256": "22627f17c436fe2a50a9fb70ed13fe69ab80ad6f32121be776f85fbd83fadaa2",
+      "attempt_sha256": "2b285f143d941b3a59c47bce0a59a60f195e7582bf9e7cd0bcf184d407f63da1",
+      "request_sha256": "a7c37b9f55bad665b95de836c0ea9d46deaf694ffa9fac2f38c8fa4354649fff",
+      "prompt_version": "patch-v1",
+      "grade": {
+        "correct_replacement": true
+      },
+      "issues": [],
+      "response": {
+        "text": "```json\n{\n  \"items\": [\n    {\n      \"finding_id\": \"00000000-0000-0000-0000-0000000000f1\",\n      \"original_line\": \"    return yaml.load(stream)\",\n      \"replacement_line\": \"    return yaml.safe_load(stream)\",\n      \"reason\": null\n    }\n  ]\n}\n```",
+        "model": "claude-haiku-4-5-20251001",
+        "input_tokens": 469,
+        "output_tokens": 94,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "finish_reason": "end_turn",
+        "latency_ms": 1182,
+        "profile_id": "anthropic",
+        "reasoning_enabled": false,
+        "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+        "billed_prompt_tokens": null,
+        "service_tier_actual": null
+      },
+      "usage_based_usd": "0.000939",
+      "wall_ms": 1183
+    }
+  ]
+}

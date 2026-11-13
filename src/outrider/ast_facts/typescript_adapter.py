@@ -1,30 +1,10 @@
-# TypeScript/TSX adapter implementing LanguageAdapter Protocol per
-# specs/2026-07-02-js-ts-tree-sitter-adapters.md.
-"""TypeScript/TSX adapter for tree-sitter-typescript 0.23.2.
+"""Extract source facts from TypeScript and TSX.
 
-`typescript` and `tsx` are two distinct grammars (the module exposes
-`language_typescript()` and `language_tsx()`; verified by introspection).
-The registry stays the single dispatch point: `.ts`/`.mts`/`.cts`
-register a typescript-dialect factory and `.tsx` a tsx-dialect factory,
-both constructing this class. The canonical divergence: `<A>b` is a
-`type_assertion` under typescript but a JSX element under tsx — parsing
-a `.ts` cast with the tsx grammar would mis-shape it, hence per-dialect
-dispatch instead of one grammar for both.
+The registry selects the TypeScript or TSX grammar for each extension; using
+the wrong grammar would confuse casts with JSX. This adapter extends the
+JavaScript tree walk with TypeScript node types and decorators.
 
-Extraction reuses the `JavaScriptAdapter` walk (TS is a syntactic
-superset for every §5.4-relevant construct; type annotations ride along
-inside the same node shapes). TS-only additions:
-  * `abstract_class_declaration` → ``kind="class"``;
-  * `public_field_definition` (the TS field node) arrow/function values
-    → ``kind="method"``;
-  * decorators are collected + span-widened by the shared
-    `_decorators_for` (inside-node children for non-exported classes,
-    preceding siblings for methods and exported classes);
-  * `interface_declaration` / `type_alias_declaration` /
-    `enum_declaration` / `internal_module` (namespaces) / ambient
-    signatures are NOT ScopeUnits per the spec — the generic walk
-    descends through them without emitting;
-  * TS `import x = require('m')` handled by the shared import builder.
+See specs/2026-07-02-js-ts-tree-sitter-adapters.md for the extraction rules.
 """
 
 from __future__ import annotations

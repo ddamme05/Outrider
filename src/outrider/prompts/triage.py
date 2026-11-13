@@ -1,20 +1,17 @@
-# Triage-node prompt template + render helper per specs/2026-05-15-triage-node.md
-"""Render PR metadata and patches for tier/risk classification.
+"""Build the request that prioritizes files in a pull request.
 
-The configured triage model proposes DEEP/STANDARD/SKIM per file, overall risk
-and review dimensions. SKIP belongs to the deterministic size gate (§6.10).
-The triage node validates the response against the changed-file set.
-
-Static instructions stay separate from per-PR data. PR strings fill values in
-USER_TEMPLATE, never act as format targets, and patches use dynamic fences
-(`webhook-strings-are-data-not-format-strings`)."""
+The model receives selected PR metadata and patch data. The triage node checks
+its proposed attention levels; deterministic checks own any skip decision.
+Untrusted metadata and code are fenced as data (webhook-strings-are-data-not-format-strings).
+"""
 
 from dataclasses import dataclass
 from typing import Final
 
+from outrider.prompts.triage_schema import file_slot_ids
 from outrider.schemas.pr_context import PRContext
 
-VERSION: Final[str] = "triage-v1"
+VERSION: Final[str] = "triage-v3"
 MAX_TOKENS: Final[int] = 2048
 TEMPERATURE: Final[float] = 0.0
 
@@ -31,11 +28,15 @@ deeper review should focus.
 
 - "deep" — files with security-sensitive patterns (auth, crypto, input
   parsing), complex logic changes, business-critical paths, database
-  migrations, or large diffs (>200 changed lines in one file).
+  migrations, or large diffs (>200 changed lines in one file). These use
+  the deeper analysis model and receive budget priority.
 - "standard" — typical application code changes that benefit from review
-  but don't warrant the full deep-context pipeline.
-- "skim" — config files, dependency updates, formatting-only changes,
-  auto-generated code, or simple comment/docstring edits. If a file
+  with the standard analysis model. DEEP and STANDARD use the same
+  context selection and admission rules.
+- "skim" — no analyze-stage review. Use only when code analysis is not
+  needed, such as formatting-only changes, auto-generated code or simple
+  comment/docstring edits. Configuration and dependency changes can affect
+  security or behavior; use STANDARD or DEEP when those need review. If a file
   looks unreviewable (lockfiles, generated bindings, vendored deps,
   binary diffs marked "[no textual diff available]"), classify as
   "skim" — never omit and never "skip".
@@ -83,22 +84,22 @@ example are illustrative and must be replaced with real values.
 
 {
   "file_tiers": {
-    "<path/from/changed_files>": "<deep|standard|skim>"
+    "file_1": "<deep|standard|skim>"
   },
   "overall_risk": "<low|medium|high|critical>",
   "relevant_dimensions": ["<dimension>"],
   "reasoning": "<two short sentences explaining the classification>"
 }
 
-`file_tiers` is an object keyed by each changed file's path; include
-every changed file as its own key (the example shows one key — your
-output should have one entry per file). `relevant_dimensions` is an
+`file_tiers` is keyed by the numbered file IDs shown in the input, such as
+"file_1" and "file_2". Include every ID exactly once, using its assigned file.
+Do not use filenames as keys. `relevant_dimensions` is an
 array of `code_quality` / `security` / `performance` / `test_coverage`
 / `best_practices` strings.
 
 Keep "reasoning" to two short sentences (hard upper bound: 500 chars).
-Every changed file MUST appear in file_tiers with a tier value. Do not
-include paths not in the changed-files list. Do not produce "skip".
+Every file ID MUST appear in file_tiers with a tier value. Do not
+invent IDs or produce "skip".
 """
 
 
@@ -139,10 +140,11 @@ def render(pr_context: PRContext) -> TriagePromptParts:
     commit messages are not carried here. Installation ID, SHAs and repository
     coordinates remain out of the prompt (DECISIONS#013 point 2). Adding fields
     requires a privacy-contract amendment."""
+    slots = zip(file_slot_ids(len(pr_context.changed_files)), pr_context.changed_files, strict=True)
     file_list = "\n".join(
-        f"- {changed_file.path} ({changed_file.status}, "
+        f"- {slot}: {changed_file.path} ({changed_file.status}, "
         f"+{changed_file.additions}/-{changed_file.deletions})"
-        for changed_file in pr_context.changed_files
+        for slot, changed_file in slots
     )
     diff_summary = "\n\n".join(
         _format_file_diff(changed_file.path, changed_file.patch)

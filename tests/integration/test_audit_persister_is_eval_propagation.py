@@ -1,21 +1,7 @@
-"""AuditPersister is_eval propagation + cross-check.
+"""Check that persisted events and content retain their evaluation flag.
 
-is_eval propagates from the event into both DB rows (audit_events + the content
-row). At the two content-bearing sites that resolve the reviews row — `persist()`
-(LLMCallEvent) and `emit_finding()` (FindingEvent) — the persister ALSO
-cross-checks `event.is_eval` against `reviews.is_eval` and raises
-`AuditPersisterIsEvalMismatchError` on divergence (FUP-130). Those two are the
-dashboard's is_eval-sensitive read surfaces, and the read-API scopes its
-metric/findings queries by review_id alone, trusting the per-event match.
-Non-resolving emit paths (`emit_phase`) propagate WITHOUT the cross-check (out of
-FUP-130 scope — they would each cost an extra SELECT and feed no is_eval-scoped
-dashboard metric).
-
-**Boundary note**: `eval_db` integrity gate at `tests/eval/conftest.py` catches
-the eval→production direction (eval test DB shouldn't have is_eval=False rows).
-The production→eval direction at construction time is FUP-024's territory; FUP-130
-adds the persister-side backstop for the two resolving sites.
-"""
+Use PostgreSQL to verify flag propagation and reject finding or LLM writes whose
+flag disagrees with the review. Evaluation fixture admission is tested separately."""
 
 from __future__ import annotations
 

@@ -1,22 +1,8 @@
-# See specs/2026-05-21-publish-node.md Q1 — CoordinateError carries a typed
-# `kind` so downstream callers (publish routing in particular) can branch on
-# a structured discriminator instead of parsing `str(exc)`.
-"""CoordinateError + CoordinateErrorKind — single failure-mode exception with typed taxonomy.
+"""Typed failures for source, patch and GitHub location checks.
 
-Lives in its own module so both `translator.py` and `diff_parser.py` can
-import it without creating a circular dependency.
-
-Per docs/spec.md §5.6 — coordinates' contract is that any patch-parse
-failure, span-out-of-hunk, span-out-of-bounds, or path-validation rejection
-surfaces as `CoordinateError`, never as an underlying `unidiff` parse
-exception, `IndexError`, or path-library leak.
-
-The `kind` field on the base exception (required keyword-only at
-construction) gives downstream consumers — `publish` is the load-bearing
-one — a structured discriminator without breaking the "single failure
-mode" contract that every caller still catches `CoordinateError`. The
-enum is total over the raise-site inventory in `translator.py` +
-`diff_parser.py` so the consumer's `match` statement can be exhaustive.
+Callers use the error type to decide how to handle a finding; they must not
+infer the failure from its message. Translation helpers normalize their
+failures to CoordinateError subclasses.
 """
 
 from __future__ import annotations
@@ -99,17 +85,9 @@ class CoordinateErrorKind(StrEnum):
     # (which is data-driven, not caller-driven).
     ARGUMENT_VALIDATION_FAILED = "argument_validation_failed"
 
-    # agent/nodes/publish.py:_resolve_inline_location — finding's file_path
-    # IS in the ChangedFile registry, but the file has `head_content=None`
-    # (deleted in this PR: status="removed"). Distinct from FILE_NOT_IN_PATCH
-    # (which means "file_path absent from patch entirely") and from
-    # NON_DIFFED_FILE (which is the registry-miss case BEFORE coordinates is
-    # called). Without this kind, a finding on a deleted file routes via the
-    # FILE_NOT_IN_PATCH path and lands in the audit stream as
-    # reason=non_diffed_file — overload that loses the
-    # diffed-but-deleted distinction for replay-time analysis.
-    # Routes via PublishRoutingReason.COORDINATE_ERROR (umbrella for
-    # non-dedicated kinds) per the reason × kind matrix.
+    # _resolve_inline_location found the file in the diff registry but it has
+    # no head content (for example, a deletion). Keep this distinct from a
+    # non-diffed file for replay; route as PublishRoutingReason.COORDINATE_ERROR.
     HEAD_CONTENT_UNAVAILABLE = "head_content_unavailable"
 
 

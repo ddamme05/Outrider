@@ -1,5 +1,18 @@
 # Live Run — Expected Findings
 
+**Validated prompt:** `analyze-v19`
+
+**Validated catalog:** `187e09f83b219f4d52dac9347ce6d7b4d027b387b8b2cd7f2816d79b3c7db592`
+
+Free structural check: `uv run pytest tests/eval/test_live_pr_corpus.py -q --is-eval`.
+It checks every corpus file and pins 17 raw/admitted structural matches: three command
+execution signals require context; the other 14 producer entries yield 13 unique
+OBSERVED findings after same-location/type deduplication. It also scans the base-only
+trace target. This is offline structural validation, not live review-quality proof.
+It does not run triage, budgets, models, the graph or HITL.
+After a prompt/catalog change, rerun it and review any match changes before updating
+this stamp or the expectations. The catalog value is the canonical `QUERY_REGISTRY_DIGEST`.
+
 Use this checklist to compare a live review with the expected findings. Open a PR in the
 sandbox repo with the sample files below, run `scripts/live_github_demo.py` against it (once per
 host), then compare the findings with this file. Differences can reveal skipped analysis,
@@ -7,8 +20,8 @@ provider changes, incorrect line mapping, or findings the model missed.
 
 The PR exercises **Python + JS/TS**, **parallel analyze workers** (one per file), the
 **deterministic severity policy table**, and the **trace node** (following imports into other
-files). Use the same sample files and checks on Anthropic (Sonnet/Haiku tiered) and Fireworks
-GLM-5.2.
+files). Use the same sample files and checks for each available provider/model
+configuration being compared.
 
 **Sample files (the corpus):** the 10 files live in `scripts/demo_fixtures/live_pr_corpus/`,
 laid out at **repo root** (`app/…`, `ops/`, `data/`, `components/`) to match the sandbox repo's import
@@ -18,8 +31,8 @@ convention — Python imports resolve as `app.*` from root, so the trace edge
 sandbox repo's **base** branch first (the trace target — must exist at head but be absent from
 the diff), then open a PR that adds the other **9** files. The corpus `README.md` deploys as
 `CATALOG_SERVICE.md` in the sandbox (so it doesn't clobber the repo's own README) — it's still the
-non-code doc that proves triage SKIM/SKIP. The OBSERVED findings below were offline-validated
-against the real query producer (17 matches), so they fire when the sandbox review runs.
+non-code doc that proves triage SKIM/SKIP. The match and producer roles below were offline-validated
+against the real query producer, as checked by the free structural test above.
 
 ---
 
@@ -28,8 +41,10 @@ against the real query producer (17 matches), so they fire when the sandbox revi
 ## Evidence tiers and expected certainty
 
 - **OBSERVED** — a tree-sitter syntax-pattern query in `queries/{python,javascript}/*.scm`
-  fired. Deterministic:
-  if the code shape matches the `.scm`, the finding is **guaranteed** and its severity comes
+  fired, passed admission and is eligible for automatic findings. Command-execution
+  matches require context and remain signals; they cannot establish a vulnerability
+  or replace a model judgment by themselves. These expectations assume the file is selected
+  and reaches structural review with the tested added-line context. Its severity comes
   from `SEVERITY_POLICY` (never the model). These are the hard assertions. Carries a
   `query_match_id`.
 - **JUDGED** — the model proposed it; no query. Best-effort: **likely** to appear but
@@ -43,7 +58,7 @@ against the real query producer (17 matches), so they fire when the sandbox revi
 fixed regardless of host — only *whether* a JUDGED finding appears can vary.
 
 HITL (human review) fires on any **CRITICAL or HIGH** finding. This PR has several OBSERVED
-criticals, so the gate is guaranteed to trip and the review will pause at `AWAITING_APPROVAL`.
+criticals; when the review reaches HITL with these findings, it pauses at `AWAITING_APPROVAL`.
 
 ---
 
@@ -77,9 +92,9 @@ criticals, so the gate is guaranteed to trip and the review will pause at `AWAIT
 | 4 | `app/db/queries.py` | py | — | **base only** | **trace target** (fetched in pass-2) |
 | 5 | `app/utils/pagination.py` | py | STANDARD | yes | Haiku-tier file, JUDGED-only (INFO band) |
 | 6 | `app/models/invoice.py` | py | STANDARD | yes | second Haiku-tier file (fan-out width) |
-| 7 | `ops/deploy_helpers.js` | js | DEEP | yes | JS OBSERVED (command injection + weak crypto) |
+| 7 | `ops/deploy_helpers.js` | js | DEEP | yes | JS command signal + OBSERVED weak crypto |
 | 8 | `data/user_repository.ts` | ts | DEEP | yes | TS grammar fires the JS OBSERVED catalog |
-| 9 | `components/ExpressionPreview.tsx` | tsx | DEEP | yes | TSX grammar + eval/hash OBSERVED |
+| 9 | `components/ExpressionPreview.tsx` | tsx | DEEP | yes | TSX eval signal + hash OBSERVED |
 | 10 | `README.md` | md | SKIM/SKIP | yes | triage excludes non-code (no worker Sent) |
 
 Tier is **triage-decided** at runtime by security density — the split above is the intent; the
@@ -90,7 +105,7 @@ in the `TriageResult` after the run rather than assuming.
 
 ## Expected findings, per file
 
-Legend: **[O]** OBSERVED (guaranteed), **[J]** JUDGED (likely, model-dependent),
+Legend: **[O]** OBSERVED (producer-eligible), **[J]** JUDGED (model-dependent),
 **[I]** INFERRED (trace pass-2). The OBSERVED rows below were **offline-validated** against the
 real producer (`ast_facts.registry.parse_source` → `analyze_observed.run_observed_matches`) —
 each listed query provably fires on the corpus file.
@@ -109,7 +124,7 @@ proves it won't (validated: 2 matches, not 5).
 ### 2. `app/tasks/report_runner.py` — DEEP
 | Finding type | Severity | Tier | Note |
 |---|---|---|---|
-| `command_injection` | CRITICAL | **[O]** | `python.command_injection_subprocess_shell` (`subprocess(..., shell=True)`) |
+| `command_injection` | CRITICAL | [J] | `python.command_injection_subprocess_shell` is a retained execution signal; a finding needs contextual support |
 | `unsafe_deserialization` | HIGH | **[O]** | `python.unsafe_deserialization_yaml` (`yaml.load` w/o SafeLoader) |
 | `tls_verify_disabled` | HIGH | **[O]** | `python.tls_verify_disabled` (`requests(..., verify=False)`) |
 | `weak_crypto` | HIGH | **[O]** | `weak_crypto_broken_cipher` + `weak_crypto_ecb_mode` both fire on the `DES.new` line → **dedup to ONE** finding (content-hash dedup) |
@@ -141,7 +156,7 @@ proves it won't (validated: 2 matches, not 5).
 ### 7. `ops/deploy_helpers.js` — DEEP (JavaScript)
 | Finding type | Severity | Tier | Note |
 |---|---|---|---|
-| `command_injection` | CRITICAL | **[O]** | `javascript.command_injection_child_process` (`cp.execSync(var)`) |
+| `command_injection` | CRITICAL | [J] | `javascript.command_injection_child_process` is a retained execution signal; a finding needs contextual support |
 | `weak_crypto` | HIGH | **[O]** | `javascript.weak_crypto_hash` (`createHash('md5')`) |
 | `weak_crypto` | HIGH | **[O]** | `javascript.weak_crypto_broken_cipher` (`des-ede3-cbc`) |
 | `weak_crypto` | HIGH | **[O]** | `javascript.weak_crypto_ecb_mode` (`aes-128-ecb`) |
@@ -156,7 +171,7 @@ proves it won't (validated: 2 matches, not 5).
 ### 9. `components/ExpressionPreview.tsx` — DEEP (TSX)
 | Finding type | Severity | Tier | Note |
 |---|---|---|---|
-| `command_injection` | CRITICAL | **[O]** | `javascript.command_injection_eval` (`eval(memberExpr)`) |
+| `command_injection` | CRITICAL | [J] | `javascript.command_injection_eval` is a retained execution signal; a finding needs contextual support |
 | `weak_crypto` | HIGH | **[O]** | `javascript.weak_crypto_hash` bare-callee (`createHash` via named import) |
 
 ### 10. `README.md`
@@ -168,13 +183,14 @@ No `analyze_file` worker runs (triage classifies non-code as SKIM/SKIP). Verify 
 ## Aggregate expected outcome (diff the run against this)
 
 - **Files kept/examined:** 9 code files (README not analyzed). ~6 DEEP + ~2 STANDARD + 1 trace-fetched.
-- **OBSERVED matches (guaranteed — offline-validated):** **17** query matches across 5 files:
-  `user_repository.py` 2 SQLi · `report_runner.py` 5 (cmd-inj, unsafe-deser, tls, broken-cipher,
-  ecb — the last two on one line → **1 weak_crypto finding**) · `deploy_helpers.js` 4 (cmd-inj +
-  3 weak-crypto) · `user_repository.ts` 4 (SQLi ×2, tls-verify, tls-env) · `ExpressionPreview.tsx`
-  2 (eval, md5). Each carries a `query_match_id`; a missing one = a silent parse/skip or catalog
-  regression. (Match count > finding count where content-hash dedup collapses same-line/same-type
-  hits, e.g. the broken-cipher+ecb pair.)
+- **Structural matches (offline-validated):** **17** raw/admitted matches across five files:
+  `user_repository.py` 2 SQLi · `report_runner.py` 5 (command signal, unsafe-deser, TLS,
+  broken-cipher, ECB) · `deploy_helpers.js` 4 (command signal + 3 weak-crypto) ·
+  `user_repository.ts` 4 (SQLi ×2, TLS-verify, TLS-env) · `ExpressionPreview.tsx` 2
+  (eval signal, MD5). All three command-execution matches require context and do not
+  automatically emit findings. The remaining **14 producer entries** collapse to
+  **13 unique OBSERVED findings**: broken-cipher and ECB share one Python DES span/type.
+  Missing structural signals and missing eligible producer findings are separate checks.
 - **Negative controls (must produce NOTHING):** the 3 parameterized methods in `user_repository.py`
   (`create_user`, `deactivate_user`, `load_team_roster`) + the STANDARD files' safe code. Any
   OBSERVED finding on these is a false positive — precision, not just recall, is on display.
@@ -191,7 +207,7 @@ No `analyze_file` worker runs (triage classifies non-code as SKIM/SKIP). Verify 
 
 | Requested surface | Proven by | Post-run signal |
 |---|---|---|
-| **Python** | files 1–6 | Python OBSERVED (SQLi/cmd/deser/tls/crypto) + JUDGED spread |
+| **Python** | files 1–6 | Python OBSERVED (SQLi/deser/tls/crypto), command signal + JUDGED spread |
 | **JS/TS** | files 7–9 (.js, .ts, .tsx) | `javascript.*` OBSERVED fire under all three grammars |
 | **Parallelization** | 8 kept files at `n=4` | max-concurrent `file:*#` phases **≥2** (overlap); `n=1` A/B: **exactly 1** open at a time, same findings |
 | **Policy table** | severity spread across files | every band CRITICAL→INFO present; severity from `SEVERITY_POLICY`, not model |
@@ -270,6 +286,9 @@ wall-clock, and phase overlap can also differ.
 
 ## Caveats
 
+- **Command syntax is a signal.** The command-execution queries still match, but hostile
+  input and exploit conditions need contextual judgment. An empty model response does
+  not become an automatic command-injection finding.
 - **OBSERVED requires the exact `.scm` code shape.** Every sink must sit inside a function body
   (a module-top-level sink is skipped `NO_CHANGED_SCOPE_UNITS` and never reaches the OBSERVED
   producer — only `tls_env_verify_disabled` is module-scope eligible). If an expected OBSERVED

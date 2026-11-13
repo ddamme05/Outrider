@@ -1,27 +1,8 @@
-"""Trace-accuracy eval scenario: JS relative-specifier resolution end-to-end.
+"""Resolve a JavaScript import and review its target outside the changed files.
 
-Per `specs/2026-07-03-js-ts-trace-resolver.md`: a JS PR's scripted pass-0
-finding proposes the relative specifier `'./db'`; trace fans out the
-pragmatic-six probe set against fake GitHub, resolves the single real path
-(`src/routes/db.js`, served beyond-diff in `repository_contents_head`),
-pass 1 analyzes the fetched file, and a grounded INFERRED finding admits
-with an admissible `trace_path` — the reachability this feature exists to
-provide. The same run scripts two negative properties as explicit attacks:
-
-- a `'../../evil'` candidate (shape-valid, repo-root-contained after two
-  pops from `src/routes/`) probes its fan-out, misses everything, and
-  lands an `unresolved` TraceDecision — the designed degradation;
-- a pass-1 proposal CLAIMING `observed` with a fabricated Python query id
-  on the fetched JS file, which admission must reject (JS/TS registers no
-  STRUCTURAL queries, so the model-citable admission set is empty by
-  registration — a model observed CLAIM on a JS/TS file always rejects,
-  even now that the JS/TS OBSERVED catalog lets the deterministic
-  producer emit the tier on catalog-matching pass-0 files) — asserted as
-  only-the-INFERRED-finding admitting in round 2.
-
-Two singleton candidate buckets skip the Haiku ranking call, so no trace
-LLM response is scripted.
-"""
+The real graph uses fake GitHub and scripted responses. Check the inferred
+finding, unresolved candidate and rejection of fabricated structural proof.
+Singleton candidate groups do not require a ranking model call."""
 
 
 def test_js_relative_specifier_trace_resolves_and_grounds_inferred() -> None:

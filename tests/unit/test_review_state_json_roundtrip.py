@@ -1,16 +1,7 @@
-"""`ReviewState` JSON round-trip — pins `state-is-pure-data`.
+"""Check that review state serializes to JSON and reconstructs without changes.
 
-The V1 `BackgroundTasksDispatcher.dispatch` calls `state.model_dump_json()`
-(discarded) on every dispatch as a fail-loud gate for any future
-contributor who adds a non-JSON-serializable field to `ReviewState` or
-its nested models. This test exercises the same gate at the schema
-level: a seed state model-dumps-as-JSON cleanly AND round-trips back to
-an equal `ReviewState` via `model_validate_json`.
-
-If a future schema extension breaks JSON round-trip, this test fails
-BEFORE the dispatcher's gate fires — V1 isn't a free pass for V2's
-Celery serialization.
-"""
+This checks the schema before dispatch's serialization guard runs
+(``state-is-pure-data``)."""
 
 from __future__ import annotations
 

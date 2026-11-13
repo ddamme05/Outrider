@@ -1,15 +1,8 @@
-# Build-context allowlist. The demo images build with `context: ..` (the repo root), so the
-# Docker daemon would otherwise receive the whole repo. This is a DEFAULT-DENY allowlist:
-# ignore everything (`*`), then un-ignore only the paths the Dockerfiles COPY, then re-exclude
-# secrets and build-noise inside them. Net effect: no secret, seed dump, or local-only artifact
-# (deploy/.env, demo_seed.sql, CLAUDE.md, COST_ANALYSIS.md, PRICING_STRATEGY.md, AUDIT_LOG.md,
-# docs/, specs/, .venv, ...) can reach the build context or a future `COPY .` — and new local
-# files are excluded by default, with no denylist to keep in sync.
-#
-# Safe because the wheel build packages only `src/outrider` (pyproject [tool.hatch.build...];
-# no readme/license-file refs) and the Dockerfiles COPY explicit paths:
-#   app (deploy/Dockerfile):      pyproject.toml uv.lock src/ db/ alembic.ini
-#   web (deploy/Dockerfile.web):  dashboard/ deploy/Caddyfile
+# Send only required application and dashboard files to Docker builds.
+# Ignore everything first, then allow the paths copied by the Dockerfiles.
+# The exclusions below keep deployment secrets, seed dumps and build output
+# out of the context. Keep this allowlist aligned with the COPY instructions.
+
 *
 
 !src
@@ -19,6 +12,7 @@
 !pyproject.toml
 !uv.lock
 !alembic.ini
+!LICENSE
 
 # Re-exclude secrets / runtime files / build-noise within the un-ignored paths.
 deploy/.env

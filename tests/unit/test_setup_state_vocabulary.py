@@ -1,9 +1,7 @@
-"""Drift guard: the setup-state vocabulary (`SETUP_STATUSES`) vs the CHECK constraints (#070).
+"""Check setup status values against ORM and migration constraints.
 
-The model CHECK is derived from `SETUP_STATUSES`; the migration's CHECK is a frozen snapshot. This
-pins all three together so adding/removing a state without updating the migration fails loudly here
-rather than as a runtime constraint violation.
-"""
+The migration is a fixed snapshot; vocabulary changes must update it too.
+See DECISIONS.md#070."""
 
 from __future__ import annotations
 

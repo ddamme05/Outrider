@@ -1,11 +1,7 @@
-"""Unit tests for `coordinates.validate_diff_path` — diff-side path validator.
+"""Check that diff paths are safe relative POSIX paths before use.
 
-Per docs/spec.md §10.1 + docs/trust-boundaries.md §5.3 — the
-`paths-validated-before-use` invariant (security-critical) requires file
-paths from the diff to be validated as relative-only, free of `..`
-traversal, free of shell metacharacters, in POSIX form, before they reach
-the GitHub comment API.
-"""
+Reject traversal and shell metacharacters (``paths-validated-before-use``).
+See docs/spec.md §10.1 and docs/trust-boundaries.md §5.3."""
 
 from __future__ import annotations
 

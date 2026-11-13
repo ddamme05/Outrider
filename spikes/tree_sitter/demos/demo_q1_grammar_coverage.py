@@ -1,15 +1,8 @@
-"""Q1 — grammar coverage.
+"""Check the pinned Python grammar against the spike's source examples.
 
-Q1a (must-pass): tree-sitter-python 0.25.0 parses our eval target (PyGoat)
-without any ERROR or MISSING nodes. If this fails, V1's Python-only language
-scope is in trouble — eval findings can't be OBSERVED/INFERRED on files the
-grammar can't parse cleanly.
-
-Q1b (document-limitations): the grammar parses Python 3.13 features we expect
-in modern codebases (PEP 695 generics and type aliases, match/case, walrus,
-async, f-string nesting). Failure here is not a V1 blocker — parse-errors-
-degrade-to-judged covers us — but every limitation we know upfront is one we
-won't rediscover mid-build.
+Parse the PyGoat fixture and modern Python syntax, reporting ERROR and MISSING
+nodes. The examples reveal grammar limits relevant to
+parse-errors-degrade-to-judged; they do not cover every Python program.
 """
 
 from pathlib import Path

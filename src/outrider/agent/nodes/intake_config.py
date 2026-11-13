@@ -1,12 +1,12 @@
-# See docs/spec.md §6.10 — whole-PR pre-flight size gate.
-"""Startup limits for the whole-PR size gate (docs/spec.md §6.10).
+"""Load size limits for pull requests entering review.
 
-`OUTRIDER_INTAKE_MAX_LINES` and `OUTRIDER_INTAKE_MAX_FILES` override the defaults
-of 1000 changed lines and 30 files. build_graph injects these settings into
-intake (`nodes-receive-deps-via-closure`).
+OUTRIDER_INTAKE_MAX_LINES and OUTRIDER_INTAKE_MAX_FILES default to 1000 changed
+lines and 30 files. Startup passes them into intake
+(nodes-receive-deps-via-closure). The file limit cannot exceed 99 because intake
+requests one extra entry to detect overflow within GitHub's 100-item page.
 
-Intake requests max_files + 1 metadata entries to detect overflow in one page.
-GitHub caps a page at 100, so max_files cannot exceed 99 without pagination."""
+See docs/spec.md §6.10.
+"""
 
 from __future__ import annotations
 

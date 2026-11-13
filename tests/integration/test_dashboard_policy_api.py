@@ -1,10 +1,7 @@
-"""Integration tests for `GET /api/policy/{version}` (FUP-132).
+"""Check that the policy API returns the requested stored policy version.
 
-The load-bearing test is `stored-not-active`: the endpoint must return the policy
-as STORED for the requested version (via `load_policy_for_version`), never the
-active in-code `SEVERITY_POLICY` — otherwise a historical review's table would
-silently re-render under today's policy (`severity-policy-versioned-for-replay`).
-"""
+Historical reviews must not be reclassified using the active in-code mapping
+(``severity-policy-versioned-for-replay``; FUP-132)."""
 
 from __future__ import annotations
 

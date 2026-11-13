@@ -1,27 +1,10 @@
-"""Patch admission instrument for the openai host (openai-native-host spec).
+"""Grade captured patch responses through the production patch checks without spending.
 
-Frozen pass predicate (spec "Gates before any production-shaped use"): a valid
-constrained patch that APPLIES — parses and survives the production
-`apply_patch_batch` rules — touching ONLY the expected target span (exact
-`original_line` echo; anchor drift is dropped), no out-of-scope edits
-(single-line, markdown/diff-marker/Trojan-free via
-`is_safe_suggestion_replacement`), and zero rejected responses (the batch
-parsed). The graders here ARE the production pipeline — the instrument never
-re-implements a rule the node enforces.
-
-ONE canonical paid path (per the review clarification): the paid row lives in
-the wire probe (`spikes/openai/probe.py`, row `gpt-5.6-luna:patch`). This file
-never spends: it proves the graders can FAIL via scripted negative twins
-(free, runs in the normal eval gate) and grades the captured probe fixture
-OFFLINE — skipped until the capture exists, HARD-asserted once it does (a
-red gate is the correct signal; the spec's miss-rule is a Terra swap plus an
-instrument rerun, never a softened predicate).
-
-The scenario is duplicated in the probe DELIBERATELY (spikes/ is not
-importable from tests). Drift fails loud: a probe that sends a different
-target line yields fixtures whose `original_line` echo cannot match this
-file's grader.
-"""
+Require the exact original line, an allowed single-line replacement that
+applies only to its target, and no rejected response. Scripted negative
+examples prove the checks can fail. The paid request belongs to the wire
+probe; this file grades its capture offline when available. Do not weaken
+the predicate when a candidate fails."""
 
 from __future__ import annotations
 

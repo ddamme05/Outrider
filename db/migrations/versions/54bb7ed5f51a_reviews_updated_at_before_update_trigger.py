@@ -1,29 +1,11 @@
-"""reviews.updated_at BEFORE UPDATE trigger (stop it equalling created_at).
+"""Keep each review's updated_at timestamp current.
 
 Revision ID: 54bb7ed5f51a
 Revises: c22e2864d3d8
 Create Date: 2026-06-06
 
-`reviews.updated_at` carries `server_default=NOW()` but no `onupdate`, and the
-status persister mutates rows via `update(Review).values(status=...)` WITHOUT
-setting `updated_at` — so the column was frozen at its insert value (always
-equal to `created_at`) for the life of every review. The dashboard exposes
-`updated_at` (`api/dashboard/reviews.py`), so a stale value misrepresents the
-last-activity time.
-
-Fix at the database level so it holds for every writer (ORM `.values(...)`,
-raw SQL, future code) rather than relying on each call site to set the column:
-a `BEFORE UPDATE ... FOR EACH ROW` trigger stamps `NEW.updated_at := NOW()` on
-every row update. NOW() (= transaction_timestamp) matches the `created_at`
-server_default's clock, so the two columns stay on the same time source.
-
-Trigger fires on UPDATE only — reads (the dashboard GET path,
-`test_read_is_non_mutating`) and INSERTs (created_at == updated_at at birth)
-are unaffected. Touches only `reviews`; no append-only table is involved.
-
-CREATE OR REPLACE FUNCTION is idempotent; CREATE TRIGGER has no IF NOT EXISTS,
-so the idempotent pattern is DROP TRIGGER IF EXISTS then CREATE TRIGGER — same
-shape as c22e2864d3d8 / 3d03bca7f2be.
+A database trigger sets updated_at on every row update, regardless of which
+application path writes it. Reads and the creation-time default are unchanged.
 """
 
 from collections.abc import Sequence

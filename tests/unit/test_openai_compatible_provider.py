@@ -1,19 +1,9 @@
-"""OpenAICompatibleProvider tests — mirror of AnthropicProvider coverage for the
-openai wire shape, exercised on `BASETEN_PROFILE` (+ a synthetic profile proving
-the per-host axes are profile-driven).
+"""Check OpenAI-compatible provider requests, accounting, and error translation.
 
-Strategy: mock the SDK at `AsyncCompletions.create` so no real HTTP fires.
-The focus is the wire deltas the wrapper must get right:
-  - §8a: `input_tokens = prompt_tokens - cached_tokens` (Baseten prompt_tokens
-    INCLUDES cached; Anthropic's input_tokens excludes it).
-  - usage null-guards: the `*_details` objects (and `usage` itself) can be None.
-  - request-side model keying: Baseten echoes `response.model=""`, so cost +
-    the audit event key on `request.model`, never `response.model`.
-  - no `cache_control` marker (automatic caching) → `cache_write_tokens=0`.
-  - `response_format` envelope (name + strict) vs Anthropic's output_config.
-  - openai → LLMProviderError mapping with the introspected isinstance order.
-  - per-host axes (base_url, §8a mode, reasoning shaper) follow the HostProfile.
-"""
+Use a fake SDK on the Baseten profile and a synthetic profile to verify that
+host options drive behavior. Cover nullable usage, cache counts, model-based
+pricing, response-format envelopes, and vendor-error mapping. Recording HTTP
+transport checks cover terminal diagnostics without network requests."""
 
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -53,6 +43,8 @@ from outrider.llm.base import (
 )
 from outrider.llm.host_profiles import (
     BASETEN_PROFILE,
+    FIREWORKS_PROFILE,
+    OPENAI_PROFILE,
     HostPrivacy,
     HostProfile,
     JsonMode,
@@ -672,25 +664,110 @@ async def test_unmapped_openai_error_translates_to_unknown() -> None:
 
     class _UnknownAPIError(openai.APIError):
         def __init__(self) -> None:
-            super().__init__("weird new error", request=_fake_request(), body=None)
+            super().__init__(
+                "weird new error",
+                request=_fake_request(),
+                body={"error": {"type": "api_error", "message": "private vendor content"}},
+            )
 
-    with _patched_create(raise_with=_UnknownAPIError()), pytest.raises(LLMUnknownError):
+    with (
+        _patched_create(raise_with=_UnknownAPIError()),
+        pytest.raises(LLMUnknownError) as exc_info,
+    ):
         await provider.complete(_request())
+    assert exc_info.value.diagnostic_metadata() == {
+        "http_status": None,
+        "request_id": None,
+        "error_category": "api_error",
+    }
 
 
 @pytest.mark.asyncio
-async def test_sdk_error_body_not_leaked_into_wrapper() -> None:
-    """openai error str() renders the response body, which can echo prompt
-    fragments. The wrapper must not carry it; `from None` drops the cause."""
-    provider = _provider()
+@pytest.mark.parametrize(
+    ("status", "body", "request_id", "expected_request_id", "category", "error_class"),
+    [
+        (
+            429,
+            {"error": {"type": "rate_limit_error"}},
+            "req_rate",
+            "req_rate",
+            "rate_limit_error",
+            LLMRateLimitError,
+        ),
+        (
+            404,
+            {"type": "not_found_error"},
+            "req_missing",
+            "req_missing",
+            "not_found_error",
+            LLMInvalidRequestError,
+        ),
+        (
+            404,
+            {"error": {"type": "new_vendor_category"}},
+            "req_unknown_category",
+            "req_unknown_category",
+            None,
+            LLMInvalidRequestError,
+        ),
+        (
+            404,
+            {"type": "private vendor content"},
+            "private vendor content with spaces",
+            None,
+            None,
+            LLMInvalidRequestError,
+        ),
+        (404, {}, None, None, None, LLMInvalidRequestError),
+    ],
+)
+async def test_sdk_error_body_not_leaked_into_wrapper(
+    status: int,
+    body: dict[str, Any],
+    request_id: str | None,
+    expected_request_id: str | None,
+    category: str | None,
+    error_class: type[LLMProviderError],
+) -> None:
+    """Real SDK HTTP errors retain bounded diagnostics and suppress vendor content."""
+    persister = _RecordingPersister()
+    provider = _provider(persister)
     sentinel = "secret_prompt_fragment_zzz9876"  # noqa: S105 — test fixture
-    sdk_exc = openai.RateLimitError(sentinel, response=_fake_response(429), body=None)
-    assert sentinel in str(sdk_exc)
-    with _patched_create(raise_with=sdk_exc), pytest.raises(LLMRateLimitError) as exc_info:
-        await provider.complete(_request())
+    payloads = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        payloads.append(request)
+        return httpx.Response(
+            status,
+            headers={} if request_id is None else {"x-request-id": request_id},
+            json=body | {"message": sentinel},
+        )
+
+    await provider._client.close()
+    provider._client = openai.AsyncOpenAI(
+        api_key="synthetic-provider-key",
+        base_url=BASETEN_BASE_URL,
+        max_retries=0,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+    )
+    # Platform probing is unrelated to the HTTP/error boundary under test.
+    provider._client._platform = "Linux"
+    try:
+        with pytest.raises(error_class) as exc_info:
+            await provider.complete(_request())
+    finally:
+        await provider.aclose()
     wrapper = exc_info.value
+    assert wrapper.diagnostic_metadata() == {
+        "http_status": status,
+        "request_id": expected_request_id,
+        "error_category": category,
+    }
+    assert len(payloads) == 1
+    assert persister.calls == []
     assert sentinel not in str(wrapper)
     assert sentinel not in repr(wrapper)
+    assert "private vendor content" not in repr(wrapper.diagnostic_metadata())
     for arg in wrapper.args:
         assert sentinel not in str(arg)
     assert wrapper.__cause__ is None
@@ -708,9 +785,12 @@ async def test_persister_receives_complete_event() -> None:
     provider = _provider(persister)
     usage = _usage(prompt_tokens=1000, completion_tokens=500, cached=200)
     with _patched_create(return_value=_chat_completion(usage=usage)):
-        await provider.complete(_request())
+        returned = await provider.complete(_request())
     assert len(persister.calls) == 1
     event, request, response = persister.calls[0]
+    assert getattr(returned, "exchange_event_id", None) is not None
+    assert returned.exchange_event_id == event.event_id == response.exchange_event_id
+    assert returned.exchange_recorded_at == event.timestamp
     assert event.cost_usd > 0
     assert event.input_tokens == 800
     assert event.output_tokens == 500
@@ -1111,10 +1191,59 @@ def test_reasoning_true_on_off_switch_host_fails_closed() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("profile", "models"),
+    [
+        (BASETEN_PROFILE, ("zai-org/GLM-5.2", "zai-org/GLM-5.3-Flash")),
+        (
+            FIREWORKS_PROFILE,
+            ("accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/glm-5p3"),
+        ),
+        (OPENAI_PROFILE, ("gpt-6.1-sol", "gpt-6-luna")),
+    ],
+)
+def test_incompatible_model_contracts_fail_before_sdk_construction(
+    profile: HostProfile, models: tuple[str, ...]
+) -> None:
+    with (
+        patch("outrider.llm.openai_compatible_provider.openai.AsyncOpenAI") as client,
+        pytest.raises(LLMInvalidRequestError, match="incompatible request contracts"),
+    ):
+        OpenAICompatibleProvider(api_key=_api_key(), profile=profile, models=models)
+    client.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_sol_truncation_preserves_full_output_usage() -> None:
+    persister = _RecordingPersister()
+    provider = OpenAICompatibleProvider(
+        api_key=_api_key(),
+        profile=OPENAI_PROFILE,
+        models=("gpt-6.1-sol",),
+        persister=persister,
+    )
+    completion = _chat_completion(
+        text="",
+        finish_reason="length",
+        usage=_usage(prompt_tokens=100, completion_tokens=100, reasoning=100),
+    ).model_copy(update={"service_tier": "default"})
+    try:
+        with _patched_create(return_value=completion):
+            response = await provider.complete(_request(model="gpt-6.1-sol"))
+    finally:
+        await provider.aclose()
+    assert response.text == ""
+    assert response.finish_reason == "max_tokens"
+    assert response.output_tokens == 100
+    event, _, _ = persister.calls[0]
+    assert event.output_tokens == 100
+    assert event.reasoning_enabled is True
+
+
 @pytest.mark.asyncio
 async def test_none_host_reasoning_on_wire_matches_stamp() -> None:
     """A NONE-mechanism host forces reasoning on: the wire sends NO reasoning-off directive
-    (apply_reasoning_off is a no-op) AND the stamp is reasoning_enabled=True — wire matches
+    (apply_reasoning_settings is a no-op) AND the stamp is reasoning_enabled=True — wire matches
     stamp, so the triad never claims an on state the request contradicts."""
     none_profile = _synthetic_profile().model_copy(
         update={"reasoning_mechanism": ReasoningMechanism.NONE}

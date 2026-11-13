@@ -33,7 +33,8 @@ if not db_url:
         "`set -a && source .env && set +a` (or set the var manually). "
         "Alembic will not run without it."
     )
-config.set_main_option("sqlalchemy.url", db_url)
+# ConfigParser unescapes these percent signs when Alembic reads the URL.
+config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
 # Wired up to the ORM models' MetaData so `alembic revision --autogenerate`
 # can compare ORM declarations against the live DB. The package init imports

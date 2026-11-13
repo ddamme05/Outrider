@@ -1,108 +1,13 @@
-"""review_phase natural-key partial unique index — HITL resume duplicate-emit fix.
+"""Prevent duplicate phase records when a review resumes.
 
 Revision ID: 4b9f1c5a7e21
 Revises: 33f8fe051bec
 Create Date: 2026-05-27
 
-The HITL node body re-runs on resume (LangGraph durable-execution semantics:
-the node restarts from the top, `interrupt(...)` returns the resume value
-the second time around). Step 1 re-emits `ReviewPhaseEvent(marker='start')`
-with a deterministic `phase_id` (per `compute_phase_id(review_id, "hitl",
-"hitl")`) — the SAME `(review_id, phase_id, marker)` tuple as the first
-emission. Without a partial unique index targeting this natural key, the
-persister's existing `on_conflict_do_nothing(index_elements=['event_id'])`
-fails to dedupe (each emit has a fresh `event_id`) and the audit_events
-table accumulates duplicate `start` rows for every HITL resume.
-
-Per `specs/2026-05-26-hitl-node.md` §Q8 the `PhaseEventSink` idempotency
-key is `(review_id, phase_id, marker)`; the `compute_phase_id` migration
-landed deterministic phase_id derivation as the producer-side half of the
-contract, but the consumer-side (DB partial unique index + persister
-`on_conflict_do_nothing` targeting) was never added. This migration closes
-the gap.
-
-    CREATE UNIQUE INDEX uq_audit_events_review_phase_natural_key
-        ON audit_events (
-            review_id,
-            (payload->>'phase_id'),
-            COALESCE(phase_key, ''),
-            (payload->>'marker')
-        )
-        WHERE event_type = 'review_phase'
-              AND payload ? 'phase_id'
-              AND payload ? 'marker';
-
-Partial-index design choices:
-
-  - `event_type = 'review_phase'` WHERE clause restricts the
-    constraint to phase-event rows only. Other event types stay
-    under the existing `event_id`-PK idempotency mode per
-    `DECISIONS.md#026`.
-
-  - `(payload->>'phase_id')` + `(payload->>'marker')` JSONB
-    expressions — the phase event's natural-key components are
-    stored in the JSONB payload (not denormalized into top-level
-    columns). PostgreSQL supports expression-on-JSONB-key in
-    unique indexes; both fields serialize to non-empty strings
-    (`phase_id` is the SHA-256 hex from `compute_phase_id`;
-    `marker` is the StrEnum value "start" or "end").
-
-  - `COALESCE(phase_key, '')` — `phase_key` is a top-level Text
-    column on `audit_events`; V1 sets it to `NULL` for all phase
-    events (V1.5's parallel-analyze populates per-file values).
-    PostgreSQL treats NULLs as DISTINCT in unique indexes by
-    default — two rows with `phase_key=NULL` would not collide
-    on the natural key, defeating the dedup contract for V1. The
-    COALESCE collapses NULL to the empty string so V1 rows
-    (all-NULL phase_key) and V1.5 per-file rows (string
-    phase_key) both dedupe correctly on the natural key. The
-    empty string is safe because real phase_key values are
-    non-empty strings (per-file paths or similar).
-
-  - `AND payload ? 'phase_id' AND payload ? 'marker'` in the
-    WHERE clause — defense in depth against PostgreSQL's
-    NULL-distinct semantics for the JSONB extractions.
-    `payload->>'...'` returns NULL when the key is absent; the
-    partial-index WHERE excludes any row whose payload is
-    missing either key from the index entirely. Same shape as
-    the trace_decision natural-key index migration.
-
-  - `review_id` is the index's first column (not in WHERE
-    clause): the natural-key tuple's first component AND a real
-    top-level column on `audit_events`. Follow-up SELECT after
-    conflict would filter on `(review_id, payload->>'phase_id',
-    payload->>'marker')` (all in the index lookup), but in
-    practice phase events use a simpler `on_conflict_do_nothing`
-    without a follow-up SELECT — no identity-subset compare
-    needed because phase events have a deterministic
-    content-derived payload (no LLM-narrative variance like
-    trace's `reason` / `proposed_import_strings`).
-
-No new event-type discriminator (ReviewPhaseEvent.event_type='review_phase'
-already exists). `CREATE UNIQUE INDEX CONCURRENTLY` scans existing rows
-during the build — if any historical duplicate phase rows exist (e.g.,
-from local testing of the pre-fix HITL resume path), the build raises
-`UniqueViolation` and the migration fails. Audit rows are append-only
-per #014 (the trigger from genesis migration forbids UPDATE / DELETE),
-so silent in-migration cleanup is impossible. This migration runs a
-pre-flight duplicate-detection SELECT FIRST and raises explicit operator-
-remediation guidance if any natural-key duplicates exist. Pre-HITL-ship
-environments do not have phase duplicates (HITL is the only path that
-produced them, and HITL itself ships in the same PR as this fix), so
-the check is a safety net for affected dev / staging databases. The
-existing `Index("ix_audit_events_review_phase_key", "review_id",
-"phase_key")` non-unique index on the model side stays as-is — different
-shape, different purpose (V1.5 forward-compat).
-
-The index is IF NOT EXISTS-guarded so a partial-failure rerun lands
-cleanly (sibling pattern to the trace + HITL migrations).
-
-See:
-  - specs/2026-05-26-hitl-node.md §Q8 (phase-event ordering + idempotency)
-  - specs/2026-05-26-hitl-node.md line 165 (compute_phase_id rationale —
-    deterministic phase_id producer side)
-  - docs/invariants.md `phase-events-bound-work`
-  - DECISIONS.md#026 (natural-key idempotency mode — first instance: trace)
+The index identifies each review phase and its start or end marker, including
+the per-file phase key. Existing duplicates or an invalid index stop the
+migration with recovery instructions. Audit rows remain append-only; this
+migration never rewrites them (DECISIONS.md#014, DECISIONS.md#026).
 """
 
 from collections.abc import Sequence

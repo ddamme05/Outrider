@@ -1,7 +1,6 @@
-// GitHub App manifest onboarding (DECISIONS.md#070). These endpoints mount
-// in database credential mode and are absent from the canonical env-mode
-// OpenAPI schema. This raw-fetch client validates their responses locally
-// and applies the same bearer-token/401 policy as api/client.ts.
+// GitHub App setup requests (DECISIONS.md#070).
+// The default schema omits these database-mode routes, so validate responses here.
+// Send admin tokens and clear rejected tokens as api/client.ts does.
 
 import { clearToken, getToken } from "../auth/token";
 

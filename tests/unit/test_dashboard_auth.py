@@ -1,9 +1,6 @@
-"""Unit tests for the dashboard `require_admin_api_key` dependency.
+"""Check dashboard authentication before review-state checks.
 
-Covers the M12 step-order contract's first slot (auth fires FIRST) and
-the failure-uniform 401 response shape (no leak via response variation).
-HMAC `compare_digest` is the timing-oracle defense.
-"""
+Failures must share one 401 response; secret comparison uses compare_digest."""
 
 from __future__ import annotations
 

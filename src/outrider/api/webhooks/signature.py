@@ -1,25 +1,11 @@
-# Route-facing webhook signature verification per docs/trust-boundaries.md:87.
-"""`verify_signature` — the only file performing webhook signature comparison.
+"""Verify a webhook signature before the router reads its payload.
 
-Route-facing security-critical entry point preserved per
-[docs/trust-boundaries.md:87](docs/trust-boundaries.md#L87) (*"the only
-file that performs signature comparison; security-critical"*). Delegates
-internally to `outrider.github.webhooks.verify_webhook_signature` (the
-vendor wrapper).
+verify_signature delegates to github/webhooks.py, where the vendor verifier
+performs the constant-time comparison. Pass the signature header unchanged;
+normalizing it here would change what gets verified.
 
-The two-module path satisfies both:
-  - `docs/trust-boundaries.md#5-input-boundary` — this module is the
-    route-facing entry the doc names.
-  - `vendor-sdks-only-in-wrappers` — the actual `githubkit` import lives
-    in `github/webhooks.py`, not here.
-
-`webhook-signature-constant-time-compare` is satisfied transitively:
-the underlying `githubkit.webhooks.verify` uses `hmac.compare_digest`
-per upstream docs (MCP-verified at `githubkit/usage/webhooks.md`).
-
-No custom header pre-normalization (no `startswith`, `split`, `lower`,
-`strip`) is performed here OR in the wrapper. The header passes through
-to the verifier exactly as received from the route handler.
+See docs/trust-boundaries.md#5-input-boundary,
+vendor-sdks-only-in-wrappers and webhook-signature-constant-time-compare.
 """
 
 from outrider.github.webhooks import verify_webhook_signature

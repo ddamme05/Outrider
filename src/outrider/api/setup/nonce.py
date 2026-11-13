@@ -1,15 +1,10 @@
-# See DECISIONS.md#070 — the single-use setup nonce (hashed at rest, delete-on-consume).
-"""The setup callback nonce (`DECISIONS.md#070`).
+"""Create and hash the one-use value that binds a setup callback.
 
-The onboarding `state` carries a **raw** high-entropy nonce; `setup_nonce` stores only its
-**sha256** (never the raw value), with an `expires_at`. Consumption is an atomic delete-on-consume
-(`state_machine.consume_callback`): the row is deleted `WHERE nonce_hash=$1 AND expires_at>now()
-RETURNING`, so a replay finds no row and an expired nonce never validates. No periodic sweep —
-expired rows are removed by the lazy `POST /setup` repair.
+The state_machine stores only its hash and expiry. It consumes an unexpired
+row atomically, so the same callback cannot use it twice. The next setup request
+removes expired rows; there is no periodic cleanup task here.
 
-sha256 (not a slow KDF) is correct here: the nonce is a `secrets.token_urlsafe(32)` value with ~256
-bits of entropy, so there is nothing to brute-force from the stored hash — the hash only prevents a
-DB-read attacker from replaying the raw nonce.
+See DECISIONS.md#070.
 """
 
 from __future__ import annotations

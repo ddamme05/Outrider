@@ -1,17 +1,9 @@
-"""Per-run trace tee for the rehearsal scripts.
+"""Write smoke-script output to both the terminal and a trace file.
 
-The scripts' diagnostic dumps (thousands of lines for `smoke_e2e.py`)
-truncate in most terminals, so every `_say` line also writes to a
-timestamped file under `scripts/generated/` — gitignored (the unanchored
-`generated/` pattern), created on demand, flushed per line so even a
-killed run leaves a readable prefix of exactly what happened before it
-died. One recipe, three consumers (`smoke_e2e.py`, `live_claude_smoke.py`,
-`live_github_demo.py`) — the tee must not fork per script.
-
-Imported bare (`import _trace_log` / `from _trace_log import TraceTee`):
-when a script under `scripts/` runs as `python scripts/<name>.py`, the
-script's own directory is `sys.path[0]`, so the bare import resolves for
-all three without packaging `scripts/`.
+TraceTee creates a timestamped file under ignored scripts/generated/ and flushes
+each line, leaving earlier output readable if a run stops. The three smoke/demo
+runners share it. They import _trace_log directly because scripts/ is on Python's
+import path when a script in that directory is run.
 """
 
 from __future__ import annotations

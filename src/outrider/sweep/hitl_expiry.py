@@ -1,15 +1,10 @@
-# HITL-expiry sweep per specs/2026-05-26-hitl-node.md Group 8.
-"""Recover interrupted approvals, then expire undecided requests.
+"""Resume saved approvals and expire requests left without a decision.
 
-`reclaim_stuck_hitl_states` resumes saved decisions from immutable audit rows
-(`audit-events-append-only`);
-without a decision or checkpoint, it can mark an old waiting review failed.
-`transition_expired_hitl_reviews` records `hitl_timeout` before changing status,
-so an anomaly-write failure leaves the review eligible for retry.
+Alerts are recorded before terminal status changes so retries can finish
+delivery. The maintenance runner holds the shared transaction lock while this
+sweep updates state and appends audit events.
 
-`run_once` holds `SWEEP_LOCK_ID` once across both jobs. Reclaim runs first so
-saved decisions are recovered before timeout handling. `run_all_sweeps` keeps
-the same transaction lock through the wider maintenance sequence.
+See specs/2026-05-26-hitl-node.md and audit-events-append-only.
 """
 
 from __future__ import annotations

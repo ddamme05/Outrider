@@ -1,23 +1,9 @@
-# See specs/2026-05-23-trace-node.md M5 + M7 + M8.
-"""Trace node unit tests — load-bearing contracts only.
+"""Check trace joins, candidate paths, probe ordering, and repeated-entry filtering.
 
-Covers:
-  - `TraceJoinIntegrityError` raises on duplicate proposal_hash across
-    findings in `state.analysis_rounds` (M5 last-resort guard).
-  - `_candidate_paths_for(import_string)` constructs module + package
-    paths deterministically (the single module→path mapping rule per
-    M8), with `_tier_paths_for` delegating suffix-strip ladder levels
-    to it and `_resolve_via_probes` enforcing the bucket-level ladder:
-    shallowest-level-wins, symbol verification on stripped-level hits,
-    pass-level probe memo + budget (FUP-209).
-  - Bucket dropping for already-traced findings (M1 + #025 point 5
-    within-graph re-entry idempotency).
-
-DB-touching integration tests (Phase 1 probes + Phase 2 fetch end-to-
-end with mock GitHub) are deferred to a follow-up integration test
-file; the unit tests pin the producer-deterministic invariants the
-spec calls out explicitly.
-"""
+Cover duplicate proposal hashes, shallowest-match selection, symbol verification,
+and per-pass probe memoization/budgets. Database-backed node behavior is in
+integration/test_trace_node_end_to_end.py.
+See specs/2026-05-23-trace-node.md M5/M7/M8, DECISIONS.md#025, and FUP-209."""
 
 from __future__ import annotations
 
@@ -891,3 +877,19 @@ async def test_extension_bearing_specifier_resolves_literal_target(
     assert outcome.target_file == "src/routes/db.js"
     assert probed[0] == "src/routes/db.js"
     assert len(probed) == 7
+
+
+def test_trace_ranking_prompt_preserves_language_reference_forms() -> None:
+    """Ranking accepts Python modules and JS/TS relative references without rewriting."""
+    from outrider.prompts.trace import render
+
+    candidates = (
+        _build_candidate(source_proposal_hash="a" * 64, import_string="app.auth"),
+        _build_candidate(source_proposal_hash="b" * 64, import_string="./auth"),
+    )
+    parts = render(candidates)
+    assert "Python" in parts.system_prompt and "JavaScript/TypeScript" in parts.system_prompt
+    assert "do not rewrite" in parts.system_prompt
+    for candidate in candidates:
+        assert candidate.candidate_id in parts.user_prompt
+        assert candidate.import_string in parts.user_prompt

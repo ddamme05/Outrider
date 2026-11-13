@@ -1,22 +1,7 @@
-"""AuditPersister.persist() — happy path + review-not-found + idempotent re-call.
+"""Check LLM-call audit and content writes against PostgreSQL.
 
-The integration test FUP-007's exit rule names. Seeds real `installations`
-+ `reviews` rows so the `SELECT reviews.installation_id` lookup returns
-a live value; then exercises the persister end-to-end against a real
-Postgres via the `migrated_db` fixture.
-
-Critical assertions:
-  - `llm_call_content.prompt` equals `request.user_prompt` VERBATIM
-    (regression against the model-dump-redaction footgun: a naive
-    `request.model_dump()["user_prompt"]` would persist
-    `"<redacted, N chars>"` instead of the real prompt).
-  - `llm_call_content.completion` equals `response.text` VERBATIM.
-  - `llm_call_content.installation_id` equals `reviews.installation_id`
-    — proves the SELECT lookup path works.
-  - Re-call with the same event is a no-op (idempotent on event_id).
-  - Calling with an unresolvable review_id raises
-    `AuditPersisterReviewNotFoundError`.
-"""
+Prompt and completion content must be stored verbatim, with installation scope
+from the review. Cover identical retries and missing-review rejection."""
 
 from __future__ import annotations
 
@@ -543,6 +528,7 @@ async def test_persist_raises_when_event_response_format_digest_disagrees_with_r
 @pytest.mark.parametrize(
     ("field_name", "override"),
     [
+        ("event_id", {"event_id": uuid4()}),
         ("model", {"model": "claude-sonnet-4-6"}),
         ("input_tokens", {"input_tokens": 9999}),
         ("output_tokens", {"output_tokens": 9999}),
@@ -582,7 +568,9 @@ async def test_persist_raises_when_event_response_field_disagrees(
         consistent_event = _make_llm_call_event(seeded_review_id)
         divergent_event = consistent_event.model_copy(update=override)
         request = _make_llm_request(seeded_review_id)
-        response = _make_llm_response()
+        response = _make_llm_response().model_copy(
+            update={"exchange_event_id": consistent_event.event_id}
+        )
 
         persister = _make_persister(engine)
         with pytest.raises(AuditPersisterEventResponseFieldMismatchError) as exc_info:

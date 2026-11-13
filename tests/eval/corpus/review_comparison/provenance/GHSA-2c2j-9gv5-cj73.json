@@ -1,0 +1,170 @@
+{
+  "ghsa_id": "GHSA-2c2j-9gv5-cj73",
+  "cve_id": "CVE-2025-54121",
+  "url": "https://api.github.com/repos/Kludex/starlette/security-advisories/GHSA-2c2j-9gv5-cj73",
+  "html_url": "https://github.com/Kludex/starlette/security/advisories/GHSA-2c2j-9gv5-cj73",
+  "summary": "Possible denial-of-service vector when parsing large files in multipart forms",
+  "description": "### Summary\r\nWhen parsing a multi-part form with large files (greater than the [default max spool size](https://github.com/encode/starlette/blob/fa5355442753f794965ae1af0f87f9fec1b9a3de/starlette/formparsers.py#L126)) `starlette` will block the main thread to roll the file over to disk. This blocks the event thread which means we can't accept new connections.\r\n\r\n### Details\r\nPlease see this discussion for details: https://github.com/encode/starlette/discussions/2927#discussioncomment-13721403. In summary the following UploadFile code (copied from [here](https://github.com/encode/starlette/blob/fa5355442753f794965ae1af0f87f9fec1b9a3de/starlette/datastructures.py#L436C5-L447C14)) has a minor bug. Instead of just checking for `self._in_memory` we should also check if the additional bytes will cause a rollover.\r\n\r\n```python\r\n\r\n    @property\r\n    def _in_memory(self) -> bool:\r\n        # check for SpooledTemporaryFile._rolled\r\n        rolled_to_disk = getattr(self.file, \"_rolled\", True)\r\n        return not rolled_to_disk\r\n\r\n    async def write(self, data: bytes) -> None:\r\n        if self.size is not None:\r\n            self.size += len(data)\r\n\r\n        if self._in_memory:\r\n            self.file.write(data)\r\n        else:\r\n            await run_in_threadpool(self.file.write, data)\r\n```\r\n\r\nI have already created a PR which fixes the problem: https://github.com/encode/starlette/pull/2962\r\n\r\n\r\n### PoC\r\nSee the discussion [here](https://github.com/encode/starlette/discussions/2927#discussioncomment-13721403) for steps on how to reproduce.\r\n\r\n### Impact\r\nTo be honest, very low and not many users will be impacted. Parsing large forms is already CPU intensive so the additional IO block doesn't slow down `starlette` that much on systems with modern HDDs/SSDs. If someone is running on tape they might see a greater impact.\r\n",
+  "severity": "medium",
+  "author": null,
+  "publisher": {
+    "login": "Kludex",
+    "id": 7353520,
+    "node_id": "MDQ6VXNlcjczNTM1MjA=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/7353520?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/Kludex",
+    "html_url": "https://github.com/Kludex",
+    "followers_url": "https://api.github.com/users/Kludex/followers",
+    "following_url": "https://api.github.com/users/Kludex/following{/other_user}",
+    "gists_url": "https://api.github.com/users/Kludex/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/Kludex/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/Kludex/subscriptions",
+    "organizations_url": "https://api.github.com/users/Kludex/orgs",
+    "repos_url": "https://api.github.com/users/Kludex/repos",
+    "events_url": "https://api.github.com/users/Kludex/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/Kludex/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "identifiers": [
+    {
+      "value": "GHSA-2c2j-9gv5-cj73",
+      "type": "GHSA"
+    },
+    {
+      "value": "CVE-2025-54121",
+      "type": "CVE"
+    }
+  ],
+  "state": "published",
+  "created_at": null,
+  "updated_at": "2025-07-21T16:52:46Z",
+  "published_at": "2025-07-20T17:33:25Z",
+  "closed_at": null,
+  "withdrawn_at": null,
+  "submission": null,
+  "vulnerabilities": [
+    {
+      "package": {
+        "ecosystem": "pip",
+        "name": "starlette"
+      },
+      "vulnerable_version_range": "<0.47.1",
+      "patched_versions": "0.47.2",
+      "vulnerable_functions": []
+    }
+  ],
+  "cvss_severities": {
+    "cvss_v3": {
+      "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L",
+      "score": 5.3
+    },
+    "cvss_v4": {
+      "vector_string": null,
+      "score": null
+    }
+  },
+  "cwes": [],
+  "cwe_ids": [],
+  "credits": [
+    {
+      "login": "HonakerM",
+      "type": "reporter"
+    },
+    {
+      "login": "defnull",
+      "type": "other"
+    },
+    {
+      "login": "wai25",
+      "type": "other"
+    }
+  ],
+  "credits_detailed": [
+    {
+      "user": {
+        "login": "HonakerM",
+        "id": 37811263,
+        "node_id": "MDQ6VXNlcjM3ODExMjYz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/37811263?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/HonakerM",
+        "html_url": "https://github.com/HonakerM",
+        "followers_url": "https://api.github.com/users/HonakerM/followers",
+        "following_url": "https://api.github.com/users/HonakerM/following{/other_user}",
+        "gists_url": "https://api.github.com/users/HonakerM/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/HonakerM/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/HonakerM/subscriptions",
+        "organizations_url": "https://api.github.com/users/HonakerM/orgs",
+        "repos_url": "https://api.github.com/users/HonakerM/repos",
+        "events_url": "https://api.github.com/users/HonakerM/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/HonakerM/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "type": "reporter",
+      "state": "accepted"
+    },
+    {
+      "user": {
+        "login": "defnull",
+        "id": 62740,
+        "node_id": "MDQ6VXNlcjYyNzQw",
+        "avatar_url": "https://avatars.githubusercontent.com/u/62740?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/defnull",
+        "html_url": "https://github.com/defnull",
+        "followers_url": "https://api.github.com/users/defnull/followers",
+        "following_url": "https://api.github.com/users/defnull/following{/other_user}",
+        "gists_url": "https://api.github.com/users/defnull/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/defnull/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/defnull/subscriptions",
+        "organizations_url": "https://api.github.com/users/defnull/orgs",
+        "repos_url": "https://api.github.com/users/defnull/repos",
+        "events_url": "https://api.github.com/users/defnull/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/defnull/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "type": "other",
+      "state": "accepted"
+    },
+    {
+      "user": {
+        "login": "wai25",
+        "id": 19560023,
+        "node_id": "MDQ6VXNlcjE5NTYwMDIz",
+        "avatar_url": "https://avatars.githubusercontent.com/u/19560023?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/wai25",
+        "html_url": "https://github.com/wai25",
+        "followers_url": "https://api.github.com/users/wai25/followers",
+        "following_url": "https://api.github.com/users/wai25/following{/other_user}",
+        "gists_url": "https://api.github.com/users/wai25/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/wai25/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/wai25/subscriptions",
+        "organizations_url": "https://api.github.com/users/wai25/orgs",
+        "repos_url": "https://api.github.com/users/wai25/repos",
+        "events_url": "https://api.github.com/users/wai25/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/wai25/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "type": "other",
+      "state": "accepted"
+    }
+  ],
+  "collaborating_users": null,
+  "collaborating_teams": null,
+  "private_fork": null,
+  "comments": 8,
+  "cvss": {
+    "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L",
+    "score": 5.3
+  }
+}

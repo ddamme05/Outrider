@@ -1,22 +1,9 @@
-; Weak hash construction (`crypto.createHash("md5"|"sha1")`) anchored to the
-; call USE. The function alternation matches both the bare form (`createHash`,
-; from a destructured require/import) and the member form (`crypto.createHash`),
-; so the algorithm predicate lives in one place. Case-insensitive: Node routes
-; the name through OpenSSL's case-insensitive lookup, so "MD5" is the same
-; construction. Non-literal algorithm arguments are a deliberate recall gap
-; (JUDGED covers them) — a name-based OBSERVED claim needs the literal.
+; Match createHash with a literal md5 or sha1 algorithm name, ignoring case.
 ;
-; Anchor-capture protocol (BindingRule mode="anchor_import"): the member arm
-; captures its receiver as @_recv; the producer admits a match only when
-; @_recv (else the bare @_fn) is bound by an import from the query's module
-; set. The receiver is constrained to a simple identifier — receivers with
-; no provable binding do not match (JUDGED covers each): nested
-; (`a.b.createHash`), inline require (`require("crypto").createHash`),
-; parenthesized (`(crypto).createHash`), `this.`-qualified, TS non-null
-; (`crypto!.createHash`). Aliased NAMED imports
-; (`import { createHash as h }`) bind only the alias, which the literal
-; name anchor never matches — binding proves receiver/namespace aliases,
-; not API-name aliases (FUP-214).
+; The producer must bind @_recv or @_fn to an allowed crypto import. Simple
+; namespace aliases work; renamed function imports, nested or inline receivers,
+; and nonliteral algorithm names are not covered and need model review
+; (FUP-214).
 (call_expression
   function: [
     (identifier) @_fn

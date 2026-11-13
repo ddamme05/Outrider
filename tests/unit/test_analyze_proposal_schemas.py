@@ -1,19 +1,8 @@
-# See specs/2026-05-19-analyze-foundation.md §7.
-"""Raw + admitted analyze proposal schema tests.
+"""Check raw and admitted analysis-proposal schemas.
 
-Pins:
-- Raw layer admits bounded INVALID enum strings (so the parser can
-  emit rejection events before construction fails).
-- Admitted layer rejects non-enum values (the type system gates
-  finding_type + evidence_tier).
-- Materially distinct field names between raw and admitted layers
-  for TraceCandidate proposals (post-split S4 pit-of-success).
-- Line-preservation invariant: admitted line range == raw, byte-for-byte
-  (FUP-126 / DECISIONS.md#022 span-key amendment — proposals are line-based).
-- Length caps on all bounded strings.
-- Max-50 findings per response.
-- Max-20 trace candidates per proposal.
-"""
+Raw enums allow rejection auditing; admitted proposals require typed values.
+Cover distinct candidate fields, unchanged line ranges, and string/item limits.
+See specs/2026-05-19-analyze-foundation.md §7, FUP-126, and DECISIONS.md#022."""
 
 from __future__ import annotations
 
@@ -225,11 +214,11 @@ def test_trace_candidate_raw_uses_import_string_raw() -> None:
     assert raw.import_string_raw == "middleware.auth"
 
 
-def test_trace_candidate_admitted_uses_import_string() -> None:
-    """Admitted layer uses `import_string` (post-is_valid_trace_import_string per
-    DECISIONS.md#024)."""
-    admitted = TraceCandidateProposal(import_string="middleware.auth", reason="x")
-    assert admitted.import_string == "middleware.auth"
+@pytest.mark.parametrize("import_string", ["middleware.auth", ".foo"])
+def test_trace_candidate_admitted_uses_import_string(import_string: str) -> None:
+    """Preserve absolute and Python-relative import strings (DECISIONS.md#024)."""
+    admitted = TraceCandidateProposal(import_string=import_string, reason="x")
+    assert admitted.import_string == import_string
 
 
 @pytest.mark.parametrize(
@@ -240,7 +229,7 @@ def test_trace_candidate_admitted_uses_import_string() -> None:
         "foo;rm",  # shell metacharacter
         "foo.class",  # Python keyword part
         "foo.123abc",  # numeric prefix part (not a valid identifier)
-        ".foo",  # leading dot
+        ".helper..decode",  # empty interior part in a relative module
         "",  # empty
     ],
 )

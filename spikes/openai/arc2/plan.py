@@ -1,25 +1,11 @@
-"""The REGISTERED experiment plan — the arc's single authority on what is being run.
+"""Build the strict-schema experiment's requests and expected checks.
 
-`verifier.py` made captured evidence single-authority: every response fact is
-decoded from hash-verified fixture bytes. But it still accepted the
-`EvaluationContract` — the GRADER's identity — as a parameter, and only checked
-that the paid contract's digest matched whatever it was handed. A caller could
-therefore supply a fully SELF-CONSISTENT evaluation contract whose
-`fired_query_match_ids` named a query that never fires, hand it to the real
-parser as the OBSERVED allowlist, and have a fabricated `query_match_id` admitted.
-That is an `evidence-tier-schema-enforced` violation manufactured through the
-instrument built to detect it — the same defect shape as the forged ledger, one
-layer up.
+Use the checked-in scenarios, production query results and current version
+constants to build the plan. verifier.py rebuilds it before accepting
+captured evidence, keeping the proof allowlist tied to queries that actually ran
+(evidence-tier-schema-enforced).
 
-This module is the fix: the plan is RECONSTRUCTED here from the scenarios,
-production's own fired-id machinery, and the live registry/version constants.
-`verify_and_derive` rebuilds it and refuses any evaluation contract that differs.
-Nothing about the experiment is caller-supplied any more; a forged evaluation is
-now a mismatch against a recomputed authority rather than a self-consistent
-document that validates itself.
-
-Kept OUT of `strict_schema_probe.py` so the verifier can import it: the probe
-imports the arc2 modules, so the dependency has to run this way round.
+The verifier imports this module; the command-line entry point imports both.
 """
 
 from __future__ import annotations
@@ -204,8 +190,9 @@ def derive_fired_query_match_ids(scenario: Scenario) -> frozenset[str]:
     """The ids that ACTUALLY fire for this scenario, via production's own machinery.
 
     Runs `_build_query_match_id_set` then `_filter_query_ids_to_scopes` — the exact
-    pair the analyze node uses — so the set the prompt describes and the set the
-    parser admits against are one set, computed one way.
+    pair the analyze node uses, so the syntax registry in the request is authentic.
+    Its membership does not qualify model OBSERVED claims; deterministic producers
+    own defect evidence, and model acceptance is tested with JUDGED source quotes.
 
     This was a hand-written literal (`py.sql.string_concat`), which is not a
     registered id at all: the registry's is `python.sql_injection_string_concat`.
@@ -618,29 +605,16 @@ def registered_locked_contract() -> LockedProbeContract:
     )
 
 
-#: REVIEWED 2026-07-20 — the EXACT measured per-row prompt sizes, no headroom.
-#: Re-measured for v5: the reshaped defect scenario moved `acceptance_finding`
-#: only. `test_reviewed_caps_are_exactly_the_measured_sizes` pins the equality,
-#: so a scenario change cannot leave a stale permissive cap behind.
-#:
-#: Deliberately exact, and the reasoning is worth keeping because "add headroom"
-#: is the intuitive choice: each row's exact `request_body_digest` is ALREADY bound
-#: into the contract and re-derived at replay, so any prompt drift whatsoever
-#: invalidates the contract and forces a fresh reviewed dry run. Headroom therefore
-#: cannot permit legitimate drift — the digest check refuses the drifted body long
-#: before the byte cap is consulted. All headroom does is loosen a redundant
-#: ceiling. Exact caps make the cap check a second, independent statement of the
-#: same reviewed fact.
-#:
-#: Regenerate by running `--dry-run` and copying the measured column. These MUST
-#: equal `registered_measurements()` byte-for-byte; `run_paid`'s preflight refuses
-#: the session if they do not.
+# Exact UTF-8 serialized request sizes, measured with analyze-v13 on 2026-11-01.
+# Re-run the free --dry-run and review its measurements after changing inputs.
+# Every row also binds its exact request digest; extra cap headroom is unnecessary.
+# Tests pin exact caps; preflight checks request digests and byte ceilings.
 REVIEWED_CAPS: Final[dict[RowId, int]] = {
-    RowId.ACCEPTANCE_CLEAN: 32_493,
-    RowId.ACCEPTANCE_FINDING: 32_315,  # v5: was 32_357 under the v4 scenario
-    RowId.REFUSAL_1: 31_384,
-    RowId.REFUSAL_2: 31_340,
-    RowId.REFUSAL_3: 31_312,
+    RowId.ACCEPTANCE_CLEAN: 33_458,
+    RowId.ACCEPTANCE_FINDING: 33_280,
+    RowId.REFUSAL_1: 32_184,
+    RowId.REFUSAL_2: 32_140,
+    RowId.REFUSAL_3: 32_112,
 }
 
 

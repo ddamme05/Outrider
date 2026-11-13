@@ -1,15 +1,7 @@
-"""AuditPersister idempotency-conflict — same event_id, different payload.
+"""Check rejection of an event ID reused with a different payload.
 
-Pins H4 + the metadata-only exception contract:
-
-- Same `event_id` with mismatched payload → `AuditPersisterIdempotencyConflict`.
-- Exception carries `event_id`, `mismatched_fields`, and `field_digests`
-  (SHA-256 + length per field).
-- Exception MUST NOT carry raw `prompt`, `completion`, `existing`,
-  `attempted`, or `payload` attrs (regression test for the #016
-  logs-stay-metadata-only contract).
-- `str(exc)` MUST NOT contain raw content text.
-"""
+Conflict errors may expose hashes and lengths, but never prompt or completion
+content in their attributes or text."""
 
 from __future__ import annotations
 

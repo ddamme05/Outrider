@@ -1,22 +1,9 @@
-# Vendor wrapper for githubkit's webhook signature verification.
-"""Thin wrapper over `githubkit.webhooks.verify`.
+"""Verify GitHub webhook signatures before parsing request data.
 
-Only file in the codebase that imports `githubkit.webhooks` per
-`vendor-sdks-only-in-wrappers` (see `docs/conventions.md` "Imports" +
-`CLAUDE.md` rule 3). The route-facing module at
-`api/webhooks/signature.py` delegates here; the router never imports
-githubkit directly.
+The wrapper delegates to the GitHub SDK's constant-time HMAC comparison.
+Callers must pass the unmodified request bytes and selected webhook secret.
 
-`githubkit.webhooks.verify` is documented time-constant by upstream
-(`githubkit/usage/webhooks.md`: *"The verify function is time-constant.
-This is to prevent timing attacks."*). Backs the
-`webhook-signature-constant-time-compare` invariant via delegation —
-the underlying primitive is still `hmac.compare_digest`.
-
-The wrapper is intentionally minimal: no header pre-normalization, no
-prefix stripping, no whitespace handling — anything between header
-extraction and `verify` would risk re-introducing a timing oracle the
-upstream verifier was designed to prevent.
+See webhook-signature-constant-time-compare and docs/trust-boundaries.md.
 """
 
 from githubkit.webhooks import verify

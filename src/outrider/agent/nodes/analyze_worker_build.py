@@ -1,9 +1,10 @@
-# Worker-outcome builders per specs/2026-07-05-parallel-analyze.md.
-"""Build per-file analysis outcomes from parser, cache, and skip results.
+"""Build the result returned by a file-analysis worker.
 
-Builders use `ReviewFinding.validated_clone()` to avoid sharing findings
-with callers and to rerun validation. Counters arrive as values, so this
-module does not import the parser.
+The builders cover model, cache and skip results. They copy and revalidate
+findings so callers do not share mutable objects, and accept counters without
+depending on the response parser.
+
+See specs/2026-07-05-parallel-analyze.md.
 """
 
 from decimal import Decimal
@@ -11,6 +12,7 @@ from typing import Literal
 
 from outrider.ast_facts.models import SkipReason
 from outrider.schemas.analyze_worker import AnalyzeWorkerOutcome
+from outrider.schemas.native_candidate import NativeCandidateRef
 from outrider.schemas.observed_subsumption import ObservedSubsumedMatch
 from outrider.schemas.review_finding import ReviewFinding
 from outrider.schemas.trace_candidate import TraceCandidate
@@ -54,6 +56,7 @@ def worker_outcome_from_parser(
     cache_write_tokens: int,
     cost: Decimal,
     estimated_tokens: int,
+    native_candidates: tuple[NativeCandidateRef, ...] = (),
 ) -> AnalyzeWorkerOutcome:
     """Build an LLM outcome from findings after the producer merge.
 
@@ -62,14 +65,8 @@ def worker_outcome_from_parser(
     tier alone would also count model proposals citing structural queries.
     """
     admitted_object_ids = {id(finding) for finding in admitted_findings}
-    surviving_producer_hashes = tuple(
-        sorted(
-            {
-                finding.content_hash
-                for finding in producer_findings
-                if id(finding) in admitted_object_ids
-            }
-        )
+    surviving_producers = tuple(
+        finding for finding in producer_findings if id(finding) in admitted_object_ids
     )
     return AnalyzeWorkerOutcome(
         path=path,
@@ -79,8 +76,11 @@ def worker_outcome_from_parser(
         review_tier=review_tier,
         admitted_findings=_clone_all(admitted_findings),
         trace_candidates=trace_candidates,
+        native_candidates=native_candidates,
         subsumed_matches=subsumed_matches,
-        producer_observed_hashes=surviving_producer_hashes,
+        producer_observed_hashes=_sorted_hashes(surviving_producers),
+        producer_finding_ids=tuple(sorted({f.finding_id for f in surviving_producers}, key=str)),
+        producer_proposal_hashes=tuple(sorted({f.proposal_hash for f in surviving_producers})),
         n_proposals_seen=n_proposals_seen,
         n_proposals_rejected=n_proposals_rejected,
         n_responses_rejected=n_responses_rejected,
@@ -146,6 +146,8 @@ def worker_outcome_from_observed_skip(
         review_tier=review_tier,
         admitted_findings=_clone_all(producer_findings),
         producer_observed_hashes=_sorted_hashes(producer_findings),
+        producer_finding_ids=tuple(sorted({f.finding_id for f in producer_findings}, key=str)),
+        producer_proposal_hashes=tuple(sorted({f.proposal_hash for f in producer_findings})),
     )
 
 
@@ -171,6 +173,8 @@ def worker_outcome_from_observed_coverage(
         review_tier=review_tier,
         admitted_findings=_clone_all(producer_findings),
         producer_observed_hashes=_sorted_hashes(producer_findings),
+        producer_finding_ids=tuple(sorted({f.finding_id for f in producer_findings}, key=str)),
+        producer_proposal_hashes=tuple(sorted({f.proposal_hash for f in producer_findings})),
         estimated_tokens=estimated_tokens,
     )
 

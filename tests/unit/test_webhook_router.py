@@ -1,29 +1,8 @@
-"""Tests for `api/webhooks/router.py` — the testable paths.
+"""Check webhook validation and no-op paths without a database.
 
-DB-touching paths (membership lookup, INSERT, dispatch, IntegrityError
-introspection) need a real Postgres for honest coverage and live in the
-integration tier alongside the rest of the router-to-graph slice. These
-unit tests focus on:
-
-  - Missing `X-Hub-Signature-256` → 401 (and pins step-2 ordering:
-    body is NOT read on the missing-sig path, via a `Request.body` spy).
-  - Signature verification failure → 401, including the malformed-header
-    `verify` False-path and the unexpected-exception 5xx path.
-  - Content-Length precheck: oversized header → 413 BEFORE body-read
-    (pinned via `Request.body` spy); malformed header → 400.
-  - Post-read body-size guard: body exceeding `_MAX_WEBHOOK_BODY_BYTES`
-    → 413; just-under-cap admits past size guards (reaches signature
-    verification).
-  - Non-`pull_request` event → 2xx no-op.
-  - Unsupported PR action → 2xx no-op.
-  - Malformed payload → 400.
-  - `X-GitHub-Delivery` header is forwarded to logs (traceability), not
-    persisted; receipt log fires on the 401 path.
-
-All tests use FastAPI's `TestClient` with a minimal app that wires only
-the router + the `app.state` slots the router reads. No DB connection
-is required.
-"""
+Authentication and header size checks must precede body reads. Cover body limits,
+bad signatures, malformed payloads, ignored events/actions, and delivery logging.
+Database writes and dispatch are covered in integration tests."""
 
 from __future__ import annotations
 
@@ -528,10 +507,11 @@ def test_x_github_delivery_logged_not_persisted(
 # against real Postgres via the project's `migrated_db` fixture. The
 # integration tier covers: unknown installation 4xx, inactive membership
 # 4xx, tombstoned installation 4xx, happy-path 202 with event_id-match,
-# idempotency fast-path 200, and retention-from-settings. The two
-# IntegrityError-race tests (natural-key conflict slow-path,
-# audit-side IntegrityError re-raise) remain skipped in the integration
-# file pending a monkey-patch fixture; tracked there, not duplicated here.
+# idempotency fast-path 200, retention-from-settings, a natural-key insert
+# race, and an audit primary-key collision with no matching review. The
+# collision check verifies rollback leaves no partial review, no dispatch,
+# and successful redelivery. Classifier checks remain in
+# tests/unit/test_webhook_router_integrity_introspection.py.
 
 
 # ---------------------------------------------------------------------------

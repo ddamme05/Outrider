@@ -1,61 +1,13 @@
-"""Synthesize node schema additions: partial unique index for the
-`cross_round_severity_divergence` anomaly rule.
+"""Prevent repeated severity-disagreement warnings for the same review.
 
 Revision ID: 7c4d8e2a1b5f
 Revises: 4b9f1c5a7e21
 Create Date: 2026-05-28
 
-Schema addition for the synthesize node per `specs/2026-05-28-synthesize-
-node.md` Phase 4:
-
-  1. `uq_anomalies_cross_round_severity_divergence_natural_key` — partial
-     unique index on `anomalies(review_id) WHERE rule_name =
-     'cross_round_severity_divergence'`. Mirrors the HITL_TIMEOUT pattern
-     from Group 3's migration; idempotency contract for the
-     graph-emitted CROSS_ROUND_SEVERITY_DIVERGENCE anomaly that
-     `agent/nodes/synthesize.py` raises when same-`content_hash` findings
-     across analysis rounds carry divergent severity (corruption per
-     `severity-set-by-policy` invariant + `compute_finding_content_hash`
-     recipe + `ReviewFinding._verify_baseline_severity`).
-
-The `AnomalyPersister.emit_anomaly` dispatch looks up a LITERAL-SQL
-predicate `index_where=_RULE_NAME_INDEX_WHERE[rule_name]`
-(→ `sa_text("rule_name = 'cross_round_severity_divergence'")`) keyed by
-the runtime rule_name — without this paired partial unique index,
-Postgres' conflict-arbiter would fail to match a partial index for the
-new rule_name and the `on_conflict_do_nothing` falls through SILENTLY:
-every retry would land a NEW row. (The predicate must be literal SQL, not
-an ORM expression — a bind parameter fails arbiter inference under
-psycopg3 generic plans; see `_RULE_NAME_INDEX_WHERE` in the persister.)
-The integration test
-`tests/integration/test_anomaly_rule_name_index_paired.py` enumerates
-every `AnomalyRuleName` value and asserts a matching partial unique
-index exists in `pg_index`, catching the enum-vs-migration drift class
-at the integration tier per the Class-10 (centrally-pinned contract
-requires call-side registration) pattern in `docs/CODE_REVIEW_STYLES.md`.
-
-Sibling-pattern caveats from the HITL precedent
-(`33f8fe051bec_hitl_node_indexes.py`) apply:
-
-  - `CREATE UNIQUE INDEX CONCURRENTLY` keeps the build non-blocking on
-    production `anomalies` scans. Recovery from a failed concurrent
-    build: `DROP INDEX CONCURRENTLY IF EXISTS <name>` then re-run.
-
-  - No backfill needed: CROSS_ROUND_SEVERITY_DIVERGENCE has never been
-    emitted (synthesize node lands in Phase 5; this Phase 4 migration is
-    a prerequisite). Zero existing rows for the predicate.
-
-  - `anomalies.review_id` is nullable with `ondelete='SET NULL'` (per
-    `db/models/anomalies.py`); the partial unique index admits at most
-    one non-null `(review_id, rule_name='cross_round_severity_divergence')`
-    per review. Orphans (post-purge NULL `review_id`) are not enforced
-    — same trade-off as the HITL_TIMEOUT partial unique index.
-
-See:
-  - specs/2026-05-28-synthesize-node.md §Severity policy + §Audit append-only
-  - specs/_2026-05-27-synthesize-pre-spec-gates.md gate #7
-  - docs/invariants.md `idempotency-via-db-unique-constraint`
-  - docs/CODE_REVIEW_STYLES.md Class 10 (centrally-pinned contract)
+The cross_round_severity_divergence index permits one warning per non-null
+review ID when analysis rounds disagree about a finding's severity. Warnings
+whose review was deleted may keep a null review ID. The migration verifies
+that its index is valid.
 """
 
 from collections.abc import Sequence

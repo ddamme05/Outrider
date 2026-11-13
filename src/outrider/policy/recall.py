@@ -1,33 +1,11 @@
-# See specs/2026-06-17-analyze-cost-fairness.md Stage 1 — high-risk signature scan (cost reserve).
-"""High-risk signature catalog + added-line scan for the analyze cost-budget reserve.
+"""Reserve review budget for files with high-risk added lines.
 
-The analyze node spends a per-review token budget in file order; under budget
-pressure, late-iterated files skip `COST_BUDGET_EXHAUSTED` regardless of how
-dangerous they are (the PR #8 smoke dropped a CRITICAL command_injection this
-way). This module is the deterministic input to a BOUNDED reserve at the cost
-gate: a file whose ADDED diff lines match a blatant CRITICAL-class signature
-draws from a reserved budget slice so it is never starved purely by iteration
-position.
+Text patterns scan patch additions without requiring a source parser. Matches
+are deliberately conservative: a false positive can reserve budget, while the
+normal analysis still decides whether a finding exists. More precise checks
+are tracked in FUP-162.
 
-Scope (deliberate):
-- Lexical scan over ADDED patch lines only — a removed `os.system` is not a new
-  risk, and an unchanged one is pre-existing, not what this PR introduces. This
-  is plain line-prefix filtering of the unified-diff body, NOT coordinate math
-  (no line-number arithmetic, no cross-system translation), so it correctly
-  stays out of `coordinates/`.
-- A recall RESERVE tolerates false positives by design: a false match costs one
-  reserved analyze slot; a false negative is the bug class this exists to kill.
-  The catalog favors recall over precision.
-- CRITICAL-class signatures only. The reserve is bounded; spending it on
-  lower-severity patterns would dilute the guarantee for the worst bugs.
-- Patterns are anchored and linear (no nested quantifiers → no catastrophic
-  backtracking / ReDoS); input is already bounded by the intake size gate.
-
-This is a POLICY catalog (sibling to `SEVERITY_POLICY`), not a tree-sitter scan
-— it does not import `tree_sitter` and is therefore correctly outside
-`ast_facts/`. A precision upgrade (tree-sitter call-site detection intersected
-with added lines, à la FUP-162) is the deferred follow-up if FP noise proves
-real in practice.
+See specs/2026-06-17-analyze-cost-fairness.md.
 """
 
 from __future__ import annotations

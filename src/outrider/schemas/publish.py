@@ -1,16 +1,9 @@
-# Cross-boundary publish carriers per docs/spec.md §4.1.7 + specs/2026-05-21-publish-node.md.
-"""Validated publish carriers and terminal results.
+"""Describe prepared review comments and GitHub publication results.
 
-InlineComment.from_finding is the only production construction path under
-docs/trust-boundaries.md §6. Publish supplies coordinates and sanitized
-body text; the factory carries them with the finding identity. Direct schema
-construction remains available to tests and is forbidden in src by an
-import-graph assertion.
-
-PublishResult records five non-failed outcomes: success, empty, local retry
-skip, external-record skip, and authorization revoked. Failed attempts raise
-and leave the start phase dangling for audit; terminal results are stored on
-ReviewState.publish_result."""
+The publish node validates coordinates and sanitizes text before posting.
+from_finding builds the comment data from an admitted finding; API failures
+raise rather than being represented as successful publication results.
+"""
 
 from __future__ import annotations
 

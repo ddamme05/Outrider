@@ -1,32 +1,27 @@
-# Fixture-driven eval graph driver: run_review + the three src-local replay adapters.
-# See specs/2026-06-01-eval-graph-driver.md (resolution A). LLM-provider boundary #8 +
-# input boundary #5: the adapters implement the LLMProvider / GitHub / GitHubPublisher
-# Protocols WITHOUT importing anthropic/githubkit — they replay fixture data only.
-"""Drive the real review graph from JSON fixtures with persisted audit data.
+"""Run the real review workflow with fixture data for tests.
 
-run_review owns an ephemeral test database and stops at completion or a HITL
-interrupt. run_review_persisting retains a caller-owned database;
-run_review_with_resume rebuilds the graph/checkpointer and supplies an explicit
-approval. Eval entry points require OUTRIDER_IS_EVAL=1 and isolated test URLs.
+run_review creates a temporary database. run_review_persisting uses the caller's
+database; run_review_with_resume rebuilds the workflow and submits an approval.
+These entry points require OUTRIDER_IS_EVAL=1 and an isolated test database URL.
 
-Fixture adapters replay model and GitHub data without vendor SDKs. An optional
-provider_factory supplies a real/captured provider whose cleanup the driver
-owns; GitHub reads and publication still stay fixture-local. Scripted responses
-prove pipeline handling, not a real model's output quality.
+GitHub reads and posting use adapters in eval_adapters.py. An optional
+provider_factory can supply a real or recorded model provider, which the runner
+closes afterward. Fixture responses test workflow handling, not the quality of
+a real model's findings.
 
-This code lives in src because the eval entry points cannot import tests;
-see specs/2026-06-01-eval-graph-driver.md (resolution A)."""
+See specs/2026-06-01-eval-graph-driver.md. The runners live here because src
+cannot import test helpers; vendor SDK calls stay in their wrapper modules.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
 import json
 import os
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, Self
 from uuid import UUID, uuid4
 
@@ -45,6 +40,36 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from outrider.agent.checkpoint_serde import build_checkpoint_serde
+from outrider.agent.eval_adapters import (
+    _CapturingPublisher as _CapturingPublisher,
+)
+from outrider.agent.eval_adapters import (
+    _FixtureContentFile as _FixtureContentFile,
+)
+from outrider.agent.eval_adapters import (
+    _FixtureContentNotFoundError as _FixtureContentNotFoundError,
+)
+from outrider.agent.eval_adapters import (
+    _FixtureFileMeta as _FixtureFileMeta,
+)
+from outrider.agent.eval_adapters import (
+    _FixtureGitHubClient as _FixtureGitHubClient,
+)
+from outrider.agent.eval_adapters import (
+    _FixturePullsAPI as _FixturePullsAPI,
+)
+from outrider.agent.eval_adapters import (
+    _FixtureReposAPI as _FixtureReposAPI,
+)
+from outrider.agent.eval_adapters import (
+    _FixtureResponse as _FixtureResponse,
+)
+from outrider.agent.eval_adapters import (
+    _FixtureRestAPI as _FixtureRestAPI,
+)
+from outrider.agent.eval_adapters import (
+    _NoOpImportPathResolver as _NoOpImportPathResolver,
+)
 from outrider.agent.graph import build_graph
 from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS
 from outrider.agent.nodes.cache_config import CacheMode
@@ -67,6 +92,7 @@ from outrider.eval_support import (
 )
 from outrider.github.authz import LiveAuthOutcome, LiveAuthResult
 from outrider.llm.config import ModelConfig
+from outrider.prompts.triage_schema import file_slot_ids
 from outrider.schemas.hitl import (
     HITLDecision,
     HITLRequest,
@@ -74,18 +100,16 @@ from outrider.schemas.hitl import (
     PerFindingOutcome,
 )
 from outrider.schemas.pr_context import PRContext
-from outrider.schemas.publish import GitHubReviewCreated
 from outrider.schemas.review_state import ReviewState
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from outrider.ast_facts.base import ImportPathResolver
     from outrider.cache import AnalyzeCacheStore
-    from outrider.github import InstallationGitHubClient
     from outrider.llm.base import LLMExchangePersister, LLMProvider, LLMRequest, LLMResponse
     from outrider.schemas.analysis_round import AnalysisRound
+    from outrider.schemas.native_candidate import CandidateAssessmentRef, NativeCandidateRef
     from outrider.schemas.publish import InlineComment
     from outrider.schemas.review_finding import ReviewFinding
     from outrider.schemas.review_report import ReviewMetrics
@@ -106,24 +130,6 @@ class EvalDriverError(RuntimeError):
     TEST_DATABASE_URL, malformed fixture), surfaced loudly so a scenario fails
     with a clear cause rather than a confusing downstream error.
     """
-
-
-class _FixtureContentNotFoundError(Exception):
-    """Mimics githubkit's 404 `RequestFailed` for a path the fixture's repo
-    does not contain.
-
-    Carries `.response.status_code == 404` so consumers that special-case 404
-    treat an absent path as a real GitHub "file not found" — matching production
-    wire behavior. This is required for the trace node's two-phase probe, which
-    fetches BOTH candidate paths for a dotted import (e.g. `app/models.py` AND
-    `app/models/__init__.py`) and relies on a 404 to learn which one exists
-    (see `trace.py` — it reads `exc.response.status_code`). No `githubkit`
-    import — only the `.response.status_code` shape those consumers read.
-    """
-
-    def __init__(self, path: str, ref: str) -> None:
-        self.response = SimpleNamespace(status_code=404)
-        super().__init__(f"fixture repo has no file at path={path!r} ref={ref!r} (GitHub 404)")
 
 
 # ---------------------------------------------------------------------------
@@ -152,10 +158,10 @@ class EvalFixture(BaseModel):
     """A complete PR fixture: identity + changed files + scripted LLM responses.
 
     `llm_responses` maps `node_id` → the ordered list of raw response strings
-    that node's calls receive (index 0 = first call). The strings are the
-    exact text the real node parser consumes (triage tiers JSON, the analyze
-    findings JSON, synthesize summary prose) — the shape proven by
-    `tests/integration/test_e2e_smoke.py`.
+    that node's calls receive (index 0 = first call). Triage fixtures retain
+    canonical path-keyed tiers covering the fixture's files; the scripted provider
+    serializes them to the numbered-file wire format. Other responses reach the
+    node unchanged. Raw invalid-output tests inject their own provider.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -283,6 +289,12 @@ class EvalRunResult:
     # are summed from the review's `LLMCallEvent` rows). None only if synthesize
     # never ran (e.g. an early-failed run). Lets scenarios pin metric population.
     review_metrics: ReviewMetrics | None = None
+    # Graph invocation through completion or an approval interrupt; excludes setup/cleanup.
+    automated_review_wall_ms: float | None = None
+    # Temporary database creation plus migrations; persisting runs leave this unknown.
+    database_setup_wall_ms: float | None = None
+    native_candidates: tuple[NativeCandidateRef, ...] = ()
+    candidate_assessments: tuple[CandidateAssessmentRef, ...] = ()
 
     def __iter__(self) -> Any:
         return iter(self.findings)
@@ -308,7 +320,7 @@ class ResumedRunResult:
 
 
 # ---------------------------------------------------------------------------
-# Adapter 1 — scripted LLM provider (LLMProvider Protocol; no `anthropic`)
+# Scripted LLM provider (LLMProvider Protocol; no `anthropic`)
 # ---------------------------------------------------------------------------
 
 
@@ -382,41 +394,33 @@ class _FixtureScriptedProvider:
         probe: CostProbe | None = None,
         host: str | None = None,
         analyze_responses_by_path: dict[str, str] | None = None,
+        triage_paths: tuple[str, ...] | None = None,
     ) -> None:
         self._responses = responses
         self._counts: dict[str, int] = {}
         self._persister = persister
         self._probe = probe
+        self._triage_paths = triage_paths
         # Concurrency-safe pass-0 analyze scripting (increment 6): responses
         # keyed by file path, served via the worker's LLMRequest.phase_key —
         # completion order can't misattribute them. None = index-keyed legacy.
         self._analyze_responses_by_path = analyze_responses_by_path
-        # Host-identity triad stamped on every response/event (DECISIONS.md#056).
-        # Default None -> anthropic: resolve_host_identity("anthropic", False) returns
-        # the SAME (ANTHROPIC_PROFILE_ID, False, ANTHROPIC_CONTRACT_DIGEST) the
-        # AnthropicProvider stamps, so the default path is byte-identical. host="baseten"
-        # stamps the baseten triad so a full-graph eval can run a non-anthropic host.
-        # host_profiles is SDK-free, so this import stays off the SDK module-load path.
+        # Validate the host now; each response uses its requested model's contract.
         from outrider.llm.host_profiles import ANTHROPIC_PROFILE_ID, resolve_host_identity
 
-        self._profile_id, self._reasoning_enabled, self._profile_contract_digest = (
-            resolve_host_identity(host or ANTHROPIC_PROFILE_ID, reasoning=False)
+        self._profile_id, _, _ = resolve_host_identity(
+            host or ANTHROPIC_PROFILE_ID, reasoning=False
         )
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         from outrider.audit.events import LLMCallEvent
-
-        # Stamp the host-identity triad resolved in __init__ (DECISIONS.md#056) on the
-        # response + event so the persister host-qualifies cost + cross-checks
-        # event-vs-response, and pricing keys on `(profile_id, model)`. Default host is
-        # anthropic (the fixture mirrors AnthropicProvider's claude-family ModelConfig);
-        # a baseten-host run stamps the baseten triad + keys pricing on `("baseten", model)`.
         from outrider.llm.base import (
             LLMResponse,
             _canonical_prompt_hash,
             _canonical_system_prompt_hash,
         )
         from outrider.llm.host_profiles import ANTHROPIC_PROFILE_ID as _ANTHROPIC_ID
+        from outrider.llm.host_profiles import resolve_host_identity
         from outrider.llm.pricing import (
             PRICING_VERSION,
             TIER_ECHO_EXPECTED_PROFILE_IDS,
@@ -453,6 +457,20 @@ class _FixtureScriptedProvider:
                     f"this node). Add the response to the fixture's llm_responses."
                 ) from exc
             self._counts[node] = idx + 1
+        if node == "triage" and request.prompt_template_version == "triage-v3":
+            if self._triage_paths is None:
+                raise EvalDriverError("triage-v3 fixtures require ordered triage_paths")
+            payload = json.loads(text_out)
+            tiers = payload["file_tiers"]
+            if set(tiers) != set(self._triage_paths):
+                raise EvalDriverError("scripted triage paths do not match triage_paths")
+            payload["file_tiers"] = {
+                slot: tiers[path]
+                for slot, path in zip(
+                    file_slot_ids(len(self._triage_paths)), self._triage_paths, strict=True
+                )
+            }
+            text_out = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
         # Token counts: fixed sentinels for correctness runs; REAL prompt-derived
         # counts when a CostProbe is attached (zero-spend cost measurement). The
         # graph has ALREADY rendered the real system+user prompts by this point, so
@@ -552,6 +570,11 @@ class _FixtureScriptedProvider:
         # set); GLM hosts realistically echo nothing.
         is_compat_host = self._profile_id != _ANTHROPIC_ID
         expects_tier_echo = self._profile_id in TIER_ECHO_EXPECTED_PROFILE_IDS
+        profile_id, reasoning_enabled, profile_contract_digest = resolve_host_identity(
+            self._profile_id, reasoning=False, models=(request.model,)
+        )
+        exchange_event_id = uuid4()
+        exchange_recorded_at = datetime.now(UTC)
         response = LLMResponse(
             text=text_out,
             model=request.model,
@@ -561,11 +584,13 @@ class _FixtureScriptedProvider:
             cache_write_tokens=cache_write_tokens,
             finish_reason="end_turn",
             latency_ms=1,
-            profile_id=self._profile_id,
-            reasoning_enabled=self._reasoning_enabled,
-            profile_contract_digest=self._profile_contract_digest,
+            profile_id=profile_id,
+            reasoning_enabled=reasoning_enabled,
+            profile_contract_digest=profile_contract_digest,
             billed_prompt_tokens=(input_tokens + cache_read_tokens) if is_compat_host else None,
             service_tier_actual="default" if expects_tier_echo else None,
+            exchange_event_id=exchange_event_id,
+            exchange_recorded_at=exchange_recorded_at,
         )
         # Emit LLMCallEvent + llm_call_content BEFORE returning, exactly as the real
         # LLMProvider contract requires (mirrors AnthropicProvider Step 9). FUP-093:
@@ -619,13 +644,15 @@ class _FixtureScriptedProvider:
                 }
             )
         event = LLMCallEvent(
+            event_id=exchange_event_id,
             review_id=request.review_id,
-            timestamp=datetime.now(UTC),
+            timestamp=exchange_recorded_at,
             is_eval=request.is_eval,
             model=response.model,
             # DECISIONS.md#016 Amended 2026-06-30: mirror finish_reason; persister cross-checks it.
             finish_reason=response.finish_reason,
             node_id=request.node_id,
+            candidate_attempt_id=request.candidate_attempt_id,
             input_tokens=response.input_tokens,
             output_tokens=response.output_tokens,
             cached_tokens=response.cache_read_tokens,
@@ -675,146 +702,6 @@ class _FixtureScriptedProvider:
         # `LLMProvider.aclose` member formalized in DECISIONS.md#035 (retained #058) so this
         # double passes build_graph's runtime isinstance(provider, LLMProvider).
         return None
-
-
-# ---------------------------------------------------------------------------
-# Adapter 2 — fake GitHub read client (intake's two-phase fetch; no `githubkit`)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _FixtureFileMeta:
-    filename: str
-    status: str
-    additions: int
-    deletions: int
-    patch: str | None
-    previous_filename: str | None
-
-
-@dataclass
-class _FixtureContentFile:
-    encoding: str
-    content: str
-
-
-@dataclass
-class _FixtureResponse:
-    parsed_data: Any
-
-
-class _FixtureReposAPI:
-    """Serves `async_get_content` from fixture content, keyed by (path, ref).
-
-    Content is base64 with newline wrapping (`base64.encodebytes`) to match
-    GitHub's real contents-API wire shape — intake strips `\\n`/`\\r` then
-    decodes with `validate=True` (see `github/fetch.py`), so an unwrapped stub
-    would not exercise the strip path real GitHub triggers
-    (`feedback_test_stubs_match_wire_format`).
-    """
-
-    def __init__(self, content_by_path_ref: dict[tuple[str, str], str]) -> None:
-        self._content = content_by_path_ref
-
-    async def async_get_content(
-        self, owner: str, repo: str, path: str, *, ref: str
-    ) -> _FixtureResponse:
-        try:
-            raw = self._content[(path, ref)]
-        except KeyError as exc:
-            # Absent path → mimic GitHub's 404 (real wire behavior), NOT a hard
-            # error: trace's candidate probe fetches paths that legitimately
-            # don't exist and reads the 404 to resolve. Intake only requests
-            # paths the fixture supplied, so a 404 there would itself be a
-            # genuine fetch failure (surfaced loudly upstream).
-            raise _FixtureContentNotFoundError(path, ref) from exc
-        wrapped_b64 = base64.encodebytes(raw.encode()).decode("ascii")
-        return _FixtureResponse(
-            parsed_data=_FixtureContentFile(encoding="base64", content=wrapped_b64)
-        )
-
-
-class _FixturePullsAPI:
-    def __init__(self, metas: list[_FixtureFileMeta]) -> None:
-        self._metas = metas
-
-    async def async_list_files(
-        self, owner: str, repo: str, pull_number: int, **kwargs: Any
-    ) -> _FixtureResponse:
-        return _FixtureResponse(parsed_data=list(self._metas))
-
-
-class _FixtureRestAPI:
-    def __init__(self, repos: _FixtureReposAPI, pulls: _FixturePullsAPI) -> None:
-        self.repos = repos
-        self.pulls = pulls
-
-
-class _FixtureGitHubClient:
-    def __init__(self, rest: _FixtureRestAPI) -> None:
-        self.rest = rest
-
-
-# ---------------------------------------------------------------------------
-# Adapter 3 — capturing publisher (GitHubPublisher Protocol; no POST)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _CapturingPublisher:
-    """Records `create_review` instead of POSTing; reports no prior review."""
-
-    create_review_calls: list[dict[str, Any]] = field(default_factory=list)
-
-    async def create_review(
-        self,
-        *,
-        gh: InstallationGitHubClient,
-        owner: str,
-        repo: str,
-        pull_number: int,
-        head_sha: str,
-        review_status: str,
-        body_marker: str,
-        body: str | None = None,
-        comments: tuple[InlineComment, ...],
-    ) -> GitHubReviewCreated:
-        self.create_review_calls.append(
-            {"review_status": review_status, "comments": tuple(comments), "body": body}
-        )
-        return GitHubReviewCreated(github_review_id=999, comments_posted=len(comments))
-
-    async def find_existing_review_on_head_sha(
-        self,
-        *,
-        gh: InstallationGitHubClient,
-        owner: str,
-        repo: str,
-        pull_number: int,
-        head_sha: str,
-        body_marker: str,
-    ) -> int | None:
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Adapter 4 — default resolver for analyze's local import context
-# ---------------------------------------------------------------------------
-
-
-class _NoOpImportPathResolver:
-    """Default resolver that supplies no local-filesystem candidate paths.
-
-    Trace resolves through GitHub probes independently. Callers may inject a real
-    resolver for analyze's scope/import context."""
-
-    def resolve_candidate_paths(self, import_string: str, import_root: Path) -> list[Path]:
-        return []
-
-    def resolve_specifier_candidate_paths(
-        self, specifier: str, importing_file_path: str, import_root: Path
-    ) -> list[Path]:
-        return []
 
 
 # ---------------------------------------------------------------------------
@@ -947,6 +834,41 @@ async def _run_is_eval_gate(engine: AsyncEngine) -> None:
         await assert_no_is_eval_violations(conn)
 
 
+async def _export_review_diagnostics(
+    engine: AsyncEngine,
+    review_id: UUID,
+    output: list[dict[str, Any]],
+) -> None:
+    """Copy persisted is_eval=True metadata before the review database closes."""
+    async with engine.connect() as conn:
+        rows = await conn.execute(
+            text(
+                "SELECT event_id, review_id, event_type, timestamp, sequence_number, "
+                "is_eval, phase_key, payload FROM audit_events "
+                "WHERE review_id = :review_id AND is_eval IS TRUE AND event_type IN ("
+                "'file_examination', 'scope_exclusion', 'analyze_completed', "
+                "'finding_proposal_rejected', 'analyze_response_rejected', "
+                "'review_phase', 'trace_decision', 'native_candidate', "
+                "'candidate_check_started', 'candidate_assessment') ORDER BY timestamp, event_id"
+            ),
+            {"review_id": review_id},
+        )
+        output.extend(
+            {
+                "kind": "persisted-audit-event",
+                "event_id": str(row.event_id),
+                "review_id": str(row.review_id),
+                "event_type": row.event_type,
+                "timestamp": row.timestamp.isoformat(),
+                "sequence_number": row.sequence_number,
+                "is_eval": row.is_eval,
+                "phase_key": row.phase_key,
+                "payload": row.payload,
+            }
+            for row in rows
+        )
+
+
 def _build_eval_graph(
     *,
     fixture: EvalFixture,
@@ -963,6 +885,12 @@ def _build_eval_graph(
     host: str | None = None,
     analyze_max_concurrency: int = 1,
     import_path_resolver: ImportPathResolver | None = None,
+    supplemental_context_enabled: bool = True,
+    called_function_context_enabled: bool = False,
+    module_context_enabled: bool = False,
+    companion_context_enabled: bool = False,
+    import_reference_context_enabled: bool = False,
+    candidate_checks_enabled: bool = False,
 ) -> Any:
     """Build the seven-logical-node graph with eval sinks and the supplied provider.
 
@@ -996,15 +924,16 @@ def _build_eval_graph(
     from outrider.llm.host_profiles import ANTHROPIC_PROFILE_ID, resolve_host_identity
 
     host_id = host or ANTHROPIC_PROFILE_ID
+    resolved_models = model_config or ModelConfig.for_host(host_id)
     profile_id, reasoning_enabled, profile_contract_digest = resolve_host_identity(
-        host_id, reasoning=False
+        host_id, reasoning=False, models=resolved_models.models()
     )
     return build_graph(
         db_factory=session_factory,
         github_factory=_github_factory_for(fixture),
         installation_authorizer=_eval_always_authorized,
         provider=provider,
-        model_config=model_config or ModelConfig.for_host(host_id),
+        model_config=resolved_models,
         profile_id=profile_id,
         reasoning_enabled=reasoning_enabled,
         profile_contract_digest=profile_contract_digest,
@@ -1054,6 +983,12 @@ def _build_eval_graph(
         # pre-seeded store through this seam.
         cache_mode=cache_mode,
         total_review_budget_tokens=review_budget,
+        supplemental_context_enabled=supplemental_context_enabled,
+        called_function_context_enabled=called_function_context_enabled,
+        module_context_enabled=module_context_enabled,
+        companion_context_enabled=companion_context_enabled,
+        import_reference_context_enabled=import_reference_context_enabled,
+        candidate_checks_enabled=candidate_checks_enabled,
     )
 
 
@@ -1070,6 +1005,13 @@ async def _drive(
     analyze_max_concurrency: int = 1,
     provider_factory: Callable[[LLMExchangePersister], LLMProvider] | None = None,
     import_path_resolver: ImportPathResolver | None = None,
+    supplemental_context_enabled: bool = True,
+    called_function_context_enabled: bool = False,
+    module_context_enabled: bool = False,
+    companion_context_enabled: bool = False,
+    import_reference_context_enabled: bool = False,
+    candidate_checks_enabled: bool = False,
+    diagnostic_events: list[dict[str, Any]] | None = None,
 ) -> EvalRunResult:
     """Run the graph once against `db_url` (already migrated) and collect results.
 
@@ -1082,6 +1024,7 @@ async def _drive(
     engine = create_async_engine(db_url, poolclass=NullPool)
     owned_provider: LLMProvider | None = None
     run_failed = True
+    review_id: UUID | None = None
     try:
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         await _seed_installation(engine, fixture)
@@ -1100,6 +1043,7 @@ async def _drive(
                 probe=probe,
                 host=host,
                 analyze_responses_by_path=fixture.analyze_responses_by_path,
+                triage_paths=tuple(file.path for file in fixture.files),
             )
         else:
             owned_provider = provider_factory(persister)
@@ -1118,12 +1062,19 @@ async def _drive(
             analyze_observed_skip_enforced=analyze_observed_skip_enforced,
             model_config=model_config,
             import_path_resolver=import_path_resolver,
+            supplemental_context_enabled=supplemental_context_enabled,
+            called_function_context_enabled=called_function_context_enabled,
+            module_context_enabled=module_context_enabled,
+            companion_context_enabled=companion_context_enabled,
+            import_reference_context_enabled=import_reference_context_enabled,
+            candidate_checks_enabled=candidate_checks_enabled,
         )
 
-        result = await graph.ainvoke(
-            _seed_state(fixture, review_id),
-            config={"configurable": {"thread_id": str(review_id)}},
-        )
+        initial_state = _seed_state(fixture, review_id)
+        thread_config = {"configurable": {"thread_id": str(review_id)}}
+        automated_review_started = time.perf_counter()
+        result = await graph.ainvoke(initial_state, config=thread_config)
+        automated_review_wall_ms = (time.perf_counter() - automated_review_started) * 1000
 
         # A CRITICAL/HIGH finding trips the HITL gate -> the graph interrupt()s
         # and LangGraph returns the accumulated channel state PLUS `__interrupt__`
@@ -1147,6 +1098,9 @@ async def _drive(
             hitl_gated=hitl_gated,
             hitl_request=hitl_request,
             review_metrics=report.metrics if report else None,
+            automated_review_wall_ms=automated_review_wall_ms,
+            native_candidates=tuple(result.get("native_candidates", ())),
+            candidate_assessments=tuple(result.get("candidate_assessments", ())),
         )
 
         # is_eval integrity gate (success path): a violation fails the run.
@@ -1161,6 +1115,17 @@ async def _drive(
         raise
     finally:
         try:
+            if diagnostic_events is not None and review_id is not None:
+                try:
+                    await _export_review_diagnostics(engine, review_id, diagnostic_events)
+                except Exception as exc:
+                    diagnostic_events.append(
+                        {
+                            "kind": "diagnostic-export-error",
+                            "review_id": str(review_id),
+                            "error_type": type(exc).__name__,
+                        }
+                    )
             if owned_provider is not None:
                 if run_failed:
                     # Preserve the review failure if provider cleanup also fails.
@@ -1182,10 +1147,19 @@ async def _arun_review(
     analyze_max_concurrency: int = 1,
     provider_factory: Callable[[LLMExchangePersister], LLMProvider] | None = None,
     import_path_resolver: ImportPathResolver | None = None,
+    supplemental_context_enabled: bool = True,
+    called_function_context_enabled: bool = False,
+    module_context_enabled: bool = False,
+    companion_context_enabled: bool = False,
+    import_reference_context_enabled: bool = False,
+    candidate_checks_enabled: bool = False,
+    diagnostic_events: list[dict[str, Any]] | None = None,
 ) -> EvalRunResult:
+    database_setup_started = time.perf_counter()
     async with ephemeral_database(base_url=base_url) as db_url:
         await run_alembic_upgrade_head(db_url)
-        return await _drive(
+        database_setup_wall_ms = (time.perf_counter() - database_setup_started) * 1000
+        result = await _drive(
             fixture,
             db_url,
             probe=probe,
@@ -1194,7 +1168,15 @@ async def _arun_review(
             analyze_max_concurrency=analyze_max_concurrency,
             provider_factory=provider_factory,
             import_path_resolver=import_path_resolver,
+            supplemental_context_enabled=supplemental_context_enabled,
+            called_function_context_enabled=called_function_context_enabled,
+            module_context_enabled=module_context_enabled,
+            companion_context_enabled=companion_context_enabled,
+            import_reference_context_enabled=import_reference_context_enabled,
+            candidate_checks_enabled=candidate_checks_enabled,
+            diagnostic_events=diagnostic_events,
         )
+        return replace(result, database_setup_wall_ms=database_setup_wall_ms)
 
 
 def _require_concurrency_safe_scripting(fixture: EvalFixture, analyze_max_concurrency: int) -> None:
@@ -1234,8 +1216,19 @@ def run_review(
     analyze_max_concurrency: int = 1,
     provider_factory: Callable[[LLMExchangePersister], LLMProvider] | None = None,
     import_path_resolver: ImportPathResolver | None = None,
+    supplemental_context_enabled: bool = True,
+    called_function_context_enabled: bool = False,
+    module_context_enabled: bool = False,
+    companion_context_enabled: bool = False,
+    import_reference_context_enabled: bool = False,
+    candidate_checks_enabled: bool = False,
+    diagnostic_events: list[dict[str, Any]] | None = None,
 ) -> EvalRunResult:
     """Drive the real 7-logical-node graph against a JSON PR fixture; return the result.
+
+    `diagnostic_events` optionally retains persisted review metadata, including
+    partial work on failure. Export failures add a separate error-type marker
+    without replacing the review outcome; they never include exception text.
 
     Synchronous wrapper (the eval scenarios call it without `await`); the async
     graph runs inside `asyncio.run`. Fail-closed: requires `OUTRIDER_IS_EVAL=1`
@@ -1301,6 +1294,13 @@ def run_review(
             analyze_max_concurrency=analyze_max_concurrency,
             provider_factory=provider_factory,
             import_path_resolver=import_path_resolver,
+            supplemental_context_enabled=supplemental_context_enabled,
+            called_function_context_enabled=called_function_context_enabled,
+            module_context_enabled=module_context_enabled,
+            companion_context_enabled=companion_context_enabled,
+            import_reference_context_enabled=import_reference_context_enabled,
+            candidate_checks_enabled=candidate_checks_enabled,
+            diagnostic_events=diagnostic_events,
         )
     )
 
@@ -1391,6 +1391,7 @@ async def run_review_with_resume(
     db_url: str,
     host: str | None = None,
     analyze_max_concurrency: int = 1,
+    companion_context_enabled: bool = False,
 ) -> ResumedRunResult:
     """Drive to HITL, rebuild the graph/checkpointer, then explicitly approve and resume.
 
@@ -1434,6 +1435,7 @@ async def run_review_with_resume(
             persister=persister,
             host=host,
             analyze_responses_by_path=fixture.analyze_responses_by_path,
+            triage_paths=tuple(file.path for file in fixture.files),
         )
 
         # First graph/checkpointer: drive to the interrupt, then close the saver.
@@ -1450,6 +1452,7 @@ async def run_review_with_resume(
                 checkpointer=saver_a,
                 host=host,
                 analyze_max_concurrency=analyze_max_concurrency,
+                companion_context_enabled=companion_context_enabled,
             )
             result_a = await graph_a.ainvoke(_seed_state(fixture, review_id), config=thread_config)
 
@@ -1478,6 +1481,7 @@ async def run_review_with_resume(
                 checkpointer=saver_b,
                 host=host,
                 analyze_max_concurrency=analyze_max_concurrency,
+                companion_context_enabled=companion_context_enabled,
             )
             result_b = await graph_b.ainvoke(
                 Command(resume=decision.model_dump(mode="json")), config=thread_config
@@ -1520,6 +1524,7 @@ async def run_review_persisting(
     cache_mode: CacheMode = CacheMode.SHADOW,
     analyze_observed_skip_enforced: bool = False,
     analyze_max_concurrency: int = 1,
+    companion_context_enabled: bool = False,
 ) -> EvalRunResult:
     """Drive the graph ONCE against a caller-supplied, already-migrated `db_url`.
 
@@ -1554,4 +1559,5 @@ async def run_review_persisting(
         cache_mode=cache_mode,
         analyze_observed_skip_enforced=analyze_observed_skip_enforced,
         analyze_max_concurrency=analyze_max_concurrency,
+        companion_context_enabled=companion_context_enabled,
     )

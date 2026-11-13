@@ -1,7 +1,8 @@
 """Classify changed files and assess the pull request's overall risk.
 
-The model supplies a TriageResult. Deterministic validation requires every
-changed-file path, rejects SKIP, and anchors the active policy version.
+The model classifies numbered files. The node restores their actual paths and
+constructs TriageResult. Admission requires every file, rejects SKIP, and anchors
+the active policy version.
 The provider records its call before returning; failed work returns no
 state update and can leave the start phase open.
 """
@@ -18,6 +19,7 @@ from outrider.llm.parsing import strip_outer_json_fence
 from outrider.policy.canonical import compute_phase_id
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts import triage as triage_prompt
+from outrider.prompts.triage_schema import file_slot_ids, response_schema_json
 from outrider.schemas.triage_result import ReviewTier, TriageResult
 
 _POLICY_VIOLATION_SAMPLE_SIZE = 3
@@ -27,10 +29,13 @@ _REASONING_MAX_CHARS = 500
 """Match TriageResult.reasoning's schema cap; advisory reasoning can be truncated."""
 
 
-def _validate_triage_response(raw_json: str) -> TriageResult:
-    """Clamp advisory reasoning to its schema cap, then validate the response.
+def _validate_triage_response(
+    raw_json: str, *, file_paths: tuple[str, ...] | None = None
+) -> TriageResult:
+    """Validate a result, decoding live numbered slots when file paths are supplied.
 
-    Let Pydantic report malformed JSON; normalize only the reasoning length.
+    Slot identity must match exactly. Reasoning keeps its existing length clamp;
+    malformed JSON is reported by Pydantic without repair.
     """
     try:
         data = json.loads(raw_json)
@@ -38,20 +43,36 @@ def _validate_triage_response(raw_json: str) -> TriageResult:
         return TriageResult.model_validate_json(raw_json)
     if isinstance(data, dict) and isinstance(data.get("reasoning"), str):
         data["reasoning"] = data["reasoning"][:_REASONING_MAX_CHARS]
+    if (
+        file_paths is not None
+        and isinstance(data, dict)
+        and isinstance(data.get("file_tiers"), dict)
+    ):
+        proposed = data["file_tiers"]
+        slots = dict(zip(file_slot_ids(len(file_paths)), file_paths, strict=True))
+        unknown = proposed.keys() - slots.keys()
+        missing = slots.keys() - proposed.keys()
+        if unknown or missing:
+            raise TriagePolicyViolationError(
+                "file_tiers must contain exactly the numbered file IDs; "
+                f"unknown slots ({_format_path_set_for_error(unknown)}); "
+                f"missing slots ({_format_path_set_for_error(missing)})"
+            )
+        data["file_tiers"] = {path: proposed[slot] for slot, path in slots.items()}
     return TriageResult.model_validate(data)
 
 
 class TriagePolicyViolationError(ValueError):
-    """Schema-valid model output violated the deterministic triage policy.
+    """Model output violated deterministic triage admission.
 
-    Reject SKIP, unknown or missing paths, and an inactive policy_version.
+    Reject unknown or missing slots/paths, SKIP and an inactive policy_version.
     Messages use bounded, escaped path samples and a hash of the full set.
     In the node flow, the provider has persisted its call before this gate runs.
     """
 
 
 def _format_path_set_for_error(paths: Iterable[str]) -> str:
-    """Describe violating paths without echoing an unbounded path list.
+    """Describe violating paths or slot IDs without echoing an unbounded list.
 
     Return the count, a 12-character SHA-256 prefix over the NUL-separated
     sorted paths, and an escaped sample of at most three paths.
@@ -160,6 +181,7 @@ async def triage(
     )
 
     prompt_parts = triage_prompt.render(state.pr_context)
+    file_paths = tuple(cf.path for cf in state.pr_context.changed_files)
 
     request = LLMRequest(
         model=triage_model,
@@ -172,12 +194,15 @@ async def triage(
         is_eval=state.is_eval,
         prompt_template_version=triage_prompt.VERSION,
         degraded_mode=False,
+        response_schema_json=response_schema_json(len(file_paths)),
     )
 
     response = await provider.complete(request)
 
     # Normalize vendor output before schema and policy validation.
-    triage_result = _validate_triage_response(strip_outer_json_fence(response.text))
+    triage_result = _validate_triage_response(
+        strip_outer_json_fence(response.text), file_paths=file_paths
+    )
 
     _enforce_triage_policy(
         triage_result,

@@ -1,9 +1,4 @@
-"""AuditPersister.emit_phase() — phase event writes + denormalized phase_key.
-
-Pins the C3 fix: persister populates the top-level `audit_events.phase_key`
-column from `event.phase_key` so V1.5's per-file index queries
-(`ix_audit_events_review_phase_key`) work the day they ship.
-"""
+"""Check that phase events persist phase_key in both the payload and indexed column."""
 
 from __future__ import annotations
 

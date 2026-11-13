@@ -1,13 +1,8 @@
-"""Retention sweep happy path: expired content rows are purged with audit trail.
+"""Check retention purges and their per-table audit records.
 
-Backs the per-table purge_audit contract from the schema-layer spec:
-one purge_audit row per target table per sweep run. Verifies all four
-retention content tables (reviews, findings, llm_call_content,
-analyze_file_cache — the last per
-specs/2026-06-11-file-hash-analyze-cache.md) are swept correctly and
-audit_events is untouched (it's append-only forever per #014; the
-trigger would block any DELETE attempt and fail the test loud).
-"""
+Expired reviews, findings, LLM content, and analyze-cache content are removed;
+append-only audit events remain. See specs/2026-06-11-file-hash-analyze-cache.md
+and DECISIONS.md#014."""
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine

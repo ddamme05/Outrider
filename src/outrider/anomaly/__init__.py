@@ -1,16 +1,11 @@
-"""Operator anomalies: rule names, sink contract, and durable persistence.
+"""Record operator alerts for review problems and approval timeouts.
 
-The four rules cover HITL timeouts, cross-round severity/policy divergence,
-cost-budget starvation, and gated findings over the soft cap. Sweeps record
-timeouts before changing review status; graph nodes report the other rules.
-`AnomalyPersister` deduplicates each `(review_id, rule_name)` through a
-per-rule partial unique index. Sweep callers also hold `SWEEP_LOCK_ID` for
-their surrounding status changes; graph callers need no sweep lock.
-This is `sweep-jobs-use-advisory-locks`. Severity divergence protects
-`severity-set-by-policy` and `severity-policy-versioned-for-replay`.
+AnomalyPersister keeps one alert per review and rule. A new rule needs a
+matching database index. Alerts about severity disagreement help protect
+severity-set-by-policy and severity-policy-versioned-for-replay.
 
-Rule/severity columns are text, with Python enums at the producer boundary.
-Every new rule still needs its matching partial-index migration.
+Sweeps hold their status-update lock when emitting alerts
+(sweep-jobs-use-advisory-locks). Graph nodes do not need that sweep lock.
 """
 
 from outrider.anomaly.persister import (

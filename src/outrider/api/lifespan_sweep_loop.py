@@ -1,17 +1,11 @@
-# Lifespan-scoped periodic sweep loop. See specs/2026-05-26-hitl-node.md
-# Group 8 scheduler-wiring bullet + docs/spec.md §4.1.6.
-"""Run background maintenance while the FastAPI lifespan is active.
+"""Run periodic maintenance while the application is running.
 
-The first tick starts immediately; each finished or failed tick is followed by
-an interval wait (default five minutes). `run_scheduled_tick` owns reconciliation
-before sweeps and gates installation deletion on confirmed liveness (#065/#012/#067).
-The loop logs ordinary tick failures and retries; cancellation propagates so
-lifespan teardown can await cleanup.
+Each tick calls run_scheduled_tick, then waits before trying again. Ordinary
+failures are logged; cancellation lets shutdown finish cleanup. Installation
+deletion requires a successful live check before the sweeps.
 
-Operators can disable this task with OUTRIDER_SWEEP_DISABLED (1/true/yes, ignoring
-case and surrounding whitespace) and schedule `run_scheduled_tick` externally.
-Calling `run_all_sweeps` alone omits reconciliation and its deletion-safety gate.
-The interval has a code-side override, not an environment setting.
+OUTRIDER_SWEEP_DISABLED can disable the loop for an external scheduler.
+See specs/2026-05-26-hitl-node.md and DECISIONS.md#065, #012, #067.
 """
 
 from __future__ import annotations

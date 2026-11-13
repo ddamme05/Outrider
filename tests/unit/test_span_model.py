@@ -1,10 +1,6 @@
-# See specs/2026-05-19-analyze-foundation.md §1.
-"""`Span` byte-range domain model tests.
+"""Check immutable byte spans, ordered bounds, and JavaScript-safe integer limits.
 
-Pins (a) `byte_start <= byte_end` invariant, (b) `byte_start >= 0`,
-(c) JS-safe-int upper bound at `2^53 - 1`, (d) frozen + `extra='forbid'`
-discipline matches the cross-boundary convention.
-"""
+See specs/2026-05-19-analyze-foundation.md §1."""
 
 from __future__ import annotations
 

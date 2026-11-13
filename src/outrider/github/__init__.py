@@ -1,18 +1,10 @@
-# GitHub vendor SDK wrapper folder.
-"""GitHub authentication, authorization, fetch, webhook, and publishing wrappers.
+"""Expose the GitHub API wrappers used to authenticate, fetch and publish.
 
-Vendor SDK imports stay inside this folder (vendor-sdks-only-in-wrappers;
-docs/conventions.md "Imports"). Consumers use the exported client types and
-protocols. Credentials come from github/credentials.py's env or database provider
-(DECISIONS.md#070); auth.py owns the SDK authentication strategies.
+GitHub SDK calls belong in this package. Callers select the credentials source
+explicitly; production does not fall back between stored and environment
+credentials (DECISIONS.md#070).
 """
 
-# Re-export the type alias from auth.py. The alias's definition
-# requires importing `githubkit.AppInstallationAuthStrategy`; per the
-# spec ("github/auth.py is the only file importing
-# `githubkit.AppInstallationAuthStrategy`"), the alias is defined in
-# auth.py and re-exported here for ergonomic import from
-# `outrider.github`.
 from outrider.github.auth import (
     AppGitHubClient,
     InstallationGitHubClient,

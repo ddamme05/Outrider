@@ -1,30 +1,8 @@
-# Value-predicate surface for OBSERVED queries. See DECISIONS.md#057 (FUP-193).
-"""Deterministic value-predicates for OBSERVED-tier queries.
+"""Apply numeric checks to structural-query matches.
 
-Tree-sitter's native query predicates (`#eq?`, `#any-of?`, `#match?`) compare
-capture TEXT; they cannot express a NUMERIC threshold ("key size < 2048"). This
-module is the seam where an OBSERVED query may carry a named, deterministic
-value-predicate that runs AFTER the structural match, inside the `queries/`
-firewall, to filter matches by a captured literal's value.
-
-Firewall note: a predicate operates only on a `QueryMatchSpan` (domain model)
-and the source `bytes` — it reads `source[capture.byte_start:capture.byte_end]`
-for the relevant capture. No `tree_sitter.Node` is touched, so the AST firewall
-(`docs/trust-boundaries.md` §4) is unaffected; the raw-node work already
-happened in `registry.match()` before the QueryMatchSpan was built.
-
-Proof boundary: the predicate keeps the OBSERVED proof DETERMINISTIC. It fires
-only on a literal it can evaluate (the `.scm` captures an `(integer)` node, so a
-non-literal size never reaches the predicate) and the comparison is a pure
-function of the source — never model judgment. The predicate's identity and its
-token-encoded *parameters* ride into `QUERY_REGISTRY_DIGEST` via `contract_token`,
-so a **threshold** (or any parameter in the token) change auto-invalidates the
-analyze cache. The digest hashes the *token*, NOT the function source, so a change
-to the predicate's evaluation **logic** that is not encoded in a token parameter
-(e.g. flipping `<` to `<=`, or the parse base) does NOT auto-invalidate — it
-requires a manual `VALUE_PREDICATE_CONTRACT_VERSION` bump. This is the
-`SHAPER_CONTRACT_VERSION` manual-version discipline (`llm/host_profiles.py`), NOT
-the automatic verbatim-body hashing the `.scm` bodies get.
+These checks use source facts, never model judgment. Their parameters enter
+the registry digest; changing predicate behavior also requires a version bump.
+See DECISIONS.md#057 and FUP-193.
 """
 
 from __future__ import annotations

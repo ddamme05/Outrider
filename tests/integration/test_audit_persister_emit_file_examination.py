@@ -1,37 +1,7 @@
-"""AuditPersister.emit_file_examination() — closes FUP-029.
+"""Check persistence of file-examination events in PostgreSQL.
 
-Spec lines 92 + 110 in `specs/2026-05-17-intake-and-webhook.md` named
-both a unit and an integration test for the new persister method:
-
-  - `test_audit_persister_emit_file_examination.py` (unit) — idempotency
-    on event_id, append-only (no UPDATE/DELETE), payload-mismatch on PK
-    conflict raises `AuditPersisterIdempotencyConflict`. Mirrors the
-    existing `emit_phase` test suite.
-  - `test_intake_emit_file_examination_atomicity.py` (integration) —
-    asserts emit_file_examination writes are per-event own-tx, append-
-    only (UPDATE/DELETE blocked by the trigger), and idempotent on
-    event_id retry.
-
-Both rolled into this single integration file because the contracts are
-identical at the integration tier (same persister method, same audit_events
-row shape, same trigger behavior). Splitting unit-vs-integration here
-would duplicate the persister setup; the integration-tier coverage is
-the load-bearing layer because the trigger AND the payload-mismatch
-detection live at the DB level.
-
-Mirrors `test_audit_persister_phase_event_emission.py` for the shape
-patterns:
-
-  - emit_file_examination writes the audit_events row with denormalized
-    fields + JSONB payload.
-  - file_path is a top-level column for index visibility (mirrors the
-    phase_key invariant).
-  - Same event_id re-emit → idempotent no-op (PK conflict caught;
-    payload equality verified).
-  - Same event_id with mismatched payload → AuditPersisterIdempotencyConflict.
-  - Trigger blocks UPDATE/DELETE post-emit (cross-references the existing
-    `test_audit_append_only_trigger.py`).
-"""
+Cover the indexed file path, identical retries, changed-payload rejection, and
+append-only protection."""
 
 from __future__ import annotations
 

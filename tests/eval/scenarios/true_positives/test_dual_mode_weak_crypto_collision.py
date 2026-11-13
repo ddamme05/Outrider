@@ -1,23 +1,7 @@
-"""Dual-mode collision eval scenario: OBSERVED + JUDGED weak_crypto.
+"""Keep one structural weak-crypto finding when the model proposes the same issue.
 
-The FUP-193 step-1 analogue of the command_injection collision: with the
-new `weak_crypto_broken_cipher` OBSERVED query (DECISIONS.md#053 type +
-the weak-crypto OBSERVED-queries spec), a `DES.new(key)` construction now
-fires OBSERVED `weak_crypto`, and the model may also flag `weak_crypto`
-JUDGED on the same line.
-
-The content-hash dedup (`analyze.py`, prefer-OBSERVED per DECISIONS.md#054)
-collapses the two: `content_hash` is keyed on (file, line_start, line_end,
-finding_type) — NOT evidence_tier — so the same-type pair shares a hash.
-The JUDGED proposal is EVICTED and the deterministic OBSERVED finding
-survives, keeping its `query_match_id`. Exactly one `weak_crypto` survives,
-OBSERVED, with the policy-set HIGH severity.
-
-The companion `test_observed_producer_alone_flags_weak_crypto` is the
-non-vacuity control — with the model proposing nothing, the OBSERVED producer
-alone flags `weak_crypto`, proving the collision is a real dedup, not a
-producer that silently never fired.
-"""
+Also check the producer with an empty model response so duplicate removal
+cannot pass because structural detection never ran."""
 
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType, lookup_severity
 

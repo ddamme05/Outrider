@@ -1,21 +1,11 @@
-# See DECISIONS.md#070 — conversion-response binding verification (verify-then-activate).
-"""Verify a manifest conversion response against the bound attempt (`DECISIONS.md#070`).
+"""Check that GitHub returned the App requested by this setup attempt.
 
-Before persisting the credentials from a `POST /app-manifests/{code}/conversions` response, the
-callback verifies the returned App matches the contract bound to THIS setup attempt (recorded on
-`setup_state` at Start, returned by `consume_callback` as a `SetupBinding`). Only the
-**response-verifiable** fields are checked — the three GitHub returns:
+verify_conversion_binding checks organization, permissions and subscribed
+events before credentials can be saved. GitHub does not return all submitted
+manifest fields, so those fields cannot be checked here. The callback separately
+checks the attempt's signed state and manifest digest.
 
-- `owner.login` **case-normalized-equals** `expected_org_login` (case-insensitive),
-- `permissions` **exactly equals** `expected_permissions` (nothing wider — this is what stops
-  a stolen `state` paired with a substituted `code` for a broader-permission App),
-- the `events` **set equals** `expected_events` (order-independent).
-
-`public` and the manifest URLs are submission-only (the conversion response omits them, so they
-cannot be response-verified). The single-use nonce binds the callback to the attempt, and the
-`manifest_contract_digest` is re-verified at the callback (`router._verify_attempt_digest`)
-to catch `OUTRIDER_PUBLIC_BASE_URL` drift across a restart/redeploy. A mismatch on the three fields
-checked HERE raises `BindingMismatchError`; the caller rejects — never persists → `ORPHANED`.
+See DECISIONS.md#070.
 """
 
 from __future__ import annotations

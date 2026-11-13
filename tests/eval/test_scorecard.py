@@ -1,12 +1,6 @@
-"""Tests for the cross-scenario eval scorecard (tests/eval/scorecard.py).
+"""Check scorecard rows, failed measurements, grouped totals and JSON/HTML reports.
 
-Covers the typed objects + serialization that step 1 promotes out of the inline
-GATE SUMMARY print: `ScorecardRow.from_comparison` (the analyze-direct quality
-join + false-positive-rate derivation), the errored-row path (transient
-isolation), the status/metric consistency validator, the per-`(node, model)`
-aggregate reduction, and the JSON + HTML emitters. Pure — no DB, no LLM, no
-spend.
-"""
+These are offline data and rendering tests without a database or model calls."""
 
 from __future__ import annotations
 

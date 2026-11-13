@@ -1,15 +1,7 @@
-"""Unit tests for `_default_engine_factory` — driver-allowlist gate.
+"""Check startup rejection of unsupported database drivers.
 
-The lifespan's engine factory must fail-loud at startup if `DATABASE_URL`
-uses a sync driver scheme; otherwise `create_async_engine` constructs
-lazily and the failure surfaces deep in the first `persister.persist()`
-call as `InvalidRequestError: The asyncio extension requires an async
-driver` — far from the configuration source.
-
-Pins the round-38 sharp-edges fold: explicit driver-allowlist gate
-alongside `hide_parameters=True` so misconfigured `.env` values fail at
-lifespan startup, not in production request handling.
-"""
+The engine factory must require an async driver and hide bound parameters,
+rather than defer a configuration failure until the first database write."""
 
 from __future__ import annotations
 

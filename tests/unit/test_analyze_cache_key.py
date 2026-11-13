@@ -1,9 +1,8 @@
-# Per specs/2026-06-11-file-hash-analyze-cache.md — cache-key recipe pins.
-"""Analyze-cache key composition: determinism, per-component sensitivity,
-and boundary-unambiguity. Every input that could change a per-file
-analyze outcome must change the key; no pair of distinct input tuples
-may collide by shifting bytes across a component boundary.
-"""
+"""Check deterministic, unambiguous analyze-cache keys.
+
+Every outcome-affecting input must change the key; component boundaries must
+prevent different input tuples from encoding identically.
+See specs/2026-06-11-file-hash-analyze-cache.md."""
 
 from __future__ import annotations
 
@@ -338,31 +337,6 @@ def test_import_bindings_digest_carries_the_value_marker() -> None:
     assert key_value != key_reexport
 
 
-# ---------------------------------------------------------------------------
-# The two new version constants
-# ---------------------------------------------------------------------------
-
-
-def test_analyze_parser_version_pinned() -> None:
-    """Bump rule: ANY change to the admitted-findings OR trace-candidate
-    semantics bumps this (the spec's TRIVIAL_FILTER_VERSION precedent).
-    v2: the FUP-162 parameterized-call veto joined the admission flow.
-    v3: prefer-OBSERVED (DECISIONS.md#054) evicts a JUDGED proposal
-    colliding with an OBSERVED finding. v4: cross-type subsumption
-    (DECISIONS.md#055) drops an admitted OBSERVED finding under a
-    same-span JUDGED subsumer — again changing what a cache row may
-    serve. v5: from-import candidate correction rewrites a hallucinated
-    module prefix on a trace candidate to the analyzed file's actual
-    importing module — changing the trace_candidates a cache row stores.
-    v6: multi-language dispatch — `collect_trace_candidates=False`
-    suppresses collection for files whose language has no import
-    resolver, changing what lands in `trace_candidates` for them.
-    v7: relative-specifier admission — JS/TS files collect leading-dot
-    specifier-form candidates (contained at admission), changing
-    `trace_candidates` for them from always-empty to populated."""
-    assert ANALYZE_PARSER_VERSION == "analyze-parser-v7"
-
-
 def test_analyze_cache_key_version_pinned() -> None:
     """The recipe-structure version (DECISIONS.md#056), distinct from
     ANALYZE_PARSER_VERSION (admitted-findings semantics): bump on ANY change to
@@ -407,7 +381,7 @@ def test_observed_producer_version_pinned() -> None:
     from the constant, so without this pin a silent revert would stay green
     while current reviews re-key onto stale cache rows written under the
     older admission rules."""
-    assert OBSERVED_PRODUCER_VERSION == "observed-producer-v7"
+    assert OBSERVED_PRODUCER_VERSION == "observed-producer-v8"
 
 
 def test_query_registry_digest_is_stable_64_hex() -> None:

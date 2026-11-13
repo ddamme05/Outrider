@@ -1,13 +1,7 @@
-"""installation_repositories UNIQUE(installation_id, repo_id) blocks duplicates.
+"""Check uniqueness of installation and repository membership pairs.
 
-Webhook redelivery on `installation_repositories.added` would otherwise
-create duplicate membership rows; the UNIQUE constraint catches the
-re-add at the DB layer. On a real re-add of a previously-removed repo,
-the application updates the existing row (sets added_at = NOW(), clears
-removed_at) rather than inserting a new row — that update path is
-application-layer logic, not tested here. This test verifies the DB
-gate that backs it.
-"""
+The database rejects duplicate inserts. Updating a previously removed membership
+on re-addition is application behavior tested elsewhere."""
 
 import pytest
 from sqlalchemy import text

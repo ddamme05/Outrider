@@ -1,14 +1,9 @@
-"""`run_scheduled_tick` orchestration invariants (Arc B2, DECISIONS.md#065/#012/#067).
+"""Check reconciliation before sweeps and confirmed liveness before installation deletion.
 
-The production tick MUST reconcile the install cache BEFORE running the sweep family, and MUST gate
-the #012 install hard-delete (`run_all_sweeps(include_install_purge=...)`) on that reconcile having
-CONFIRMED liveness this tick. A reconcile that fails, is lock-contended, or is skipped (no
-configured credentials) leaves the hard-delete OFF for the tick — but the unrelated sweeps still
-run. These unit
-tests pin that contract against monkeypatched reconcile + run_all_sweeps stand-ins, plus the
-FAIL-SAFE default of `run_all_sweeps` itself (a bare call must NOT hard-delete installs); the real
-end-to-end survival guarantee is in tests/integration/test_scheduled_tick_ordering.py.
-"""
+Failed, skipped, or lock-contended reconciliation must disable installation
+deletion while other sweeps continue. Bare run_all_sweeps also defaults to no
+installation deletion. See DECISIONS.md#065, #012, and #067; real database
+survival is covered in integration/test_scheduled_tick_ordering.py."""
 
 from __future__ import annotations
 

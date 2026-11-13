@@ -1,22 +1,7 @@
-# Tests for `coordinates.source_line_to_github` — the line-coord publisher entry point.
-"""Pin `source_line_to_github` semantics, especially the bounds-check
-that distinguishes "line_end is the last line" from "line_end past EOF".
+"""Check source-line conversion at file boundaries.
 
-Per Codex review 2026-05-22: the original implementation caught every
-`CoordinateError` from the `_line_to_byte_offset(line_end + 1)` lookup
-and treated it as "last line", silently truncating past-EOF findings
-to EOF and letting them publish inline. The fix split the validation:
-validate `line_end` itself is reachable BEFORE the `line_end + 1`
-lookup; the still-caught CoordinateError on the second call now means
-strictly "line_end IS the last line of the file."
-
-Tests cover:
-  - Valid mid-file ranges
-  - Legitimate last-line (line_end == total lines)
-  - PAST-EOF line_end (raises BYTE_OFFSET_INVALID, NOT silently truncated)
-  - line_end < line_start (raises BYTE_OFFSET_INVALID)
-  - line_start past EOF (raises BYTE_OFFSET_INVALID via the first lookup)
-"""
+The last source line is valid; a range past EOF must raise BYTE_OFFSET_INVALID
+rather than be silently shortened. Cover inverted and out-of-range starts too."""
 
 from __future__ import annotations
 

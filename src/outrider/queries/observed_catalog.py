@@ -1,14 +1,8 @@
-"""The OBSERVED-tier query catalog — static data, no lookup logic.
+"""List structural checks and whether their matches require contextual review.
 
-Separated from `registry.py` so a reader can see WHAT is registered here and follow
-HOW one query is selected there. Nothing in this module executes a query, compiles a
-grammar, or reads a file; it declares entries and the module-name families some of
-them bind against.
-
-Order is behavior. `_OBSERVED_QUERIES` preserves the tuple order, and
-`observed_queries_for` preserves it for `run_observed_matches`. Do not
-reorder entries in a behavior-preserving edit. `_registry_digest` sorts
-by query id, so catalog reordering does not change the digest.
+Entry order determines processing order. Reordering can change which finding
+wins even when the registry digest is unchanged, so preserve deliberate order.
+See DECISIONS.md#048 and queries/observed.py.
 """
 
 from __future__ import annotations
@@ -25,7 +19,8 @@ __all__: tuple[str, ...] = ()
 # specs/2026-06-14-observed-query-library-v1.md). These carry routing/output
 # metadata (finding_type, class, title/description) the deterministic OBSERVED
 # producer consumes; structural queries in registry.py do not. All are SIGNAL_ONLY in
-# V1 (default-deny — they augment the LLM, never skip it). Their .scm bodies
+# V1 (default-deny — they never skip the LLM). Context-required entries retain
+# matches without automatically emitting findings (DECISIONS.md#071). Their .scm bodies
 # are loaded + compiled alongside the structural queries, so match() and
 # get_query_source() resolve them; their metadata folds into the cache-key
 # digest (DECISIONS.md#048 for the FindingTypes).
@@ -100,6 +95,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             finding_type=FindingType.COMMAND_INJECTION,
             language="python",
             query_class=QueryClass.SIGNAL_ONLY,
+            requires_context=True,
             title="subprocess invoked with shell=True",
             description=(
                 "A subprocess is run with shell=True; untrusted input in the "
@@ -113,6 +109,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             finding_type=FindingType.COMMAND_INJECTION,
             language="python",
             query_class=QueryClass.SIGNAL_ONLY,
+            requires_context=True,
             title="os.system / os.popen command execution",
             description=(
                 "os.system and os.popen pass a string to the shell; untrusted "
@@ -126,6 +123,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             finding_type=FindingType.COMMAND_INJECTION,
             language="python",
             query_class=QueryClass.SIGNAL_ONLY,
+            requires_context=True,
             title="eval / exec on a dynamic expression",
             description=(
                 "eval/exec runs a non-literal expression as code; untrusted "
@@ -295,6 +293,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             finding_type=FindingType.COMMAND_INJECTION,
             language="javascript",
             query_class=QueryClass.SIGNAL_ONLY,
+            requires_context=True,
             title="Shell command built from dynamic strings",
             description=(
                 "child_process.exec/execSync is invoked with a concatenated or "
@@ -310,6 +309,7 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             finding_type=FindingType.COMMAND_INJECTION,
             language="javascript",
             query_class=QueryClass.SIGNAL_ONLY,
+            requires_context=True,
             title="eval / new Function on a dynamic expression",
             description=(
                 "eval or new Function runs a non-literal expression as code; "

@@ -909,6 +909,40 @@ def test_verify_cross_event_refs_rejects_dangling_reference() -> None:
         _verify_cross_event_refs((finding, trace))
 
 
+@pytest.mark.parametrize("kind", ["analyze", "synthesize"])
+def test_completion_selection_refs_resolve_without_inventing_historical_selection(
+    kind: str,
+) -> None:
+    from test_analyze_audit_events import _completed_kwargs as analyze_kwargs
+    from test_synthesize_audit_events import _completed_kwargs as synthesize_kwargs
+
+    from outrider.audit.events import AnalyzeCompletedEvent, SynthesizeCompletedEvent
+
+    finding = _finding_event()
+    selected = (finding.finding_id,)
+    if kind == "analyze":
+        event = AnalyzeCompletedEvent(
+            **analyze_kwargs(
+                review_id=_REVIEW_ID,
+                n_files_analyzed=1,
+                n_llm_calls=1,
+                n_proposals_seen=1,
+                n_findings_emitted=1,
+                selected_finding_ids=selected,
+            )
+        )
+    else:
+        event = SynthesizeCompletedEvent(
+            **synthesize_kwargs(review_id=_REVIEW_ID, n_findings=1, selected_finding_ids=selected)
+        )
+    _verify_cross_event_refs((finding, event))
+    dangling = event.model_copy(update={"selected_finding_ids": (uuid4(),)})
+    with pytest.raises(ReplayEquivalenceError, match="selected_finding_ids"):
+        _verify_cross_event_refs((finding, dangling))
+    historical = event.model_copy(update={"selected_finding_ids": None})
+    _verify_cross_event_refs((historical,))
+
+
 # ---------------------------------------------------------------------------
 # Full-finding content equality + mode consistency
 # ---------------------------------------------------------------------------

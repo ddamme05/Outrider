@@ -1,45 +1,21 @@
-# =============================================================================
-# coordinates: SINGLE TRANSLATION POINT — per docs/trust-boundaries.md §3
-#
-# Translation among diff coordinates, tree-sitter byte spans, GitHub comment
-# locations, and source line numbers lives in this module and nowhere else.
-# Agent nodes, audit handlers, and github/publisher.py consume the public
-# surface below; coordinate math outside coordinates/ is a boundary violation.
-# Backs invariant `coordinates-module-is-sole-translator` (docs/spec.md §5.6).
-# =============================================================================
-"""Translation among the four coordinate systems, per docs/spec.md §5.6.
+"""Translate source ranges into locations GitHub can review.
 
-The four are: unified-diff patch coordinates, tree-sitter byte spans and
-(row, column) points, GitHub review-comment locations (line + side, 1-indexed),
-and source line numbers — separately for base and head. They agree here or
-nowhere, which is why `coordinates-module-is-sole-translator` confines the math
-to this package.
+This package owns source/diff/GitHub line translation and repository-path
+validation. Callers receive domain spans and typed errors, never parser nodes.
+Keep location conversion here (coordinates-module-is-sole-translator).
 
-The public surface, all re-exported below and each documented at its definition:
-
-  - Translators, byte-span or line-range in, GitHub location or scope out.
-  - Path validators — a string-level surface for paths bound for the GitHub API,
-    and root-aware surfaces for paths bound for filesystem stats. The split is
-    trust-boundary §5 sub-rule 3; the string-level one deliberately omits
-    `.resolve()` because there is no meaningful root to resolve against.
-  - Diff and span predicates the analyze admission gates compose.
-  - Boundary types: `GitHubCommentLocation`, `ChangedLineSpan`,
-    `ScopeChangedLineSpans`, and `CoordinateError` as the single failure mode.
-    Raw `unidiff.Line` objects never cross out of this package; raw tree-sitter
-    nodes stay behind the `ast_facts` firewall.
-  - `COORDINATES_IMPORT_PATH_RESOLVER`, the singleton `build_graph` injects so
-    nodes close over one resolver instead of each constructing their own.
-
-Extending this surface means adding a function here with tests, never inlining a
-parallel translator at a call site.
+See docs/trust-boundaries.md §5 and DECISIONS.md#006.
 """
 
+from outrider.coordinates.candidate_context import CandidateChangeContext, candidate_change_context
 from outrider.coordinates.diff_parser import (
     COORDINATES_IMPORT_PATH_RESOLVER,
     diff_line_to_scope,
     file_in_patch,
+    is_python_relative_import_form,
     is_relative_specifier_form,
     is_valid_import_string,
+    is_valid_python_relative_import_string,
     is_valid_relative_specifier,
     is_valid_trace_import_string,
     lookup_patched_file,
@@ -49,24 +25,42 @@ from outrider.coordinates.diff_parser import (
     validate_diff_path,
 )
 from outrider.coordinates.errors import CoordinateError
+from outrider.coordinates.python_reference_paths import (
+    python_relative_import_candidate_paths,
+    python_relative_trace_candidate_paths,
+)
+from outrider.coordinates.removed_source import (
+    removed_source_to_review_body,
+    validate_removed_file,
+)
 from outrider.coordinates.spans import (
+    BoundedDiffContext,
     ChangedLineSpan,
     ScopeChangedLineSpans,
     added_line_byte_ranges,
     added_line_numbers,
+    bound_diff_context,
     bound_diff_hunks_text,
     changed_line_spans,
+    exact_quote_overlaps_span,
+    extract_line_range_body,
     extract_scope_unit_body,
+    line_range_diff_hunks,
     line_range_to_span,
     line_range_vetoed_by_parameterized_call,
     line_range_within_scope_unit,
     patched_file_has_added_lines,
     patched_file_has_removed_lines,
+    scope_unit_body_owners,
     scope_unit_diff_hunks,
     scope_unit_has_added_lines,
+    scope_unit_has_changed_lines,
+    scope_unit_source_span,
+    source_line_count,
     span_is_nonempty,
     span_within_degraded_context,
     span_within_file,
+    unscoped_changed_line_ranges,
 )
 from outrider.coordinates.translator import (
     GitHubCommentLocation,
@@ -76,7 +70,9 @@ from outrider.coordinates.translator import (
 )
 
 __all__ = [
+    "BoundedDiffContext",
     "COORDINATES_IMPORT_PATH_RESOLVER",
+    "CandidateChangeContext",
     "ChangedLineSpan",
     "CoordinateError",
     "GitHubCommentLocation",
@@ -84,14 +80,21 @@ __all__ = [
     "added_line_byte_ranges",
     "added_line_numbers",
     "bound_diff_hunks_text",
+    "bound_diff_context",
     "changed_line_spans",
+    "candidate_change_context",
     "diff_line_to_scope",
+    "extract_line_range_body",
     "extract_scope_unit_body",
+    "exact_quote_overlaps_span",
     "file_in_patch",
+    "is_python_relative_import_form",
     "is_relative_specifier_form",
     "is_valid_import_string",
+    "is_valid_python_relative_import_string",
     "is_valid_relative_specifier",
     "is_valid_trace_import_string",
+    "line_range_diff_hunks",
     "line_range_to_span",
     "line_range_vetoed_by_parameterized_call",
     "line_range_within_scope_unit",
@@ -99,15 +102,24 @@ __all__ = [
     "patched_file_has_added_lines",
     "patched_file_has_removed_lines",
     "query_span_to_source_lines",
+    "python_relative_import_candidate_paths",
+    "python_relative_trace_candidate_paths",
     "relative_specifier_candidate_paths",
+    "removed_source_to_review_body",
     "resolve_candidate_paths",
     "resolve_specifier_candidate_paths",
+    "scope_unit_body_owners",
     "scope_unit_diff_hunks",
     "scope_unit_has_added_lines",
+    "scope_unit_has_changed_lines",
+    "scope_unit_source_span",
     "source_line_to_github",
+    "source_line_count",
     "span_is_nonempty",
     "span_within_degraded_context",
     "span_within_file",
     "tree_sitter_to_github",
+    "unscoped_changed_line_ranges",
     "validate_diff_path",
+    "validate_removed_file",
 ]

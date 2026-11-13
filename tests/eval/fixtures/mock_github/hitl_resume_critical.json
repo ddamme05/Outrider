@@ -27,7 +27,7 @@
       "{\"file_tiers\": {\"app/search.py\": \"deep\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Deep-review the search endpoint introducing a raw SQL query.\"}"
     ],
     "analyze": [
-      "{\"findings\": [{\"finding_type\": \"sql_injection\", \"evidence_tier\": \"observed\", \"query_match_id\": \"python.function_definition\", \"trace_path\": null, \"title\": \"SQL injection via string-formatted query in search_users\", \"description\": \"search_users() builds a SQL query by %-formatting the untrusted request.GET['q'] value straight into the WHERE clause, then executes it. An attacker controls the query. Use a parameterized query instead.\", \"evidence\": \"    query = \\\"SELECT * FROM users WHERE name = '%s'\\\" % request.GET[\\\"q\\\"]\", \"line_start\": 5, \"line_end\": 5, \"trace_candidates\": []}]}"
+      "{\"findings\": [{\"finding_type\": \"sql_injection\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"SQL injection via string-formatted query in search_users\", \"description\": \"search_users() builds a SQL query by %-formatting the untrusted request.GET['q'] value straight into the WHERE clause, then executes it. An attacker controls the query. Use a parameterized query instead.\", \"evidence\": \"    query = \\\"SELECT * FROM users WHERE name = '%s'\\\" % request.GET[\\\"q\\\"]\", \"line_start\": 5, \"line_end\": 5, \"trace_candidates\": []}]}"
     ],
     "synthesize": [
       "One CRITICAL SQL-injection finding -- search_users() formats untrusted request input directly into a SQL query. Gated for human approval before publish."

@@ -1,9 +1,4 @@
-"""Integration tests for `outrider.queries.registry` per
-specs/2026-04-30-ast-facts-module.md integration test list.
-
-Crosses ast_facts/ + queries/ + tree-sitter (the C library), so it
-lives under `tests/integration/`. No DB required.
-"""
+"""Check query registration and matching with real tree-sitter parsers, without a database."""
 
 from __future__ import annotations
 

@@ -1,10 +1,6 @@
-"""Startup secret-validation helpers (AUDIT M1/M2).
+"""Check eager validation of truncation-signing and token-encryption secrets.
 
-`require_truncation_secret` (output_sanitizer) and `validate_token_enc_key`
-(token_crypto) are the eager, boot-time validators the lifespan calls so a missing
-or placeholder secret fails LOUD at startup instead of lazily — mid-review for the
-truncation HMAC, or at the first OAuth callback / decrypt for the enc key.
-"""
+Invalid secrets must fail at startup rather than during a review or OAuth callback."""
 
 from __future__ import annotations
 

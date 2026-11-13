@@ -304,10 +304,7 @@ test("post-install hint polls until the installation webhook lands", async () =>
     render(<SetupGitHubApp />);
 
     await screen.findByText(/confirming the installation/i);
-    // Wait for the first status to LAND before asserting absence. Without this the
-    // assertion is vacuous: `setConfirmingInstall(true)` runs synchronously, so the
-    // confirming note appears while `state` is still "loading" and the configured
-    // block has not rendered at all — absence would hold for the wrong reason.
+    // Wait for CONFIGURED so absence is checked after loading, not before rendering.
     await screen.findByText("CONFIGURED");
     // Status is now CONFIGURED + install_known=false, which renders BOTH notes unless
     // suppressed — telling the operator two contradictory things at once.
@@ -341,7 +338,7 @@ test("no post-install hint → a single status read, no polling", async () => {
 });
 
 
-test("SMOKE (not a regression guard): post-install polling works under StrictMode", async () => {
+test("post-install polling and URL cleanup work under StrictMode", async () => {
   // Exercise polling with the same StrictMode wrapper used by main.tsx.
   // Keep the URL scrub in the effect; these assertions check polling and URL cleanup.
   let installed = false;

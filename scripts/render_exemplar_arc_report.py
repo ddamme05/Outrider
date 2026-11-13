@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
-"""Render the analyze-EXEMPLARS prompt-optimization ARC report to `reports/`.
+"""Build the prompt-experiment report from saved evidence.
 
-A narrative view over the arc's committed artifacts — the Fireworks cache probe
-(`spikes/fireworks/fixtures/cache_probe_result.json`) and the frozen pre-registration baseline
-(`tests/eval/baselines/analyze-exemplars/analyze-v10.json`). Every figure is READ from those
-artifacts or computed from the repo's own pricing table; nothing is transcribed by hand, so the
-report cannot drift from the evidence it describes.
+Read the Fireworks cache capture and analyze-exemplars baseline, then render the
+report under ignored reports/. Figures come from those artifacts and the local
+pricing table. This rewrites a derived report, not the original evidence.
 
-Like the per-run reports in `tests/eval/exemplar_baseline.py`, this writes to gitignored `reports/`:
-it is a derived VIEW, not evidence, so it is freely re-renderable and never create-once.
-
-    uv run python scripts/render_exemplar_arc_report.py
+Run uv run python scripts/render_exemplar_arc_report.py.
 """
 
 from __future__ import annotations

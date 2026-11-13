@@ -1,23 +1,7 @@
-# Tests for github/publisher.py — focus on the 422 taxonomy split.
-"""Pin `GitHubKitPublisher`'s 422 discrimination logic.
+"""Check GitHub publish error classification, especially ambiguous HTTP 422s.
 
-Per `docs/spec.md` §VI: GitHub returns HTTP 422 for two distinct
-failure classes — per-comment validation failure AND secondary-rate-
-limit (abuse-detection throttle). The status code alone is ambiguous;
-the publisher MUST inspect the response body to discriminate.
-
-Without the split, both would land as `GitHubReviewValidationError`,
-which would mis-record `failure_class` on `PublishAttemptEvent` for
-rate-limited cases
-(critical for retry-diagnosis dashboards).
-
-This file pins:
-- Validation-failure body → `GitHubReviewValidationError`
-- Secondary-rate-limit body (case-insensitive marker) →
-  `GitHubSecondaryRateLimitError`
-- Non-422 status → generic `GitHubPublishError`
-- Both wrapper exceptions carry `.status_code` AND `.body_text`
-"""
+Response content distinguishes comment validation from secondary rate limiting.
+Wrapper errors retain status and body details. See docs/spec.md §VI."""
 
 from __future__ import annotations
 

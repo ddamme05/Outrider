@@ -1,15 +1,7 @@
-"""AuditPersister.persist() atomicity — failure on second insert rolls back first.
+"""Check that audit and content inserts roll back together.
 
-Pins `DECISIONS.md#016` single-transaction-insert at the persister-public-method
-layer (the raw-SQL test at `test_llm_content_single_transaction.py` only proves
-the DB-layer shape; this proves the persister honors it via its real method).
-
-Fault-injection approach: SQLAlchemy engine-level `before_execute` event
-listener that raises a synthetic exception when the statement targets
-`llm_call_content`. After C1's `installation_id`-via-SELECT design, naturally-
-failing FK paths are unreachable — fault injection is the only realistic way
-to test the rollback through the real public method.
-"""
+Fail the content insert through the real persister and verify that the preceding
+audit insert is not committed."""
 
 from __future__ import annotations
 

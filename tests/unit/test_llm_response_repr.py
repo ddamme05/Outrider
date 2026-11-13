@@ -1,10 +1,6 @@
-"""__repr_args__ elision across LLMRequest/LLMResponse/LLMMessage.
+"""Check that repr, str, and f-strings omit LLM content.
 
-Pydantic V2 builds `__repr__` AND `__str__` from `__repr_args__`, so
-overriding it covers `repr()`, `str()`, and f-strings in one place.
-Per AC#16. Round-14 verified empirically: overriding `__repr__` directly
-does NOT cover `str()`/f-strings.
-"""
+Pydantic builds all three from __repr_args__, so testing repr alone is insufficient."""
 
 from __future__ import annotations
 

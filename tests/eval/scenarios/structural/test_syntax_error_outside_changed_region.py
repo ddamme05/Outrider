@@ -1,18 +1,6 @@
-"""Structural eval scenario: graceful degradation on syntax error outside diff.
+"""Check that errors elsewhere do not degrade a valid changed function.
 
-Per docs/spec.md §11.2 + the `parse-errors-degrade-to-judged` invariant: a file
-with a syntax error OUTSIDE the changed region degrades gracefully — the analyze
-node's degradation decision is `clean` (NOT degraded) because the CHANGED scope
-unit is parseable even though the file as a whole has an error elsewhere.
-
-LLM-free: `ast_facts` ships the parse result (with whatever `scope_units`
-tree-sitter recovers from the parseable region); `coordinates` ships
-`diff_line_to_scope`; and the degradation decision that combines a `ParseResult`
-+ the patch into a `clean`/`degraded`/`skip` outcome is the pure
-`agent/nodes/degradation.decide_degradation` (extracted from the analyze node so a
-structural scenario can call it without the LLM). This scenario exercises the real
-decision — the changed scope has added lines and no tree error → `mode="clean"`.
-"""
+Use real parsing, changed-line mapping and review selection without a model."""
 
 from __future__ import annotations
 

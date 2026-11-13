@@ -1,0 +1,625 @@
+{
+  "url": "https://api.github.com/repos/dbt-labs/dbt-common/compare/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342...5656f48554842d13305c395dc7f0147f73ca9ac4",
+  "html_url": "https://github.com/dbt-labs/dbt-common/compare/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342...5656f48554842d13305c395dc7f0147f73ca9ac4",
+  "permalink_url": "https://github.com/dbt-labs/dbt-common/compare/dbt-labs:c9cc99e...dbt-labs:5656f48",
+  "diff_url": "https://github.com/dbt-labs/dbt-common/compare/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342...5656f48554842d13305c395dc7f0147f73ca9ac4.diff",
+  "patch_url": "https://github.com/dbt-labs/dbt-common/compare/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342...5656f48554842d13305c395dc7f0147f73ca9ac4.patch",
+  "base_commit": {
+    "sha": "c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342",
+    "node_id": "C_kwDOK8ynxNoAKGM5Y2M5OWU0MmZlOWIyM2RjZDA2N2NjZDRkNDExZjVhM2Q0ZjUzNDI",
+    "commit": {
+      "author": {
+        "name": "Peter Webb",
+        "email": "peter.webb@dbtlabs.com",
+        "date": "2024-08-01T19:55:43Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2024-08-01T19:55:43Z"
+      },
+      "message": "More Type Annotations (#177)\n\n* More type annotations.\n\n* Fix Python 3.8 issues. More typing.\n\n* More Python 3.8 fixes",
+      "tree": {
+        "sha": "980583548b589978d5977f555f02869c77aaf570",
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/trees/980583548b589978d5977f555f02869c77aaf570"
+      },
+      "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/commits/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJmq+hPCRC1aQ7uu5UhlAAA8YwQAB4oAK04J10PZB1uJDsw+nRD\n9aPdmXaicdbTIHarqq5CTd6sYuWtBCHZzbdFWYuTaHhsp01BRU3Q2eS9SAEPSOw8\n8LuIYZT/SIaHK33wwoYhYYTDsYNi040j3wjjkTB8bvfGJRH63mm9KXvk9gtR134S\nYyFLbwVmSloJzz/SBWvFnq5ZeIsrjfSj22s6OE/92I/DYB9EtmrlYKa5iPuVzNTe\nfd0ZZPeamYObJVqdyY1h39SH/5bOMG/iOxLK944yYhTtozrlNnflDpEqDW3OCnEJ\n8SlmiY9KopGVVfSbxia0JVSM4JrNi2nWR6vxHHdYdKWoq6qZ4S31AVbwps+2Gu2N\nr9kj8psE6ECvZpokITy6pR8YCfgIYopgebu1huUrnGj/QGjxki+D8MRdJNSAzyKc\nkQ0b8LbaS5yTFouIPTW+wneerVyiB6aGwjTMTQfU2kO9QZC6TjOMZzqAe3P+/E6m\n+aLicYA7vH0DsRc8BHg05bSuA5YLduxjVtUNZLUDkFPhZvEIOkbJr9fAQWBqBbuG\nHNyNA2Xia5EoWjKQn37fOxO8jfCHjeICWDV7k6BIOMChZR/B8X0SJkfg9yx9aLnV\ncMMTnhWzKDRUKlU7fy2fTwDiAaT/RnvuJ0kUgXskXO5AuWioCazNCIlfmCvB5cTL\nyjt5tmUjaTgpOtMiP0+3\n=dF5/\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 980583548b589978d5977f555f02869c77aaf570\nparent bef3b7d85d19db04d174bb0d2c9afcccc8c37fcb\nauthor Peter Webb <peter.webb@dbtlabs.com> 1722542143 -0400\ncommitter GitHub <noreply@github.com> 1722542143 +0000\n\nMore Type Annotations (#177)\n\n* More type annotations.\n\n* Fix Python 3.8 issues. More typing.\n\n* More Python 3.8 fixes",
+        "verified_at": "2024-11-08T09:31:37Z"
+      }
+    },
+    "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342",
+    "html_url": "https://github.com/dbt-labs/dbt-common/commit/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342",
+    "comments_url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342/comments",
+    "author": {
+      "login": "peterallenwebb",
+      "id": 541216,
+      "node_id": "MDQ6VXNlcjU0MTIxNg==",
+      "avatar_url": "https://avatars.githubusercontent.com/u/541216?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/peterallenwebb",
+      "html_url": "https://github.com/peterallenwebb",
+      "followers_url": "https://api.github.com/users/peterallenwebb/followers",
+      "following_url": "https://api.github.com/users/peterallenwebb/following{/other_user}",
+      "gists_url": "https://api.github.com/users/peterallenwebb/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/peterallenwebb/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/peterallenwebb/subscriptions",
+      "organizations_url": "https://api.github.com/users/peterallenwebb/orgs",
+      "repos_url": "https://api.github.com/users/peterallenwebb/repos",
+      "events_url": "https://api.github.com/users/peterallenwebb/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/peterallenwebb/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "bef3b7d85d19db04d174bb0d2c9afcccc8c37fcb",
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/bef3b7d85d19db04d174bb0d2c9afcccc8c37fcb",
+        "html_url": "https://github.com/dbt-labs/dbt-common/commit/bef3b7d85d19db04d174bb0d2c9afcccc8c37fcb"
+      }
+    ]
+  },
+  "merge_base_commit": {
+    "sha": "c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342",
+    "node_id": "C_kwDOK8ynxNoAKGM5Y2M5OWU0MmZlOWIyM2RjZDA2N2NjZDRkNDExZjVhM2Q0ZjUzNDI",
+    "commit": {
+      "author": {
+        "name": "Peter Webb",
+        "email": "peter.webb@dbtlabs.com",
+        "date": "2024-08-01T19:55:43Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2024-08-01T19:55:43Z"
+      },
+      "message": "More Type Annotations (#177)\n\n* More type annotations.\n\n* Fix Python 3.8 issues. More typing.\n\n* More Python 3.8 fixes",
+      "tree": {
+        "sha": "980583548b589978d5977f555f02869c77aaf570",
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/trees/980583548b589978d5977f555f02869c77aaf570"
+      },
+      "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/commits/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJmq+hPCRC1aQ7uu5UhlAAA8YwQAB4oAK04J10PZB1uJDsw+nRD\n9aPdmXaicdbTIHarqq5CTd6sYuWtBCHZzbdFWYuTaHhsp01BRU3Q2eS9SAEPSOw8\n8LuIYZT/SIaHK33wwoYhYYTDsYNi040j3wjjkTB8bvfGJRH63mm9KXvk9gtR134S\nYyFLbwVmSloJzz/SBWvFnq5ZeIsrjfSj22s6OE/92I/DYB9EtmrlYKa5iPuVzNTe\nfd0ZZPeamYObJVqdyY1h39SH/5bOMG/iOxLK944yYhTtozrlNnflDpEqDW3OCnEJ\n8SlmiY9KopGVVfSbxia0JVSM4JrNi2nWR6vxHHdYdKWoq6qZ4S31AVbwps+2Gu2N\nr9kj8psE6ECvZpokITy6pR8YCfgIYopgebu1huUrnGj/QGjxki+D8MRdJNSAzyKc\nkQ0b8LbaS5yTFouIPTW+wneerVyiB6aGwjTMTQfU2kO9QZC6TjOMZzqAe3P+/E6m\n+aLicYA7vH0DsRc8BHg05bSuA5YLduxjVtUNZLUDkFPhZvEIOkbJr9fAQWBqBbuG\nHNyNA2Xia5EoWjKQn37fOxO8jfCHjeICWDV7k6BIOMChZR/B8X0SJkfg9yx9aLnV\ncMMTnhWzKDRUKlU7fy2fTwDiAaT/RnvuJ0kUgXskXO5AuWioCazNCIlfmCvB5cTL\nyjt5tmUjaTgpOtMiP0+3\n=dF5/\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 980583548b589978d5977f555f02869c77aaf570\nparent bef3b7d85d19db04d174bb0d2c9afcccc8c37fcb\nauthor Peter Webb <peter.webb@dbtlabs.com> 1722542143 -0400\ncommitter GitHub <noreply@github.com> 1722542143 +0000\n\nMore Type Annotations (#177)\n\n* More type annotations.\n\n* Fix Python 3.8 issues. More typing.\n\n* More Python 3.8 fixes",
+        "verified_at": "2024-11-08T09:31:37Z"
+      }
+    },
+    "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342",
+    "html_url": "https://github.com/dbt-labs/dbt-common/commit/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342",
+    "comments_url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342/comments",
+    "author": {
+      "login": "peterallenwebb",
+      "id": 541216,
+      "node_id": "MDQ6VXNlcjU0MTIxNg==",
+      "avatar_url": "https://avatars.githubusercontent.com/u/541216?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/peterallenwebb",
+      "html_url": "https://github.com/peterallenwebb",
+      "followers_url": "https://api.github.com/users/peterallenwebb/followers",
+      "following_url": "https://api.github.com/users/peterallenwebb/following{/other_user}",
+      "gists_url": "https://api.github.com/users/peterallenwebb/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/peterallenwebb/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/peterallenwebb/subscriptions",
+      "organizations_url": "https://api.github.com/users/peterallenwebb/orgs",
+      "repos_url": "https://api.github.com/users/peterallenwebb/repos",
+      "events_url": "https://api.github.com/users/peterallenwebb/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/peterallenwebb/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "bef3b7d85d19db04d174bb0d2c9afcccc8c37fcb",
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/bef3b7d85d19db04d174bb0d2c9afcccc8c37fcb",
+        "html_url": "https://github.com/dbt-labs/dbt-common/commit/bef3b7d85d19db04d174bb0d2c9afcccc8c37fcb"
+      }
+    ]
+  },
+  "status": "ahead",
+  "ahead_by": 5,
+  "behind_by": 0,
+  "total_commits": 5,
+  "commits": [
+    {
+      "sha": "211e760ce5cfb1e42bea8dc0de79f191b2381930",
+      "node_id": "C_kwDOK8ynxNoAKDIxMWU3NjBjZTVjZmIxZTQyYmVhOGRjMGRlNzlmMTkxYjIzODE5MzA",
+      "commit": {
+        "author": {
+          "name": "Kshitij Aranke",
+          "email": "kshitij.aranke@dbtlabs.com",
+          "date": "2024-08-08T19:54:19Z"
+        },
+        "committer": {
+          "name": "Kshitij Aranke",
+          "email": "kshitij.aranke@dbtlabs.com",
+          "date": "2024-08-08T19:54:19Z"
+        },
+        "message": "Fix #181: Arbitrary file write during tarfile extraction",
+        "tree": {
+          "sha": "c100a91e43a2488a60218c300b45a007edc6ab79",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/trees/c100a91e43a2488a60218c300b45a007edc6ab79"
+        },
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/commits/211e760ce5cfb1e42bea8dc0de79f191b2381930",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/211e760ce5cfb1e42bea8dc0de79f191b2381930",
+      "html_url": "https://github.com/dbt-labs/dbt-common/commit/211e760ce5cfb1e42bea8dc0de79f191b2381930",
+      "comments_url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/211e760ce5cfb1e42bea8dc0de79f191b2381930/comments",
+      "author": {
+        "login": "aranke",
+        "id": 49380716,
+        "node_id": "MDQ6VXNlcjQ5MzgwNzE2",
+        "avatar_url": "https://avatars.githubusercontent.com/u/49380716?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/aranke",
+        "html_url": "https://github.com/aranke",
+        "followers_url": "https://api.github.com/users/aranke/followers",
+        "following_url": "https://api.github.com/users/aranke/following{/other_user}",
+        "gists_url": "https://api.github.com/users/aranke/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/aranke/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/aranke/subscriptions",
+        "organizations_url": "https://api.github.com/users/aranke/orgs",
+        "repos_url": "https://api.github.com/users/aranke/repos",
+        "events_url": "https://api.github.com/users/aranke/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/aranke/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "aranke",
+        "id": 49380716,
+        "node_id": "MDQ6VXNlcjQ5MzgwNzE2",
+        "avatar_url": "https://avatars.githubusercontent.com/u/49380716?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/aranke",
+        "html_url": "https://github.com/aranke",
+        "followers_url": "https://api.github.com/users/aranke/followers",
+        "following_url": "https://api.github.com/users/aranke/following{/other_user}",
+        "gists_url": "https://api.github.com/users/aranke/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/aranke/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/aranke/subscriptions",
+        "organizations_url": "https://api.github.com/users/aranke/orgs",
+        "repos_url": "https://api.github.com/users/aranke/repos",
+        "events_url": "https://api.github.com/users/aranke/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/aranke/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342",
+          "html_url": "https://github.com/dbt-labs/dbt-common/commit/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342"
+        }
+      ]
+    },
+    {
+      "sha": "f605a4169a7aae2a2274ea00da1db151990e7238",
+      "node_id": "C_kwDOK8ynxNoAKGY2MDVhNDE2OWE3YWFlMmEyMjc0ZWEwMGRhMWRiMTUxOTkwZTcyMzg",
+      "commit": {
+        "author": {
+          "name": "Kshitij Aranke",
+          "email": "kshitij.aranke@dbtlabs.com",
+          "date": "2024-08-08T19:56:13Z"
+        },
+        "committer": {
+          "name": "Kshitij Aranke",
+          "email": "kshitij.aranke@dbtlabs.com",
+          "date": "2024-08-08T19:56:13Z"
+        },
+        "message": "cleanup",
+        "tree": {
+          "sha": "d5a34472d506292ff1b127dd1611da619e3ae5aa",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/trees/d5a34472d506292ff1b127dd1611da619e3ae5aa"
+        },
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/commits/f605a4169a7aae2a2274ea00da1db151990e7238",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/f605a4169a7aae2a2274ea00da1db151990e7238",
+      "html_url": "https://github.com/dbt-labs/dbt-common/commit/f605a4169a7aae2a2274ea00da1db151990e7238",
+      "comments_url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/f605a4169a7aae2a2274ea00da1db151990e7238/comments",
+      "author": {
+        "login": "aranke",
+        "id": 49380716,
+        "node_id": "MDQ6VXNlcjQ5MzgwNzE2",
+        "avatar_url": "https://avatars.githubusercontent.com/u/49380716?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/aranke",
+        "html_url": "https://github.com/aranke",
+        "followers_url": "https://api.github.com/users/aranke/followers",
+        "following_url": "https://api.github.com/users/aranke/following{/other_user}",
+        "gists_url": "https://api.github.com/users/aranke/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/aranke/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/aranke/subscriptions",
+        "organizations_url": "https://api.github.com/users/aranke/orgs",
+        "repos_url": "https://api.github.com/users/aranke/repos",
+        "events_url": "https://api.github.com/users/aranke/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/aranke/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "aranke",
+        "id": 49380716,
+        "node_id": "MDQ6VXNlcjQ5MzgwNzE2",
+        "avatar_url": "https://avatars.githubusercontent.com/u/49380716?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/aranke",
+        "html_url": "https://github.com/aranke",
+        "followers_url": "https://api.github.com/users/aranke/followers",
+        "following_url": "https://api.github.com/users/aranke/following{/other_user}",
+        "gists_url": "https://api.github.com/users/aranke/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/aranke/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/aranke/subscriptions",
+        "organizations_url": "https://api.github.com/users/aranke/orgs",
+        "repos_url": "https://api.github.com/users/aranke/repos",
+        "events_url": "https://api.github.com/users/aranke/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/aranke/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "211e760ce5cfb1e42bea8dc0de79f191b2381930",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/211e760ce5cfb1e42bea8dc0de79f191b2381930",
+          "html_url": "https://github.com/dbt-labs/dbt-common/commit/211e760ce5cfb1e42bea8dc0de79f191b2381930"
+        }
+      ]
+    },
+    {
+      "sha": "931f49f48c7ca4efd8999f3705a261a6719c0bcb",
+      "node_id": "C_kwDOK8ynxNoAKDkzMWY0OWY0OGM3Y2E0ZWZkODk5OWYzNzA1YTI2MWE2NzE5YzBiY2I",
+      "commit": {
+        "author": {
+          "name": "Kshitij Aranke",
+          "email": "kshitij.aranke@dbtlabs.com",
+          "date": "2024-08-08T20:44:57Z"
+        },
+        "committer": {
+          "name": "Kshitij Aranke",
+          "email": "kshitij.aranke@dbtlabs.com",
+          "date": "2024-08-08T20:44:57Z"
+        },
+        "message": "Add changie",
+        "tree": {
+          "sha": "34f44e55fbbbf7823d5dffc8b99e909b84f4b364",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/trees/34f44e55fbbbf7823d5dffc8b99e909b84f4b364"
+        },
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/commits/931f49f48c7ca4efd8999f3705a261a6719c0bcb",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/931f49f48c7ca4efd8999f3705a261a6719c0bcb",
+      "html_url": "https://github.com/dbt-labs/dbt-common/commit/931f49f48c7ca4efd8999f3705a261a6719c0bcb",
+      "comments_url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/931f49f48c7ca4efd8999f3705a261a6719c0bcb/comments",
+      "author": {
+        "login": "aranke",
+        "id": 49380716,
+        "node_id": "MDQ6VXNlcjQ5MzgwNzE2",
+        "avatar_url": "https://avatars.githubusercontent.com/u/49380716?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/aranke",
+        "html_url": "https://github.com/aranke",
+        "followers_url": "https://api.github.com/users/aranke/followers",
+        "following_url": "https://api.github.com/users/aranke/following{/other_user}",
+        "gists_url": "https://api.github.com/users/aranke/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/aranke/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/aranke/subscriptions",
+        "organizations_url": "https://api.github.com/users/aranke/orgs",
+        "repos_url": "https://api.github.com/users/aranke/repos",
+        "events_url": "https://api.github.com/users/aranke/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/aranke/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "aranke",
+        "id": 49380716,
+        "node_id": "MDQ6VXNlcjQ5MzgwNzE2",
+        "avatar_url": "https://avatars.githubusercontent.com/u/49380716?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/aranke",
+        "html_url": "https://github.com/aranke",
+        "followers_url": "https://api.github.com/users/aranke/followers",
+        "following_url": "https://api.github.com/users/aranke/following{/other_user}",
+        "gists_url": "https://api.github.com/users/aranke/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/aranke/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/aranke/subscriptions",
+        "organizations_url": "https://api.github.com/users/aranke/orgs",
+        "repos_url": "https://api.github.com/users/aranke/repos",
+        "events_url": "https://api.github.com/users/aranke/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/aranke/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "f605a4169a7aae2a2274ea00da1db151990e7238",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/f605a4169a7aae2a2274ea00da1db151990e7238",
+          "html_url": "https://github.com/dbt-labs/dbt-common/commit/f605a4169a7aae2a2274ea00da1db151990e7238"
+        }
+      ]
+    },
+    {
+      "sha": "86e01cc7b3ced3ad5a5fb7873bfd4a8bdc8fa791",
+      "node_id": "C_kwDOK8ynxNoAKDg2ZTAxY2M3YjNjZWQzYWQ1YTVmYjc4NzNiZmQ0YThiZGM4ZmE3OTE",
+      "commit": {
+        "author": {
+          "name": "Kshitij Aranke",
+          "email": "kshitij.aranke@dbtlabs.com",
+          "date": "2024-08-09T15:31:45Z"
+        },
+        "committer": {
+          "name": "Kshitij Aranke",
+          "email": "kshitij.aranke@dbtlabs.com",
+          "date": "2024-08-09T15:31:45Z"
+        },
+        "message": "simplify method and add typing",
+        "tree": {
+          "sha": "c6ce8b102d76701e0a5dd82fe71504cd42244dfd",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/trees/c6ce8b102d76701e0a5dd82fe71504cd42244dfd"
+        },
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/commits/86e01cc7b3ced3ad5a5fb7873bfd4a8bdc8fa791",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/86e01cc7b3ced3ad5a5fb7873bfd4a8bdc8fa791",
+      "html_url": "https://github.com/dbt-labs/dbt-common/commit/86e01cc7b3ced3ad5a5fb7873bfd4a8bdc8fa791",
+      "comments_url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/86e01cc7b3ced3ad5a5fb7873bfd4a8bdc8fa791/comments",
+      "author": {
+        "login": "aranke",
+        "id": 49380716,
+        "node_id": "MDQ6VXNlcjQ5MzgwNzE2",
+        "avatar_url": "https://avatars.githubusercontent.com/u/49380716?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/aranke",
+        "html_url": "https://github.com/aranke",
+        "followers_url": "https://api.github.com/users/aranke/followers",
+        "following_url": "https://api.github.com/users/aranke/following{/other_user}",
+        "gists_url": "https://api.github.com/users/aranke/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/aranke/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/aranke/subscriptions",
+        "organizations_url": "https://api.github.com/users/aranke/orgs",
+        "repos_url": "https://api.github.com/users/aranke/repos",
+        "events_url": "https://api.github.com/users/aranke/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/aranke/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "aranke",
+        "id": 49380716,
+        "node_id": "MDQ6VXNlcjQ5MzgwNzE2",
+        "avatar_url": "https://avatars.githubusercontent.com/u/49380716?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/aranke",
+        "html_url": "https://github.com/aranke",
+        "followers_url": "https://api.github.com/users/aranke/followers",
+        "following_url": "https://api.github.com/users/aranke/following{/other_user}",
+        "gists_url": "https://api.github.com/users/aranke/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/aranke/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/aranke/subscriptions",
+        "organizations_url": "https://api.github.com/users/aranke/orgs",
+        "repos_url": "https://api.github.com/users/aranke/repos",
+        "events_url": "https://api.github.com/users/aranke/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/aranke/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "931f49f48c7ca4efd8999f3705a261a6719c0bcb",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/931f49f48c7ca4efd8999f3705a261a6719c0bcb",
+          "html_url": "https://github.com/dbt-labs/dbt-common/commit/931f49f48c7ca4efd8999f3705a261a6719c0bcb"
+        }
+      ]
+    },
+    {
+      "sha": "5656f48554842d13305c395dc7f0147f73ca9ac4",
+      "node_id": "C_kwDOK8ynxNoAKDU2NTZmNDg1NTQ4NDJkMTMzMDVjMzk1ZGM3ZjAxNDdmNzNjYTlhYzQ",
+      "commit": {
+        "author": {
+          "name": "Kshitij Aranke",
+          "email": "kshitij.aranke@dbtlabs.com",
+          "date": "2024-08-09T15:36:22Z"
+        },
+        "committer": {
+          "name": "Kshitij Aranke",
+          "email": "kshitij.aranke@dbtlabs.com",
+          "date": "2024-08-09T15:36:22Z"
+        },
+        "message": "Add back members",
+        "tree": {
+          "sha": "3518f750121e59bd4a37b5ec66102092407094f0",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/trees/3518f750121e59bd4a37b5ec66102092407094f0"
+        },
+        "url": "https://api.github.com/repos/dbt-labs/dbt-common/git/commits/5656f48554842d13305c395dc7f0147f73ca9ac4",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/5656f48554842d13305c395dc7f0147f73ca9ac4",
+      "html_url": "https://github.com/dbt-labs/dbt-common/commit/5656f48554842d13305c395dc7f0147f73ca9ac4",
+      "comments_url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/5656f48554842d13305c395dc7f0147f73ca9ac4/comments",
+      "author": {
+        "login": "aranke",
+        "id": 49380716,
+        "node_id": "MDQ6VXNlcjQ5MzgwNzE2",
+        "avatar_url": "https://avatars.githubusercontent.com/u/49380716?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/aranke",
+        "html_url": "https://github.com/aranke",
+        "followers_url": "https://api.github.com/users/aranke/followers",
+        "following_url": "https://api.github.com/users/aranke/following{/other_user}",
+        "gists_url": "https://api.github.com/users/aranke/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/aranke/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/aranke/subscriptions",
+        "organizations_url": "https://api.github.com/users/aranke/orgs",
+        "repos_url": "https://api.github.com/users/aranke/repos",
+        "events_url": "https://api.github.com/users/aranke/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/aranke/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "aranke",
+        "id": 49380716,
+        "node_id": "MDQ6VXNlcjQ5MzgwNzE2",
+        "avatar_url": "https://avatars.githubusercontent.com/u/49380716?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/aranke",
+        "html_url": "https://github.com/aranke",
+        "followers_url": "https://api.github.com/users/aranke/followers",
+        "following_url": "https://api.github.com/users/aranke/following{/other_user}",
+        "gists_url": "https://api.github.com/users/aranke/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/aranke/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/aranke/subscriptions",
+        "organizations_url": "https://api.github.com/users/aranke/orgs",
+        "repos_url": "https://api.github.com/users/aranke/repos",
+        "events_url": "https://api.github.com/users/aranke/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/aranke/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "86e01cc7b3ced3ad5a5fb7873bfd4a8bdc8fa791",
+          "url": "https://api.github.com/repos/dbt-labs/dbt-common/commits/86e01cc7b3ced3ad5a5fb7873bfd4a8bdc8fa791",
+          "html_url": "https://github.com/dbt-labs/dbt-common/commit/86e01cc7b3ced3ad5a5fb7873bfd4a8bdc8fa791"
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "sha": "0fddf2f70e2ef989b2b2dd391e68bf8b2bcd0720",
+      "filename": ".changes/unreleased/Security-20240808-154439.yaml",
+      "status": "added",
+      "additions": 6,
+      "deletions": 0,
+      "changes": 6,
+      "blob_url": "https://github.com/dbt-labs/dbt-common/blob/5656f48554842d13305c395dc7f0147f73ca9ac4/.changes%2Funreleased%2FSecurity-20240808-154439.yaml",
+      "raw_url": "https://github.com/dbt-labs/dbt-common/raw/5656f48554842d13305c395dc7f0147f73ca9ac4/.changes%2Funreleased%2FSecurity-20240808-154439.yaml",
+      "contents_url": "https://api.github.com/repos/dbt-labs/dbt-common/contents/.changes%2Funreleased%2FSecurity-20240808-154439.yaml?ref=5656f48554842d13305c395dc7f0147f73ca9ac4",
+      "patch": "@@ -0,0 +1,6 @@\n+kind: Security\n+body: Fix arbitrary file write during tarfile extraction\n+time: 2024-08-08T15:44:39.601346-05:00\n+custom:\n+    Author: aranke\n+    PR: \"182\""
+    },
+    {
+      "sha": "5ab681fb8ffb5919976d225a5b45885aea619475",
+      "filename": "dbt_common/clients/system.py",
+      "status": "modified",
+      "additions": 27,
+      "deletions": 1,
+      "changes": 28,
+      "blob_url": "https://github.com/dbt-labs/dbt-common/blob/5656f48554842d13305c395dc7f0147f73ca9ac4/dbt_common%2Fclients%2Fsystem.py",
+      "raw_url": "https://github.com/dbt-labs/dbt-common/raw/5656f48554842d13305c395dc7f0147f73ca9ac4/dbt_common%2Fclients%2Fsystem.py",
+      "contents_url": "https://api.github.com/repos/dbt-labs/dbt-common/contents/dbt_common%2Fclients%2Fsystem.py?ref=5656f48554842d13305c395dc7f0147f73ca9ac4",
+      "patch": "@@ -52,6 +52,7 @@ class FindMatchingParams:\n     root_path: str\n     relative_paths_to_search: List[str]\n     file_pattern: str\n+\n     # ignore_spec: Optional[PathSpec] = None\n \n     def __init__(\n@@ -608,11 +609,36 @@ def rename(from_path: str, to_path: str, force: bool = False) -> None:\n     shutil.move(from_path, to_path)\n \n \n+def safe_extract(tarball: tarfile.TarFile, path: str = \".\") -> None:\n+    \"\"\"\n+    Fix for CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')\n+    Solution copied from https://github.com/mindsdb/mindsdb/blob/main/mindsdb/utilities/fs.py\n+    \"\"\"\n+\n+    def _is_within_directory(directory, target):\n+        abs_directory = os.path.abspath(directory)\n+        abs_target = os.path.abspath(target)\n+        prefix = os.path.commonprefix([abs_directory, abs_target])\n+        return prefix == abs_directory\n+\n+    # for py >= 3.12\n+    if hasattr(tarball, \"data_filter\"):\n+        tarball.extractall(path, filter=\"data\")\n+    else:\n+        members = tarball.getmembers()\n+        for member in members:\n+            member_path = os.path.join(path, member.name)\n+            if not _is_within_directory(path, member_path):\n+                raise tarfile.OutsideDestinationError(member, path)\n+\n+        tarball.extractall(path, members=members)\n+\n+\n def untar_package(tar_path: str, dest_dir: str, rename_to: Optional[str] = None) -> None:\n     tar_path = convert_path(tar_path)\n     tar_dir_name = None\n     with tarfile.open(tar_path, \"r:gz\") as tarball:\n-        tarball.extractall(dest_dir)\n+        safe_extract(tarball, dest_dir)\n         tar_dir_name = os.path.commonprefix(tarball.getnames())\n     if rename_to:\n         downloaded_path = os.path.join(dest_dir, tar_dir_name)"
+    },
+    {
+      "sha": "34c6f49cc369b153d89e201ab2979c4dbeb5f495",
+      "filename": "tests/unit/test_system_client.py",
+      "status": "modified",
+      "additions": 15,
+      "deletions": 0,
+      "changes": 15,
+      "blob_url": "https://github.com/dbt-labs/dbt-common/blob/5656f48554842d13305c395dc7f0147f73ca9ac4/tests%2Funit%2Ftest_system_client.py",
+      "raw_url": "https://github.com/dbt-labs/dbt-common/raw/5656f48554842d13305c395dc7f0147f73ca9ac4/tests%2Funit%2Ftest_system_client.py",
+      "contents_url": "https://api.github.com/repos/dbt-labs/dbt-common/contents/tests%2Funit%2Ftest_system_client.py?ref=5656f48554842d13305c395dc7f0147f73ca9ac4",
+      "patch": "@@ -268,3 +268,18 @@ def test_untar_package_empty(self) -> None:\n             with self.assertRaises(tarfile.ReadError) as exc:\n                 dbt_common.clients.system.untar_package(named_file.name, self.tempdest)\n             self.assertEqual(\"empty file\", str(exc.exception))\n+\n+    def test_untar_package_outside_directory(self) -> None:\n+        with NamedTemporaryFile(\n+            prefix=\"my-package.2\", suffix=\".tar.gz\", dir=self.tempdir, delete=False\n+        ) as named_tar_file:\n+            tar_file_full_path = named_tar_file.name\n+            with NamedTemporaryFile(prefix=\"a\", suffix=\".txt\", dir=self.tempdir) as file_a:\n+                file_a.write(b\"some text in the text file\")\n+                relative_file_a = \"/../\" + os.path.basename(file_a.name)\n+                with tarfile.open(fileobj=named_tar_file, mode=\"w:gz\") as tar:\n+                    tar.addfile(tarfile.TarInfo(relative_file_a), open(file_a.name))\n+\n+        assert tarfile.is_tarfile(tar.name)\n+        with self.assertRaises(tarfile.OutsideDestinationError):\n+            dbt_common.clients.system.untar_package(tar_file_full_path, self.tempdest)"
+    }
+  ]
+}

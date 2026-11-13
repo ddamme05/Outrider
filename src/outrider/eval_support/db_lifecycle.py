@@ -1,16 +1,9 @@
-# Ephemeral postgres-test lifecycle shared by run_review + the test conftests + smoke runner.
-# See specs/2026-06-01-eval-graph-driver.md (resolution A) for why this is `src`-resident.
-"""Create, migrate and drop ephemeral test databases.
+"""Create, migrate and remove isolated evaluation databases.
 
-Drivers, test fixtures and the smoke runner share this lifecycle. Each exported
-create/drop primitive checks test URL markers (port 5433 and "test" in the
-database name) and validates the SQL identifier. Eval-only entry points call
-require_eval_mode separately; integration fixtures also use these primitives.
-URL errors redact passwords.
-
-CREATE/DROP use AUTOCOMMIT, and drop terminates target connections first.
-Alembic runs in a worker thread with DATABASE_URL temporarily set, because its
-env.py starts its own event loop. See docs/testing.md "Two-container model"."""
+Database URLs must use the test port and an approved test database name.
+Cleanup terminates connections before dropping the database. Error messages
+redact passwords; these helpers must never operate on production databases.
+"""
 
 from __future__ import annotations
 

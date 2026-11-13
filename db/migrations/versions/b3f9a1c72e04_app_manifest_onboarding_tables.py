@@ -1,18 +1,13 @@
-"""App-Manifest onboarding tables — github_app_credentials + setup_state + setup_nonce.
+"""Create storage for guided GitHub App setup.
 
 Revision ID: b3f9a1c72e04
 Revises: a7c3f2b18d40
 Create Date: 2026-07-13
 
-DECISIONS.md#070 (self-service onboarding). Three tables for `database` credential mode:
-
-  - github_app_credentials — encrypted (`pem`/`webhook_secret` ciphertext), versioned App creds;
-    a unique partial index on `is_active` enforces at most one active row (first-write-wins).
-  - setup_state           — the DB-enforced singleton (id=1) state machine + attempt binding.
-  - setup_nonce           — hashed, expiring callback nonces (atomic delete-on-consume).
-
-The singleton `setup_state` row is seeded here (id=1, UNCONFIGURED) so the state-machine
-compare-and-swap always has a row to UPDATE. Harmless in `env` mode (unused).
+The tables hold encrypted App credentials, the single setup-status row and
+expiring single-use callback tokens. Only one credential row can be active.
+Setup starts in UNCONFIGURED; environment-based credentials do not use these
+tables (DECISIONS.md#070).
 """
 
 from collections.abc import Sequence

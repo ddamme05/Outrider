@@ -1,14 +1,7 @@
-"""PhaseEventSink Protocol contract tests.
+"""Check the phase-event sink's runtime protocol.
 
-Pins the runtime-checkable Protocol contract introduced by the
-triage-node spec. PhaseEventSink is consumed by agent nodes (starting
-with triage) and lands its concrete implementation in FUP-007's
-audit-persister spec.
-
-These tests document what the Protocol enforces structurally vs what
-falls through to runtime — important for callers and for the
-`build_graph` validation gate that uses `isinstance(sink, PhaseEventSink)`.
-"""
+Membership checks member presence rather than signatures; build_graph uses
+that same check for injected sinks."""
 
 from typing import Literal
 from uuid import uuid4

@@ -1,0 +1,35 @@
+{
+  "models": {
+    "triage_model": "claude-haiku-5-5",
+    "analyze_model": "claude-sonnet-5-5",
+    "standard_analyze_model": "claude-sonnet-5-5",
+    "synthesize_model": "claude-haiku-5-5",
+    "trace_model": "claude-haiku-5-5",
+    "patch_model": "claude-haiku-5-5"
+  },
+  "analyze": {
+    "review_budget_tokens": 200000,
+    "max_concurrency": 4,
+    "companion_context_enabled": false
+  },
+  "patch": {
+    "patches_enabled": true,
+    "max_patch_suggestions_per_review": 5
+  },
+  "hitl": {
+    "timeout_minutes": 30,
+    "timeout_action": "expire_only"
+  },
+  "cache": {
+    "mode": "shadow"
+  },
+  "intake": {
+    "max_lines": 1000,
+    "max_files": 30
+  },
+  "retention": {
+    "llm_content_retention_ttl": "P90D",
+    "findings_retention_ttl": "P90D",
+    "review_retention_ttl": "P90D"
+  }
+}

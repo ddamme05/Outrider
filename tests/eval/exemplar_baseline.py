@@ -1,53 +1,15 @@
-"""Frozen per-provider, across-prompt-version baseline harness for the analyze EXEMPLARS
-prompt-optimization arc (`specs/2026-07-14-analyze-exemplars-prompt-optimization.md`).
+"""Freeze and compare repeated model-evaluation results without making model calls.
 
-DETERMINISTIC CORE only — offline, unit-tested, no models: the frozen-artifact schema, the
-N-run majority aggregator, the per-provider ε=0 pre/post comparator that encodes the
-pre-registered acceptance contract, and the pure HTML renderers for the human-readable reports.
-The PAID runner that drives the real providers lives in `test_exemplar_baseline.py` behind
-`OUTRIDER_EVAL_REAL_MODELS=1` and feeds `aggregate()` here.
+Tracked JSON is create-once evidence; HTML is a report rebuilt from it.
+Compare three matching runs per provider, using a two-of-three majority.
+Claude deep/standard and Fireworks results determine acceptance; Baseten
+results provide supporting evidence. Fixture, model, host and measurement
+contracts must agree, and a prompt change must change its version and digest.
 
-Two artifact tiers, deliberately different: the JSON under `BASELINE_DIR` is TRACKED, immutable
-EVIDENCE (create-once); the HTML under `REPORT_DIR` is a gitignored derived VIEW, freely
-re-renderable from that JSON. A view is not evidence, so re-rendering it cannot rewrite history.
-
-Pre-registration contract (spec step 1), enforced by `aggregate()` at freeze time and
-re-checked by `compare()`:
-
-- exactly N=3 clean reps, a >=2/3 majority per (fixture, dimension);
-- the EXACT acceptance set {Claude DEEP, Claude STANDARD, Fireworks GLM}; Baseten is
-  supporting (never gating);
-- the runs are provably COMPARABLE: identical fixture identities + SEMANTIC content digests
-  (source + ground-truth types + safe/unsafe, via `fixture_content_digest`), per-type totals,
-  resolved model identity, host/profile-contract identity;
-- a preregistered candidate MUST change BOTH the analyze VERSION (`prompt_version`) and the prompt
-  content (`prompt_digest`) — reusing either fails closed (it is not a real prompt change);
-- provider-correct INPUT-SIDE tokens are persisted per rep + aggregated, split by class
-  (input / cache_read / cache_write), as the cost evidence the shrink is measured by. All three
-  classes are required: the prefix is CACHED on Claude (`#042`), so it lands in cache_read and is
-  NET of `input_tokens` — an input-only measure would show ~zero saving for Claude. Recorded and
-  reported (`token_delta` / `cost_objective`), never gated by `compare()`.
-- structured-output RAW COUNTS (accepted / rejected / void) are persisted per fixture and per
-  provider (schema v3, FUP-219): raw counts, never a derived rate, so a later yield-metric
-  definition change costs nothing. Recorded, never gated — yield is evidence, like tokens.
-- per-fixture EXTRA-FINDINGS raw counts on recall fixtures (mc-2): sorted per-rep values +
-  total, gated no-increase on BOTH total and max — over-emission conservatism, not correctness
-  adjudication (extras are unadjudicated; a genuine improvement is admitted by amendment).
-- the fixture suite carries a versioned identity (`fixture_suite`), gated and woven into freeze
-  labels (`{prompt_version}+{suite}`), so suite changes get new immutable artifacts without
-  prompt-VERSION abuse.
-- the artifact self-records its producing harness (`harness_digest`, FUP-238), so provenance is
-  readable from the artifact instead of reconstructed from the git DAG. Provenance and
-  comparability are SEPARATE contracts: `harness_digest` is informational (surfaced by
-  `provenance_notes()`, never gated), while `measurement_contract` is the blocking semantics
-  identity `compare()` and `preflight_comparability()` enforce.
-
-Accept iff, per (acceptance-provider, finding_type), recall does not decrease and the
-false-positive count does not increase (ε = 0).
-
-Narrow by design (per the arc decision): serves THIS optimization's fixed fixtures + fixed provider
-set only — NOT a generalized multi-provider evaluation framework.
-"""
+Recall cannot fall, and false-positive or extra-finding counts cannot rise.
+Extra findings are not automatically confirmed bugs. Save token counts and
+structured-response counts as evidence without treating them as acceptance
+rules. The optional paid collector lives in test_exemplar_baseline.py."""
 
 from __future__ import annotations
 
@@ -73,8 +35,10 @@ if TYPE_CHECKING:
 #   those fields first shipped under an unchanged "3", which mislabeled the shape.
 # Legacy artifacts stay readable via `read_baseline`'s deterministic in-memory upgrade chain —
 # the frozen on-disk evidence is never rewritten.
-SCHEMA_VERSION = 4
-_READABLE_SCHEMA_VERSIONS = frozenset({2, 3, SCHEMA_VERSION})
+SCHEMA_VERSION = 5
+_READABLE_SCHEMA_VERSIONS = frozenset({2, 3, 4, SCHEMA_VERSION})
+PROMPT_IDENTITY_RECIPE = "analyze-clean-pass0-v1"
+LEGACY_PROMPT_IDENTITY_RECIPE = "analyze-system-prefix-v1"
 
 # The BLOCKING comparability identity for measurement SEMANTICS — deliberately separate from
 # `harness_digest` (informational provenance, surfaced not gated: any source edit rotates a code
@@ -212,6 +176,7 @@ class RunMeta(NamedTuple):
     measurement_contract: str = MEASUREMENT_CONTRACT
     # Versioned suite identity (see FIXTURE_SUITE_VERSION). Gated; also woven into freeze labels.
     fixture_suite: str = FIXTURE_SUITE_VERSION
+    prompt_identity_recipe: str = PROMPT_IDENTITY_RECIPE
 
 
 @dataclass
@@ -227,6 +192,22 @@ class _Cell:
 
 # The harness's own source, in fixed order, hashed into `harness_digest` (FUP-238).
 _HARNESS_FILES = ("exemplar_baseline.py", "test_exemplar_baseline.py")
+
+
+def analyze_prompt_identity() -> tuple[str, str]:
+    """Identify the instruction strings actually rendered by clean pass-zero calls.
+
+    The JSON list makes segment boundaries explicit. Post-trace and degraded
+    templates belong to different instruments and are not exercised here.
+    """
+    from outrider.prompts import analyze as prompt
+
+    content = json.dumps(
+        [prompt.SYSTEM_PROMPT_STABLE_PREFIX, prompt.FILE_CONTEXT_TEMPLATE, prompt.USER_TEMPLATE],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return prompt.VERSION, hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def harness_source_digest(filenames: tuple[str, ...] = _HARNESS_FILES) -> str:
@@ -313,6 +294,8 @@ def aggregate(observations: list[Observation], meta: RunMeta) -> dict[str, objec
             "meta.fixture_suite is empty — a run must name its fixture-suite identity "
             "(see FIXTURE_SUITE_VERSION)"
         )
+    if meta.prompt_identity_recipe != PROMPT_IDENTITY_RECIPE:
+        raise ValueError("new runs must use the current prompt_identity_recipe")
     n_reps = meta.n_reps
     seen_providers = {o.provider for o in observations}
     if set(meta.providers) != seen_providers:
@@ -480,6 +463,7 @@ def aggregate(observations: list[Observation], meta: RunMeta) -> dict[str, objec
 
     return {
         "schema_version": SCHEMA_VERSION,
+        "prompt_identity_recipe": meta.prompt_identity_recipe,
         "measurement_contract": meta.measurement_contract,
         "fixture_suite": meta.fixture_suite,
         "n_reps": n_reps,
@@ -532,6 +516,7 @@ def compare(baseline: dict, candidate: dict) -> dict[str, object]:
     # (harness_digest stays non-gated — see provenance_notes.)
     for field_name in (
         "schema_version",
+        "prompt_identity_recipe",
         "measurement_contract",
         "fixture_suite",
         "n_reps",
@@ -729,6 +714,12 @@ def preflight_comparability(baseline: dict, meta: RunMeta) -> list[str]:
     necessarily need the observations.
     """
     reasons: list[str] = []
+    if baseline.get("prompt_identity_recipe") != meta.prompt_identity_recipe:
+        reasons.append(
+            f"prompt_identity_recipe {baseline.get('prompt_identity_recipe')!r} != planned "
+            f"{meta.prompt_identity_recipe!r}; prefix-only legacy evidence does not identify "
+            "the clean pass-zero user instructions"
+        )
     if baseline.get("schema_version") != SCHEMA_VERSION:
         reasons.append(
             f"baseline schema_version {baseline.get('schema_version')} != {SCHEMA_VERSION}"
@@ -1223,20 +1214,21 @@ def authoritative_attempt(label_prefix: str) -> Path | None:
 
 
 def _upgrade_legacy(data: dict[str, object]) -> dict[str, object]:
-    """Deterministic IN-MEMORY upgrade chain (v2 → v3 → v4); the frozen on-disk artifact is
-    never rewritten.
+    """Add metadata to old formats in memory, preserving the saved evidence.
 
-    Each step only ADDS fields, filled with `None` = UNRECORDED-under-the-older-shape — distinct
-    from a measured zero, same discipline as token telemetry-absence (FUP-238 route c).
-
-    The `measurement_contract` and `fixture_suite` fills are NOT unknown-markers: they are the
-    reviewed compatibility DECLARATIONS of what legacy evidence was collected under —
-    exemplar-mc-1 semantics, the suite-v1 (20-fixture) set. Both are LITERALS on purpose: the
-    constants have since rotated (mc-2 / suite-v2), and following them would falsely re-declare
-    old evidence. The mc-1 → mc-2 rotation ships no compatibility mapping: the v2 baseline
-    legitimately stops comparing (superseded as the bar by the suite-v2 freeze, not migrated).
+    Unknown measurements stay None so missing data cannot look like zero.
+    Protocol, suite and prompt-identity labels describe the original run.
+    Keep those labels independent of current defaults to avoid relabeling evidence.
     """
     version = data.get("schema_version")
+    assert isinstance(version, int)
+    _reject_anachronisms(
+        data, version=version, top=("prompt_identity_recipe",), provider=(), fixture=()
+    )
+    if version == 4:
+        data["prompt_identity_recipe"] = LEGACY_PROMPT_IDENTITY_RECIPE
+        data["schema_version"] = SCHEMA_VERSION
+        return data
     if version == 2:
         # v2's shape has NONE of the later fields — their presence means a malformed or
         # hand-edited artifact, and silently preserving (or overwriting) a tampered identity
@@ -1266,6 +1258,7 @@ def _upgrade_legacy(data: dict[str, object]) -> dict[str, object]:
     for p in data.get("providers", {}).values():  # type: ignore[union-attr]
         for fx in p.get("per_fixture", {}).values():
             fx["extra_findings"] = None
+    data["prompt_identity_recipe"] = LEGACY_PROMPT_IDENTITY_RECIPE
     data["schema_version"] = SCHEMA_VERSION
     return data
 
@@ -1312,6 +1305,11 @@ def read_baseline(label: str) -> dict[str, object]:
         )
     if data.get("schema_version") != SCHEMA_VERSION:
         return _upgrade_legacy(data)
+    if data.get("prompt_identity_recipe") not in {
+        PROMPT_IDENTITY_RECIPE,
+        LEGACY_PROMPT_IDENTITY_RECIPE,
+    }:
+        raise ValueError("baseline does not record a recognized prompt_identity_recipe")
     return data
 
 

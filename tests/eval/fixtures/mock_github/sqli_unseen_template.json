@@ -1,0 +1,34 @@
+{
+  "installation_id": 5410,
+  "owner": "acme",
+  "repo": "orders",
+  "pr_number": 70,
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "pr_title": "Add an order-owner lookup",
+  "author": "contributor",
+  "total_additions": 11,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "app/template_lookup.py",
+      "status": "modified",
+      "additions": 11,
+      "deletions": 0,
+      "patch": "@@ -1 +1,12 @@\n \"\"\"Database lookup helpers.\"\"\"\n+\n+\n+def find_orders(cursor, request):\n+    \"\"\"Return matching IDs; callers handle database failures.\"\"\"\n+    from string import Template\n+\n+    query = Template(\"SELECT id FROM orders WHERE owner = '$owner'\").substitute(\n+        owner=request.args[\"owner\"]\n+    )\n+    cursor.execute(query)\n+    return cursor.fetchall()\n",
+      "content_base": "\"\"\"Database lookup helpers.\"\"\"\n",
+      "content_head": "\"\"\"Database lookup helpers.\"\"\"\n\n\ndef find_orders(cursor, request):\n    \"\"\"Return matching IDs; callers handle database failures.\"\"\"\n    from string import Template\n\n    query = Template(\"SELECT id FROM orders WHERE owner = '$owner'\").substitute(\n        owner=request.args[\"owner\"]\n    )\n    cursor.execute(query)\n    return cursor.fetchall()\n"
+    }
+  ],
+  "llm_responses": {
+    "triage": [
+      "{\"file_tiers\": {\"app/template_lookup.py\": \"standard\"}, \"overall_risk\": \"high\", \"relevant_dimensions\": [\"security\"], \"reasoning\": \"Review the added database lookup.\"}"
+    ],
+    "analyze": [
+      "{\"findings\": [{\"finding_type\": \"sql_injection\", \"evidence_tier\": \"judged\", \"query_match_id\": null, \"trace_path\": null, \"title\": \"Request value becomes SQL syntax\", \"description\": \"The request owner is inserted into SQL text before execution, without driver binding or SQL literal quoting.\", \"evidence\": \"    query = Template(\\\"SELECT id FROM orders WHERE owner = '$owner'\\\").substitute(\\n        owner=request.args[\\\"owner\\\"]\\n    )\\n    cursor.execute(query)\", \"line_start\": 8, \"line_end\": 11, \"trace_candidates\": []}]}"
+    ],
+    "synthesize": [
+      "Review complete."
+    ]
+  }
+}

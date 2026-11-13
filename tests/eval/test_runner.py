@@ -1,17 +1,6 @@
-"""Tests for the cross-scenario eval runner (tests/eval/runner.py).
+"""Check scorecard assembly, provider-error handling and optional cost-run guards.
 
-Covers the matrix orchestration that step 1 promotes out of the inline opt-in
-loop: `build_scorecard` row assembly (one row per scenario × candidate model),
-the ported transient-isolation (`_isolate_transients`) and regression
-(`_sqli_fp_count` / `_regression_verdict`) helpers, and the cost-pass guard.
-
-The happy path reuses the zero-spend scripted-provider machinery from
-`test_model_comparison` (a SQL-injection scenario whose canned responses find /
-miss the known finding); the isolation helper is tested directly with raising
-coroutines (decoupled from analyze's degraded-mode behavior, exactly as the
-original `_run_scenario_isolating_transients` test is). Pure — no DB, no LLM, no
-spend.
-"""
+Scripted providers exercise comparisons without model spend or a database."""
 
 from __future__ import annotations
 
@@ -396,9 +385,7 @@ def test_build_scorecard_runs_baseline_once_per_scenario() -> None:
 
 # --- build_triage_scorecard matrix orchestration ----------------------------
 
-# _build_state's one changed file is src/example.py; the scripted _TRIAGE_DEEP /
-# _TRIAGE_SKIM responses (from test_triage_grading) tier exactly that path, so the
-# real triage node's path-coverage gate is satisfied.
+# The scripted file_1 tier maps to _build_state's sole changed file, src/example.py.
 _TRIAGE_EXPECTED = ExpectedTriage(
     expected_file_tiers={"src/example.py": ReviewTier.DEEP},
     overall_risk=RiskLevel.HIGH,
@@ -556,7 +543,7 @@ def test_build_triage_scorecard_closes_providers_when_requested() -> None:
 # SKIP). The node raises TriagePolicyViolationError post-schema — not an
 # LLMProviderError, so _isolate_transients does not catch it.
 _TRIAGE_SKIP = (
-    '{"file_tiers": {"src/example.py": "skip"}, "overall_risk": "high", '
+    '{"file_tiers": {"file_1": "skip"}, "overall_risk": "high", '
     '"relevant_dimensions": ["security"], "reasoning": "skip it"}'
 )
 

@@ -1,22 +1,12 @@
 #!/usr/bin/env python3
-"""Verify that every (see #NNN) / Supersedes #NNN / Superseded by #NNN
-reference in DECISIONS.md resolves to a real ## NNN. entry in the same file.
+"""Check that numbered references in DECISIONS.md point to existing entries.
 
-Content inside fenced code blocks is skipped — format examples intentionally
-use illustrative numbers that are not guaranteed to match real entries.
+Recognize see, Supersedes and Superseded by references. Ignore fenced examples,
+and reject missing targets or duplicate entry numbers. This checks that a target
+exists; deciding whether it is the intended target still needs review.
 
-Usage:
-    .venv/bin/python scripts/check_decision_refs.py
-    .venv/bin/python scripts/check_decision_refs.py --file path/to/DECISIONS.md
-
-Exit 0 if all references resolve; exit 1 on any dangling reference or
-duplicate entry number.
-
-Limitation: This checker verifies that every #NNN reference resolves to SOME
-## NNN. entry. It does not verify that the reference points to the CORRECT
-entry. A reference written as (see #007) when the author meant (see #009)
-will pass this check if both #007 and #009 exist as entries. Semantic review
-still requires a human.
+Run .venv/bin/python scripts/check_decision_refs.py, or add --file PATH.
+Exit 0 means the references resolve; exit 1 reports the problems.
 """
 
 from __future__ import annotations

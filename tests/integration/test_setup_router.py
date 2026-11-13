@@ -1,10 +1,8 @@
-"""Integration tests for `api/setup/router` against a real Postgres (#070).
+"""Check onboarding endpoints against PostgreSQL (DECISIONS.md#070).
 
-Drives the four onboarding endpoints through a real state machine (migrated DB) with a FAKE manifest
-conversion (no GitHub network): admin gating, the happy path start → callback → CONFIGURED + a
-decryptable credential row, the security rejections (bad state, replayed state), and the saga
-failures (binding mismatch / conversion error → ORPHANED, never persisted).
-"""
+Script GitHub manifest conversion and exercise admin access, activation,
+decryptable credentials, state rejection, and failures that leave setup orphaned
+without storing credentials."""
 
 from __future__ import annotations
 

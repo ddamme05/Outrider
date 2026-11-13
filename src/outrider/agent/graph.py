@@ -1,19 +1,14 @@
-# StateGraph(ReviewState) factory: seven LOGICAL nodes (DECISIONS.md#064).
-"""`StateGraph(ReviewState)` factory.
+"""Build the review workflow with its database, model and GitHub services.
 
-Seven LOGICAL nodes — intake, triage, analyze, trace, synthesize, hitl, publish —
-over nine physical vertices: analyze fans out into a planner, per-file `analyze_file`
-Send workers, and an `analyze_aggregate` fold. Audit vocabulary, state identity and
-replay grouping know only the seven (`DECISIONS.md#064`).
+build_graph checks dependencies, connects the review steps and compiles a graph
+that callers run with await graph.ainvoke(seed_state). Analysis schedules files
+separately and then combines their results into one round.
 
-Intake routes with `Command(goto=...)`, which is why this module deliberately has NO
-`add_edge("intake", ...)` and no `add_conditional_edges("intake", ...)`: under LangGraph
-1.1.6 a static edge fires ALONGSIDE the Command's dynamic edge, sending to both.
+Services are passed into the node functions, never saved in ReviewState
+(nodes-receive-deps-via-closure). Intake and analysis choose their next steps
+with Commands, so adding static outgoing edges would run extra steps.
 
-Every runtime dependency arrives as a keyword argument and is closed over in
-the node callables rather than stored in ReviewState
-(`nodes-receive-deps-via-closure`). All nodes are async, so the compiled graph is
-driven with `await graph.ainvoke(seed_state)`.
+The seven review-stage names remain the audit vocabulary (DECISIONS.md#064).
 """
 
 from __future__ import annotations
@@ -24,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from outrider.agent.candidate_store import CandidateStore
 from outrider.agent.nodes.analyze import (
     ANALYZE_MAX_CONCURRENCY,
     DEFAULT_REVIEW_BUDGET_TOKENS,
@@ -47,6 +43,7 @@ from outrider.anomaly import AnomalySink
 from outrider.ast_facts.base import ImportPathResolver
 from outrider.audit.sinks import (
     AnalyzeEventSink,
+    CandidateEventSink,
     FileExaminationSink,
     HITLEventSink,
     PhaseEventSink,
@@ -402,6 +399,14 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     import_path_resolver: ImportPathResolver,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
     analyze_max_concurrency: int = ANALYZE_MAX_CONCURRENCY,
+    supplemental_context_enabled: bool = True,
+    called_function_context_enabled: bool = False,
+    module_context_enabled: bool = False,
+    companion_context_enabled: bool = False,
+    import_reference_context_enabled: bool = False,
+    candidate_checks_enabled: bool = False,
+    candidate_store: CandidateStore | None = None,
+    candidate_event_sink: CandidateEventSink | None = None,
     trivial_scope_filter_enabled: bool = False,
     analyze_observed_skip_enforced: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
@@ -426,6 +431,19 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     Returns a compiled `StateGraph(ReviewState)` ready for
     `await graph.ainvoke(seed_state)`.
     """
+    if companion_context_enabled and not supplemental_context_enabled:
+        raise ValueError("companion context requires supplemental context")
+    if (
+        sum(
+            (
+                module_context_enabled,
+                called_function_context_enabled,
+                import_reference_context_enabled,
+            )
+        )
+        > 1
+    ):
+        raise ValueError("optional import/module/called-function modes cannot be enabled together")
     _validate_provider_and_host_identity(
         provider=provider,
         model_config=model_config,
@@ -478,6 +496,18 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         publisher=publisher,
         import_path_resolver=import_path_resolver,
     )
+    if candidate_event_sink is None and isinstance(analyze_event_sink, CandidateEventSink):
+        candidate_event_sink = analyze_event_sink
+    if candidate_checks_enabled:
+        if candidate_event_sink is None:
+            raise BuildGraphError("candidate checks require a candidate event writer")
+        if analyze_cache_store is not None and cache_mode is CacheMode.SERVE:
+            raise BuildGraphError(
+                "candidate checks cannot serve cached analysis; "
+                "use shadow mode or disable the cache store"
+            )
+        if candidate_store is None:
+            candidate_store = CandidateStore(db_factory)
 
     # Close over the per-tier model id, not the whole ModelConfig.
     triage_callable = functools.partial(
@@ -506,9 +536,16 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         phase_event_sink=phase_event_sink,
         file_examination_sink=file_examination_sink,
         analyze_event_sink=analyze_event_sink,
+        candidate_event_sink=candidate_event_sink,
         anomaly_sink=anomaly_sink,
         import_path_resolver=import_path_resolver,
         total_review_budget_tokens=total_review_budget_tokens,
+        supplemental_context_enabled=supplemental_context_enabled,
+        called_function_context_enabled=called_function_context_enabled,
+        module_context_enabled=module_context_enabled,
+        companion_context_enabled=companion_context_enabled,
+        import_reference_context_enabled=import_reference_context_enabled,
+        github_factory=github_factory,
         # Shadow default: the classifier audits would-exclude verdicts and excludes
         # nothing.
         trivial_scope_filter_enabled=trivial_scope_filter_enabled,
@@ -533,6 +570,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         phase_event_sink=phase_event_sink,
         file_examination_sink=file_examination_sink,
         analyze_event_sink=analyze_event_sink,
+        candidate_event_sink=candidate_event_sink,
         total_review_budget_tokens=total_review_budget_tokens,
         trivial_scope_filter_enabled=trivial_scope_filter_enabled,
         analyze_observed_skip_enforced=analyze_observed_skip_enforced,
@@ -572,6 +610,10 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
         phase_event_sink=phase_event_sink,
         trace_sink=trace_sink,
         github_factory=github_factory,
+        candidate_checks_enabled=candidate_checks_enabled,
+        candidate_store=candidate_store,
+        candidate_event_sink=candidate_event_sink,
+        import_path_resolver=import_path_resolver,
     )
     hitl_callable = functools.partial(
         hitl,
@@ -618,7 +660,10 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     builder.add_edge("analyze_file", "analyze_aggregate")
     # The adaptive loop hangs off the AGGREGATE, not the planner, because that is
     # where a pass-0 round merges.
-    builder.add_conditional_edges("analyze_aggregate", _analyze_router)
+    builder.add_conditional_edges(
+        "analyze_aggregate",
+        functools.partial(_analyze_router, candidate_checks_enabled=candidate_checks_enabled),
+    )
     builder.add_conditional_edges("trace", _trace_router)
     builder.add_edge("synthesize", "hitl")
     # A static edge is correct here: the node body's `interrupt(...)` is what pauses
@@ -628,7 +673,7 @@ def build_graph(  # noqa: PLR0913 — closure-injected deps surface; one kwarg p
     return builder.compile(checkpointer=checkpointer)
 
 
-def _analyze_router(state: ReviewState) -> str:
+def _analyze_router(state: ReviewState, *, candidate_checks_enabled: bool = False) -> str:
     """Route the aggregate's output: trace if round 1 has candidates, else synthesize.
 
     Attached to "analyze_aggregate" (the pass-0 round merges when the
@@ -642,7 +687,9 @@ def _analyze_router(state: ReviewState) -> str:
     by severity (empty gate-set passes through to publish without an
     interrupt).
     """
-    if len(state.analysis_rounds) == 1 and state.trace_candidates:
+    if len(state.analysis_rounds) == 1 and (
+        state.trace_candidates or (candidate_checks_enabled and state.native_candidates)
+    ):
         return "trace"
     return "synthesize"
 

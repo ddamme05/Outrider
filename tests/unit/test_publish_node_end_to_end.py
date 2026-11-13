@@ -1,22 +1,7 @@
-# End-to-end publish-node tests with real `ChangedFile` + `ReviewFinding`.
-"""Run the publish node body against real schemas + stub sinks/publisher.
+"""Check the publish node with real review models and stub external effects.
 
-This file exists because the prior unit-test suite (`test_publish_*.py`)
-covered every helper in isolation but never invoked `publish(...)` with
-a real `ReviewState` carrying real `ChangedFile` / `ReviewFinding`
-instances. That gap let two HIGH-confidence cross-file attribute bugs
-escape (`changed_file.head_content` instead of `content_head`;
-`finding.byte_start` / `byte_end` instead of the actual `line_start` /
-`line_end` fields) until Codex caught them at PR review.
-
-The lesson: AST-based unit tests + isolated-helper tests are necessary
-but not sufficient for cross-file integration; one end-to-end node-body
-test catches the class of bugs static audits miss.
-
-Sister of the FUP-066 tracking (`test_publish_routing.py` +
-`test_publish_idempotency.py`); this file covers the regression floor
-that the spec didn't explicitly name but should have.
-"""
+Cover routing, eligibility, approval, and repeat-run handling across model
+boundaries. These calls do not contact GitHub. See FUP-066."""
 
 from __future__ import annotations
 
@@ -275,21 +260,11 @@ def _make_state(
     changed_files: tuple[ChangedFile, ...] = (),
     analysis_round_findings: tuple[ReviewFinding, ...] | None = None,
 ) -> ReviewState:
-    """Build a ReviewState with one AnalysisRound + a synthesize-canonical
-    ReviewReport carrying the findings (publish requires the canonical
-    review_report shape post-Phase-5 fail-loud).
+    """Build a state whose canonical report carries findings for publish.
 
-    `analysis_round_findings` populates `analysis_rounds[0].findings`
-    INDEPENDENTLY of `findings` (which always populates
-    `review_report.findings`). Defaults to `findings` (mirror) for
-    backward compatibility with existing tests. Callers wanting a
-    regression pin against publish accidentally reading from
-    `analysis_rounds` instead of `review_report.findings` can pass
-    `analysis_round_findings=()` so a regression would surface as an
-    empty admitted-set instead of silently passing on the mirror.
-    Sibling capability to the HITL-side `_make_state` helper (per
-    CodeRabbit 2026-05-28).
-    """
+    analysis_round_findings independently controls the analysis-round copy, defaulting
+    to the report findings. Pass () to expose publish accidentally reading analysis
+    rounds instead of review_report.findings."""
     from outrider.policy.canonical import compute_round_id
     from outrider.schemas import ReviewMetrics, ReviewReport
     from outrider.schemas.analysis_round import AnalysisRound
@@ -2527,6 +2502,36 @@ async def _run_publish(state: ReviewState, orch: Any, **overrides: Any) -> dict[
     }
     kwargs.update(overrides)
     return await publish(state, **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("human_approved", [False, True])
+async def test_disputed_low_warning_cannot_bypass_human_approval(human_approved):
+    from test_publish_eligibility import _verification_assessment, _verification_ref
+
+    finding = _make_finding(severity=FindingSeverity.LOW, line_start=1, line_end=1)
+    original = finding.model_dump(mode="json")
+    ref = _verification_ref(finding)
+    state = _make_state(findings=(finding,), changed_files=(_make_changed_file(),))
+    state.native_candidates = [ref]
+    state.candidate_assessments = [_verification_assessment(ref, status="refutes")]
+    if human_approved:
+        state = _gate(state, finding)
+        assert state.hitl_request is not None
+        state.hitl_request = state.hitl_request.model_copy(
+            update={"verification_hold_finding_ids": (finding.finding_id,)}
+        )
+    publisher, sink = _StubPublisher(), _RecordingPublishEventSink()
+    result = await _run_publish(
+        state, _RecordingSlackOrchestrator(), publisher=publisher, publish_event_sink=sink
+    )
+    assert (result["publish_result"].outcome == "success") is human_approved
+    if human_approved:
+        assert "<!-- outrider:hitl-gated true -->" in publisher.create_calls[0]["comments"][0].body
+    else:
+        assert publisher.create_calls == []
+        assert sink.eligibility[0].eligibility is PublishEligibility.WITHHELD
+    assert finding.model_dump(mode="json") == original
 
 
 @pytest.mark.asyncio

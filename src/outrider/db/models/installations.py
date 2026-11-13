@@ -1,17 +1,8 @@
-# See DECISIONS.md#012-data-retention-ttls-configurable-purge-on-installationdeleted
-"""INSTALLATIONS + INSTALLATION_REPOSITORIES.
+"""Track GitHub installations, repository membership and deletion state.
 
-INSTALLATIONS is the per-tenant root in V1's single-tenant deployment (one row per
-GitHub App installation). `tombstoned_at` and `purge_after_at` together model the
-two-state lifecycle from #012: tombstoned-in-grace (`tombstoned_at IS NOT NULL`,
-`purge_after_at` future) and ready-for-hard-delete (`purge_after_at < NOW()`).
-
-INSTALLATION_REPOSITORIES is a join row per repo covered by an install. The
-`installation_id → installations.installation_id` FK uses `ON DELETE CASCADE`
-because the join table has no retention TTL and no `purge_audit` semantics — its
-rows are pure membership state and should follow the install when it hard-deletes.
-This is the only join-style cascade in the schema; content tables use RESTRICT
-to force the sweep job to delete content explicitly first.
+Removing an installation removes its repository membership. Review content
+requires the explicit purge flow and its deletion grace period rather than
+cascading from this row. See DECISIONS.md#012.
 """
 
 from dataclasses import dataclass
@@ -143,7 +134,7 @@ async def set_slack_config(
     channel_id: str,
     configured_by: str,
 ) -> bool:
-    """Persist per-install Slack config from a completed OAuth exchange (commit 6.3c).
+    """Persist per-install Slack config from a completed OAuth exchange.
 
     Updates the five `slack_*` columns on the matching ACTIVE (non-tombstoned)
     `installations` row and returns True; returns False if no active install matched

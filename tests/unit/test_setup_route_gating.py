@@ -1,16 +1,8 @@
-# Per DECISIONS.md#070 / spec F6 — setup-only route surface + credential gating.
-"""The setup-only route surface (F6): `/setup*` mounts in `database` mode only, and every
-credential-dependent router fails closed with 503 while the provider is not `CONFIGURED`.
+"""Check setup routes and credential-dependent route gates without startup or a database.
 
-Two layers, unit-level (no DB, no lifespan):
-  1. The `require_credentials_configured` dependency in isolation — 503 for a `None` / unconfigured
-     provider, pass-through for a configured one.
-  2. The real `create_app()` route surface — `/setup*` present in `database` mode, absent in `env`
-     and demo mode; and the three side-effecting production routers carry the gate dependency.
-
-The end-to-end status table under a booted `database`-unconfigured lifespan is the integration
-concern; here the gate's return code + the exact gated route set are pinned structurally.
-"""
+Setup routes belong only to database credential mode. Unconfigured providers
+return 503; configured providers pass. Inspect the real app's gated route set;
+booted-app status checks are in integration tests. See DECISIONS.md#070, spec F6."""
 
 from __future__ import annotations
 

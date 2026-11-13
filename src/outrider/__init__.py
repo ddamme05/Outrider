@@ -1,10 +1,11 @@
-"""Outrider: review GitHub pull requests through the agent pipeline.
+"""Review GitHub pull requests with Outrider.
 
-Import installs the LLM-content logging filter before review work
-(specs/2026-05-05-llm-provider-wrapper.md AC#23; DECISIONS.md#016 point 4).
-The lifespan reapplies it after later handler registration. Forced policy imports
-also run the finding/dimension lockstep and subsumption guards at startup
-(specs/2026-05-19-analyze-foundation.md §6; DECISIONS.md#055).
+Importing this package installs the log filter that blocks model content and
+checks that the finding policies agree. Startup reapplies the filter after
+logging handlers are registered.
+
+See DECISIONS.md#016 and #055; specs/2026-05-05-llm-provider-wrapper.md and
+specs/2026-05-19-analyze-foundation.md.
 """
 
 from outrider.llm.logging import register_filter_on_all_handlers

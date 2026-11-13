@@ -1,26 +1,11 @@
-# OpenAICompatibleProvider — concrete LLMProvider for OpenAI-compatible hosts,
-# parameterized by a frozen HostProfile (DECISIONS.md#056). Owns the openai
-# transport surface; vendor SDK imports stay inside `src/outrider/llm/` per the
-# folder-scoped `vendor-sdks-only-in-wrappers` invariant (trust boundary #8).
-# Second deployment family alongside AnthropicProvider.
-"""Call an OpenAI-compatible host through a frozen `HostProfile`.
+"""Call an OpenAI-compatible host using its configured HostProfile.
 
-The profile selects endpoint, model pattern, reasoning directive, JSON mode,
-token accounting, and privacy posture (`DECISIONS.md#056`). Construction
-validates these contracts and pricing. Before spending, `complete` checks
-the configured model, persister, closed state, and flat-rate input ceiling.
+The wrapper validates responses and saves completed exchanges before returning
+them. Host-specific parameters, pricing and privacy requirements come from
+the profile. Unpriced calls remain marked as such rather than receiving a
+guessed cost. Provider errors never expose prompt or completion content.
 
-The call path shapes the request, translates SDK errors, extracts one choice,
-normalizes usage/finish reason, hashes prompts, and computes a pricing outcome.
-Request model identity anchors cost and audit even when the response model
-echo is empty. Completed calls persist before returning or raising a terminal
-pricing-contract error. Known billing-pending outcomes remain unpriced and
-return their response; runtime deviations raise after persistence.
-
-Structured refusals become empty content with `finish_reason='refusal'`.
-Downstream admission handles that response; the native Anthropic wrapper
-instead persists and raises `LLMRefusalError` (FUP-203).
-`GLMProvider` retains the Baseten constructor surface for existing callers.
+See DECISIONS.md#056, FUP-203 and docs/trust-boundaries.md §8.
 """
 
 import asyncio
@@ -29,6 +14,7 @@ import logging
 import time
 from datetime import UTC, datetime
 from typing import Any, Final
+from uuid import uuid4
 
 import httpx
 import openai
@@ -122,8 +108,9 @@ class OpenAICompatibleProvider:
     matches the profile's slug pattern AND is priced; `profile.privacy.trains_on_inputs`
     is a hard-fail (no blanket override). The egress privacy notice is surfaced from
     `profile.privacy`. The identity triad is stamped on every response + event (DECISIONS.md#056);
-    reasoning is OFF on every call EXCEPT a `NONE`-mechanism host (no off-switch — reasoning on by
-    nature), and `reasoning=True` on an off-switch host fails closed (V1 has no verified on-wire).
+    All configured roles must share a request contract. Models without a supported
+    off-switch keep reasoning on; their full completion count is billed and audited.
+    `reasoning=True` on an off-switch model fails closed.
     """
 
     def __init__(
@@ -173,15 +160,14 @@ class OpenAICompatibleProvider:
         # routed to this host's endpoint. The slug pattern + the pricing check together
         # mean self._models is always host-servable AND priced, which is what the per-call
         # `request.model in self._models` guard relies on.
-        for model in models:
-            try:
-                profile.validate_model_slug(model)
-            except ValueError as exc:
-                raise LLMInvalidRequestError(
-                    f"OpenAICompatibleProvider({profile.host_id!r}) configured with a model "
-                    f"the host does not serve: {exc}. (Being in RATE_TABLE is not enough — "
-                    f"the Anthropic models are priced too.)"
-                ) from exc
+        try:
+            profile = profile.for_models(models)
+        except ValueError as exc:
+            raise LLMInvalidRequestError(
+                f"OpenAICompatibleProvider({profile.host_id!r}) configured with models "
+                f"the host does not serve under one request contract: {exc}. "
+                "(Being in RATE_TABLE is not enough — the Anthropic models are priced too.)"
+            ) from exc
 
         # Eager pricing-coverage validation — eliminates a KeyError between SDK success
         # and the persister write.
@@ -198,13 +184,8 @@ class OpenAICompatibleProvider:
         self._profile = profile
         self._models = tuple(models)
         self._persister = persister
-        # Reasoning-ON wire is UNVERIFIED in V1 for a host with an off-switch: the shapers express
-        # reasoning-OFF only, so stamping reasoning_enabled=True while `_build_sdk_kwargs` still
-        # sends the off directive would be a wire/stamp lie the persister cross-check can't catch
-        # (both event + response share the same wrong source). Fail closed — the on-direction
-        # shaper + a per-host wire probe (docs ≠ wire, #056) is a later arc. A NONE-mechanism host
-        # forces reasoning on at the wire already (apply_reasoning_off is a no-op there), so
-        # reasoning is honestly on regardless of the request.
+        # Off-switch contracts only implement their off direction. Mandatory-on
+        # contracts either request low explicitly or leave default reasoning on.
         if reasoning and not profile.reasoning_forced_on:
             raise LLMInvalidRequestError(
                 f"reasoning=True requested for host {profile.host_id!r} "
@@ -361,66 +342,9 @@ class OpenAICompatibleProvider:
             ) from None
         latency_ms = (time.perf_counter_ns() - t_start_ns) // 1_000_000
 
-        # Step 4: extract assistant text (fail loud on unexpected shape).
-        text, finish_reason = _extract_assistant_text(sdk_response)
-
-        # Step 5: usage normalization (§8a, delegated to the host's accounting mode).
-        # The whole usage object can be None on the SDK type; non-streaming responses
-        # populate it, but fail loud if absent rather than silently zero the token
-        # contract.
-        usage = sdk_response.usage
-        if usage is None:
-            raise LLMInvalidResponseError()
-        prompt_token_details = usage.prompt_tokens_details
-        raw_cached = (
-            (prompt_token_details.cached_tokens or 0) if prompt_token_details is not None else 0
-        )
-        # 5.6+ hosts report cache WRITES as a distinct billed class. The pinned SDK
-        # (openai==2.44.0) does not type `cache_write_tokens` on PromptTokensDetails,
-        # but its models preserve unknown extras — validated read, wire-fixture-pinned
-        # (openai-native-host spec). Only consulted for the writes-reported accounting.
-        raw_cache_write = 0
-        if self._profile.token_accounting is TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED:
-            raw_cache_write = _read_cache_write_tokens(prompt_token_details)
-        # `read_usage` applies the host's includes/excludes-cached rule (Baseten INCLUDES
-        # cached → subtract, capping at prompt_tokens so a malformed cached can't drive
-        # input negative or break input+cache_read==prompt) and rejects negative components.
-        input_tokens, cached_tokens, cache_write_tokens, output_tokens = read_usage(
-            prompt_tokens=usage.prompt_tokens,
-            raw_cached_tokens=raw_cached,
-            completion_tokens=usage.completion_tokens,
-            accounting=self._profile.token_accounting,
-            raw_cache_write_tokens=raw_cache_write,
-        )
-
-        # Model identity: key cost + the audit event on the REQUEST model id, not
-        # response.model. request.model is deterministic + pre-validated, so it's
-        # the reliable cost key. The live probe returned response.model populated
-        # with the slug, but Baseten's GLM library example shows it can echo "" —
-        # we never depend on response.model regardless of what it carries.
-        model_id = request.model
-
-        response = LLMResponse(
-            text=text,
-            model=model_id,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cached_tokens,
-            # 0 for the GLM hosts (no cache-write token class); the real §8a-normalized
-            # write count for hosts whose accounting reports writes distinctly (5.6+).
-            cache_write_tokens=cache_write_tokens,
-            finish_reason=finish_reason,
-            latency_ms=int(latency_ms),
-            # Host-identity triad (DECISIONS.md#056), stamped together so the coherence envelope
-            # holds; the LLMCallEvent below mirrors these from the response (single source).
-            profile_id=self._profile.host_id,
-            reasoning_enabled=self._reasoning_enabled,
-            profile_contract_digest=self._profile_contract_digest,
-            # Pricing context (openai-native-host spec): the raw wire facts, stamped for
-            # EVERY compatible host (truthful for GLM too) — pricing.py derives tier +
-            # >272K internally from these; the persister recomputes from the same.
-            billed_prompt_tokens=usage.prompt_tokens,
-            service_tier_actual=getattr(sdk_response, "service_tier", None),
+        # Steps 4 and 5: normalize assistant text and host usage.
+        response = self._normalize_completion_response(
+            request=request, sdk_response=sdk_response, latency_ms=latency_ms
         )
 
         # Step 6: hash the prompts.
@@ -442,7 +366,7 @@ class OpenAICompatibleProvider:
             # lives in this provider.
             outcome = compute_cost_outcome(
                 self._profile.host_id,
-                model_id,
+                response.model,
                 input_tokens=response.input_tokens,
                 cache_write_tokens=response.cache_write_tokens,
                 cache_read_tokens=response.cache_read_tokens,
@@ -451,9 +375,9 @@ class OpenAICompatibleProvider:
                 service_tier=response.service_tier_actual,
             )
         except KeyError as exc:
-            missing_key = pricing_key(self._profile.host_id, model_id)
+            missing_key = pricing_key(self._profile.host_id, response.model)
             raise LLMPricingMissingError(
-                f"Model {model_id!r} maps to host-qualified pricing key {missing_key!r}, "
+                f"Model {response.model!r} maps to host-qualified pricing key {missing_key!r}, "
                 f"which is not in RATE_TABLE at complete() step 7. Add the key "
                 f"to RATE_TABLE + bump PRICING_VERSION to fix.",
                 missing_models=[str(missing_key)],
@@ -484,29 +408,31 @@ class OpenAICompatibleProvider:
 
         # Step 8: build LLMCallEvent + persist.
         event = LLMCallEvent(
+            event_id=response.exchange_event_id or uuid4(),
             review_id=request.review_id,
-            timestamp=datetime.now(UTC),
+            timestamp=response.exchange_recorded_at or datetime.now(UTC),
             is_eval=request.is_eval,
-            model=model_id,
+            model=response.model,
             # Mirror the normalized finish_reason onto the event (DECISIONS.md#016 Amended
             # 2026-06-30); the persister cross-checks event.finish_reason == response's.
             finish_reason=response.finish_reason,
             node_id=request.node_id,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cached_tokens=cached_tokens,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            cached_tokens=response.cache_read_tokens,
             cost_usd=event_cost,
             cost_unpriced_reason=unpriced_reason,
             pricing_version=PRICING_VERSION,
             latency_ms=response.latency_ms,
             prompt_hash=prompt_hash,
-            cache_hit=(cached_tokens > 0),
+            cache_hit=(response.cache_read_tokens > 0),
             context_summary=request.context_summary,
             prompt_template_version=request.prompt_template_version,
             system_prompt_hash=system_prompt_hash,
             degraded_mode=request.degraded_mode,
             degradation_reason=request.degradation_reason,
             phase_key=request.phase_key,
+            candidate_attempt_id=request.candidate_attempt_id,
             response_format_digest=request.response_format_digest,
             # Triad mirrored from the response (single source) so the persister cross-check
             # verifies this identity (DECISIONS.md#056).
@@ -569,6 +495,75 @@ class OpenAICompatibleProvider:
 
         # Step 10: return.
         return response
+
+    def _normalize_completion_response(
+        self,
+        *,
+        request: LLMRequest,
+        sdk_response: openai.types.chat.ChatCompletion,
+        latency_ms: int,
+    ) -> LLMResponse:
+        """Normalize assistant text and host usage before pricing or persistence."""
+        # Step 4: extract assistant text (fail loud on unexpected shape).
+        text, finish_reason = _extract_assistant_text(sdk_response)
+
+        # Step 5: usage normalization (§8a, delegated to the host's accounting mode).
+        # The whole usage object can be None on the SDK type; non-streaming responses
+        # populate it, but fail loud if absent rather than silently zero the token
+        # contract.
+        usage = sdk_response.usage
+        if usage is None:
+            raise LLMInvalidResponseError()
+        prompt_token_details = usage.prompt_tokens_details
+        raw_cached = (
+            (prompt_token_details.cached_tokens or 0) if prompt_token_details is not None else 0
+        )
+        # 5.6+ hosts report cache WRITES as a distinct billed class. The pinned SDK
+        # (openai==2.44.0) does not type `cache_write_tokens` on PromptTokensDetails,
+        # but its models preserve unknown extras — validated read, wire-fixture-pinned
+        # (openai-native-host spec). Only consulted for the writes-reported accounting.
+        raw_cache_write = 0
+        if self._profile.token_accounting is TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED:
+            raw_cache_write = _read_cache_write_tokens(prompt_token_details)
+        # `read_usage` applies the host's includes/excludes-cached rule (Baseten INCLUDES
+        # cached → subtract, capping at prompt_tokens so a malformed cached can't drive
+        # input negative or break input+cache_read==prompt) and rejects negative components.
+        input_tokens, cached_tokens, cache_write_tokens, output_tokens = read_usage(
+            prompt_tokens=usage.prompt_tokens,
+            raw_cached_tokens=raw_cached,
+            completion_tokens=usage.completion_tokens,
+            accounting=self._profile.token_accounting,
+            raw_cache_write_tokens=raw_cache_write,
+        )
+
+        # Attribute the normalized response to the validated request model.
+        # The SDK's model field does not control pricing or audit identity.
+        model_id = request.model
+
+        return LLMResponse(
+            exchange_event_id=uuid4(),
+            exchange_recorded_at=datetime.now(UTC),
+            text=text,
+            model=model_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cached_tokens,
+            # 0 for the GLM hosts (no cache-write token class); the real §8a-normalized
+            # write count for hosts whose accounting reports writes distinctly (5.6+).
+            cache_write_tokens=cache_write_tokens,
+            finish_reason=finish_reason,
+            latency_ms=int(latency_ms),
+            # Host-identity triad (DECISIONS.md#056), stamped together so the coherence envelope
+            # holds; the LLMCallEvent below mirrors these from the response (single source).
+            profile_id=self._profile.host_id,
+            reasoning_enabled=self._reasoning_enabled,
+            profile_contract_digest=self._profile_contract_digest,
+            # Pricing context (openai-native-host spec): the raw wire facts, stamped for
+            # EVERY compatible host (truthful for GLM too) — pricing.py derives tier +
+            # >272K internally from these; the persister recomputes from the same.
+            billed_prompt_tokens=usage.prompt_tokens,
+            service_tier_actual=getattr(sdk_response, "service_tier", None),
+        )
 
     async def aclose(self) -> None:
         """Close the underlying openai SDK client and drain its pool.
@@ -639,31 +634,30 @@ def _build_sdk_kwargs(request: LLMRequest, *, profile: HostProfile) -> dict[str,
     """Build chat-completions kwargs from the request and host contract.
 
     System/user text becomes two messages. The profile selects the token-limit
-    parameter, reasoning-off directive, requested tier, and prompt-cache key.
+    parameter, reasoning directive, sampling support, tier, and prompt-cache key.
     Schema modes send `response_format.json_schema`; JSON-object mode requests
     syntactic JSON and leaves schema admission to the node parser. No explicit
     cache-control breakpoint is sent; compatible hosts manage prefix caching.
     """
+    profile = profile.for_models((request.model,))
     kwargs: dict[str, Any] = {
         "model": request.model,
         profile.token_limit_param.value: request.max_tokens,
-        "temperature": request.temperature,
         "messages": [
             {"role": "system", "content": request.system_prompt},
             {"role": "user", "content": request.user_prompt},
         ],
     }
-    # Reasoning off per the host's mechanism (a no-op for a host with no off-switch).
-    profile.apply_reasoning_off(kwargs)
+    if profile.sends_temperature:
+        kwargs["temperature"] = request.temperature
+    # The directive also handles models whose lowest supported effort is low.
+    profile.apply_reasoning_settings(kwargs)
     # Requested tier is host DATA (digest-folded), never a builder constant: an
     # omitted tier behaves as `auto` and can select a Project-configured tier,
     # silently changing billing (openai-native-host spec). Sent verbatim.
     if profile.requested_service_tier is not None:
         kwargs["service_tier"] = profile.requested_service_tier
-    # GPT-5.6+ requires prompt_cache_key for reliable implicit/explicit cache
-    # matching. Stable per (profile contract, prompt version) so the #042
-    # stable-prefix packing keeps paying; ~15 RPM per key is ample at review
-    # volumes.
+    # Keep the optional cache partition stable across calls with the same contract.
     if profile.sends_prompt_cache_key:
         kwargs["prompt_cache_key"] = (
             f"outrider:{profile.profile_contract_digest[:16]}:{request.prompt_template_version}"
@@ -784,20 +778,28 @@ def _extract_assistant_text(response: Any) -> tuple[str, str]:
 
 
 def _translate_openai_error(exc: openai.OpenAIError) -> LLMProviderError:
-    """Map an openai SDK exception to the typed `LLMProviderError` subclass.
+    """Classify an SDK failure and attach validated, non-content diagnostics.
 
-    Order is load-bearing (subclass before parent, Python `except`
-    semantics). `APITimeoutError` IS a subclass of `APIConnectionError`
-    (verified against openai==2.44.0), so it must be tested first or every
-    timeout would route to `LLMUpstreamError`. `APIResponseValidationError`
-    subclasses `APIError` directly (not `APIStatusError`), so it precedes
-    the fallback. The retry layers match AnthropicProvider's set exactly —
-    only the SDK class names differ.
+    SDK bodies can be a flat error object or contain an ``error`` envelope.
+    Read only its type; the shared validator drops unknown categories. Never
+    copy the message, body or exception text into the project error.
+    """
+    provider_error = _classify_openai_error(exc)
+    body = getattr(exc, "body", None)
+    error_payload = body.get("error", body) if isinstance(body, dict) else None
+    category = error_payload.get("type") if isinstance(error_payload, dict) else None
+    return provider_error.attach_diagnostics(
+        http_status=getattr(exc, "status_code", None),
+        request_id=getattr(exc, "request_id", None),
+        error_category=category,
+    )
 
-    Metadata-only: never pass `str(exc)` to the wrapper constructor; openai
-    error messages render the response body, which can echo prompt
-    fragments. Only the SDK class name (a safe identifier) is surfaced, and
-    only for the unmapped fallback.
+
+def _classify_openai_error(exc: openai.OpenAIError) -> LLMProviderError:
+    """Map SDK classes to project errors, testing subclasses before parents.
+
+    Timeouts precede connection errors; response validation precedes the
+    unknown-error fallback. Only the fallback includes the SDK class name.
     """
     if isinstance(exc, openai.APITimeoutError):
         return LLMTimeoutError()

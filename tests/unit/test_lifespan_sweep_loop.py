@@ -1,12 +1,8 @@
-"""The periodic sweep loop drives one `run_scheduled_tick` per interval (Arc B2,
-DECISIONS.md#065/#012/#067).
+"""Check periodic scheduled ticks, credential forwarding, and recovery after errors.
 
-`run_scheduled_tick` owns the reconcile-first-then-sweep ordering + the #012 install-hard-delete
-liveness gating; these loop-level tests pin only that the loop (a) invokes it each tick, (b)
-forwards the credential `provider` verbatim, and (c) survives a tick failure and keeps ticking. The
-ordering / gating guarantee itself is pinned in tests/unit/test_sweep_runner_scheduled_tick.py and
-the tests/integration/test_scheduled_tick_ordering.py end-to-end survival test.
-"""
+Tick ordering and installation-deletion checks are tested separately in
+test_sweep_runner_scheduled_tick.py and integration/test_scheduled_tick_ordering.py.
+See DECISIONS.md#065, #012, and #067."""
 
 from __future__ import annotations
 

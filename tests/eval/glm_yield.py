@@ -1,17 +1,8 @@
-"""Two-host GLM structured-output yield collector — deterministic core (FUP-219).
+"""Save accepted, rejected and failed-response counts for the two GLM hosts.
 
-A SEPARATE instrument from the exemplar ε=0 baseline (`exemplar_baseline.py`): it measures
-structured-output yield for the two GLM hosts (Fireworks strict constrained-decoding vs Baseten
-soft-fenced) over the same 20 exemplar fixtures, persisting RAW accepted/rejected/void counts —
-never a derived rate, so a later yield-metric definition change costs nothing. It deliberately
-records NO detection data: recall/FP authority stays with the frozen analyze-exemplars baseline
-under its pinned pooled-expectation estimand, and keeping detection out of this artifact is what
-prevents the two collection protocols from being silently pooled.
-
-Artifact tier: TRACKED, immutable, create-once evidence under `tests/eval/baselines/glm-yield/`
-(same discipline as the exemplar baselines — no overwrite path, re-decide via a new prompt
-identity). The PAID collector loop lives in `test_glm_yield.py` behind two explicit opt-ins.
-"""
+This offline helper measures response shape, not detection quality. Keep its
+results separate from the exemplar detection baseline. Evidence files are
+create-once; the paid collection loop in test_glm_yield.py needs two opt-ins."""
 
 from __future__ import annotations
 

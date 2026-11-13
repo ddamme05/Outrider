@@ -1,33 +1,24 @@
-"""Make the Arc 2 `spikes/openai/arc2/` probe modules importable — WITHOUT leaving
-the repo root on `sys.path`.
+"""Import OpenAI probe modules without leaving the repository root on sys.path.
 
-`pyproject.toml` sets `pythonpath = ["src"]` only, which keeps `tests/` out of the
-import path. An earlier version of this file inserted the repo root and left it
-there; `sys.path` is process-global, so that made top-level `tests` importable for
-the whole pytest process, eroding the very guard `pythonpath = ["src"]` exists to
-provide (a `src/` module doing `import tests.x` would SUCCEED instead of failing
-loudly).
-
-The fix is to scope the insertion to the import itself: put the root on the path,
-import the modules so they land in `sys.modules`, then remove it. Subsequent
-`from spikes.openai.arc2... import X` in test files resolves from `sys.modules`
-without any finder consulting `sys.path`, so the path is clean afterwards and
-`tests` is not importable.
-
-**Why not the `spikes/`-duplication pattern the repo uses elsewhere.**
-`tests/eval/test_openai_scorecard.py` deliberately re-implements probe logic
-("independent recomputation is the point — the gate must not trust the manifest's
-own conservation_facts block"). That rationale governs GRADING instruments, which
-must characterize evidence independently of whatever produced it. It does not
-transfer to unit-testing a derivation function: re-implementing
-`derive_strict_analyze_schema` would only test the re-implementation.
-"""
+Tests exercise the real derivation functions. Remove temporary path entries
+after import so production modules still cannot import top-level tests."""
 
 from __future__ import annotations
 
 import importlib
 import sys
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
+
+import pytest
+from pydantic import TypeAdapter
+
+if TYPE_CHECKING:
+    from spikes.openai.arc2.contracts import RowMeasurement
+
+    from outrider.prompts.analyze import AnalyzePromptParts
 
 _REPO_ROOT = str(Path(__file__).resolve().parents[2])
 
@@ -56,3 +47,27 @@ finally:
             sys.path.remove(_REPO_ROOT)
 
 # `tests/unit/test_arc2_path_isolation.py` asserts this cleanup actually held.
+
+
+@pytest.fixture
+def arc2_reviewed_analyzer(monkeypatch: pytest.MonkeyPatch) -> tuple[RowMeasurement, ...]:
+    """Use the November 1 Arc 2 system message and return its recorded measurements."""
+    from spikes.openai.arc2 import plan
+    from spikes.openai.arc2.contracts import RowMeasurement
+
+    from outrider.prompts import analyze
+
+    fixtures = Path(__file__).resolve().parents[1] / "fixtures"
+    system_prompt = (fixtures / "arc2-reviewed-v13-system.txt").read_bytes().decode("utf-8")
+
+    def render(**kwargs: Any) -> AnalyzePromptParts:
+        return replace(analyze.render(**kwargs), system_prompt=system_prompt)
+
+    monkeypatch.setattr(
+        plan,
+        "analyze_prompt",
+        SimpleNamespace(VERSION="analyze-v13", MAX_TOKENS=8192, TEMPERATURE=0.0, render=render),
+    )
+    return TypeAdapter(tuple[RowMeasurement, ...]).validate_json(
+        (fixtures / "arc2-reviewed-v13-measurements.json").read_bytes()
+    )

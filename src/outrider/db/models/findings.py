@@ -1,18 +1,15 @@
-# See DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
-"""Retained finding content, one row per persisted finding_id.
+"""Store finding content until its retention deadline.
 
-Review purge cascades to findings; installation RESTRICT requires explicit purge
-with a purge_audit record. Policy-version RESTRICT preserves the severity policy
-needed for replay (severity-policy-versioned-for-replay).
+Policy and evidence validation happen before persistence. The saved policy
+version allows replay to recover the original severity; confidence is derived
+from the evidence tier.
 
-Proof columns are nullable here; schemas/review_finding.py enforces each evidence
-tier's query_match_id or trace_path requirements. Confidence is computed from
-evidence, not stored (confidence-is-computed-not-assigned). Database checks keep
-line ranges 1-indexed and ordered. content_hash groups equivalent content; it is
-not a write-time uniqueness key.
+See DECISIONS.md#014, severity-policy-versioned-for-replay and
+confidence-is-computed-not-assigned.
 """
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import (
@@ -36,6 +33,7 @@ class Finding(Base):
     __table_args__ = (
         CheckConstraint("line_start >= 1", name="ck_findings_line_start_gte_1"),
         CheckConstraint("line_end >= line_start", name="ck_findings_line_end_gte_line_start"),
+        CheckConstraint("source_side IN ('head', 'base')", name="ck_findings_source_side"),
         # Retention sweep query.
         Index("ix_findings_retention_expires_at", "retention_expires_at"),
         # Installation-scoped purge query.
@@ -69,6 +67,9 @@ class Finding(Base):
     severity: Mapped[str] = mapped_column(Text, nullable=False)
     evidence_tier: Mapped[str] = mapped_column(Text, nullable=False)
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    source_side: Mapped[Literal["head", "base"]] = mapped_column(
+        Text, server_default=text("'head'"), nullable=False
+    )
     line_start: Mapped[int] = mapped_column(Integer, nullable=False)
     line_end: Mapped[int] = mapped_column(Integer, nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)

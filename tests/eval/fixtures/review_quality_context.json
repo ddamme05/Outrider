@@ -1,0 +1,222 @@
+{
+  "schema": "review-quality-context-v1",
+  "scope": "Visible-premise support for bounded grounded matching; semantic adjudication remains separate. Unreviewed or changed inputs are unknown.",
+  "cases": {
+    "tests/eval/fixtures/mock_github/pygoat_sql_injection.json": {
+      "fixture_sha256": "e81fb5642854bb1e8262ed01e5fa8d92b018c6c4b42b0cfd7468bb63f06be7b1",
+      "finding_type": "sql_injection",
+      "file_path": "pygoat/introduction/views.py",
+      "line_start": 5,
+      "line_end": 5,
+      "status": "supported",
+      "reason": "Request GET data is formatted into a SQL literal and sent to execute in the served function."
+    },
+    "tests/eval/fixtures/mock_github/pygoat_auth_bypass.json": {
+      "fixture_sha256": "a70cf6663f6e2f2d214be7b6185f323c3a85bef27aef6fbe019222b6fe5fc6cb",
+      "finding_type": "auth_bypass",
+      "file_path": "pygoat/introduction/auth_views.py",
+      "line_start": 7,
+      "line_end": 8,
+      "status": "unknown",
+      "reason": "The admin-name branch skips authenticate, but a welcome response alone does not establish authenticated state or access to a protected operation."
+    },
+    "tests/eval/fixtures/mock_github/missing_error_handling.json": {
+      "fixture_sha256": "b4c0ec34a6d22bfa41b8f55410afb284c2328447b8183d87faf42cb47dbf604a",
+      "finding_type": "missing_error_handling",
+      "file_path": "profile/client.py",
+      "line_start": 5,
+      "line_end": 5,
+      "status": "unknown",
+      "reason": "The helper shows no local exception handler, but its callers and ownership of the error contract are not served."
+    },
+    "tests/eval/fixtures/mock_github/n_plus_one_query.json": {
+      "fixture_sha256": "6071ef5bdbef3a953921a880f1ab7e408e50a74a69c41d293c33ea8a3e02e6c7",
+      "finding_type": "n_plus_one_query",
+      "file_path": "orders/enrich.py",
+      "line_start": 7,
+      "line_end": 7,
+      "status": "unknown",
+      "reason": "The function queries once per input order, but the served input does not establish query-result provenance or exclude a small fixed-cardinality collection."
+    },
+    "tests/eval/fixtures/mock_github/path_traversal.json": {
+      "fixture_sha256": "e88d2299e4069f2124ac602ef7bca2929ced4c6f2cfb566d2a06462899c0b0f3",
+      "finding_type": "path_traversal",
+      "file_path": "reports/views.py",
+      "line_start": 6,
+      "line_end": 6,
+      "status": "supported",
+      "reason": "Request GET name is concatenated onto a filesystem root and read with Path.read_text without a visible containment check."
+    },
+    "tests/eval/fixtures/mock_github/missing_input_validation.json": {
+      "fixture_sha256": "f312d0f24f693e5c4ddc15c0139ead7269b974cfd848172b711986d86249a25d",
+      "finding_type": "missing_input_validation",
+      "file_path": "accounts/views.py",
+      "line_start": 5,
+      "line_end": 5,
+      "status": "supported",
+      "reason": "Request GET age is cast with int and written through user.save without a visible range or schema gate; this establishes the local pattern, not all upstream constraints."
+    },
+    "tests/eval/fixtures/mock_github/sqli_holdout_fstring.json": {
+      "fixture_sha256": "048ca797517c0ebce2e1987e1647c80667e1768faea8b92879028e1a352ff035",
+      "finding_type": "sql_injection",
+      "file_path": "search/views.py",
+      "line_start": 6,
+      "line_end": 6,
+      "status": "unknown",
+      "reason": "The query interpolates the name parameter, but no caller or untrusted source for that parameter is served."
+    },
+    "tests/eval/fixtures/mock_github/sqli_holdout_format.json": {
+      "fixture_sha256": "a263bbf1cde852fde01b35ef770f0589ee9d6fbd990456a2be709cd81a4473ae",
+      "finding_type": "sql_injection",
+      "file_path": "lookup/users.py",
+      "line_start": 6,
+      "line_end": 6,
+      "status": "unknown",
+      "reason": "The query formats the user_id parameter, but no caller or untrusted source for that parameter is served."
+    },
+    "tests/eval/fixtures/mock_github/sqli_holdout_concat.json": {
+      "fixture_sha256": "5eb9f456fed08dfcc7d23b552be49ceabd2caabcb072b550db833fba34e77f77",
+      "finding_type": "sql_injection",
+      "file_path": "contacts/lookup.py",
+      "line_start": 6,
+      "line_end": 6,
+      "status": "unknown",
+      "reason": "The query concatenates the email parameter, but no caller or untrusted source for that parameter is served."
+    },
+    "tests/eval/fixtures/mock_github/sqli_holdout_orm_fstring.json": {
+      "fixture_sha256": "ade962da6aad167f15a63f17f69d8362538bbf08e5169f8a818b69212c2f3703",
+      "finding_type": "sql_injection",
+      "file_path": "crm/queries.py",
+      "line_start": 5,
+      "line_end": 5,
+      "status": "unknown",
+      "reason": "The ORM raw query interpolates the email parameter, but no caller or untrusted source for that parameter is served."
+    },
+    "tests/eval/fixtures/mock_github/ssrf_user_host.json": {
+      "fixture_sha256": "f28110d90e068c60774a78a5e4d8e765a718c257010558adaeb49fae7ad50c55",
+      "finding_type": "ssrf",
+      "file_path": "app/fetch.py",
+      "line_start": 7,
+      "line_end": 7,
+      "status": "supported",
+      "reason": "Request GET url flows directly into requests.get without a visible target-host restriction."
+    },
+    "tests/eval/fixtures/mock_github/weak_password_hash_md5.json": {
+      "fixture_sha256": "06506fc57556c804abaddd226bcd188c21a48f1f51dfe58cba9bb6444e98cfe3",
+      "finding_type": "weak_password_hash",
+      "file_path": "accounts/auth.py",
+      "line_start": 5,
+      "line_end": 5,
+      "status": "supported",
+      "reason": "The served set_password function assigns hashlib.md5 of password data to user.password_hash."
+    },
+    "tests/eval/fixtures/mock_github/cmd_injection_subprocess.json": {
+      "fixture_sha256": "69ea82def34123733df08b608449f4de2a1538dd3060b12ccab1192ac87577d4",
+      "finding_type": "command_injection",
+      "file_path": "ops/net.py",
+      "line_start": 5,
+      "line_end": 5,
+      "status": "unknown",
+      "reason": "The host parameter is concatenated into bash -c text, but no caller or untrusted source for host is served."
+    },
+    "tests/eval/fixtures/mock_github/cmd_injection_eval_indirect.json": {
+      "fixture_sha256": "acbc3c88e7fd496ba1fe159ce375f6bd1f81a21bdc37ee9673ea119f9c2996c8",
+      "finding_type": "command_injection",
+      "file_path": "app/calc.py",
+      "line_start": 6,
+      "line_end": 6,
+      "status": "supported",
+      "reason": "Request GET expr flows to getattr(builtins, eval) and is executed in the served function."
+    },
+    "tests/eval/fixtures/mock_github/weak_crypto_cast.json": {
+      "fixture_sha256": "d3feb7b76fbda51d46f04abe27c80dce69f620da1e3eea4cc082de17d1d1e634",
+      "finding_type": "weak_crypto",
+      "file_path": "vault/cipher.py",
+      "line_start": 5,
+      "line_end": 5,
+      "status": "supported",
+      "reason": "The served encrypt_token function constructs CAST.new and calls cipher.encrypt, exposing the weak-primitive pattern as written."
+    },
+    "tests/eval/fixtures/mock_github/insecure_random_token.json": {
+      "fixture_sha256": "9682a77e7d980e2653867799fd5509b045ca90e200d9806455ae4f721509c567",
+      "finding_type": "insecure_randomness",
+      "file_path": "accounts/session.py",
+      "line_start": 5,
+      "line_end": 5,
+      "status": "supported",
+      "reason": "The served make_session_id function returns random.randint, exposing non-cryptographic randomness for a named session identifier."
+    },
+    "tests/eval/fixtures/mock_github/xss_search_echo.json": {
+      "fixture_sha256": "9e6523d8d3a531944a0611cca010a5d9379c430fcb9269a3aa214d42a04d5f6b",
+      "finding_type": "xss",
+      "file_path": "search/views.py",
+      "line_start": 6,
+      "line_end": 6,
+      "status": "supported",
+      "reason": "Request GET q is interpolated into an HTML body and passed to HttpResponse without visible escaping."
+    },
+    "tests/eval/fixtures/mock_github/hardcoded_secret_release_token.json": {
+      "fixture_sha256": "d7c837cf11e59d47b105e3fb1f2dde18ed7741ee8be518b55405b3ff120f8b65",
+      "finding_type": "hardcoded_secret",
+      "file_path": "tools/release.py",
+      "line_start": 5,
+      "line_end": 5,
+      "status": "supported",
+      "reason": "The served function contains a live-looking ghp_ token literal and uses it in an Authorization header."
+    },
+    "tests/eval/fixtures/mock_github/blocking_async_export_poll.json": {
+      "fixture_sha256": "6bf8f5d303bb26f0dd5d095579dd98aea4c1d5c1818c289ec2f907d7ae395873",
+      "finding_type": "blocking_call_in_async",
+      "file_path": "exports/poller.py",
+      "line_start": 13,
+      "line_end": 13,
+      "status": "supported",
+      "reason": "The served async function calls time.sleep directly inside its polling loop; the exact delay value is not served."
+    },
+    "tests/eval/fixtures/mock_github/unused_import_added_csv.json": {
+      "fixture_sha256": "40a45981d9b340b25b22eb0cb9a4f1d02ec8f98ad7b8ef55ab1f3142c9e71571",
+      "finding_type": "unused_import",
+      "file_path": "audit/manifest.py",
+      "line_start": 9,
+      "line_end": 9,
+      "status": "supported",
+      "reason": "The csv import is local to export_manifest and the complete served function contains no use of that local binding."
+    },
+    "tests/eval/fixtures/mock_github/missing_test_shipping_rates.json": {
+      "fixture_sha256": "50e486763ff33caf1dd069ebc4758125b75a64f9fdb6ee288ec72c138680d892",
+      "finding_type": "missing_test",
+      "file_path": "pricing/shipping.py",
+      "line_start": 5,
+      "line_end": 5,
+      "status": "unknown",
+      "reason": "The served pricing function has new branching arithmetic, but the request does not establish the absence of corresponding tests."
+    },
+    "tests/eval/fixtures/mock_github/deprecated_api_event_loop.json": {
+      "fixture_sha256": "809aa8e0bbab8be50022201f7b2bfca634bc20a02a0886c14cd8f5c9f3a6bd36",
+      "finding_type": "deprecated_api",
+      "file_path": "cli/sync.py",
+      "line_start": 7,
+      "line_end": 7,
+      "status": "unknown",
+      "reason": "The served main function calls get_event_loop, but no target Python version, loop state or caller contract establishes the deprecation premise."
+    },
+    "tests/eval/fixtures/mock_github/sqli_unseen_template.json": {
+      "fixture_sha256": "964643b1504c237c77abe355431e932c79ceb464b58c116c4e277ac02a9e0522",
+      "finding_type": "sql_injection",
+      "file_path": "app/template_lookup.py",
+      "line_start": 8,
+      "line_end": 11,
+      "status": "supported",
+      "reason": "Served request.args owner data is substituted into a SQL string with Template and sent to cursor.execute."
+    },
+    "tests/eval/fixtures/mock_github/sqli_unseen_join.json": {
+      "fixture_sha256": "b4d768a61a49dc18c053b07f7193625ff9b8040b8f29ce4a0cb8647f84d3fd22",
+      "finding_type": "sql_injection",
+      "file_path": "app/join_lookup.py",
+      "line_start": 6,
+      "line_end": 9,
+      "status": "supported",
+      "reason": "Served request.args owner data is joined into a SQL string and sent to cursor.execute."
+    }
+  }
+}

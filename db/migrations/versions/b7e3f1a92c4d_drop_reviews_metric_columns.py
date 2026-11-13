@@ -1,24 +1,12 @@
-"""Drop the seven seeded-zero `reviews` aggregate-metric columns (DECISIONS.md#037).
+"""Remove stored review totals that are calculated from audit events.
 
 Revision ID: b7e3f1a92c4d
 Revises: 7c4d8e2a1b5f
 Create Date: 2026-06-03
 
-Per DECISIONS.md#037 (FUP-127): the `reviews` table carried seven denormalized
-aggregate-metric columns (`files_examined`, `files_traced_beyond_diff`,
-`llm_calls_made`, `total_input_tokens`, `total_output_tokens`, `total_cost_usd`,
-`wall_clock_seconds`). They were seeded to 0 by the webhook INSERT and never
-rolled up — a DEAD denormalized copy. No consumer reads them: the dashboard
-computes metrics read-through from the audit stream (`_aggregate_metrics`, per
-the FUP-130 work) and replay surfaced the row values verbatim without reading
-or verifying them. Drop the columns + their non-negative CHECK constraints; the
-audit stream stays the source of truth per #030.
-
-One-way in intent (the columns held no data — all-zero, no reader). The
-downgrade re-creates them NOT NULL using a transient `server_default` of 0 to
-backfill existing rows, then drops the default so the columns match genesis
-exactly (NOT NULL, no server default); replay's `ReconstructedReviewMetadata`
-no longer references them, so a downgrade reattaches dead columns, not data.
+Drop the seven review metric columns and their checks. Dashboard totals come
+from recorded events rather than these columns (DECISIONS.md#037). Downgrade
+recreates the columns with their original types and defaults.
 """
 
 from collections.abc import Sequence

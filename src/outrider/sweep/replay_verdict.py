@@ -1,16 +1,8 @@
-# See DECISIONS.md#039 — the sibling verdict-projection of the read-only metrics endpoint.
-"""Background replay-verdict projector.
+"""Save audit-verification results for completed reviews.
 
-Computes each completed review's replay-equivalence verdict ONCE, off the hot
-path, and appends it as a `ReplayVerdictEvent` so the dashboard Replay-% can
-aggregate a persisted verdict instead of reconstructing per 2s poll
-(`DECISIONS.md#039`, the cost the read-only `/api/metrics` endpoint ruled out).
-
-Sweep-family placement: it reads `reviews WHERE status='completed'` on a cadence
-and appends an audit row — the sweep job profile — but unlike hitl-expiry it flips
-no status, so it needs no `SWEEP_LOCK_ID` advisory lock: its only side effect is
-the natural-key-idempotent verdict INSERT (the anomaly two-caller-class precedent —
-a lock is load-bearing only for a non-idempotent status flip).
+The dashboard reads these results without running replay on each request.
+Verification does not change review status and does not use the maintenance
+sweep lock. See DECISIONS.md#039.
 """
 
 from __future__ import annotations

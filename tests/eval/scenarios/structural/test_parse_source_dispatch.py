@@ -1,18 +1,12 @@
-"""Structural eval scenario: `parse_source` extension dispatch.
+"""Check parser selection by extension, including case and unsupported files.
 
-LLM-free per `docs/conventions.md` — pins the registry's language-generic
-parse dispatch directly (dispatch spec): each extension group routes to
-its owning parser, `.pyi` keeps its GENERATED_FILENAME audit record,
-case variants dispatch identically, the two dispatch structures stay in
-lockstep, and unregistered extensions raise the typed error.
-"""
+Keep extension groups and parser registration aligned without model calls."""
 
 from unittest.mock import MagicMock
 
 import pytest
 
 from outrider.ast_facts import UnsupportedExtensionError, parse_source
-from outrider.ast_facts.models import SkipReason
 from outrider.ast_facts.registry import _LANGUAGE_ADAPTERS, _PARSE_FN_LOADERS
 
 
@@ -22,13 +16,11 @@ def test_python_routes_to_python_adapter() -> None:
     assert [s.kind for s in result.scope_units] == ["function"]
 
 
-def test_pyi_keeps_generated_filename_skip() -> None:
-    """`.pyi` routes to the Python adapter, whose suffix rule skips stub
-    files as GENERATED_FILENAME — the audit record the registry entry
-    exists to preserve (dispatch spec, open question 3)."""
+def test_pyi_routes_to_python_adapter() -> None:
     result = parse_source(b"def f() -> int: ...\n", "stubs/app.pyi", MagicMock())
-    assert result.parser_outcome == "skipped"
-    assert result.skip_reason is SkipReason.GENERATED_FILENAME
+    assert result.parser_outcome == "clean"
+    assert result.skip_reason is None
+    assert [scope.name for scope in result.scope_units] == ["f"]
 
 
 def test_javascript_routes_to_javascript_adapter() -> None:

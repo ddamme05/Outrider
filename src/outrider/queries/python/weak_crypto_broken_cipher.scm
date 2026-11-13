@@ -1,10 +1,8 @@
-; Broken/legacy cipher construction (DES/3DES/RC2/RC4/Blowfish) anchored to the
-; `.new(...)` USE, not the import. The object alternation
-; `[(identifier) (attribute attribute: (identifier))]` matches both the bare form
-; (`DES.new`) and the qualified-import form (`Crypto.Cipher.DES.new`), so the cipher
-; #any-of? list lives in one place (no bare/qualified duplication to drift).
-; CAST/IDEA are deliberately EXCLUDED — common English words, too collision-prone
-; for a name-based OBSERVED finding; the JUDGED path covers them in context.
+; Match .new calls on DES, DES3, RC2/ARC2, RC4/ARC4, or Blowfish receivers.
+;
+; Accept bare or qualified receiver names at the call site. CAST and IDEA are
+; excluded because these common words make name-only matching too imprecise;
+; model review can assess those uses in context.
 (call
   function: (attribute
     object: [(identifier) @_cipher (attribute attribute: (identifier) @_cipher)]

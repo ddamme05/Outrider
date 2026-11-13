@@ -1,13 +1,8 @@
-# Per specs/2026-06-21-demo-deployment.md — the DEMO_MODE route allowlist.
-"""`DEMO_MODE` mounts an EXACT, default-deny read-only allowlist on the real app.
+"""Check the demo app's exact read-only route allowlist.
 
-The guard is exact `(path, methods)` equality against the actual `create_app()`
-output — NOT negative pattern matching on a helper-built app. So even a future
-side-effecting `GET /api/*` route fails this test until a human deliberately adds
-it to the allowlist below (and thinks about whether it's safe on a public box).
-The Slack OAuth callback is a GET that persists config, which is why a method
-denylist would be insufficient and the allowlist is the only correct shape.
-"""
+Compare paths and methods on the real app. A method denylist is insufficient:
+some GET routes, such as OAuth callbacks, write data.
+See specs/2026-06-21-demo-deployment.md."""
 
 from __future__ import annotations
 
@@ -38,6 +33,7 @@ _DEMO_ALLOWLIST = {
     ("/api/reviews/{review_id}/agent-view", frozenset({"GET"})),
     ("/api/reviews/{review_id}/events", frozenset({"GET"})),
     ("/api/reviews/{review_id}/findings", frozenset({"GET"})),
+    ("/api/reviews/{review_id}/candidates", frozenset({"GET"})),
     ("/api/reviews/{review_id}/replay-timeline", frozenset({"GET"})),
     # B3: public, unauthenticated privacy page — always mounted (it must be
     # reachable pre-install), read-only, so it belongs in the demo allowlist.

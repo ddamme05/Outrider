@@ -1,19 +1,7 @@
-"""Sweep advisory lock serializes concurrent runs.
+"""Check that retention and installation purges share an advisory lock.
 
-Backs ``sweep-jobs-use-advisory-locks``. Both sweep entrypoints —
-``purge_expired`` and ``purge_installation`` — must acquire
-SWEEP_LOCK_ID before mutating shared content state. The two share a
-lock identifier on purpose: a time-based sweep and an installation
-hard-delete cannot run concurrently against the same database without
-risking torn state.
-
-PostgreSQL's ``pg_try_advisory_xact_lock`` releases the lock at
-transaction commit/rollback. So a second invocation sees the lock
-held only while the first transaction is still open. Within a single
-transaction the lock is reentrant — purge_expired and
-purge_installation can compose into one advisory-locked transaction
-per the schema-layer spec.
-"""
+The shared lock prevents concurrent content changes. It lasts until transaction
+end and is reentrant within one transaction (``sweep-jobs-use-advisory-locks``)."""
 
 import pytest
 from sqlalchemy import text

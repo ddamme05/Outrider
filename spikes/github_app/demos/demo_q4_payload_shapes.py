@@ -1,13 +1,8 @@
-"""Q4 — webhook payload shapes.
+"""Check the GitHub webhook fixtures through githubkit's parser.
 
-For each of the three events V1 cares about, parse the fixture via
-``githubkit.webhooks.parse`` and assert the fields the future PRContext
-builder will need are populated and correctly typed.
-
-If this demo fails, it means either the octokit sample has drifted from
-GitHub's current schema OR githubkit's pinned schema has drifted. Either
-way, ``api/webhooks/schemas.py`` needs to be revisited. NOTES.md will carry
-the exact field list that was confirmed on the date the spike ran.
+Assert the fields consumed by review setup for the three saved event types.
+These fixtures describe the spike's examples, not every GitHub payload; see
+NOTES.md for the recorded field checks.
 """
 
 from __future__ import annotations

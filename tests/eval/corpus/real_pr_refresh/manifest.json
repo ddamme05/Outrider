@@ -1,0 +1,96 @@
+{
+  "schema": "real-pr-refresh-v1",
+  "dataset_id": "real-pr-commonprefix-development-v1",
+  "exposure": "development-selected-historical-prs",
+  "held_out": false,
+  "selection_note": "Fresh captures of three historical PRs in two repositories, all in the same commonprefix containment behavior family. Training exposure is unknown. The runner selects one changed source file per full authentic capture; counterpart labels are type- and mechanism-bounded, not whole-PR cleanliness claims.",
+  "cases": [
+    {
+      "id": "starlette-985",
+      "fixture": "tests/eval/corpus/real_pr_refresh/starlette-985/fixture.json",
+      "receipt": "tests/eval/corpus/real_pr_refresh/starlette-985/receipt.json",
+      "license": "tests/eval/corpus/real_pr_refresh/starlette-985/LICENSE",
+      "fixture_sha256": "5ecb2d9eb06388a9d0a6a4f192e1b63cec126354f5512b5b74a634d5581b8039",
+      "receipt_sha256": "76450677671dbd81190179c15b2f07504ccaf8c6418b6a54735b89e248b78ce2",
+      "license_sha256": "dcb95677a02240243187e964f941847d19b17821cf99e5afae684fab328c19bf",
+      "analysis_file": "starlette/staticfiles.py",
+      "expected": [
+        {
+          "file_path": "starlette/staticfiles.py",
+          "line_start": 144,
+          "line_end": 147,
+          "finding_type": "path_traversal",
+          "severity": "high"
+        }
+      ],
+      "scoped_counterparts": [],
+      "context_status": "supported",
+      "context_reason": "The actual request shows StaticFiles lines40\u2013221, including ASGI path handling, get_response and lookup_path. The added commonprefix check can accept a sibling-prefixed filesystem path after the earlier traversal guard is removed. This supports the bounded containment defect, not claims about every deployment.",
+      "provenance_family": "commonprefix-path-containment",
+      "required_context_ranges": [
+        [
+          40,
+          221
+        ]
+      ]
+    },
+    {
+      "id": "dbt-common-182",
+      "fixture": "tests/eval/corpus/real_pr_refresh/dbt-common-182/fixture.json",
+      "receipt": "tests/eval/corpus/real_pr_refresh/dbt-common-182/receipt.json",
+      "license": "tests/eval/corpus/real_pr_refresh/dbt-common-182/LICENSE",
+      "fixture_sha256": "66757ae717bf19ef4ff2c03977719d79752c1c9e9aaf97c01ad0e5f9082c6b85",
+      "receipt_sha256": "20afedd31fea571287c37fd4a4836c3738f32e4d551885b479594aa05c378ed8",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "analysis_file": "dbt_common/clients/system.py",
+      "expected": [
+        {
+          "file_path": "dbt_common/clients/system.py",
+          "line_start": 621,
+          "line_end": 621,
+          "finding_type": "path_traversal",
+          "severity": "high"
+        }
+      ],
+      "scoped_counterparts": [],
+      "context_status": "supported",
+      "context_reason": "The actual request shows safe_extract612\u2013634, its nested directory predicate618\u2013622, and untar_package637\u2013646. Archive member names reach filesystem extraction after a lexical commonprefix check that can accept a sibling-prefixed target. This is an incomplete-fix containment defect, not a claim that this PR originated it.",
+      "provenance_family": "commonprefix-path-containment",
+      "required_context_ranges": [
+        [
+          612,
+          634
+        ]
+      ]
+    },
+    {
+      "id": "dbt-common-353",
+      "fixture": "tests/eval/corpus/real_pr_refresh/dbt-common-353/fixture.json",
+      "receipt": "tests/eval/corpus/real_pr_refresh/dbt-common-353/receipt.json",
+      "license": "tests/eval/corpus/real_pr_refresh/dbt-common-353/LICENSE",
+      "fixture_sha256": "4081ffd5dff80bccfcce97d9d33d0cb823507749c82f8ebd18c0afa5c9b7c8d4",
+      "receipt_sha256": "4d2017b9ad4f66f8626a9704d1adad17e9763b2a447e7c1391592e0e33f8dfae",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "analysis_file": "dbt_common/clients/system.py",
+      "expected": [],
+      "scoped_counterparts": [
+        {
+          "file_path": "dbt_common/clients/system.py",
+          "finding_type": "path_traversal",
+          "line_start": 628,
+          "line_end": 636,
+          "reason": "The commonpath boundary check addresses sibling-prefix traversal and rejects different-drive ValueError. This label concerns that mechanism only; symlink-member traversal and every emitted finding still require adjudication."
+        }
+      ],
+      "context_status": "supported",
+      "context_reason": "The actual request shows safe_extract620\u2013648 and the nested guard628\u2013636. commonpath plus ValueError rejection addresses the sibling-prefix predicate. This counterpart label does not establish protection against archive symlink members or certify the function or PR as clean; all emissions need adjudication.",
+      "provenance_family": "commonprefix-path-containment",
+      "required_context_ranges": [
+        [
+          620,
+          648
+        ]
+      ]
+    }
+  ]
+}

@@ -1,18 +1,8 @@
-# See DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult
-# — `test_triage_result_policy_version_admits_any_valid_semver` is #028's
-# shape-vs-value pin (BARE_SEMVER_PATTERN is the schema floor; the
-# triage Rule (d) gate is what closes the value-injection path).
-"""TriageResult: construction-time validation, enum gates, frozen guard.
+"""Check immutable triage results and their typed, bounded fields.
 
-Per spec §7.2: TriageResult is the typed output contract of the triage node.
-file_tiers maps changed-file paths to ReviewTier; overall_risk is a RiskLevel;
-relevant_dimensions enumerates which review dimensions apply (pure CSS doesn't
-get a security review per §4.1.2 cost-control rationale); reasoning is the
-LLM's brief justification, capped at 500 chars.
-
-Round 24: file_tiers is wrapped in MappingProxyType post-construction so
-`triage.file_tiers["x"] = ...` raises TypeError. Closes FUP-018.
-"""
+File tiers cannot be changed through the mapping after construction. Policy
+versions require valid shape; the producer separately checks their value.
+See spec §7.2, DECISIONS.md#028, and FUP-018."""
 
 from collections.abc import Mapping
 

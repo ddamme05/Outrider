@@ -1,21 +1,7 @@
-"""Structural eval scenario: degrade-don't-skip on syntax error inside diff.
+"""Check that an added syntax error still receives limited review.
 
-Per docs/spec.md §11.2 + the `parse-errors-degrade-to-judged` invariant: a file
-with a syntax error INSIDE the changed region — where the error breaks a scope's
-header so tree-sitter recovers NO scope for it — must DEGRADE to JUDGED-only review,
-not be silently skipped. This is the no-scope case of DECISIONS.md#033.
-
-LLM-free, exercising the real surfaces:
-- `parse_python` ships `ParseResult.error_lines` — the 1-indexed tree ERROR/MISSING
-  lines, scope-INDEPENDENT, so the broken header's line IS flagged even though no
-  `ScopeUnit` (and thus no `has_error` entry) was recovered for it.
-- `coordinates.diff_line_to_scope` returns None for the diff line (no scope contains
-  it) — indistinguishable, at the coordinates layer, from a module-level line.
-- `agent/nodes/degradation.decide_degradation` combines them: clean parse, no changed
-  scope unit, but an addable changed line intersects `error_lines` → `mode="degraded"`
-  with `degradation_reason="tree_has_error_no_scope"`. That is the derivation that was
-  inline + LLM-coupled before Phase 2; now pure + importable.
-"""
+When a broken header leaves no function scope, combine parser error lines
+with the diff and choose bounded-diff review instead of skipping. No model runs."""
 
 from __future__ import annotations
 

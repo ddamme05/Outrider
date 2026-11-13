@@ -1,25 +1,10 @@
-# JavaScript adapter implementing LanguageAdapter Protocol per
-# specs/2026-07-02-js-ts-tree-sitter-adapters.md.
-"""JavaScript/JSX adapter for tree-sitter-javascript 0.25.0.
+"""Extract scopes, imports and other source facts from JavaScript and JSX.
 
-Structural extraction walks the tree without `.scm` queries. JSX parses
-natively; Flow-typed `.js` degrades through per-scope `has_error`.
-`TypeScriptAdapter` reuses the walk with extended node-type tables.
+TypeScriptAdapter reuses this tree walk with its language-specific node types.
+Only relative imports resolve to repository files; dynamic import() calls and
+node_modules lookup are outside this adapter's scope (DECISIONS.md#024).
 
-Canonical §5.4 scope kinds: function declarations and identifier-bound
-function expressions are functions; class/object methods and function-valued
-class fields are methods; class declarations and identifier-bound class
-expressions are classes. Anonymous functions and computed-name members have
-no stable scope name. Object-literal bindings qualify members (`obj.method`)
-to keep sibling unit_ids distinct.
-
-Import kinds: default/named imports, destructured `require`, and named
-re-exports are `from`; namespace/side-effect imports, identifier-bound
-`require`, and TS `import x = require(...)` are `direct`; wildcard re-exports
-are `star`. Relative specifiers (`./`, `../`, `.`, `..`) override any form
-with `relative` and `is_simple_direct=True` (DECISIONS.md#024). Only these
-resolve through the injected resolver; `node_modules` resolution is out of
-scope. Dynamic `import()` expressions are not extracted.
+See specs/2026-07-02-js-ts-tree-sitter-adapters.md for the extraction rules.
 """
 
 from __future__ import annotations

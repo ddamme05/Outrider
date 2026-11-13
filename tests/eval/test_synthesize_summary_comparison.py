@@ -1,23 +1,8 @@
-# Opt-in, real-spend: side-by-side summary prose under Sonnet vs Haiku (DECISIONS#043).
-"""Pre-merge human read for the synthesize Haiku flip.
+"""Optionally collect paid Sonnet and Haiku summaries for a person to compare.
 
-REPORT-ONLY, BY DESIGN: prose quality has no ground truth, so there is no
-machine gate here (the #041-style recall gate is the wrong tool — synthesize
-decides no findings). This runner renders the REAL current synthesize prompt (VERSION below) over
-six representative finding sets, sends each through the pre-flip baseline
-(Sonnet) and the shipped default (Haiku), and prints the summary pairs for
-the human to read. The verdict is recorded by the human in the flip arc's
-log, not asserted by pytest — "passed" means the run completed.
-
-Run:
-  OUTRIDER_EVAL_REAL_MODELS=1 op run --env-file=.env -- \
-    uv run pytest tests/eval/test_synthesize_summary_comparison.py --is-eval -v -s
-
-Cost: 12 calls (6 scenarios x 2 models), ~1k tokens in / ~300 out each.
-The mechanical pins for the flip (model routing, prompt VERSION provenance,
-no-GitHub-surface prompt claim) are zero-spend unit tests in
-tests/unit/test_synthesize_patch_pass.py + tests/unit/test_prompts_synthesize.py.
-"""
+Use the current summary prompt over six finding sets. Pytest success means
+the run completed; a person judges prose quality and records the verdict.
+Requires OUTRIDER_EVAL_REAL_MODELS=1 and credentials through op run."""
 
 from __future__ import annotations
 
@@ -32,7 +17,6 @@ from outrider.policy import EvidenceTier, FindingType, lookup_severity
 from outrider.policy.dimensions import lookup_dimension
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts.synthesize import MAX_TOKENS, TEMPERATURE, VERSION, render
-from outrider.schemas.review_report import ReviewMetrics
 from outrider.schemas.triage_result import RiskLevel
 
 # asyncio_mode = "auto" (pyproject) auto-detects async tests.
@@ -67,15 +51,6 @@ def _finding(
             file_path=file_path, line_start=line, line_end=line, finding_type=finding_type
         ),
         proposal_hash="a" * 64,
-    )
-
-
-def _metrics() -> ReviewMetrics:
-    return ReviewMetrics(
-        files_examined=3,
-        files_traced_beyond_diff=0,
-        llm_calls_made=4,
-        wall_clock_seconds=42.0,
     )
 
 
@@ -182,7 +157,7 @@ async def test_real_summary_side_by_side() -> None:
     )
     try:
         for name, risk, findings in _scenarios():
-            parts = render(overall_risk=risk, findings=findings, metrics=_metrics())
+            parts = render(overall_risk=risk, findings=findings)
             print(f"\n{'=' * 72}\nSCENARIO: {name} ({len(findings)} findings, risk={risk.value})")
             for label, model in (("baseline", baseline_model), ("candidate", candidate_model)):
                 response = await provider.complete(

@@ -1,24 +1,19 @@
-# Pre-flight budget planner pins per specs/2026-07-05-parallel-analyze.md.
-"""The planner mirrors the sequential gate + drawdown; these pins hold it there.
+"""Check file-budget planning against worker estimates.
 
-The load-bearing properties: the accounting equation (structural
-no-overspend), reserved-then-general attribution, cap-rejects-not-clamps,
-all-or-nothing funding, the duplicate-path fail-loud gate, and divisor
-lockstep with the worker's real estimator.
-"""
+Funding must stay within the budget, use reserve before general funds, and reject
+unfunded files rather than partly fund them. Cover caps and duplicate paths.
+See specs/2026-07-05-parallel-analyze.md."""
 
 from __future__ import annotations
 
 import pytest
 
 from outrider.agent.nodes.analyze_budget import (
-    BYTES_PER_TOKEN,
     BudgetPlan,
     DuplicatePlannedPathError,
     FileAllocation,
     FileBudgetRequest,
     plan_file_budgets,
-    proxy_estimate_tokens,
 )
 
 
@@ -212,36 +207,6 @@ def test_negative_inputs_rejected() -> None:
         )
     with pytest.raises(ValueError, match="non-negative"):
         plan_file_budgets((), general_pool_tokens=-1, reserved_pool_tokens=0, per_file_cap_tokens=0)
-
-
-# ---------------------------------------------------------------------------
-# Proxy estimator + divisor lockstep.
-# ---------------------------------------------------------------------------
-
-
-def test_proxy_is_monotone_and_covers_fixed_overhead() -> None:
-    base = proxy_estimate_tokens(0, 0, fixed_overhead_tokens=500)
-    assert base == 500  # zero variable bytes → overhead only
-    bigger = proxy_estimate_tokens(3_000, 300, fixed_overhead_tokens=500)
-    assert bigger > base
-    # DUP_FACTOR=2.0: ceil(2.0 * 3300 / 3) = 2200 variable tokens.
-    assert bigger == 500 + 2_200
-
-
-def test_proxy_rejects_negative_inputs() -> None:
-    with pytest.raises(ValueError, match="non-negative"):
-        proxy_estimate_tokens(-1, 0, fixed_overhead_tokens=0)
-    with pytest.raises(ValueError, match="non-negative"):
-        proxy_estimate_tokens(0, 0, fixed_overhead_tokens=-1)
-
-
-def test_bytes_per_token_locksteps_with_the_worker_estimator() -> None:
-    """The planner's proxy and the worker's real estimate must divide by the
-    same conservative-up divisor, or proxy-covers-real is meaningless.
-    Cross-module pin (the literal-target-suffixes precedent)."""
-    from outrider.agent.nodes.analyze import _BYTES_PER_TOKEN
-
-    assert BYTES_PER_TOKEN == _BYTES_PER_TOKEN
 
 
 def test_plan_construction_rejects_compensating_negative_draws() -> None:

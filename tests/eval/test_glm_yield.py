@@ -1,13 +1,7 @@
-"""Offline tests for the GLM yield collector's deterministic core (`glm_yield.py`) PLUS the
-opt-in PAID collection loop (FUP-219's remaining measurement).
+"""Check saved GLM response counts offline and provide an optional paid collector.
 
-The offline tests pin the collector's contract: conservation (accepted + rejected + void ==
-n_reps per host/fixture), the exact two-host domain, void-reason discipline (exception TYPE
-only, present iff void), create-once persistence, and the wiring guard that drives the real
-collection loop — all three outcome paths — with no spend.
-
-Run offline: uv run pytest tests/eval/test_glm_yield.py --is-eval -v
-"""
+Offline tests cover accepted/rejected/failed counts, both hosts, failure reasons,
+create-once evidence and collection wiring. Paid collection needs explicit opt-ins."""
 
 from __future__ import annotations
 

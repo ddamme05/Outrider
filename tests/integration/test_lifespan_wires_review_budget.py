@@ -1,14 +1,7 @@
-"""Production wiring guard — lifespan injects the env-configured review budget.
+"""Check that startup passes the configured review-token budget to build_graph.
 
-Pins the Stage-0 contract (specs/2026-06-17-analyze-cost-fairness.md): before
-this, `build_graph(...)` was called WITHOUT `total_review_budget_tokens`, so
-production silently ran on the hardcoded `DEFAULT_REVIEW_BUDGET_TOKENS` (200k)
-no matter what an operator set — the `analyze.py` "production wires a tighter
-value from settings" comment was aspirational. This guard proves lifespan now
-reads `AnalyzeConfig` (`OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS`) and passes the
-value through. The spy wraps the REAL `build_graph` so the kwarg is also proven
-accepted by the actual builder, not just named in the call.
-"""
+Wrap the real builder and set OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS to verify
+configuration reaches the graph. See specs/2026-06-17-analyze-cost-fairness.md."""
 
 from __future__ import annotations
 

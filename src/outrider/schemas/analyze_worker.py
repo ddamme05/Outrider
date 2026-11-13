@@ -1,52 +1,21 @@
-# Worker-outcome state model per specs/2026-07-05-parallel-analyze.md + DECISIONS.md#063.
-"""Per-(file, pass) worker outcome for the parallel-analyze fan-out.
+"""Describe a file worker's result before it is combined into a review round.
 
-`AnalyzeWorkerOutcome` is what an `analyze_file` worker returns into state:
-the aggregate step folds these into ONE `AnalysisRound` per pass plus the
-`AnalyzeCompletedEvent` accounting (per `DECISIONS.md#063`, workers never
-emit rounds — round count is the trace depth counter).
-
-Design rule: the outcome carries **facts and identities, never re-derived
-judgments.** A worker reporting derived counters would force validators to
-re-infer branch semantics from them, and those inferences do not hold —
-evidence tier is NOT producer origin, and a response rejection does NOT
-preclude producer augmentation. The outcome instead records what only the
-worker knows, as explicit identity:
-
-- `source` — the sequential branch, discriminated (parser / cache_serve /
-  observed_coverage / observed_skip / plain_skip), never inferred.
-- `producer_observed_hashes` — WHICH findings the deterministic OBSERVED
-  producer made this pass. Origin is identity, not tier: a model-cited
-  OBSERVED proposal is a legitimate proposal and stays out of this list.
-- `served_content_hashes` — WHICH findings a cache hit reconstructed.
-- Parser tallies copied VERBATIM from `ParserCounters` (no derivation).
-
-Everything derivable is derived by the AGGREGATE from these identities
-(the event-level emitted/served/observed counters are recomputed over the
-post-cap kept set anyway), and the canonical proposal equation is
-enforced where it always was — `AnalyzeCompletedEvent`'s accounting
-validator — not re-approximated per worker.
-
-State discipline (`state-is-pure-data`): every field JSON-round-trips;
-`cost` is an exact `Decimal`; NO generated identities or timestamps on
-the outcome itself. The #063 merge digest is recomputed by the state
-reducer over the outcome's canonical dump (generated finding_ids
-excluded) — the `AnalysisRound.round_id` precedent: a content-derived
-key over findings that are nested-mutable by lifecycle design, safe
-because state is never mutated post-insertion, and a mutation that DID
-happen should fail loud as divergence, never pass silently as an
-identical retry.
+Results retain finding origin and cache identity instead of inferring them
+from the evidence tier. They contain data only, with no clients or database
+sessions (DECISIONS.md#063; state-is-pure-data).
 """
 
 import re
 from decimal import Decimal
 from typing import Annotated, Final, Literal, Self
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from outrider.ast_facts.models import SkipReason
 from outrider.coordinates import validate_diff_path
 from outrider.policy import EvidenceTier
+from outrider.schemas.native_candidate import NativeCandidateRef
 from outrider.schemas.observed_subsumption import ObservedSubsumedMatch
 from outrider.schemas.review_finding import ReviewFinding
 from outrider.schemas.trace_candidate import TraceCandidate
@@ -61,9 +30,15 @@ __all__ = [
 
 # Positional exclusion paths for the #063 semantic digest (dot-separated,
 # `[]` = list traversal): exactly the model tree's generated identities —
-# the nested findings' uuid4 `finding_id`s. Pinned one-for-one against
-# the models' default_factory fields.
-WORKER_OUTCOME_EXCLUDE_PATHS: Final[frozenset[str]] = frozenset({"admitted_findings.[].finding_id"})
+# the nested findings' uuid4 IDs and references to those same generated IDs.
+# Stable producer proposal hashes still bind origin semantics in the digest.
+WORKER_OUTCOME_EXCLUDE_PATHS: Final[frozenset[str]] = frozenset(
+    {
+        "admitted_findings.[].finding_id",
+        "producer_finding_ids",
+        "native_candidates.[].finding_id",
+    }
+)
 
 _SHA256_HEX_RE: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{64}")
 
@@ -109,23 +84,21 @@ class AnalyzeWorkerOutcome(BaseModel):
     review_tier: ReviewTier
     admitted_findings: tuple[ReviewFinding, ...] = ()
     trace_candidates: tuple[TraceCandidate, ...] = ()
+    native_candidates: tuple[NativeCandidateRef, ...] = ()
     # Cross-type subsumption proof-retention records (DECISIONS.md#055) —
     # the aggregate forwards them onto AnalyzeCompletedEvent. Present on
     # BOTH non-skip paths: the parser merge assembles them, and a cache
     # serve RECONSTRUCTS them from the cached payload (proof retention
     # survives the serve). Skip sources carry none.
     subsumed_matches: tuple[ObservedSubsumedMatch, ...] = ()
-    # ORIGIN IDENTITY, recorded by the producer that knows it (never
-    # inferred from evidence tier): content hashes of the findings the
-    # deterministic OBSERVED producer made THIS pass. A model-cited
-    # OBSERVED proposal is a proposal — admitted, but not listed here.
-    # The schema verifies tier + subset; ORIGIN TRUTHFULNESS cannot be
-    # schema-verified (a model-cited structural finding is
-    # indistinguishable by shape) — it is the worker's write obligation,
-    # pinned at the wiring increment where the list is constructed
-    # directly from produce_observed_findings output, the only code path
-    # that knows.
+    # Origin hashes come directly from produce_observed_findings this pass.
+    # Model-cited OBSERVED findings are proposals and do not belong here.
+    # The schema checks tier and subset; only the worker can attest origin.
     producer_observed_hashes: tuple[str, ...] = ()
+    # Exact admitted representatives, rather than every variant sharing a hash.
+    # Empty defaults preserve older checkpoint payloads; new builders supply both.
+    producer_finding_ids: tuple[UUID, ...] = ()
+    producer_proposal_hashes: tuple[str, ...] = ()
     # Content hashes of CACHE-SERVED findings (produced in a PRIOR pass,
     # reconstructed without an LLM call). Identity, not count: the
     # post-cap accounting recomputes served-vs-proposal origins after
@@ -165,6 +138,17 @@ class AnalyzeWorkerOutcome(BaseModel):
         caller sees the first, and the groups run cheapest-and-most-fundamental
         first.
         """
+        if self.native_candidates and (
+            self.source != "parser" or len(self.native_candidates) != self.n_proposals_seen
+        ):
+            raise ValueError("native candidates require the complete parser proposal inventory")
+        if len({ref.candidate_id for ref in self.native_candidates}) != len(self.native_candidates):
+            raise ValueError("worker candidate occurrences must be unique")
+        if any(
+            ref.file_path != self.path or ref.pass_index != self.pass_index
+            for ref in self.native_candidates
+        ):
+            raise ValueError("worker candidate source differs from its file/pass")
         _check_skip_coherence(self)
         _check_source_capabilities(self)
         _check_identity_lists(self)
@@ -277,12 +261,35 @@ def _check_identity_lists(outcome: AnalyzeWorkerOutcome) -> None:
     Producer hashes cover exactly the admitted set on `observed_coverage` (never
     empty — coverage requires matches) and on `observed_skip`; served hashes cover
     exactly it on `cache_serve` and are exclusive to that source; both are empty on
-    `plain_skip`. Every producer-listed finding is OBSERVED-tier, and no finding or
-    subsumed match may name a file other than this worker's — cross-file
-    attribution is unrepresentable in the per-file loop.
+    `plain_skip`. Exact producer IDs bind their stable proposal hashes when
+    present; older payloads retain hash-only origin checks. Every producer-listed
+    finding is OBSERVED-tier, and no finding or subsumed match may name another file.
     """
     _canonical_hash_tuple("producer_observed_hashes", outcome.producer_observed_hashes)
+    _canonical_hash_tuple("producer_proposal_hashes", outcome.producer_proposal_hashes)
     _canonical_hash_tuple("served_content_hashes", outcome.served_content_hashes)
+    producer_ids = set(outcome.producer_finding_ids)
+    if list(outcome.producer_finding_ids) != sorted(producer_ids, key=str):
+        raise ValueError("AnalyzeWorkerOutcome: producer finding IDs must be sorted and unique")
+    admitted_by_id = {finding.finding_id: finding for finding in outcome.admitted_findings}
+    if not producer_ids <= admitted_by_id.keys():
+        raise ValueError("AnalyzeWorkerOutcome: producer IDs must reference admitted findings")
+    if producer_ids or outcome.producer_proposal_hashes:
+        producers = [admitted_by_id[finding_id] for finding_id in producer_ids]
+        if (
+            {finding.proposal_hash for finding in producers}
+            != set(outcome.producer_proposal_hashes)
+            or {finding.content_hash for finding in producers}
+            != set(outcome.producer_observed_hashes)
+            or {
+                finding.finding_id
+                for finding in outcome.admitted_findings
+                if finding.proposal_hash in outcome.producer_proposal_hashes
+            }
+            != producer_ids
+            or any(finding.evidence_tier is not EvidenceTier.OBSERVED for finding in producers)
+        ):
+            raise ValueError("AnalyzeWorkerOutcome: producer IDs and provenance must agree")
     admitted = {f.content_hash for f in outcome.admitted_findings}
     producer = set(outcome.producer_observed_hashes)
     served = set(outcome.served_content_hashes)
@@ -347,7 +354,10 @@ def _check_identity_lists(outcome: AnalyzeWorkerOutcome) -> None:
         raise ValueError("AnalyzeWorkerOutcome: plain_skip carries nothing")
 
     for finding in outcome.admitted_findings:
-        if finding.content_hash in producer and finding.evidence_tier is not EvidenceTier.OBSERVED:
+        is_producer = (
+            finding.finding_id in producer_ids if producer_ids else finding.content_hash in producer
+        )
+        if is_producer and finding.evidence_tier is not EvidenceTier.OBSERVED:
             raise ValueError(
                 "AnalyzeWorkerOutcome: producer-listed findings are "
                 "OBSERVED-tier (the deterministic producer makes nothing else)"
@@ -377,7 +387,11 @@ def _check_proposal_equation(outcome: AnalyzeWorkerOutcome) -> None:
         lhs = outcome.n_proposals_seen
         rhs = (
             len(outcome.admitted_findings)
-            - len(outcome.producer_observed_hashes)
+            - (
+                len(outcome.producer_finding_ids)
+                if outcome.producer_finding_ids
+                else len(outcome.producer_observed_hashes)
+            )
             + outcome.n_proposals_rejected
             + outcome.n_proposals_superseded_by_observed
         )

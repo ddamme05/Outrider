@@ -1,12 +1,8 @@
-# Full-node synthesize test for the suggested-patch pass (DECISIONS.md#040).
-"""End-to-end-through-the-node coverage that the patch pass runs INSIDE synthesize:
-after final dedup, before the summary call + ReviewReport, with the patch LLM call
-stamped to `node_id="synthesize"` (its cost rolls into synthesize's aggregate).
+"""Check suggested-fix generation through the synthesis node (DECISIONS.md#040).
 
-The pure parser/orchestration logic lives in `test_patch_generation.py`; this file
-locks the WIRING — a patched finding flows out of synthesize on the canonical
-`review_report.findings`, and a disabled flag makes no patch call.
-"""
+The patch call runs after deduplication and before the summary/report, with
+synthesis attribution. Suggested fixes reach report findings; a disabled flag
+makes no patch call. Pure validation is in test_patch_generation.py."""
 
 from __future__ import annotations
 
@@ -30,6 +26,7 @@ from outrider.prompts import patch as patch_prompt
 from outrider.prompts import synthesize as synthesize_prompt
 from outrider.schemas import ChangedFile, PRContext, ReviewFinding, ReviewState
 from outrider.schemas.analysis_round import AnalysisRound
+from outrider.schemas.trace_fetched_file import TraceFetchedFile
 from outrider.schemas.triage_result import (
     ReviewDimension,
     ReviewTier,
@@ -276,34 +273,108 @@ async def test_synthesize_disabled_makes_no_patch_call() -> None:
 
 @pytest.mark.asyncio
 async def test_summary_request_carries_configured_model_and_prompt_version() -> None:
-    """Zero-spend pins for the DECISIONS#043 flip mechanics: the summary
-    LLMRequest carries (a) the injected `synthesize_model` verbatim — the
-    config→request routing the Haiku default flows through — and (b)
-    `prompts/synthesize.VERSION` as `prompt_template_version`, pinned to
-    "synthesize-v3" (the no-pipeline-claims prompt bump) so audit
-    provenance records both halves of the flip."""
+    """Keep metric changes out of prose inputs while preserving measured report totals."""
     finding = _make_high_finding(line=2)
     state = _make_state(finding, content_head="a = 1\nreturn x\nc = 3\n")
-    provider = _DispatchingProvider(
-        _batch_json(finding.finding_id, "return x", "return sanitize(x)")
+    original_round = state.analysis_rounds[0]
+    examined = (finding.file_path, "src/dependency.py")
+    extended_round = AnalysisRound(
+        **{
+            **original_round.model_dump(),
+            "files_examined": examined,
+            "round_id": compute_round_id(
+                pass_index=0,
+                files_examined=examined,
+                files_skipped=(),
+                finding_content_hashes=(finding.content_hash,),
+            ),
+        }
     )
-
-    await synthesize(
-        state,
-        provider=provider,  # type: ignore[arg-type]
-        synthesize_model="stub-synthesize-model",
-        patch_model="stub-patch-model",
-        patches_enabled=False,
-        max_suggestions=5,
-        phase_event_sink=_StubPhaseSink(),
-        synthesize_event_sink=_StubSynthesizeEventSink(),
-        anomaly_sink=_StubAnomalySink(),
+    extended_state = state.model_copy(
+        update={
+            "analysis_rounds": [extended_round],
+            "trace_fetched_files": [
+                TraceFetchedFile(
+                    path="src/dependency.py",
+                    content_head="def dependency(): return 1\n",
+                    source_finding_id=finding.finding_id,
+                )
+            ],
+        }
     )
+    aggregates = (
+        ReviewLLMAggregates(
+            llm_calls_made=4,
+            total_input_tokens=350,
+            total_output_tokens=175,
+            total_cost_usd=0.06,
+        ),
+        ReviewLLMAggregates(
+            llm_calls_made=9,
+            total_input_tokens=990,
+            total_output_tokens=288,
+            total_cost_usd=0.44,
+        ),
+    )
+    captures = []
+    for current_state, totals in zip((state, extended_state), aggregates, strict=True):
+        provider = _DispatchingProvider("unused", summary="The finding needs attention.")
 
-    [summary_req] = provider.requests
-    assert summary_req.model == "stub-synthesize-model"
-    assert summary_req.prompt_template_version == synthesize_prompt.VERSION
-    assert synthesize_prompt.VERSION == "synthesize-v3"
+        class _MeasuredSink(_StubSynthesizeEventSink):
+            def __init__(self, provider: _DispatchingProvider, totals: ReviewLLMAggregates) -> None:
+                super().__init__()
+                self.provider = provider
+                self.totals = totals
+                self.queried_after_provider: list[bool] = []
+
+            async def query_review_llm_aggregates(  # noqa: ARG002
+                self, *, review_id: Any, is_eval: bool
+            ) -> ReviewLLMAggregates:
+                self.queried_after_provider.append(bool(self.provider.requests))
+                return self.totals
+
+        sink = _MeasuredSink(provider, totals)
+        result = await synthesize(
+            current_state,
+            provider=provider,  # type: ignore[arg-type]
+            synthesize_model="stub-synthesize-model",
+            patch_model="stub-patch-model",
+            patches_enabled=False,
+            max_suggestions=5,
+            phase_event_sink=_StubPhaseSink(),
+            synthesize_event_sink=sink,
+            anomaly_sink=_StubAnomalySink(),
+        )
+        [request] = provider.requests
+        captures.append((request, result["review_report"], sink))
+
+    first_request, first_report, _ = captures[0]
+    second_request, second_report, _ = captures[1]
+    assert first_request.user_prompt == second_request.user_prompt
+    assert first_request.system_prompt == second_request.system_prompt
+    assert first_report.findings == second_report.findings
+    assert first_report.overall_risk == second_report.overall_risk
+    assert (first_report.metrics.files_examined, first_report.metrics.files_traced_beyond_diff) == (
+        1,
+        0,
+    )
+    assert (
+        second_report.metrics.files_examined,
+        second_report.metrics.files_traced_beyond_diff,
+    ) == (2, 1)
+    for (request, report, sink), totals in zip(captures, aggregates, strict=True):
+        assert request.model == "stub-synthesize-model"
+        assert sink.queried_after_provider == [True]
+        assert "Metrics" not in request.user_prompt
+        assert report.metrics.llm_calls_made == totals.llm_calls_made
+        assert report.metrics.total_input_tokens == totals.total_input_tokens
+        assert report.metrics.total_output_tokens == totals.total_output_tokens
+        assert report.metrics.total_cost_usd == totals.total_cost_usd
+        [completed] = sink.completed
+        for name, value in report.metrics.model_dump().items():
+            assert getattr(completed, name) == value
+        assert request.prompt_template_version == synthesize_prompt.VERSION
+    assert synthesize_prompt.VERSION == "synthesize-v5"
 
 
 def _make_finding(
@@ -390,6 +461,55 @@ def _make_multi_state(findings: tuple[ReviewFinding, ...]) -> ReviewState:
 
 
 @pytest.mark.asyncio
+async def test_later_stronger_evidence_retains_its_original_finding_id() -> None:
+    first = _make_high_finding()
+    later = ReviewFinding.model_validate(
+        {
+            **first.model_dump(),
+            "finding_id": uuid4(),
+            "proposal_hash": "b" * 64,
+            "evidence_tier": EvidenceTier.INFERRED,
+            "trace_path": ("foo",),
+        }
+    )
+    state = _make_state(first, content_head="def foo():\n    pass\n")
+    original_round = state.analysis_rounds[0]
+    later_round = AnalysisRound(
+        round_id=compute_round_id(
+            pass_index=1,
+            files_examined=original_round.files_examined,
+            files_skipped=(),
+            finding_content_hashes=(later.content_hash,),
+        ),
+        pass_index=1,
+        findings=(later,),
+        files_examined=original_round.files_examined,
+        files_skipped=(),
+        started_at=original_round.started_at,
+        ended_at=original_round.ended_at,
+    )
+    state.analysis_rounds.append(later_round)
+    original = [finding.model_dump() for r in state.analysis_rounds for finding in r.findings]
+    result = await synthesize(
+        state,
+        provider=_DispatchingProvider("{}"),
+        synthesize_model="m",
+        patch_model="m",
+        patches_enabled=False,
+        max_suggestions=0,
+        phase_event_sink=_StubPhaseSink(),
+        synthesize_event_sink=_StubSynthesizeEventSink(),
+        anomaly_sink=_StubAnomalySink(),
+    )
+    [selected] = result["review_report"].findings
+    assert selected.finding_id == later.finding_id
+    assert selected.evidence_tier is EvidenceTier.INFERRED
+    assert [
+        finding.model_dump() for r in state.analysis_rounds for finding in r.findings
+    ] == original
+
+
+@pytest.mark.asyncio
 async def test_synthesize_report_cap_keeps_gated_drops_non_gated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -433,6 +553,10 @@ async def test_synthesize_report_cap_keeps_gated_drops_non_gated(
     assert all(f.severity is FindingSeverity.HIGH for f in report.findings)
     # The degrade counter lands on SynthesizeCompletedEvent (2 non-gated dropped).
     assert event_sink.completed[0].n_findings_dropped_over_cap == 2
+    selected_ids = event_sink.completed[0].selected_finding_ids
+    assert set(selected_ids) == {finding.finding_id for finding in report.findings}
+    assert len({finding.finding_id for finding in findings} - set(selected_ids)) == 2
+    assert state.analysis_rounds[0].findings == findings
     # kept (2) == soft_cap (2), not a gated overflow → no anomaly.
     assert not anomaly_sink.anomalies
 

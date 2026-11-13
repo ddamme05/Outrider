@@ -1,17 +1,7 @@
-"""Caddy/FastAPI demo-surface parity guard.
+"""Check that Caddy forwards every demo API route instead of serving the SPA shell.
 
-`deploy/Caddyfile` (the keyless demo topology: Caddy serves the SPA and proxies
-the API) is a hand-maintained mirror of the FastAPI demo-mode route surface —
-the same mirror class as `dashboard/vite.config.ts`, which shipped broken twice
-(`/privacy` 587f4a9, `/setup` FUP-230) before its contract-sweep rule landed.
-This test makes the demo mirror mechanical: every route `create_app(demo_mode=True)`
-serves must be covered by a `handle` matcher that proxies to the app, or the SPA
-catch-all swallows it and returns index.html with a 200.
-
-Parsing is deliberately minimal (this is a ~25-line Caddyfile): `handle <path> {`
-blocks only. Named matchers (`handle @x`) or a reshaped file fail loud rather
-than silently skipping — the vacuous-pass guard below.
-"""
+Read the real demo app routes and the checked-in Caddyfile. The small parser
+rejects unsupported matcher shapes so a changed file cannot pass unchecked."""
 
 from __future__ import annotations
 

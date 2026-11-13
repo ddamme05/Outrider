@@ -1,13 +1,7 @@
-"""Unit tests for `coordinates.tree_sitter_to_github` translator.
+"""Check tree-sitter-to-GitHub coordinate translation at boundaries.
 
-Per docs/spec.md §5.6 — covers happy-path translation, error paths, byte
-boundary cases, UTF-8 / line-ending semantics, multi-file disambiguation,
-multi-line span collapse, and patch-input edge cases.
-
-See DECISIONS.md#006-two-month-0-spikes-not-five for the off-by-one test
-discipline these cases honor — coordinate math correctness is enforced by
-exhaustive boundary tests, not by spike work.
-"""
+Cover UTF-8, line endings, multiple files, multiline ranges, and invalid patches.
+See docs/spec.md §5.6 and DECISIONS.md#006."""
 
 from __future__ import annotations
 

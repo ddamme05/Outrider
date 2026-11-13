@@ -1,22 +1,17 @@
-"""Read dashboard analytics from reviews and the permanent audit stream.
+"""Read dashboard counts, costs and saved replay verdicts.
 
-UTC buckets contain review counts, known model costs, logical finding counts, and
-failed reviews (DECISIONS.md#039). Eval rows are excluded by default; joined event
-rows must agree with their review's is_eval flag (FUP-130). No writes are made
-(audit-events-append-only). Unpriced calls keep cost completeness visible.
+Review totals come from review rows; finding and cost totals come from audit
+events. Each finding content hash
+counts once per review: choose its earliest sequence before the window end,
+then check its timestamp. Different hashes and backdated timestamps can affect
+that count. Unknown model costs remain visibly incomplete. Evaluation rows are
+excluded by default; joined events must match their review's is_eval.
 
-Count each (review_id, finding_content_hash) once at its earliest sequence number
-before the window end, then filter by that representative's timestamp. A later
-re-emission cannot move an older finding into a new window. This represents the
-synthesized result for ordinary cross-round repeats; proposal-hash differences
-and backdated timestamps remain the spec's bounded edge.
-
-The separate replay route counts only persisted replay verdicts, bucketed by
-review completion. Projector-pending reviews are excluded rather than assumed
-equivalent. Demo windows anchor to the latest scoped data and expose that anchor.
+Replay charts count saved verdicts rather than assuming unprocessed reviews
+are equivalent. These routes only read data (audit-events-append-only).
+See DECISIONS.md#039 and FUP-130.
 """
 
-# See DECISIONS.md#039.
 from __future__ import annotations
 
 from collections import Counter

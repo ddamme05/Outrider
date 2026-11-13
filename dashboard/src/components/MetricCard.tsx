@@ -1,5 +1,6 @@
-// Render a metric, its period delta, and a trend sparkline. Callers supply the
-// values (DECISIONS#039); this component owns presentation.
+// Show a metric, its change since the previous period, and a small trend chart.
+// Callers supply the values (DECISIONS#039); this component displays them.
+
 import type { ReactNode } from "react";
 
 import type { DeltaInfo } from "../lib/metrics";

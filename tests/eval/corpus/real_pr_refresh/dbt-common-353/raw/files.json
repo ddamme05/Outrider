@@ -1,0 +1,38 @@
+[
+  {
+    "sha": "88d9021b9eb49fc1c2e80793fcdb1794103ab99b",
+    "filename": ".changes/unreleased/Security-20260225-142955.yaml",
+    "status": "added",
+    "additions": 7,
+    "deletions": 0,
+    "changes": 7,
+    "blob_url": "https://github.com/dbt-labs/dbt-common/blob/882ac14d320f8779fcb461c059371f7f7e63d848/.changes%2Funreleased%2FSecurity-20260225-142955.yaml",
+    "raw_url": "https://github.com/dbt-labs/dbt-common/raw/882ac14d320f8779fcb461c059371f7f7e63d848/.changes%2Funreleased%2FSecurity-20260225-142955.yaml",
+    "contents_url": "https://api.github.com/repos/dbt-labs/dbt-common/contents/.changes%2Funreleased%2FSecurity-20260225-142955.yaml?ref=882ac14d320f8779fcb461c059371f7f7e63d848",
+    "patch": "@@ -0,0 +1,7 @@\n+kind: Security\n+body: Replace os.path.commonprefix() with os.path.commonpath() to preventpath traversal\n+  via sibling directories with matching prefixes.\n+time: 2026-02-25T14:29:55.922683-05:00\n+custom:\n+  Author: emmyoop\n+  PR: \"1\""
+  },
+  {
+    "sha": "37d88157c5526a414e748bc0fe913d61d661176c",
+    "filename": "dbt_common/clients/system.py",
+    "status": "modified",
+    "additions": 9,
+    "deletions": 3,
+    "changes": 12,
+    "blob_url": "https://github.com/dbt-labs/dbt-common/blob/882ac14d320f8779fcb461c059371f7f7e63d848/dbt_common%2Fclients%2Fsystem.py",
+    "raw_url": "https://github.com/dbt-labs/dbt-common/raw/882ac14d320f8779fcb461c059371f7f7e63d848/dbt_common%2Fclients%2Fsystem.py",
+    "contents_url": "https://api.github.com/repos/dbt-labs/dbt-common/contents/dbt_common%2Fclients%2Fsystem.py?ref=882ac14d320f8779fcb461c059371f7f7e63d848",
+    "patch": "@@ -620,14 +620,20 @@ def rename(from_path: str, to_path: str, force: bool = False) -> None:\n def safe_extract(tarball: tarfile.TarFile, path: str = \".\") -> None:\n     \"\"\"\n     Fix for CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')\n-    Solution copied from https://github.com/mindsdb/mindsdb/blob/main/mindsdb/utilities/fs.py\n+\n+    Uses os.path.commonpath() instead of commonprefix() to prevent path traversal\n+    via sibling directories with matching prefixes (CVE-2026-1703).\n     \"\"\"\n \n     def _is_within_directory(directory, target):\n         abs_directory = os.path.abspath(directory)\n         abs_target = os.path.abspath(target)\n-        prefix = os.path.commonprefix([abs_directory, abs_target])\n-        return prefix == abs_directory\n+        try:\n+            prefix = os.path.commonpath([abs_directory, abs_target])\n+            return prefix == abs_directory\n+        except ValueError:\n+            # Captures the case of different drives on Windows so it fails safely\n+            return False\n \n     # for py >= 3.12\n     if hasattr(tarfile, \"data_filter\"):"
+  },
+  {
+    "sha": "7814b5e48e40c0cff6cd14fe15eb81f68d9e924c",
+    "filename": "tests/unit/test_system_client.py",
+    "status": "modified",
+    "additions": 19,
+    "deletions": 0,
+    "changes": 19,
+    "blob_url": "https://github.com/dbt-labs/dbt-common/blob/882ac14d320f8779fcb461c059371f7f7e63d848/tests%2Funit%2Ftest_system_client.py",
+    "raw_url": "https://github.com/dbt-labs/dbt-common/raw/882ac14d320f8779fcb461c059371f7f7e63d848/tests%2Funit%2Ftest_system_client.py",
+    "contents_url": "https://api.github.com/repos/dbt-labs/dbt-common/contents/tests%2Funit%2Ftest_system_client.py?ref=882ac14d320f8779fcb461c059371f7f7e63d848",
+    "patch": "@@ -299,6 +299,25 @@ def test_untar_package_outside_directory(self) -> None:\n         with self.assertRaises(tarfile.OutsideDestinationError):\n             dbt_common.clients.system.untar_package(tar_file_full_path, self.tempdest)\n \n+    def test_untar_package_sibling_path_traversal(self) -> None:\n+        # A malicious tarball with a path that is a string prefix of the destination\n+        # but not actually within it (e.g., \"dest\" vs \"destevil\")\n+        with NamedTemporaryFile(\n+            prefix=\"my-package.2\", suffix=\".tar.gz\", dir=self.tempdir, delete=False\n+        ) as named_tar_file:\n+            tar_file_full_path = named_tar_file.name\n+            with NamedTemporaryFile(prefix=\"a\", suffix=\".txt\", dir=self.tempdir) as file_a:\n+                file_a.write(b\"malicious content\")\n+                # Create path that escapes to a sibling directory with matching prefix\n+                # e.g., extracting to \"/tmp/dest\" but writing to \"/tmp/destevil/file.txt\"\n+                sibling_path = \"../\" + os.path.basename(self.tempdest) + \"evil/malicious.txt\"\n+                with tarfile.open(fileobj=named_tar_file, mode=\"w:gz\") as tar:\n+                    tar.addfile(tarfile.TarInfo(sibling_path), open(file_a.name))\n+\n+        assert tarfile.is_tarfile(tar.name)\n+        with self.assertRaises(tarfile.OutsideDestinationError):\n+            dbt_common.clients.system.untar_package(tar_file_full_path, self.tempdest)\n+\n \n @pytest.mark.skipif(\n     sys.version_info < (3, 12), reason=\"Tests Python 3.12+ tarfile filter='data' path\""
+  }
+]

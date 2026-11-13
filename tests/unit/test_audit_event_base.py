@@ -1,10 +1,8 @@
-"""AuditEventBase shared-field invariants.
+"""Check shared audit fields, immutable events, and strict validation.
 
-Backs `audit-events-frozen-extra-forbid`, `every-audit-event-has-review-id`,
-and `timestamps-are-aware`. Also covers the eval-isolation flag (`is_eval`)
-and the audit-identity / content-table-join-key (`event_id`) per
-`DECISIONS.md#016`'s `llm_call_content.event_id → audit_events.event_id` FK.
-"""
+Require a review ID and aware timestamps, and retain evaluation and event identity
+for content joins. See ``audit-events-frozen-extra-forbid``,
+``every-audit-event-has-review-id``, ``timestamps-are-aware``, and DECISIONS.md#016."""
 
 from datetime import UTC, datetime
 from typing import Literal
@@ -46,7 +44,7 @@ def test_audit_event_base_timestamp_must_be_aware() -> None:
     with pytest.raises(ValidationError):
         _SampleEvent(
             review_id=uuid4(),
-            timestamp=datetime.utcnow(),  # type: ignore[arg-type]  # noqa: DTZ003
+            timestamp=datetime.now(UTC).replace(tzinfo=None),  # type: ignore[arg-type]
         )
 
 

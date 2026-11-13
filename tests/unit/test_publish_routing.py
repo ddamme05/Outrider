@@ -1,36 +1,15 @@
-# Per spec §V lines 204-211: publish-routing branch coverage (FUP-066).
-# See DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult
-# — `test_publish_eligibility_stamps_finding_policy_version_not_active` is
-# #028's snapshot-mirror contract pin (eligibility stamps the captured
-# snapshot, NOT live ACTIVE).
-"""Pin the publish node's routing decision matrix.
+"""Check posting destinations, coordinate failures, and per-finding routing events.
 
-Per the publish-node spec at §V lines 204-211, the publish node MUST:
-
-1. Route reviewable findings to `INLINE_COMMENT` / `reviewable_diff_line`.
-2. Route `CoordinateError(kind=UNCHANGED_REGION)` to `REVIEW_BODY` /
-   `unchanged_region`.
-3. Route registry-miss findings to `DASHBOARD_ONLY` / `non_diffed_file`
-   WITHOUT calling `source_line_to_github` (FUP-057 short-circuit).
-4. For each `CoordinateErrorKind`, route to the right reason + kind
-   payload. Publisher branches on the TYPED `kind` discriminator,
-   NEVER on `str(exc)`.
-5. ALWAYS emit a routing event for every admitted finding.
-6. OVERWRITE any pre-set `publish_destination` on the finding.
-7. NEVER leak `CoordinateError.message` text into the audit row's
-   `coordinate_error_kind` field (info-leak defense).
-
-Helpers (`_make_*`, `_Recording*`, `_StubPublisher`) inlined per the
-existing `test_publish_node_end_to_end.py` pattern — `tests/unit/` has no
-`__init__.py` so cross-file imports aren't first-class in this repo.
-"""
+Coordinate errors use typed kinds rather than exception text. Eligibility records
+must retain the finding's captured policy version, not the active policy.
+See FUP-066, FUP-057, and DECISIONS.md#028."""
 
 from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
@@ -206,9 +185,12 @@ def _make_finding(
     line_start: int = 1,
     line_end: int = 1,
     policy_version: str = ACTIVE_POLICY_VERSION,
+    source_side: Literal["head", "base"] = "head",
 ) -> ReviewFinding:
     finding_type = _FINDING_TYPE_BY_SEVERITY[severity]
+    side_fields = {"source_side": source_side} if source_side == "base" else {}
     return ReviewFinding(
+        **side_fields,
         finding_id=uuid4(),
         review_id=uuid4(),
         installation_id=42,
@@ -228,6 +210,7 @@ def _make_finding(
             line_start=line_start,
             line_end=line_end,
             finding_type=finding_type,
+            **side_fields,
         ),
         # Per DECISIONS.md#025: distinct per-call so multi-finding tests
         # don't trip the AnalysisRound._enforce_findings_proposal_hash_unique
@@ -336,6 +319,165 @@ async def test_reviewable_diff_line_routes_inline_comment() -> None:
     assert sink.routing[0].destination is PublishDestination.INLINE_COMMENT
     assert sink.routing[0].reason is PublishRoutingReason.REVIEWABLE_DIFF_LINE
     assert sink.routing[0].coordinate_error_kind is None
+
+
+@pytest.mark.asyncio
+async def test_removed_base_requires_human_approval_and_posts_only_in_review_body(monkeypatch):
+    from outrider.agent.nodes.hitl import hitl
+    from outrider.agent.nodes.hitl_config import HITLConfig
+    from outrider.schemas.hitl import HITLDecision, PerFindingDecision, PerFindingOutcome
+
+    finding = _make_finding(source_side="base")
+    removed_file = ChangedFile(
+        path=finding.file_path,
+        status="removed",
+        additions=0,
+        deletions=1,
+        content_base="e\n",
+        content_head=None,
+        patch="@@ -1 +0,0 @@\n-e\n",
+    )
+    state = _make_state(findings=(finding,), changed_files=(removed_file,))
+    publisher, sink = _StubPublisher(), _RecordingPublishEventSink()
+    kwargs = {
+        "publisher": publisher,
+        "publish_event_sink": sink,
+        "phase_event_sink": _RecordingPhaseEventSink(),
+        "review_status_sink": _StubReviewStatusSink(),
+        "github_factory": _stub_github_factory,
+    }
+    await publish_module.publish(state, **kwargs)
+    assert publisher.create_calls == []
+    assert sink.eligibility[-1].eligibility is PublishEligibility.WITHHELD
+
+    class ApprovalSink:
+        async def emit_hitl_request(self, event):
+            return event
+
+        async def emit_hitl_decision(self, event):
+            return event
+
+    class PausedError(Exception):
+        pass
+
+    gate_payloads = []
+
+    def pause(payload):
+        gate_payloads.append(payload)
+        raise PausedError
+
+    monkeypatch.setattr("outrider.agent.nodes.hitl.interrupt", pause)
+    hitl_kwargs = {
+        "phase_event_sink": _RecordingPhaseEventSink(),
+        "hitl_event_sink": ApprovalSink(),
+        "review_status_sink": _StubReviewStatusSink(),
+        "hitl_config": HITLConfig(),
+    }
+    with pytest.raises(PausedError):
+        await hitl(state, **hitl_kwargs)
+    assert gate_payloads[0]["verification_hold_finding_ids"] == [str(finding.finding_id)]
+    decision = HITLDecision(
+        reviewer_id="admin",
+        decisions=(
+            PerFindingDecision(
+                finding_id=finding.finding_id,
+                outcome=PerFindingOutcome.APPROVE,
+                reason="The deletion regression has been reviewed.",
+            ),
+        ),
+        decided_at=datetime.now(UTC),
+    )
+    monkeypatch.setattr(
+        "outrider.agent.nodes.hitl.interrupt", lambda _payload: decision.model_dump(mode="json")
+    )
+    approved = await hitl(state, **hitl_kwargs)
+    state.hitl_request = approved["hitl_request"]
+    state.hitl_decision = approved["hitl_decision"]
+    await publish_module.publish(state, **kwargs)
+
+    assert len(publisher.create_calls) == 1
+    posted = publisher.create_calls[0]
+    assert not posted["comments"]
+    assert "Removed BASE" in posted["body"]
+    assert "absent from HEAD" in posted["body"]
+    route = sink.routing[-1]
+    assert route.destination is PublishDestination.REVIEW_BODY
+    assert route.reason is PublishRoutingReason.REMOVED_SOURCE
+    assert route.source_side == sink.eligibility[-1].source_side == "base"
+    assert route.finding_content_hash == finding.content_hash
+    assert route.finding_content_hash != compute_finding_content_hash(
+        finding.file_path,
+        line_start=finding.line_start,
+        line_end=finding.line_end,
+        finding_type=finding.finding_type,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "damage", ["retained_head", "wrong_base", "partial_patch", "wrong_patch", "missing_path"]
+)
+async def test_invalid_removed_base_never_materializes_on_github(damage):
+    from outrider.schemas.hitl import (
+        HITLDecision,
+        HITLRequest,
+        PerFindingDecision,
+        PerFindingOutcome,
+    )
+
+    finding = _make_finding(source_side="base")
+    changed_file = ChangedFile(
+        path=finding.file_path,
+        status="removed",
+        additions=0,
+        deletions=1,
+        content_base="e\n",
+        content_head=None,
+        patch="@@ -1 +0,0 @@\n-e\n",
+    )
+    changes = {
+        "retained_head": {"status": "modified", "content_head": ""},
+        "wrong_base": {"content_base": "other\n"},
+        "partial_patch": {"content_base": "e\nother\n"},
+        "wrong_patch": {"patch": "--- a/other.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-e\n"},
+        "missing_path": {"path": "src/other.py"},
+    }
+    changed_file = changed_file.model_copy(update=changes[damage])
+    state = _make_state(findings=(finding,), changed_files=(changed_file,))
+    now = datetime.now(UTC)
+    state.hitl_request = HITLRequest(
+        findings_requiring_approval=(finding.finding_id,),
+        auto_post_findings=(),
+        verification_hold_finding_ids=(finding.finding_id,),
+        created_at=now,
+        expires_at=now,
+    )
+    state.hitl_decision = HITLDecision(
+        reviewer_id="admin",
+        decisions=(
+            PerFindingDecision(
+                finding_id=finding.finding_id, outcome=PerFindingOutcome.APPROVE, reason=""
+            ),
+        ),
+        decided_at=now,
+    )
+    sink, publisher = _RecordingPublishEventSink(), _StubPublisher()
+    await publish_module.publish(
+        state,
+        publisher=publisher,
+        publish_event_sink=sink,
+        phase_event_sink=_RecordingPhaseEventSink(),
+        review_status_sink=_StubReviewStatusSink(),
+        github_factory=_stub_github_factory,
+    )
+    assert sink.routing[0].destination is PublishDestination.DASHBOARD_ONLY
+    assert sink.routing[0].source_side == "base"
+    assert all(
+        not call["comments"]
+        and "Removed-file concerns" not in call["body"]
+        and finding.file_path not in call["body"]
+        for call in publisher.create_calls
+    )
 
 
 @pytest.mark.asyncio

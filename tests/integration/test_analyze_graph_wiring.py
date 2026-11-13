@@ -1,27 +1,7 @@
-"""Analyze-node graph wiring integration tests per spec §8.
+"""Check file-analysis wiring through the compiled review graph.
 
-Four gates:
-
-1. **`triage → analyze → END` wires correctly.** Build the compiled graph;
-   assert the edge set and node membership.
-2. **One clean eligible file flows through analyze.** Tier=DEEP file →
-   analyze runs → AnalysisRound populated with at least one finding;
-   FindingEvent emitted.
-3. **One triage-excluded file does not enter analyze.** Tier=SKIM file →
-   analyze iterates zero files for it; FileExaminationEvent with that
-   file's path does NOT fire from analyze.
-4. **One budget-skip file remains audited and does not look like 'clean'.**
-   Tier=DEEP file + tiny `total_review_budget_tokens` → cost gate fires →
-   `FileExaminationEvent(parse_status="skipped",
-   skip_reason=COST_BUDGET_EXHAUSTED)` emitted; the file appears in
-   `AnalysisRound.files_skipped` (not `files_examined`).
-
-These exercise the COMPILED graph end-to-end (intake → triage → analyze →
-publish; publish runs but is a no-op pass-through under the fixtures
-here because triage routes everything to SKIP or analyze emits no
-admitted findings). The unit tests in `tests/unit/test_analyze_node.py`
-cover the node body in isolation; this file covers the wiring.
-"""
+Use a scripted provider and recording sinks to cover kept, excluded, and
+budget-skipped files and the results recorded for each."""
 
 from __future__ import annotations
 
@@ -370,7 +350,7 @@ class _StubImportPathResolver:
 def _triage_response(*, tier: str) -> str:
     return json.dumps(
         {
-            "file_tiers": {_DEEP_FILE_PATH: tier},
+            "file_tiers": {"file_1": tier},
             "overall_risk": "medium",
             "relevant_dimensions": ["security"],
             "reasoning": f"test mock: {tier} tier.",

@@ -1,25 +1,10 @@
-# See DECISIONS.md#070 — the GitHub App Manifest conversion (code → App credentials).
-"""The App-Manifest handshake: `POST /app-manifests/{code}/conversions` (`DECISIONS.md#070`).
+"""Exchange a one-use GitHub manifest code for App credentials.
 
-GitHub redirects the operator to `redirect_url?code=&state=` after they create the App from
-our manifest. This wrapper exchanges that temporary `code` for the App's `id`, `pem`, and
-`webhook_secret` (plus non-secret `slug`/`client_id` and the response-verifiable `owner`/
-`permissions`/`events`). The endpoint is **unauthenticated** — the `code` IS the credential; GitHub
-rejects tokens on it — so we use an unauthenticated `GitHub()` client, but NOT a default one:
-`auto_retry=False` (the `code` is single-use — a retried POST would re-send a spent credential; a
-failed conversion must orphan, never retry), plus a bounded request: an httpx per-phase `timeout`
-AND a hard total `asyncio.timeout` deadline (githubkit defaults to no timeout, and the per-phase
-timeout does not bound total wall-clock; the state machine orphans a stale `CONVERTING` after 5 min
-ASSUMING the request is bounded well below that — see `_CONVERSION_TIMEOUT_SECONDS` +
-`_CONVERSION_TOTAL_DEADLINE_SECONDS`).
+The request has a timeout and is not automatically retried. Returned secrets
+must stay out of logs; errors expose status metadata rather than response
+content. The client secret is not part of the stored App credentials.
 
-Boundary duties (githubkit confined here, `vendor-sdks-only-in-wrappers`):
-- The `code` is external input → percent-encoded into the path segment (no path injection).
-- `client_secret` is present in the response but **NOT read into the domain model** — OAuth
-  user-tokens are a `#070` non-goal, so it is never persisted or surfaced (credential minimization).
-- `pem` / `webhook_secret` come back as `SecretStr` and are never logged; a non-201 / malformed
-  response raises `ManifestConversionError` with the status only (no body — it may echo attacker
-  input), and the caller routes to `ORPHANED` (the App likely already exists).
+See DECISIONS.md#070 and vendor-payloads-normalized-at-boundary.
 """
 
 from __future__ import annotations

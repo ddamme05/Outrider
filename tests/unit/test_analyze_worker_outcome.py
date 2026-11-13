@@ -1,15 +1,9 @@
-# Worker-outcome model pins per specs/2026-07-05-parallel-analyze.md + DECISIONS.md#063.
-"""`AnalyzeWorkerOutcome` pins: facts and identities, never re-derived judgments.
+"""Check file-worker state, identity, and retry validation.
 
-The contracts: (1) pure JSON-round-trip state, no generated identities of
-its own; (2) the discriminated `source` + explicit ORIGIN identity lists
-(`producer_observed_hashes`, `served_content_hashes`) — origin is
-identity, not evidence tier, so a model-cited OBSERVED proposal is a
-legitimate proposal; (3) the #063 merge digest recomputes over the
-canonical dump (the `AnalysisRound.round_id` precedent) — identical
-retries with fresh finding UUIDs merge as no-ops, real divergence and
-tampered state both fail loud.
-"""
+Outcomes round-trip as JSON and retain producer/cache origin identities rather
+than infer origin from evidence tier. Merge digests ignore fresh finding UUIDs
+but reject changed or tampered results. See specs/2026-07-05-parallel-analyze.md
+and DECISIONS.md#063."""
 
 from __future__ import annotations
 
@@ -46,6 +40,7 @@ def _finding(
     *,
     tier: EvidenceTier = EvidenceTier.JUDGED,
     line: int = 3,
+    proposal_hash: str = "a" * 64,
 ) -> ReviewFinding:
     finding_type = FindingType.HARDCODED_SECRET
     return ReviewFinding(
@@ -68,7 +63,7 @@ def _finding(
         content_hash=compute_finding_content_hash(
             "src/app.py", line_start=line, line_end=line, finding_type=finding_type
         ),
-        proposal_hash="a" * 64,
+        proposal_hash=proposal_hash,
     )
 
 
@@ -400,8 +395,10 @@ def test_json_round_trip_is_exact_including_decimal_cost() -> None:
 
 
 def test_exclusion_paths_match_generated_fields_one_for_one() -> None:
-    """Every default_factory-generated field in the model tree appears in
-    WORKER_OUTCOME_EXCLUDE_PATHS and nothing else does."""
+    """Exclude generated finding IDs and their explicit origin references.
+
+    Stable producer proposal hashes remain semantic digest input.
+    """
     generated: set[str] = set()
     for model, prefix in (
         (AnalyzeWorkerOutcome, ""),
@@ -412,7 +409,10 @@ def test_exclusion_paths_match_generated_fields_one_for_one() -> None:
         for name, field in model.model_fields.items():
             if field.default_factory is not None and field.default_factory is not tuple:
                 generated.add(f"{prefix}{name}")
-    assert generated == set(WORKER_OUTCOME_EXCLUDE_PATHS)
+    assert generated | {
+        "producer_finding_ids",
+        "native_candidates.[].finding_id",
+    } == set(WORKER_OUTCOME_EXCLUDE_PATHS)
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +426,36 @@ def test_identical_retry_with_fresh_finding_uuids_merges_as_noop() -> None:
     retry = _outcome(admitted_findings=(_finding("x"),))
     assert first.admitted_findings[0].finding_id != retry.admitted_findings[0].finding_id
     assert reducer([first], [retry]) == [first]
+
+
+def test_producer_reference_retries_preserve_origin_in_the_semantic_digest() -> None:
+    def build() -> AnalyzeWorkerOutcome:
+        model = _finding("model", tier=EvidenceTier.OBSERVED, proposal_hash="b" * 64)
+        producer = _finding("producer", tier=EvidenceTier.OBSERVED)
+        return _outcome(
+            admitted_findings=(model, producer),
+            producer_observed_hashes=(producer.content_hash,),
+            producer_finding_ids=(producer.finding_id,),
+            producer_proposal_hashes=(producer.proposal_hash,),
+        )
+
+    first, retry = build(), build()
+    reducer = _state_reducer()
+    assert reducer([first], [retry]) == [first]
+    model = first.admitted_findings[0]
+    changed_origin = AnalyzeWorkerOutcome.model_validate(
+        {
+            **first.model_dump(),
+            "producer_finding_ids": (model.finding_id,),
+            "producer_proposal_hashes": (model.proposal_hash,),
+        }
+    )
+    with pytest.raises(SlotDivergenceError):
+        reducer([first], [changed_origin])
+    with pytest.raises(ValidationError, match="producer IDs and provenance"):
+        AnalyzeWorkerOutcome.model_validate(
+            {**first.model_dump(), "producer_proposal_hashes": (model.proposal_hash,)}
+        )
 
 
 def test_semantic_divergence_fails_loud() -> None:

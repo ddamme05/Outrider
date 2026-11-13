@@ -1,17 +1,7 @@
-"""Arc 2 — the spike-import bootstrap must not erode the `pythonpath` guard.
+"""Check that importing probe modules does not expose the test tree to production.
 
-`tests/unit/conftest.py` makes `spikes/openai/arc2/` importable so these tests can
-verify the real derivation rather than a re-implementation. `sys.path` is
-process-global, so doing that carelessly leaves the repo root on the path for the
-whole pytest process and makes top-level `tests` importable — which is precisely
-the failure `pythonpath = ["src"]` exists to make loud (`docs/conventions.md`:
-"`tests/utils/` is not importable from `src/`").
-
-Measured baseline before the fix: without the conftest the root was absent and
-`tests` was NOT importable; with the naive version both flipped. Two copies of the
-root were being added (the conftest's own, plus the probe's script bootstrap), so
-a single `sys.path.remove()` left one behind.
-"""
+The import bootstrap must remove every temporary repository-root path entry.
+See docs/conventions.md: tests/utils/ is not importable from src/."""
 
 from __future__ import annotations
 

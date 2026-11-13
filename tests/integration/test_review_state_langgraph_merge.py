@@ -1,20 +1,9 @@
-"""FUP-019 closure: LangGraph reducer-merge semantics on ReviewState.
+"""ReviewState validation and reducer merges through LangGraph (FUP-019).
 
-Three integration tests pin the LangGraph 1.1.6 contract our spec
-depends on:
-
-1. First-node input validation fires (run-time validation only happens on
-   inputs to the FIRST node per `narrative/use-graph-api.md`).
-2. Partial-state merge populates `triage_result` (default reducer
-   overwrites; `pr_context` survives unchanged).
-3. Result-dict rehydrates as ReviewState (LangGraph returns a dict, not
-   the Pydantic instance; explicit re-validation is the canonical path).
-
-Async-node graphs require `.ainvoke()` per LangGraph docs. The compiled
-graph uses MockLLMProvider + RecordingPhaseEventSink + NoOpPersister via
-the root-conftest fixtures so the test doesn't depend on Anthropic
-credentials or a live API call.
-"""
+Check first-node input validation, partial triage-result merges, result-dict
+rehydration, and production/eval flag propagation into state and phase events.
+Graphs use ainvoke with provider and persistence doubles, without live model
+calls. First-node validation follows narrative/use-graph-api.md."""
 
 from __future__ import annotations
 
@@ -73,14 +62,10 @@ class _RecordingPhaseEventSinkLike(Protocol):
 
 
 class _MockLLMProvider:
-    """Routes by `request.node_id` to a canned response per node.
+    """Return scripted replies by node ID.
 
-    Triage gets a valid TriageResult JSON; analyze gets a canned
-    `{"findings": []}` so the analyze node body iterates without emitting
-    findings (consistent with the all-SKIP tier map below — the analyze
-    body's triage gate excludes the file before the LLM call fires; the
-    canned analyze response is defense-in-depth in case a future test
-    sets a non-SKIP tier and accidentally invokes the provider).
+    Triage assigns SKIM to the sole file slot by default, so analysis makes
+    no model call. If a test assigns an analysis tier, the reply has no findings.
     """
 
     def __init__(self, *, triage_response: str | None = None) -> None:
@@ -89,7 +74,7 @@ class _MockLLMProvider:
         # contract; SKIP is reserved for the deterministic upstream gate).
         self.triage_response = triage_response or json.dumps(
             {
-                "file_tiers": {"src/example.py": "skim"},
+                "file_tiers": {"file_1": "skim"},
                 "overall_risk": "low",
                 "relevant_dimensions": ["code_quality"],
                 "reasoning": "Test mock: SKIM tier so analyze iterates zero files.",
@@ -759,23 +744,10 @@ async def test_result_dict_rehydrates_as_review_state(
 async def test_is_eval_survives_langgraph_merge(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,
 ) -> None:
-    """`is_eval` on the seed `ReviewState` must survive the partial-state
-    merge — triage returns `{"triage_result": ...}` only, so LangGraph's
-    default-reducer-overwrite path should leave the seed's `is_eval`
-    untouched. Without this test, a future regression that drops the
-    eval flag through the merge would silently pollute the production
-    audit stream with eval-tagged runs (or vice versa).
+    """Partial-state merges preserve both production and eval seeds.
 
-    Tests both `is_eval=True` (eval seed) and `is_eval=False`
-    (production seed) round-trip cleanly through:
-      - the result-dict returned by ainvoke,
-      - the rehydrated ReviewState,
-      - both phase events emitted by triage during the invocation.
-
-    The phase-event assertion specifically covers the graph-driven
-    invocation path (the unit tests cover the direct-call path);
-    pinning both surfaces together prevents a regression where the
-    reducer drops the flag from one but not the other."""
+    Check is_eval in the ainvoke result, rehydrated ReviewState and triage phase events.
+    This covers graph-driven propagation in addition to direct node-call checks."""
     # Graph construction does not depend on eval_flag — hoist out of the loop.
     graph = build_graph(**_graph_kwargs(phase_event_sink=recording_phase_event_sink))
     for eval_flag in (True, False):

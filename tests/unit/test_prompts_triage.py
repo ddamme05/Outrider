@@ -1,15 +1,6 @@
-"""prompts/triage.py contract tests.
+"""Check triage prompt constants, templates, and rendered structure.
 
-Pins the triage prompt's public surface from the triage-node spec:
-constants (VERSION, MAX_TOKENS, TEMPERATURE), templates (SYSTEM_PROMPT,
-USER_TEMPLATE, TEMPLATE alias), TriagePromptParts swap-impossible
-dataclass, and the pure render() helper.
-
-Tests are organized as: surface contracts (what callers can rely on),
-render-behavior (happy path + content sanity + edge cases), input-
-boundary regression (PR text with format-string metacharacters cannot
-escape the template structure).
-"""
+Untrusted PR text and format metacharacters must remain data inside the template."""
 
 import dataclasses
 import re
@@ -96,10 +87,8 @@ def _build_pr_context(
 # ---------------------------------------------------------------------------
 
 
-def test_version_is_named_v1() -> None:
-    """VERSION flows to LLMRequest.prompt_template_version. Pin the v1 name
-    so future renames break the test and force a registry decision."""
-    assert VERSION == "triage-v1"
+def test_version_identifies_numbered_file_response() -> None:
+    assert VERSION == "triage-v3"
 
 
 def test_max_tokens_bounded_within_llm_request_limit() -> None:
@@ -385,8 +374,8 @@ def test_render_user_prompt_contains_file_list() -> None:
     cf2 = _build_changed_file(path="src/b.py", additions=3, deletions=5)
     pr_context = _build_pr_context(changed_files=(cf1, cf2))
     parts = render(pr_context)
-    assert "src/a.py" in parts.user_prompt
-    assert "src/b.py" in parts.user_prompt
+    assert "file_1: src/a.py" in parts.user_prompt
+    assert "file_2: src/b.py" in parts.user_prompt
     assert "+10/-2" in parts.user_prompt
     assert "+3/-5" in parts.user_prompt
 
@@ -568,3 +557,11 @@ def test_module_exports_all_documented_surfaces() -> None:
         "render",
     }
     assert set(triage.__all__) == expected
+
+
+def test_tiers_describe_actual_analysis_work_and_context() -> None:
+    """SKIM performs no analysis; DEEP and STANDARD share context selection."""
+    text = " ".join(SYSTEM_PROMPT.lower().split())
+    assert "no analyze-stage review" in text
+    assert "same context selection" in text
+    assert "don't warrant the full deep-context pipeline" not in text

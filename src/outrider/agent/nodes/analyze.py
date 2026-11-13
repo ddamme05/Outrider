@@ -1,46 +1,26 @@
-# See DECISIONS.md#018, #025 (proposal_hash threaded through admitted
-# and rejected lift sites per #025 point 1).
-# See also DECISIONS.md#024-trace-candidates-are-dotted-python-import-strings-v1
-# (admission path; same-file inline handling).
-"""Review changed files and audit accepted findings.
+"""Review changed code and record the results.
 
-`analyze` plans the initial pass and runs the sequential trace pass;
-`analyze_file` reviews one file. `analyze_aggregate` folds worker results
-in its own module. `build_graph` binds runtime dependencies, and
-`analyze_parser.parse_analyze_response` owns finding admission.
+`analyze` schedules the first pass across files and reviews related files
+found by tracing. `analyze_file` handles one scheduled file; results are
+combined in `analyze_aggregate.py`.
 
-File outcomes (spec §7 step 3a):
+Start at `_process_one_file` to follow a file through source and patch checks,
+budget limits, cached results, code checks, and model review when needed. Its first step,
+`_prepare_file_review`, decides whether the file can be reviewed.
+`analyze_parser.py` checks model responses before accepting findings.
 
-- `clean+full_llm`: changed scopes parse without errors and pass the budget gate.
-- `degraded+degraded_llm`: tree errors intersect changed scopes or added lines
-  without recovered scopes, or eligible module-level OBSERVED matches occur
-  outside changed scopes (`module_level_observed_match`, DECISIONS.md#062).
-  The module route keeps clean parse status and merges deterministic findings.
-  Model proposals must be JUDGED, stay within file bounds, and intersect
-  added-line context.
-- `skipped+NO_REVIEWABLE_CONTEXT`: no content, or parse failure without added text.
-  Current intake and `ChangedFile` validation make these cases unreachable.
-- `skipped+NO_CHANGED_SCOPE_UNITS`: no changed scopes or patch, unless eligible
-  module-level matches select the degraded prompt route.
-- `skipped+COST_BUDGET_EXHAUSTED`: prompt estimate exceeds the available budget.
-- `skipped+UNSUPPORTED_LANGUAGE`: no registered adapter for the file extension.
-- `skipped+ALL_SCOPES_TRIVIAL`: enforcement excludes every admitted scope;
-  the budget gate runs first. Shadow mode never takes this route.
-- `skipped+PATCH_HEAD_MISALIGNED`: added patch lines disagree with head content;
-  checked before routing because their coordinates cannot be trusted.
+Files with syntax errors may be reviewed using a bounded part of the diff.
+See `degradation.py` for these selection rules. Deletions and changes outside
+functions also receive bounded current-source context when available.
+Whole-file removals use explicit BASE/change evidence instead, prepared by
+`deleted_file.py`; removed bodies never provide current structural proof.
 
-Parser-stage skips retain their reason on `FileExaminationEvent`. Scope
-selection requires added lines and clipped hunks; deletion-only edits can
-still miss review (FUP-050).
-
-The `failed+degraded_llm` route remains for a future raw-byte intake path
-(FUP-053). Current intake rejects invalid UTF-8 and supplies decoded strings.
-
-Provider failures propagate. Completed-file events remain persisted, and an
-interrupted phase has no end marker; failures must not become skip outcomes.
-Completion counters come from parser results, never from re-reading the audit
-stream, and `AnalyzeCompletedEvent` validates proposal accounting.
+Errors from model requests stop the current work rather than count as skipped
+files. Completed work stays recorded; an interrupted phase has no end event.
 """
+
+# Design references: DECISIONS.md#018, #025 and
+# DECISIONS.md#024-trace-candidates-are-dotted-python-import-strings-v1.
 
 from __future__ import annotations
 
@@ -52,6 +32,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from functools import partial
 from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Literal
@@ -60,10 +41,24 @@ from uuid import UUID  # noqa: TC003 — AnalyzeWorkerPayload resolves this at m
 from langgraph.types import Command, Send
 from pydantic import BaseModel, ConfigDict, Field
 
+from outrider.agent.native_candidates import candidate_event_id, collect_native_candidates
 from outrider.agent.nodes.analyze_budget import (
     FileBudgetRequest,
     plan_file_budgets,
-    proxy_estimate_tokens,
+    reserve_context_headroom,
+)
+from outrider.agent.nodes.analyze_context import (
+    MAX_MODULE_CONTEXT_BYTES,
+    PreparedReviewContext,
+    add_companion_function_context,
+    add_constructor_caller_context,
+    add_parent_class_context,
+    add_parent_constructor_context,
+    add_parent_reference_declarations,
+    build_called_function_index,
+    build_module_context_index,
+    omit_optional_module_context,
+    prepare_review_context,
 )
 from outrider.agent.nodes.analyze_observed import (
     OBSERVED_PRODUCER_VERSION,
@@ -94,22 +89,29 @@ from outrider.agent.nodes.analyze_worker_build import (
 )
 from outrider.agent.nodes.cache_config import CacheMode
 from outrider.agent.nodes.degradation import (
+    DegradationDecision,
     _ParseStatus,
     decide_degradation,
 )
+from outrider.agent.nodes.deleted_file import prepare_removed_file_context
 from outrider.agent.nodes.finding_cap import (
     _collapse_by_content_hash,
     admit_with_pair_dedup,
     cap_findings_by_severity,
 )
+from outrider.agent.nodes.import_reference_context import (
+    omit_import_references,
+    prepare_import_reference_contexts,
+)
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.analyze_bundle import extract_triviality_and_scan
-from outrider.ast_facts.models import SkipReason, TrivialityReason
+from outrider.ast_facts.models import ParseResult, SkipReason, TrivialityReason
 from outrider.ast_facts.parameterized_calls import (
     ParameterizedCallScan,
     scan_digest,
     scan_parameterized_calls,
 )
+from outrider.ast_facts.parser_outcome import should_skip
 from outrider.ast_facts.registry import (
     JAVASCRIPT_EXTENSIONS,
     PYTHON_EXTENSIONS,
@@ -132,6 +134,7 @@ from outrider.audit.events import (
     DegradationReason,
     FileExaminationEvent,
     FindingProposalRejectedEvent,
+    NativeCandidateEvent,
     ObservedSkipShadowEvent,
     ObservedSubsumedMatch,
     ReviewPhaseEvent,
@@ -143,13 +146,20 @@ from outrider.cache import CacheScope, CacheStoreError, compute_analyze_cache_ke
 from outrider.coordinates import (
     CoordinateError,
     added_line_byte_ranges,
-    bound_diff_hunks_text,
+    bound_diff_context,
     changed_line_spans,
+    extract_line_range_body,
     extract_scope_unit_body,
+    line_range_diff_hunks,
+    line_range_to_span,
     lookup_patched_file,
     patched_file_has_added_lines,
     patched_file_has_removed_lines,
+    scope_unit_body_owners,
+    source_line_count,
+    unscoped_changed_line_ranges,
 )
+from outrider.coordinates.errors import CoordinateErrorKind
 from outrider.llm.base import LLMRequest, _canonical_prompt_hash
 from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
 from outrider.policy.canonical import (
@@ -158,6 +168,7 @@ from outrider.policy.canonical import (
     compute_served_finding_id,
 )
 from outrider.policy.findings import EvidenceTier
+from outrider.policy.publish_eligibility import verification_hold_finding_ids
 from outrider.policy.recall import scan_added_lines_for_risk
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.policy.subsumption import SUBSUMES_DIGEST, subsumes
@@ -175,25 +186,29 @@ from outrider.schemas.pr_context import ChangedFile  # noqa: TC001 — payload m
 from outrider.schemas.triage_result import ReviewTier
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Awaitable, Callable, Iterable, Mapping
 
     from unidiff import PatchedFile
 
+    from outrider.agent.nodes.analyze_budget import BudgetPlan
     from outrider.anomaly.sinks import AnomalySink
     from outrider.ast_facts.base import ImportPathResolver
-    from outrider.ast_facts.models import ParseResult, ScopeUnit
+    from outrider.ast_facts.models import ScopeUnit
     from outrider.audit.sinks import (
         AnalyzeEventSink,
+        CandidateEventSink,
         FileExaminationSink,
         PhaseEventSink,
     )
     from outrider.cache import AnalyzeCacheStore, CacheEntry
+    from outrider.github import InstallationGitHubClient
     from outrider.llm.base import LLMProvider, LLMResponse
     from outrider.schemas import (
         ReviewState,
         TraceFetchedFile,
     )
     from outrider.schemas.analyze_worker import AnalyzeWorkerOutcome
+    from outrider.schemas.native_candidate import NativeCandidateRef
     from outrider.schemas.triage_result import TriageResult
 
 
@@ -242,31 +257,15 @@ _BYTES_PER_TOKEN: Final[int] = 3
 # AND ≤8192 chars. Either cap closes the gate.
 _DEGRADED_HUNK_LINE_CAP: Final[int] = 100
 _DEGRADED_HUNK_CHAR_CAP: Final[int] = 8192
+_PRIMARY_REGION_LINE_CAP: Final[int] = 100
+_PRIMARY_REGION_BYTE_CAP: Final[int] = 16_384
 
-# Default bound on in-flight `analyze_file` workers (the Send fan-out per
-# specs/2026-07-05-parallel-analyze.md). The Send count itself is unbounded
-# — every kept file gets a worker — but the gate built at build_graph
-# admits at most this many worker BODIES at once PER (graph, event loop):
-# on the single-loop production server that is graph-global across
-# concurrent reviews; simultaneous multi-loop driving gets an independent
-# cap per loop (the AnalyzeConcurrencyGate contract). Prompt-cache
-# stampede note (spec): the first concurrent wave can each cache-WRITE
-# the shared system prefix; the bounded 1.25× write overhead on at most
-# (cap - 1) redundant writes per tier-model is accepted rather than
-# serializing the first call.
+# Bound worker bodies per (graph, event loop), not Send count: every kept file
+# gets a worker (specs/2026-07-05-parallel-analyze.md). Production's single loop
+# shares the gate across reviews; other loops have independent gates.
+# Initial concurrent calls may each cache-write the prefix; that bounded
+# per-tier overhead is accepted rather than serializing the first call.
 ANALYZE_MAX_CONCURRENCY: Final[int] = 4
-
-# Per-file render margin folded into the planner proxy's fixed overhead.
-# The rendered user prompt carries per-file scaffolding that is NOT
-# proportional to content bytes — the fired-query-id list (worst case
-# ~170 tokens for the python catalog), safe_code_fence lines, scope-unit
-# headers, and the file path — so `DUP_FACTOR × bytes` alone under-covers
-# TINY files (the eval starvation fixture: proxy 17,419 vs real 17,449 →
-# a spurious COST_BUDGET_EXHAUSTED skip on a funded-by-intent file). The
-# margin over-reserves (utilization cost, measured via skip counters),
-# never overspends; the proxy-covers-real calibration test is the
-# regression gate for shrinking it.
-_PROXY_RENDER_MARGIN_TOKENS: Final[int] = 384
 
 
 def _estimate_tokens(text: str) -> int:
@@ -285,6 +284,16 @@ def _language_supported(path: str) -> bool:
     `get_adapter_factory` normalizes case internally.
     """
     return get_adapter_factory(PurePosixPath(path).suffix) is not None
+
+
+def _text_config_supported(path: str) -> bool:
+    """Recognize configuration text that can be reviewed without structural proof."""
+    file = PurePosixPath(path.lower())
+    return file.suffix in {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg"} or file.name in {
+        ".env.example",
+        ".env.sample",
+        ".env.template",
+    }
 
 
 def _is_python_file(path: str) -> bool:
@@ -480,6 +489,8 @@ class AnalyzeWorkerPayload(BaseModel):
     review_tier: ReviewTier
     allocation_tokens: int = Field(ge=0)
     changed_file: ChangedFile
+    review_context: str = Field(default="", max_length=MAX_MODULE_CONTEXT_BYTES)
+    supplemental_context_manifest: tuple[ContextManifestEntry, ...] = ()
     cache_scope: CacheScope | None = None
 
 
@@ -503,6 +514,7 @@ async def analyze_file(
     reasoning_enabled: bool | None = None,
     profile_contract_digest: str | None = None,
     concurrency_semaphore: asyncio.Semaphore | AnalyzeConcurrencyGate | None = None,
+    candidate_event_sink: CandidateEventSink | None = None,
 ) -> dict[str, object]:
     """Review one file and return its outcome for the aggregate's round.
 
@@ -543,6 +555,8 @@ async def analyze_file(
         )
         file_outcome = await _process_one_file(
             changed_file=payload.changed_file,
+            review_context=payload.review_context,
+            supplemental_context_manifest=payload.supplemental_context_manifest,
             review_id=payload.review_id,
             installation_id=payload.installation_id,
             is_eval=payload.is_eval,
@@ -551,6 +565,7 @@ async def analyze_file(
             import_path_resolver=import_path_resolver,
             file_examination_sink=file_examination_sink,
             analyze_event_sink=analyze_event_sink,
+            candidate_event_sink=candidate_event_sink,
             active_policy_version=active_policy_version,
             pass_index=payload.pass_index,
             per_file_cap_tokens=_compute_per_file_cap(total_review_budget_tokens),
@@ -598,6 +613,13 @@ async def _plan_pass_zero(
     per_file_cap_tokens: int,
     cache_scope: CacheScope | None,
     triage_result: TriageResult | None,
+    supplemental_context_enabled: bool,
+    called_function_context_enabled: bool,
+    module_context_enabled: bool = False,
+    companion_context_enabled: bool = False,
+    import_reference_context_enabled: bool = False,
+    github_factory: Callable[[int], Awaitable[InstallationGitHubClient]] | None = None,
+    import_path_resolver: ImportPathResolver,
 ) -> Command[Literal["analyze_file", "analyze_aggregate", "synthesize"]]:
     """Allocate budgets and dispatch one worker per kept file.
 
@@ -613,21 +635,71 @@ async def _plan_pass_zero(
                 pass_zero_worklist.append((changed_file, tier))
         pass_zero_worklist.sort(key=lambda item: _PASS0_TIER_RANK[item[1]])
 
-    # Include the system prompt, template scaffolding, and output reservation
-    # in every estimate; omitting a fixed term would underfund every worker.
-    empty_parts = analyze_prompt.render(
-        file_path="",
-        scope_unit_context="",
-        query_match_id_list="",
-        diff_hunks="",
-        pass_index=0,
+    called_function_index = (
+        build_called_function_index(
+            state.pr_context.changed_files, import_path_resolver=import_path_resolver
+        )
+        if supplemental_context_enabled and called_function_context_enabled and pass_zero_worklist
+        else None
     )
-    fixed_overhead_tokens = (
-        _estimate_tokens(empty_parts.system_prompt)
-        + _estimate_tokens(empty_parts.user_prompt)
-        + analyze_prompt.MAX_TOKENS
-        + _PROXY_RENDER_MARGIN_TOKENS
+    module_context_index = (
+        build_module_context_index(
+            state.pr_context.changed_files, import_path_resolver=import_path_resolver
+        )
+        if supplemental_context_enabled and module_context_enabled and pass_zero_worklist
+        else None
     )
+    # Reuse one bounded HEAD index for all removed files, independently of the
+    # optional complete-module feature used by ordinary HEAD reviews.
+    removed_module_index = module_context_index
+    if (
+        supplemental_context_enabled
+        and removed_module_index is None
+        and any(file.status == "removed" for file, _tier in pass_zero_worklist)
+    ):
+        removed_module_index = build_module_context_index(
+            state.pr_context.changed_files, import_path_resolver=import_path_resolver
+        )
+    review_context_by_path = {
+        changed_file.path: prepare_review_context(
+            file_path=changed_file.path,
+            content=changed_file.content_head,
+            patch=changed_file.patch,
+            changed_files=state.pr_context.changed_files,
+            import_path_resolver=import_path_resolver,
+            removed_module_index=removed_module_index,
+        )
+        if supplemental_context_enabled
+        else PreparedReviewContext("", ())
+        for changed_file, _tier in pass_zero_worklist
+    }
+    # Price the same unfiltered request that each worker checks before filtering.
+    # None defers a malformed/duplicate patch error to its keyed worker phase.
+    prepared_by_path: dict[str, _PreparedFileReview | SkipReason | None] = {}
+    baseline_estimates: dict[str, int] = {}
+    for changed_file, _tier in pass_zero_worklist:
+        try:
+            prepared = _select_file_review(
+                changed_file=changed_file, import_path_resolver=import_path_resolver
+            )
+        except CoordinateError as error:
+            if error.kind not in (
+                CoordinateErrorKind.MALFORMED_PATCH,
+                CoordinateErrorKind.DUPLICATE_FILE_ENTRY,
+            ):
+                raise
+            prepared = None
+        prepared_by_path[changed_file.path] = prepared
+        baseline_estimates[changed_file.path] = (
+            _prepare_file_prompt(
+                prepared,
+                file_path=changed_file.path,
+                pass_index=pass_index,
+                review_context=review_context_by_path[changed_file.path].text,
+            ).estimated_tokens
+            if isinstance(prepared, _PreparedFileReview)
+            else 0
+        )
 
     # Allocations are final; unused tokens are not redistributed.
     # Reject duplicate paths before dispatching any worker.
@@ -637,11 +709,7 @@ async def _plan_pass_zero(
         tuple(
             FileBudgetRequest(
                 path=changed_file.path,
-                estimate_tokens=proxy_estimate_tokens(
-                    len((changed_file.content_head or "").encode("utf-8")),
-                    len((changed_file.patch or "").encode("utf-8")),
-                    fixed_overhead_tokens=fixed_overhead_tokens,
-                ),
+                estimate_tokens=baseline_estimates[changed_file.path],
                 is_high_risk=bool(scan_added_lines_for_risk(changed_file.patch)),
             )
             for changed_file, _tier in pass_zero_worklist
@@ -650,6 +718,106 @@ async def _plan_pass_zero(
         reserved_pool_tokens=reserved_pool_tokens,
         per_file_cap_tokens=per_file_cap_tokens,
     )
+    # Fund the base requests before spending headroom on optional references.
+    if called_function_index is not None or module_context_index is not None:
+        expanded_contexts: dict[str, PreparedReviewContext] = {}
+        context_estimates: dict[str, int] = {}
+        file_by_path = {file.path: file for file, _tier in pass_zero_worklist}
+        for allocation in plan.allocations:
+            if not allocation.funded:
+                continue
+            changed_file = file_by_path[allocation.path]
+            prepared = prepared_by_path[allocation.path]
+            if changed_file.status == "removed" or not isinstance(prepared, _PreparedFileReview):
+                continue
+            context = prepare_review_context(
+                file_path=changed_file.path,
+                content=changed_file.content_head,
+                patch=changed_file.patch,
+                changed_files=state.pr_context.changed_files,
+                import_path_resolver=import_path_resolver,
+                called_function_index=called_function_index,
+                module_context_index=module_context_index,
+                removed_module_index=removed_module_index,
+            )
+            if not any(e.inclusion_reason == "captured_reference" for e in context.manifest):
+                continue
+            expanded_contexts[allocation.path] = context
+            context_estimates[allocation.path] = _prepare_file_prompt(
+                prepared,
+                file_path=changed_file.path,
+                pass_index=pass_index,
+                review_context=context.text,
+            ).estimated_tokens
+        plan = reserve_context_headroom(
+            plan, context_estimates, per_file_cap_tokens=per_file_cap_tokens
+        )
+        for allocation in plan.allocations:
+            if file_by_path[allocation.path].status == "removed":
+                continue
+            if allocation.path in context_estimates and (
+                allocation.funded
+                and context_estimates[allocation.path] <= allocation.allocation_tokens
+            ):
+                review_context_by_path[allocation.path] = expanded_contexts[allocation.path]
+            elif module_context_index is not None:
+                review_context_by_path[allocation.path] = omit_optional_module_context(
+                    review_context_by_path[allocation.path],
+                    reason=(
+                        "budget"
+                        if not allocation.funded or allocation.path in context_estimates
+                        else "source/context limits"
+                    ),
+                )
+    if import_reference_context_enabled:
+        if github_factory is None:
+            raise ValueError("import references require an installation-scoped GitHub factory")
+        funded = {item.path for item in plan.allocations if item.funded}
+        reference_contexts = await prepare_import_reference_contexts(
+            state,
+            files=[
+                file
+                for file, _tier in pass_zero_worklist
+                if file.path in funded
+                and isinstance(prepared_by_path[file.path], _PreparedFileReview)
+            ],
+            base_contexts=review_context_by_path,
+            github_factory=github_factory,
+            import_path_resolver=import_path_resolver,
+        )
+        estimates: dict[str, int] = {}
+        for allocation in plan.allocations:
+            if not allocation.funded or allocation.path not in reference_contexts:
+                continue
+            prepared = prepared_by_path[allocation.path]
+            if not isinstance(prepared, _PreparedFileReview):
+                continue
+            estimates[allocation.path] = _prepare_file_prompt(
+                prepared,
+                file_path=allocation.path,
+                pass_index=pass_index,
+                review_context=reference_contexts[allocation.path].text,
+            ).estimated_tokens
+        plan = reserve_context_headroom(plan, estimates, per_file_cap_tokens=per_file_cap_tokens)
+        for allocation in plan.allocations:
+            if allocation.path not in reference_contexts:
+                continue
+            base = review_context_by_path[allocation.path]
+            review_context_by_path[allocation.path] = (
+                reference_contexts[allocation.path]
+                if estimates[allocation.path] <= allocation.allocation_tokens
+                else omit_import_references(base, reason="budget")
+            )
+    if supplemental_context_enabled:
+        plan = _fund_python_reference_context(
+            state,
+            plan=plan,
+            prepared_by_path=prepared_by_path,
+            review_context_by_path=review_context_by_path,
+            pass_index=pass_index,
+            per_file_cap_tokens=per_file_cap_tokens,
+            companion_context_enabled=companion_context_enabled,
+        )
     allocation_by_path = {a.path: a for a in plan.allocations}
     sends: list[Send] = []
     for worker_file, worker_tier in pass_zero_worklist:
@@ -664,6 +832,8 @@ async def _plan_pass_zero(
                     review_tier=worker_tier,
                     allocation_tokens=allocation_by_path[worker_file.path].allocation_tokens,
                     changed_file=worker_file,
+                    review_context=review_context_by_path[worker_file.path].text,
+                    supplemental_context_manifest=review_context_by_path[worker_file.path].manifest,
                     cache_scope=cache_scope,
                 ),
             )
@@ -687,66 +857,79 @@ async def _plan_pass_zero(
     )
 
 
-async def _run_trace_pass(
+def _fund_python_reference_context(  # noqa: PLR0913
     state: ReviewState,
     *,
-    provider: LLMProvider,
-    analyze_model: str,
-    profile_id: str | None,
-    reasoning_enabled: bool | None,
-    profile_contract_digest: str | None,
-    phase_event_sink: PhaseEventSink,
-    file_examination_sink: FileExaminationSink,
-    analyze_event_sink: AnalyzeEventSink,
-    anomaly_sink: AnomalySink,
-    import_path_resolver: ImportPathResolver,
-    active_policy_version: str,
-    total_review_budget_tokens: int,
+    plan: BudgetPlan,
+    prepared_by_path: Mapping[str, _PreparedFileReview | SkipReason | None],
+    review_context_by_path: dict[str, PreparedReviewContext],
     pass_index: int,
-    phase_id: str,
-    started_at: datetime,
-    started_mono: float,
     per_file_cap_tokens: int,
-) -> Command[Literal["analyze_file", "analyze_aggregate", "synthesize"]]:
-    """Analyze trace-fetched files sequentially, then route to synthesis.
+    companion_context_enabled: bool,
+) -> BudgetPlan:
+    """Update review_context_by_path with funded references and return the plan."""
+    context_adders = [
+        add_parent_constructor_context,
+        add_parent_class_context,
+        add_parent_reference_declarations,
+        add_constructor_caller_context,
+    ]
+    if companion_context_enabled:
+        captured_heads = {
+            file.path: file.content_head
+            for file in state.pr_context.changed_files
+            if file.content_head is not None and file.status != "removed"
+        }
+        # Existing references and primary scopes keep their allocation first.
+        context_adders.append(
+            partial(add_companion_function_context, captured_heads=captured_heads),
+        )
+    for add_context in context_adders:
+        expanded_contexts: dict[str, PreparedReviewContext] = {}
+        expanded_context_estimates: dict[str, int] = {}
+        for allocation in plan.allocations:
+            if not allocation.funded:
+                continue
+            prepared = prepared_by_path[allocation.path]
+            if (
+                not isinstance(prepared, _PreparedFileReview)
+                or prepared.decision.mode != "clean"
+                or not _is_python_file(allocation.path)
+            ):
+                continue
+            base_context = review_context_by_path[allocation.path]
+            context = add_context(
+                base_context,
+                file_path=allocation.path,
+                head_sha=state.pr_context.head_sha,
+                source=prepared.content,
+                selected_scope_units=prepared.decision.included_scope_units,
+            )
+            if context is base_context:
+                continue
+            expanded_contexts[allocation.path] = context
+            expanded_context_estimates[allocation.path] = _prepare_file_prompt(
+                prepared,
+                file_path=allocation.path,
+                pass_index=pass_index,
+                review_context=context.text,
+            ).estimated_tokens
+        plan = reserve_context_headroom(
+            plan, expanded_context_estimates, per_file_cap_tokens=per_file_cap_tokens
+        )
+        for allocation in plan.allocations:
+            if (
+                allocation.path in expanded_contexts
+                and expanded_context_estimates[allocation.path] <= allocation.allocation_tokens
+            ):
+                review_context_by_path[allocation.path] = expanded_contexts[allocation.path]
+    return plan
 
-    Completion counters come from this pass's bookkeeping, not the audit stream.
-    `Command` requires the node's full destination union; the two-round limit
-    makes synthesis the only destination after this pass.
-    """
-    admitted_findings: list[ReviewFinding] = []
-    # Different source findings can produce the same target-file proposal.
-    # Deduplicate admission by both hashes; collapse content hashes later.
-    admitted_keys_seen: set[tuple[str, str]] = set()
-    trace_candidates: list[TraceCandidate] = []
-    # Collect per-file subsumption proof for completion accounting (DECISIONS.md#055).
-    pass_subsumed_matches: list[ObservedSubsumedMatch] = []
-    files_examined: list[str] = []
-    files_skipped: list[str] = []
-    # Trace passes leave this counter at zero; starvation is measured in pass 0.
-    budget_skip_count = 0
-    n_proposals_seen = 0
-    n_findings_emitted = 0
-    n_findings_served = 0
-    n_findings_observed = 0
-    # Trace passes currently serve no cached findings. Retain the provenance set
-    # used by the post-cap accounting below; evidence tier cannot identify a serve.
-    served_content_hashes: set[str] = set()
-    n_proposals_superseded_by_observed = 0
-    n_proposals_rejected = 0
-    n_responses_rejected = 0
-    n_trace_candidates_emitted = 0
-    n_trace_candidates_dropped_malformed = 0
-    n_llm_calls = 0
-    # Trace analysis uses the DEEP model; this field remains None.
-    standard_model_used: str | None = None
-    total_input_tokens = 0
-    total_output_tokens = 0
-    total_cache_read_tokens = 0
-    total_cache_write_tokens = 0
-    total_cost_decimal = Decimal("0")
-    remaining_budget_tokens = total_review_budget_tokens
 
+def _trace_review_pairs(
+    state: ReviewState, pass_index: int
+) -> list[tuple[TraceFetchedFile, ReviewFinding]]:
+    """Join trace decisions to captured files and their admitted source findings."""
     source_findings_by_id: dict[UUID, ReviewFinding] = {
         f.finding_id: f for r in state.analysis_rounds for f in r.findings
     }
@@ -777,9 +960,91 @@ async def _run_trace_pass(
             )
         pass_one_work.append((fetched, source_finding))
 
+    return pass_one_work
+
+
+async def _run_trace_pass(
+    state: ReviewState,
+    *,
+    supplemental_context_enabled: bool,
+    provider: LLMProvider,
+    analyze_model: str,
+    profile_id: str | None,
+    reasoning_enabled: bool | None,
+    profile_contract_digest: str | None,
+    phase_event_sink: PhaseEventSink,
+    file_examination_sink: FileExaminationSink,
+    analyze_event_sink: AnalyzeEventSink,
+    anomaly_sink: AnomalySink,
+    import_path_resolver: ImportPathResolver,
+    active_policy_version: str,
+    total_review_budget_tokens: int,
+    pass_index: int,
+    phase_id: str,
+    started_at: datetime,
+    started_mono: float,
+    per_file_cap_tokens: int,
+    candidate_event_sink: CandidateEventSink | None = None,
+) -> Command[Literal["analyze_file", "analyze_aggregate", "synthesize"]]:
+    """Analyze trace-fetched files sequentially, then route to synthesis.
+
+    Completion counters come from this pass's bookkeeping, not the audit stream.
+    `Command` requires the node's full destination union; the two-round limit
+    makes synthesis the only destination after this pass.
+    """
+    admitted_findings: list[ReviewFinding] = []
+    # Different source findings can produce the same target-file proposal.
+    # Deduplicate admission by both hashes; collapse content hashes later.
+    admitted_keys_seen: set[tuple[str, str]] = set()
+    trace_candidates: list[TraceCandidate] = []
+    native_candidates: list[NativeCandidateRef] = []
+    # Collect per-file subsumption proof for completion accounting (DECISIONS.md#055).
+    pass_subsumed_matches: list[ObservedSubsumedMatch] = []
+    files_examined: list[str] = []
+    files_skipped: list[str] = []
+    # Trace passes leave this counter at zero; starvation is measured in pass 0.
+    budget_skip_count = 0
+    n_proposals_seen = 0
+    n_findings_emitted = 0
+    n_findings_served = 0
+    n_findings_observed = 0
+    # Trace passes currently serve no cached findings. Count selected origins by
+    # their original IDs; another variant can carry the same content hash.
+    served_finding_ids: set[UUID] = set()
+    producer_finding_ids: set[UUID] = set()
+    n_proposals_superseded_by_observed = 0
+    n_proposals_rejected = 0
+    n_responses_rejected = 0
+    n_trace_candidates_emitted = 0
+    n_trace_candidates_dropped_malformed = 0
+    n_llm_calls = 0
+    # Trace analysis uses the DEEP model; this field remains None.
+    standard_model_used: str | None = None
+    total_input_tokens = 0
+    total_output_tokens = 0
+    total_cache_read_tokens = 0
+    total_cache_write_tokens = 0
+    total_cost_decimal = Decimal("0")
+    remaining_budget_tokens = total_review_budget_tokens
+
+    pass_one_work = _trace_review_pairs(state, pass_index)
+
     for fetched_file, source_finding in pass_one_work:
+        supplemental_context = (
+            prepare_review_context(
+                file_path=fetched_file.path,
+                content=None,
+                patch=None,
+                changed_files=state.pr_context.changed_files,
+                import_path_resolver=import_path_resolver,
+            )
+            if supplemental_context_enabled
+            else PreparedReviewContext("", ())
+        )
         file_outcome = await _process_one_trace_fetched_file(
             fetched_file=fetched_file,
+            review_context=supplemental_context.text,
+            supplemental_context_manifest=supplemental_context.manifest,
             source_finding=source_finding,
             review_id=state.review_id,
             installation_id=state.pr_context.installation_id,
@@ -789,12 +1054,14 @@ async def _run_trace_pass(
             import_path_resolver=import_path_resolver,
             file_examination_sink=file_examination_sink,
             analyze_event_sink=analyze_event_sink,
+            candidate_event_sink=candidate_event_sink,
             active_policy_version=active_policy_version,
             pass_index=pass_index,
             per_file_cap_tokens=per_file_cap_tokens,
             remaining_budget_tokens=remaining_budget_tokens,
         )
 
+        native_candidates.extend(file_outcome.native_candidates)
         if file_outcome.parser_result is not None:
             n_llm_calls += 1
             n_proposals_seen += file_outcome.parser_result.counters.n_proposals_seen
@@ -819,6 +1086,14 @@ async def _run_trace_pass(
                 file_outcome.parser_result.admitted_findings,
                 admitted_findings,
                 admitted_keys_seen,
+            )
+            admitted_object_ids = {
+                id(finding) for finding in file_outcome.parser_result.admitted_findings
+            }
+            producer_finding_ids.update(
+                finding.finding_id
+                for finding in file_outcome.producer_findings
+                if id(finding) in admitted_object_ids
             )
             # Retain candidates from rejected proposals for replay (DECISIONS.md#025).
             # Trace skips candidates it cannot join to admitted findings.
@@ -863,27 +1138,33 @@ async def _run_trace_pass(
     ended_at = _round_ended_at(started_at, started_mono)
 
     # Finalize and validate the kept set before emitting its FindingEvents.
-    # Different proposals can share a content hash; collapse them first-wins.
+    # Different proposals can share a hash; retain the strongest admitted evidence.
     collapsed_findings = _collapse_by_content_hash(admitted_findings)
 
     # Gated findings survive the soft cap (hitl-gates-high-severity).
     # Exceeding the hard ceiling raises rather than dropping them.
     kept_findings, dropped_findings = cap_findings_by_severity(
-        collapsed_findings, soft_cap=MAX_FINDINGS_PER_ROUND, hard_cap=MAX_FINDINGS_HARD_CAP
+        collapsed_findings,
+        soft_cap=MAX_FINDINGS_PER_ROUND,
+        hard_cap=MAX_FINDINGS_HARD_CAP,
+        protected_finding_ids=verification_hold_finding_ids(
+            collapsed_findings,
+            [*state.native_candidates, *native_candidates],
+            state.candidate_assessments,
+            policy_version=active_policy_version,
+        ),
     )
     n_findings_dropped_over_cap = len(dropped_findings)
 
     # Recount kept findings after admission deduplication, collapse, and capping.
-    # The sequential path identifies producer output by tier and registry membership;
-    # the parallel aggregate uses recorded origin. Dropped proposals balance accounting.
+    # Origin belongs to the selected original, not every finding sharing its hash
+    # or evidence tier. Dropped proposals balance accounting.
     parser_proposal_emitted = n_findings_emitted - n_findings_served - n_findings_observed
-    kept_served = sum(1 for f in kept_findings if f.content_hash in served_content_hashes)
+    kept_served = sum(1 for f in kept_findings if f.finding_id in served_finding_ids)
     kept_observed = sum(
         1
         for f in kept_findings
-        if f.content_hash not in served_content_hashes
-        and f.evidence_tier is EvidenceTier.OBSERVED
-        and f.query_match_id in OBSERVED_QUERY_IDS
+        if f.finding_id not in served_finding_ids and f.finding_id in producer_finding_ids
     )
     kept_proposals = len(kept_findings) - kept_served - kept_observed
     n_proposals_dropped = parser_proposal_emitted - kept_proposals
@@ -920,6 +1201,7 @@ async def _run_trace_pass(
         n_llm_calls=n_llm_calls,
         n_proposals_seen=n_proposals_seen,
         n_findings_emitted=n_findings_emitted,
+        selected_finding_ids=tuple(finding.finding_id for finding in kept_findings),
         n_findings_served=n_findings_served,
         n_findings_observed=n_findings_observed,
         n_proposals_superseded_by_observed=n_proposals_superseded_by_observed,
@@ -987,6 +1269,7 @@ async def _run_trace_pass(
         update={
             "analysis_rounds": [new_round],
             "trace_candidates": list(trace_candidates),
+            "native_candidates": native_candidates,
             # Only pass 0 produces worker outcomes.
             "analyze_worker_outcomes": [],
         },
@@ -1011,10 +1294,17 @@ async def analyze(
     import_path_resolver: ImportPathResolver,
     active_policy_version: str = ACTIVE_POLICY_VERSION,
     total_review_budget_tokens: int = DEFAULT_REVIEW_BUDGET_TOKENS,
+    supplemental_context_enabled: bool = True,
+    called_function_context_enabled: bool = False,
+    module_context_enabled: bool = False,
+    companion_context_enabled: bool = False,
+    import_reference_context_enabled: bool = False,
+    github_factory: Callable[[int], Awaitable[InstallationGitHubClient]] | None = None,
     trivial_scope_filter_enabled: bool = False,
     analyze_observed_skip_enforced: bool = False,
     analyze_cache_store: AnalyzeCacheStore | None = None,
     cache_mode: CacheMode = CacheMode.SHADOW,
+    candidate_event_sink: CandidateEventSink | None = None,
 ) -> Command[Literal["analyze_file", "analyze_aggregate", "synthesize"]]:
     """Open the analysis phase, then plan workers or run the trace pass.
 
@@ -1023,6 +1313,29 @@ async def analyze(
     `_run_trace_pass`, which reviews fetched scopes sequentially and
     routes to synthesis.
     """
+    if called_function_context_enabled and not state.is_eval:
+        raise ValueError("called-function context is available only for evaluation reviews")
+    if module_context_enabled and not state.is_eval:
+        raise ValueError("module context is available only for evaluation reviews")
+    if (
+        sum(
+            (
+                module_context_enabled,
+                called_function_context_enabled,
+                import_reference_context_enabled,
+            )
+        )
+        > 1
+    ):
+        raise ValueError("optional import/module/called-function modes cannot be enabled together")
+    if module_context_enabled and not supplemental_context_enabled:
+        raise ValueError("module context requires the base context supplement")
+    if companion_context_enabled and not supplemental_context_enabled:
+        raise ValueError("companion context requires the base context supplement")
+    if import_reference_context_enabled and (
+        not supplemental_context_enabled or github_factory is None
+    ):
+        raise ValueError("import references require base context and a GitHub factory")
     # Derive the pass from merged rounds so each pass has a distinct round_id.
     # The graph's trace router enforces MAX_ANALYSIS_ROUNDS.
     pass_index = len(state.analysis_rounds)
@@ -1097,9 +1410,17 @@ async def analyze(
             per_file_cap_tokens=per_file_cap_tokens,
             cache_scope=cache_scope,
             triage_result=state.triage_result,
+            supplemental_context_enabled=supplemental_context_enabled,
+            called_function_context_enabled=called_function_context_enabled,
+            module_context_enabled=module_context_enabled,
+            companion_context_enabled=companion_context_enabled,
+            import_reference_context_enabled=import_reference_context_enabled,
+            github_factory=github_factory,
+            import_path_resolver=import_path_resolver,
         )
     return await _run_trace_pass(
         state,
+        supplemental_context_enabled=supplemental_context_enabled,
         provider=provider,
         analyze_model=analyze_model,
         profile_id=profile_id,
@@ -1108,6 +1429,7 @@ async def analyze(
         phase_event_sink=phase_event_sink,
         file_examination_sink=file_examination_sink,
         analyze_event_sink=analyze_event_sink,
+        candidate_event_sink=candidate_event_sink,
         anomaly_sink=anomaly_sink,
         import_path_resolver=import_path_resolver,
         active_policy_version=active_policy_version,
@@ -1140,6 +1462,7 @@ def _worker_outcome_for(
             review_tier=review_tier,
             parse_status=file_outcome.parse_status,  # type: ignore[arg-type]  # non-skip by branch
             admitted_findings=parser_result.admitted_findings,
+            native_candidates=file_outcome.native_candidates,
             producer_findings=file_outcome.producer_findings,
             trace_candidates=parser_result.trace_candidates,
             subsumed_matches=file_outcome.subsumed_matches,
@@ -1248,6 +1571,7 @@ class _FileOutcome:
     subsumed_matches: tuple[ObservedSubsumedMatch, ...] = ()
     # Original producer objects let builders check survival by identity before cloning.
     producer_findings: tuple[ReviewFinding, ...] = ()
+    native_candidates: tuple[NativeCandidateRef, ...] = ()
 
 
 class _ServeReconstructionError(Exception):
@@ -1267,6 +1591,7 @@ async def _serve_cache_hit(
     is_eval: bool,
     file_path: str,
     included_scope_units: tuple[ScopeUnit, ...],
+    supplemental_context_manifest: tuple[ContextManifestEntry, ...] = (),
     analyze_event_sink: AnalyzeEventSink,
     file_examination_sink: FileExaminationSink,
     phase_key: str | None,
@@ -1315,11 +1640,9 @@ async def _serve_cache_hit(
         served_candidates = tuple(
             TraceCandidate.model_validate(dump) for dump in entry.payload["trace_candidates"]
         )
-        # Cross-type subsumption proof-retention records (DECISIONS.md#055): the
-        # dropped OBSERVED findings are NOT in `findings`, so reconstruct their
-        # telemetry from the payload so a cache HIT retains the proof too. `.get`
-        # tolerates pre-#055 rows (none survive the analyze-parser-v4 bump, but the
-        # default keeps reconstruction total).
+        # Dropped OBSERVED findings are absent from findings, so restore their
+        # subsumption proof separately (DECISIONS.md#055). Missing proof arrays
+        # default to empty for pre-#055 payload compatibility.
         served_subsumed_matches = tuple(
             ObservedSubsumedMatch.model_validate(dump)
             for dump in entry.payload.get("subsumed_matches", [])
@@ -1334,18 +1657,10 @@ async def _serve_cache_hit(
             f"serve reconstruction failed for {file_path}: {type(exc).__name__}"
         ) from exc
 
-    # Pre-emit uniqueness gate (FUP-177): a malformed-but-live payload with a
-    # duplicate-finding set would, under the (review_id, content_hash) re-mint,
-    # produce duplicate finding_ids — appending duplicate FindingEvents / hitting
-    # persister conflicts BEFORE the `AnalysisRound` validators (which run only
-    # AFTER this returns) reject the round. Enforce the round's uniqueness
-    # invariants HERE, before any emit; a violation raises into the degrade guard.
-    # Two arms suffice: finding_id is uuid5(review_id, content_hash), so
-    # finding_id-uniqueness IS content_hash-uniqueness for the served set (a
-    # separate content_hash arm would be redundant) — finding_id is the
-    # emit-collision key. proposal_hash is the independent second invariant
-    # (`AnalysisRound._enforce_findings_proposal_hash_unique`): two findings with
-    # distinct content can still share a proposal_hash.
+    # Enforce round uniqueness before emitting anything (FUP-177); later round
+    # validation cannot undo conflicting events. Re-minted finding_id already
+    # covers content_hash uniqueness. proposal_hash needs its own check because
+    # distinct findings may share it. Violations fall back to the model.
     if len({f.finding_id for f in served_findings}) != len(served_findings) or len(
         {f.proposal_hash for f in served_findings}
     ) != len(served_findings):
@@ -1366,7 +1681,8 @@ async def _serve_cache_hit(
             served_finding_count=len(served_findings),
             context_summary=_build_context_manifest(
                 file_path, included_scope_units, inclusion_reason="changed_scope"
-            ),
+            )
+            + supplemental_context_manifest,
             served_trace_candidates=tuple(
                 ServedTraceCandidateRef(
                     candidate_id=c.candidate_id,
@@ -1448,11 +1764,9 @@ def _filter_query_ids_to_scopes(
     in `_build_query_match_id_set` (unreachable in practice for a file with
     no catalog: its fired set is already empty).
 
-    Used only when the trivial-scope filter excluded scopes from the
-    prompt (specs/2026-06-10-trivial-scope-filter.md): IDs whose matches
-    fall only in excluded scopes must not advertise — the same filtered
-    set feeds both the prompt and the parser's OBSERVED admission, so a
-    finding cannot cite structural proof from code the model never saw.
+    Apply before the first prompt and again after trivial-scope filtering.
+    The prompt and parser share this set; matches confined to supplemental
+    or omitted code do not advertise an OBSERVED identifier.
     Half-open intersection over `QueryMatchSpan` envelopes.
     """
     grammar = query_registry.grammar_for_path(file_path)
@@ -1475,6 +1789,7 @@ def _classify_included_scopes(
     triviality_context: FileTrivialityContext,
     patched_file: PatchedFile,
     included_scope_units: tuple[ScopeUnit, ...],
+    base_scope_units: tuple[ScopeUnit, ...] = (),
 ) -> tuple[ScopeExclusionEntry, ...]:
     """Classify every admitted scope through the trivial-scope filter;
     return one audit entry per scope (specs/2026-06-10-trivial-scope-filter.md).
@@ -1501,7 +1816,13 @@ def _classify_included_scopes(
 
     entries: list[ScopeExclusionEntry] = []
     for su in included_scope_units:
-        changed = changed_line_spans(su, patched_file, head_source=content, base_source=base_text)
+        changed = changed_line_spans(
+            su,
+            patched_file,
+            head_source=content,
+            base_source=base_text,
+            base_scope_units=base_scope_units,
+        )
         verdict = classify_scope_triviality(changed, triviality_context)
         entries.append(
             ScopeExclusionEntry(
@@ -1527,20 +1848,31 @@ def _assemble_scope_unit_context(
     source_bytes: bytes,
     fence_lang: str = "python",
 ) -> str:
-    """Render scope kind, name, source-line range and fenced body for each unit.
+    """Keep every scope header while rendering each enclosing body once.
 
-    coordinates.extract_scope_unit_body owns byte slicing
+    coordinates owns body containment and byte slicing
     (`coordinates-module-is-sole-translator`). This block adds no caller/import
     graph context. The call-site budget gate limits size; an assembly-time cap
     remains deferred (FUP-052)."""
     blocks: list[str] = []
-    for scope_unit in included_scope_units:
-        body = extract_scope_unit_body(scope_unit, source_bytes)
+    body_owners = scope_unit_body_owners(included_scope_units)
+    for index, scope_unit in enumerate(included_scope_units):
         name = scope_unit.qualified_name or scope_unit.name
+        owner_index = body_owners[index]
+        owner = included_scope_units[owner_index]
+        if owner_index == index:
+            body = extract_scope_unit_body(scope_unit, source_bytes)
+            rendered = safe_code_fence(body, lang=fence_lang)
+        else:
+            owner_name = owner.qualified_name or owner.name
+            rendered = (
+                f"Body included in selected {owner.kind} `{owner_name}` "
+                f"(lines {owner.line_start}-{owner.line_end})."
+            )
         blocks.append(
             f"### {scope_unit.kind} `{name}` "
             f"(lines {scope_unit.line_start}-{scope_unit.line_end})\n"
-            f"{safe_code_fence(body, lang=fence_lang)}"
+            f"{rendered}"
         )
     return "\n\n".join(blocks)
 
@@ -1562,12 +1894,23 @@ def _assemble_query_match_id_list(query_match_id_set: frozenset[str]) -> str:
 def _concat_clipped_hunks(clipped_per_unit: tuple[tuple[str, ...], ...]) -> str:
     """Concatenate the per-scope-unit clipped hunks into the prompt's `diff_hunks` block.
 
-    Per-unit hunks join with single newlines; per-unit blocks separate
+    Exact repeated hunk strings appear once. Surviving per-unit hunks join with
+    single newlines; distinct unit blocks separate
     with blank lines so the model can visually tell where one unit's
     diff ends and the next begins. The full PR diff is never in this
     string — only hunks already clipped to included scope unit lines.
     """
-    return "\n\n".join("\n".join(hunks) for hunks in clipped_per_unit)
+    blocks: list[str] = []
+    seen: set[str] = set()
+    for hunks in clipped_per_unit:
+        unique_hunks: list[str] = []
+        for hunk in hunks:
+            if hunk not in seen:
+                seen.add(hunk)
+                unique_hunks.append(hunk)
+        if unique_hunks or not hunks:
+            blocks.append("\n".join(unique_hunks))
+    return "\n\n".join(blocks)
 
 
 async def _emit_skip(
@@ -1662,11 +2005,10 @@ def _build_context_manifest(
     *,
     inclusion_reason: Literal["changed_scope", "same_file_context", "trace_expansion"],
 ) -> tuple[ContextManifestEntry, ...]:
-    """One `ContextManifestEntry` per scope unit — the `context_summary` that rides
-    every analyze emit (LLMCallEvent on the clean + trace paths, CacheServeEvent on
-    the serve path). Extracted (FUP-178) so the three paths cannot drift on the
-    manifest shape; the clean path keeps its own `degraded_mode` empty-manifest
-    guard at the call site."""
+    """Build the shared clean, trace and cache-serve context manifest (FUP-178).
+
+    Primary text regions are recorded separately from structural scope entries.
+    """
     return tuple(
         ContextManifestEntry(
             file_path=file_path,
@@ -1688,10 +2030,10 @@ async def _emit_examination(
     parse_status: _ParseStatus = "clean",
     phase_key: str | None,
 ) -> None:
-    """Emit the single `FileExaminationEvent` for a KEPT (non-skipped) file —
-    sibling to `_emit_skip` (FUP-178). The clean, trace, and serve paths share this
-    one emission shape; `parse_status` defaults to "clean" (serve + trace), and the
-    clean path passes its own `parse_status_for_event`."""
+    """Record one kept file's examination across clean, trace and serve paths (FUP-178).
+
+    Clean analysis supplies its parse status; trace and serve use the clean default.
+    """
     await file_examination_sink.emit_file_examination(
         FileExaminationEvent(
             review_id=review_id,
@@ -1842,9 +2184,516 @@ async def _emit_parser_rejections(
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _PrimaryRegionContext:
+    """Actual HEAD ranges served as primary context, separate from AST scopes."""
+
+    line_ranges: tuple[tuple[int, int], ...] = ()
+    source: str = ""
+    diff_hunks: str = ""
+    omitted: bool = False
+
+
+def _prepare_primary_regions(
+    content: str, patched_file: PatchedFile, line_ranges: tuple[tuple[int, int], ...]
+) -> _PrimaryRegionContext:
+    """Keep complete source lines and their authentic diffs within fixed bounds."""
+    head_line_count = source_line_count(content)
+    selected: list[tuple[int, int]] = []
+    sources: list[str] = []
+    diffs: list[str] = []
+    used_lines = used_bytes = 0
+    for start, end in line_ranges:
+        bounded_end = min(end, start + _PRIMARY_REGION_LINE_CAP - used_lines - 1)
+        while bounded_end >= start:
+            body = extract_line_range_body(start, bounded_end, content)
+            lines = body.removesuffix("\n").split("\n")
+            numbered = "\n".join(f"{number} | {line}" for number, line in enumerate(lines, start))
+            source = f"HEAD lines {start}-{bounded_end}\n{numbered}"
+            diff = "\n".join(
+                line_range_diff_hunks(
+                    patched_file, start, bounded_end, head_line_count=head_line_count
+                )
+            )
+            size = len((source + diff).encode("utf-8")) + (4 if sources else 0)
+            if used_bytes + size <= _PRIMARY_REGION_BYTE_CAP:
+                selected.append((start, bounded_end))
+                sources.append(source)
+                diffs.append(diff)
+                used_lines += bounded_end - start + 1
+                used_bytes += size
+                break
+            bounded_end -= 1
+    return _PrimaryRegionContext(
+        line_ranges=tuple(selected),
+        source="\n\n".join(sources),
+        diff_hunks="\n\n".join(diffs),
+        omitted=tuple(selected) != line_ranges,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedFileReview:
+    """Source facts and a non-skipped route shared by later analysis stages."""
+
+    content: str
+    content_bytes: bytes
+    file_byte_length: int
+    parse_result: ParseResult
+    patched_file: PatchedFile | None
+    decision: DegradationDecision
+    module_all_scope_units: tuple[ScopeUnit, ...]
+    module_added_ranges: tuple[tuple[int, int], ...]
+    module_matches: tuple[ObservedMatch, ...]
+    base_scope_units: tuple[ScopeUnit, ...] = ()
+    primary_context: _PrimaryRegionContext = _PrimaryRegionContext()
+    source_side: Literal["head", "base"] = "head"
+
+
+def _select_structural_file_review(
+    *,
+    changed_file: ChangedFile,
+    content: str,
+    content_bytes: bytes,
+    file_byte_length: int,
+    parse_result: ParseResult,
+    patched_file: PatchedFile | None,
+    import_path_resolver: ImportPathResolver,
+) -> _PreparedFileReview | SkipReason:
+    """Select scoped or degraded review from parsed HEAD and available BASE context."""
+    base_scope_units: tuple[ScopeUnit, ...] = ()
+    if (
+        patched_file is not None
+        and patched_file_has_removed_lines(patched_file)
+        and changed_file.content_base is not None
+    ):
+        base_parse = parse_source(
+            changed_file.content_base.encode("utf-8"), changed_file.path, import_path_resolver
+        )
+        if (
+            base_parse.parser_outcome == "clean"
+            and not base_parse.error_lines
+            and not any(base_parse.has_error.values())
+        ):
+            base_scope_units = base_parse.scope_units
+
+    # Derive module inputs once for routing, producer admission, and cache identity
+    # (DECISIONS.md#062). The catalog sweep remains lazy.
+    module_all_scope_units, module_added_ranges = module_admission_inputs(
+        parse_result, patched_file, changed_file.content_head
+    )
+
+    # The pure degradation decision selects skip, bounded hunks, or scoped review.
+    # Its parse-failure route remains for future raw-byte intake (FUP-053).
+    decision = decide_degradation(parse_result, patched_file, base_scope_units=base_scope_units)
+
+    # Sweep only when module matches could rescue NO_CHANGED_SCOPE_UNITS.
+    # Reuse those matches for production; ineligible languages short-circuit
+    # (DECISIONS.md#062).
+    module_matches: tuple[ObservedMatch, ...] = ()
+    if (
+        decision.mode == "skip"
+        and decision.skip_reason is SkipReason.NO_CHANGED_SCOPE_UNITS
+        and module_added_ranges
+    ):
+        module_matches = module_level_observed_matches(
+            file_path=changed_file.path,
+            head_content=content,
+            all_scope_units=module_all_scope_units,
+            added_line_ranges=module_added_ranges,
+            import_refs=parse_result.imports,
+            lexical_bindings=parse_result.lexical_bindings,
+        )
+        if module_matches:
+            decision = decide_degradation(
+                parse_result,
+                patched_file,
+                module_level_observed_candidate=True,
+                base_scope_units=base_scope_units,
+            )
+    primary = _PrimaryRegionContext()
+    if (
+        patched_file is not None
+        and changed_file.content_head is not None
+        and not parse_result.error_lines
+        and not any(parse_result.has_error.values())
+        and (decision.mode == "clean" or decision.skip_reason is SkipReason.NO_CHANGED_SCOPE_UNITS)
+    ):
+        ranges = unscoped_changed_line_ranges(
+            patched_file,
+            decision.included_scope_units,
+            base_scope_units=base_scope_units,
+            head_line_count=source_line_count(content),
+        )
+        primary = _prepare_primary_regions(content, patched_file, ranges)
+        decision = decide_degradation(
+            parse_result,
+            patched_file,
+            base_scope_units=base_scope_units,
+            primary_line_ranges=primary.line_ranges,
+        )
+    if decision.mode == "skip":
+        skip_reason = decision.skip_reason
+        if skip_reason is None:  # DegradationDecision guard makes this impossible; narrows mypy.
+            raise RuntimeError("DegradationDecision mode='skip' with skip_reason None")
+        return skip_reason
+    return _PreparedFileReview(
+        content=content,
+        content_bytes=content_bytes,
+        file_byte_length=file_byte_length,
+        parse_result=parse_result,
+        patched_file=patched_file,
+        decision=decision,
+        module_all_scope_units=module_all_scope_units,
+        module_added_ranges=module_added_ranges,
+        module_matches=module_matches,
+        base_scope_units=base_scope_units,
+        primary_context=primary,
+    )
+
+
+def _select_file_review(
+    *,
+    changed_file: ChangedFile,
+    import_path_resolver: ImportPathResolver,
+) -> _PreparedFileReview | SkipReason:
+    """Select source, coordinates and route without audit or model side effects."""
+    # Triage can keep files without a registered language adapter; skip them
+    # before parsing (DECISIONS.md#018).
+    text_only = _text_config_supported(changed_file.path) and not _language_supported(
+        changed_file.path
+    )
+    if not _language_supported(changed_file.path) and not text_only:
+        return SkipReason.UNSUPPORTED_LANGUAGE
+
+    # An empty head is current content; only None permits the base fallback.
+    if changed_file.content_head is not None:
+        content = changed_file.content_head
+    elif changed_file.content_base is not None:
+        content = changed_file.content_base
+    else:
+        content = None
+    if content is None:
+        return SkipReason.NO_REVIEWABLE_CONTEXT
+
+    # Reuse the byte length for every proposal's span check.
+    content_bytes = content.encode("utf-8")
+    file_byte_length = len(content_bytes)
+
+    if text_only:
+        excluded = should_skip(changed_file.path, content_bytes)
+        if excluded is not None:
+            return excluded
+        # No AST adapter ran. This carrier has no structural facts or success claim.
+        parse_result = ParseResult(
+            parser_outcome="skipped", skip_reason=SkipReason.UNSUPPORTED_LANGUAGE
+        )
+    else:
+        parse_result = parse_source(content_bytes, changed_file.path, import_path_resolver)
+
+    # Handle parser exclusions before patch lookup, which can raise on malformed
+    # or duplicate patches. Pass the skip reason through without a model call.
+    if parse_result.parser_outcome == "skipped" and not text_only:
+        # ParseResult validator guarantees skip_reason non-None when
+        # parser_outcome="skipped"; rebind narrows for mypy.
+        parser_skip_reason = parse_result.skip_reason
+        if parser_skip_reason is None:  # validator-impossible; kept for narrowing
+            raise RuntimeError(
+                "ParseResult invariant violated: parser_outcome='skipped' "
+                "requires non-None skip_reason"
+            )
+        return parser_skip_reason
+
+    if changed_file.status == "removed":
+        if changed_file.content_base == "" and changed_file.content_head is None:
+            return SkipReason.NO_REVIEWABLE_CONTEXT
+        try:
+            removed = prepare_removed_file_context(
+                changed_file,
+                max_lines=_PRIMARY_REGION_LINE_CAP,
+                max_source_bytes=_PRIMARY_REGION_BYTE_CAP,
+            )
+        except CoordinateError:
+            return SkipReason.PATCH_BASE_MISALIGNED
+        if not removed.line_ranges:
+            return SkipReason.NO_REVIEWABLE_CONTEXT
+        return _PreparedFileReview(
+            content=content,
+            content_bytes=content_bytes,
+            file_byte_length=file_byte_length,
+            parse_result=parse_result,
+            patched_file=removed.patched_file,
+            decision=DegradationDecision(
+                mode="degraded",
+                parse_status="degraded",
+                degradation_reason=DegradationReason.FILE_REMOVAL,
+                included_primary_line_ranges=removed.line_ranges,
+            ),
+            module_all_scope_units=(),
+            module_added_ranges=(),
+            module_matches=(),
+            primary_context=_PrimaryRegionContext(
+                line_ranges=removed.line_ranges,
+                source=removed.numbered_source,
+                diff_hunks=removed.diff_hunks,
+                omitted=removed.omitted,
+            ),
+            source_side="base",
+        )
+
+    # Missing or path-rejected patch context returns None. A malformed patch can
+    # raise here, after parser exclusions have already returned.
+    patched_file = lookup_patched_file(changed_file.patch, changed_file.path)
+
+    # Validate patch/head alignment before routing: every later span uses this
+    # coordinate frame. The coordinates layer raises on mismatched added lines;
+    # only that mismatch becomes a skip (FUP-217).
+    if patched_file is not None:
+        if changed_file.content_head is None:
+            misaligned = patched_file_has_added_lines(patched_file)
+        else:
+            try:
+                added_line_byte_ranges(patched_file, changed_file.content_head)
+                misaligned = False
+            except CoordinateError:
+                misaligned = True
+        if misaligned:
+            return SkipReason.PATCH_HEAD_MISALIGNED
+
+    if changed_file.content_head is None:
+        return SkipReason.NO_CHANGED_SCOPE_UNITS
+
+    if text_only:
+        primary = (
+            _prepare_primary_regions(
+                content,
+                patched_file,
+                unscoped_changed_line_ranges(
+                    patched_file,
+                    (),
+                    head_line_count=source_line_count(content),
+                ),
+            )
+            if patched_file is not None and changed_file.content_head is not None
+            else _PrimaryRegionContext()
+        )
+        if not primary.line_ranges:
+            return SkipReason.NO_REVIEWABLE_CONTEXT
+        return _PreparedFileReview(
+            content=content,
+            content_bytes=content_bytes,
+            file_byte_length=file_byte_length,
+            parse_result=parse_result,
+            patched_file=patched_file,
+            decision=DegradationDecision(
+                mode="degraded",
+                parse_status="degraded",
+                degradation_reason=DegradationReason.TEXT_ONLY_CONTEXT,
+                included_primary_line_ranges=primary.line_ranges,
+            ),
+            module_all_scope_units=(),
+            module_added_ranges=(),
+            module_matches=(),
+            primary_context=primary,
+        )
+
+    return _select_structural_file_review(
+        changed_file=changed_file,
+        content=content,
+        content_bytes=content_bytes,
+        file_byte_length=file_byte_length,
+        parse_result=parse_result,
+        patched_file=patched_file,
+        import_path_resolver=import_path_resolver,
+    )
+
+
+async def _prepare_file_review(
+    *,
+    changed_file: ChangedFile,
+    review_id: UUID,
+    is_eval: bool,
+    import_path_resolver: ImportPathResolver,
+    file_examination_sink: FileExaminationSink,
+    phase_key: str | None,
+) -> _FileOutcome | _PreparedFileReview:
+    """Select the same route as planning and emit skips inside the worker phase."""
+    prepared = _select_file_review(
+        changed_file=changed_file, import_path_resolver=import_path_resolver
+    )
+    if isinstance(prepared, SkipReason):
+        if prepared is SkipReason.PATCH_HEAD_MISALIGNED:
+            logger.warning(
+                "patch/head-content misalignment for %s — file skipped "
+                "(PATCH_HEAD_MISALIGNED; review continues)",
+                changed_file.path,
+            )
+        return await _emit_skip(
+            file_examination_sink=file_examination_sink,
+            review_id=review_id,
+            is_eval=is_eval,
+            file_path=changed_file.path,
+            phase_key=phase_key,
+            skip_reason=prepared,
+        )
+    return prepared
+
+
+async def _preserve_native_candidates(
+    response: LLMResponse,
+    parser_result: ParserResult,
+    *,
+    review_id: UUID,
+    file_path: str,
+    pass_index: int,
+    is_eval: bool,
+    phase_key: str | None,
+    sink: CandidateEventSink | None,
+    source_side: Literal["head", "base"] = "head",
+) -> tuple[NativeCandidateRef, ...]:
+    """Record original proposal references before producer merge and finding caps."""
+    if sink is None:
+        return ()
+    candidates = collect_native_candidates(
+        response,
+        parser_result,
+        review_id=review_id,
+        file_path=file_path,
+        pass_index=pass_index,
+        source_side=source_side,
+    )
+    for candidate in candidates:
+        await sink.emit_native_candidate(
+            NativeCandidateEvent(
+                event_id=candidate_event_id(candidate.candidate_id),
+                timestamp=response.exchange_recorded_at or datetime.now(UTC),
+                review_id=review_id,
+                is_eval=is_eval,
+                phase_key=phase_key,
+                candidate=candidate,
+            )
+        )
+    return candidates
+
+
+@dataclass(frozen=True)
+class _PreparedFilePrompt:
+    """The unfiltered request and proof ranges priced by planner and worker."""
+
+    prompt_parts: analyze_prompt.AnalyzePromptParts
+    query_match_id_set: frozenset[str]
+    degraded_evidence_byte_ranges: tuple[tuple[int, int], ...]
+    estimated_tokens: int
+
+
+def _prepare_file_prompt(
+    prepared: _PreparedFileReview,
+    *,
+    file_path: str,
+    pass_index: int,
+    review_context: str,
+) -> _PreparedFilePrompt:
+    """Render the complete selected review, including proof IDs and output ceiling."""
+    content = prepared.content
+    content_bytes = prepared.content_bytes
+    patched_file = prepared.patched_file
+    decision = prepared.decision
+    primary_context = prepared.primary_context
+    primary_line_ranges = primary_context.line_ranges
+    source_side = prepared.source_side
+    degradation_reason = decision.degradation_reason
+    included_scope_units = decision.included_scope_units
+    included_clipped_hunks = decision.included_clipped_hunks
+    degraded_mode = decision.mode == "degraded"
+
+    # Run structural queries under the registered language grammar. Degraded
+    # prompts cannot cite structural proof; an empty fired set rejects OBSERVED
+    # model proposals.
+    query_match_id_set: frozenset[str] = (
+        frozenset()
+        if degraded_mode
+        else _filter_query_ids_to_scopes(
+            _build_query_match_id_set(content_bytes, file_path=file_path),
+            content_bytes,
+            included_scope_units,
+            file_path=file_path,
+        )
+    )
+
+    # Build scoped context for clean files, bounded diff context for degraded ones.
+    degraded_evidence_byte_ranges: tuple[tuple[int, int], ...] = ()
+    if degraded_mode:
+        # The degradation decision guarantees both values; this check narrows them.
+        if degradation_reason is None or patched_file is None:
+            raise RuntimeError(
+                "analyze: degraded_mode true with degradation_reason/patched_file None "
+                "— upstream outcome-determination invariant violated"
+            )
+        if primary_line_ranges:
+            bounded_hunks = primary_context.diff_hunks
+            degraded_evidence_byte_ranges = tuple(
+                (span.byte_start, span.byte_end)
+                for start, end in primary_line_ranges
+                for span in (line_range_to_span(start, end, content),)
+            )
+        else:
+            bounded_diff = bound_diff_context(
+                patched_file,
+                content,
+                max_lines=_DEGRADED_HUNK_LINE_CAP,
+                max_chars=_DEGRADED_HUNK_CHAR_CAP,
+            )
+            bounded_hunks = bounded_diff.text
+            degraded_evidence_byte_ranges = bounded_diff.head_byte_ranges
+        render_text_review = (
+            analyze_prompt.render_deleted
+            if source_side == "base"
+            else analyze_prompt.render_degraded
+        )
+        prompt_parts = render_text_review(
+            file_path=file_path,
+            bounded_hunks=bounded_hunks,
+            pass_index=pass_index,
+            review_context=review_context,
+            degradation_reason=degradation_reason,
+            primary_source_context=primary_context.source,
+            primary_context_omitted=primary_context.omitted,
+        )
+    else:
+        prompt_parts = analyze_prompt.render(
+            file_path=file_path,
+            scope_unit_context=_assemble_scope_unit_context(
+                included_scope_units=included_scope_units,
+                source_bytes=content_bytes,
+                fence_lang=_fence_lang_for(file_path),
+            ),
+            query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
+            diff_hunks=_concat_clipped_hunks(included_clipped_hunks),
+            pass_index=pass_index,
+            review_context=review_context,
+            primary_source_context=primary_context.source,
+            primary_diff_hunks=primary_context.diff_hunks,
+            primary_context_omitted=primary_context.omitted,
+        )
+
+    estimated_tokens = (
+        _estimate_tokens(prompt_parts.system_prompt)
+        + _estimate_tokens(prompt_parts.user_prompt)
+        + analyze_prompt.MAX_TOKENS
+    )
+    return _PreparedFilePrompt(
+        prompt_parts=prompt_parts,
+        query_match_id_set=query_match_id_set,
+        degraded_evidence_byte_ranges=degraded_evidence_byte_ranges,
+        estimated_tokens=estimated_tokens,
+    )
+
+
 async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orchestration boundary; outcome branches resist further extraction without losing audit clarity
     *,
     changed_file: ChangedFile,
+    review_context: str = "",
+    supplemental_context_manifest: tuple[ContextManifestEntry, ...] = (),
     review_id: UUID,
     installation_id: int,
     is_eval: bool,
@@ -1866,6 +2715,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     reasoning_enabled: bool | None = None,
     profile_contract_digest: str | None = None,
     phase_key: str | None,
+    candidate_event_sink: CandidateEventSink | None = None,
 ) -> _FileOutcome:
     """Review a triage-kept file through eligibility, context, and budget gates.
 
@@ -1874,196 +2724,51 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     producer findings, audit rejections, and cache the completed result.
     Finding emission waits for the caller's round cap.
     """
-    # Triage can keep files without a registered language adapter; skip them
-    # before parsing (DECISIONS.md#018).
-    if not _language_supported(changed_file.path):
-        return await _emit_skip(
-            file_examination_sink=file_examination_sink,
-            review_id=review_id,
-            is_eval=is_eval,
-            file_path=changed_file.path,
-            phase_key=phase_key,
-            skip_reason=SkipReason.UNSUPPORTED_LANGUAGE,
-        )
 
-    # An empty head is current content; only None permits the base fallback.
-    if changed_file.content_head is not None:
-        content = changed_file.content_head
-    elif changed_file.content_base is not None:
-        content = changed_file.content_base
-    else:
-        content = None
-    if content is None:
-        return await _emit_skip(
-            file_examination_sink=file_examination_sink,
-            review_id=review_id,
-            is_eval=is_eval,
-            file_path=changed_file.path,
-            phase_key=phase_key,
-            skip_reason=SkipReason.NO_REVIEWABLE_CONTEXT,
-        )
-
-    # Reuse the byte length for every proposal's span check.
-    content_bytes = content.encode("utf-8")
-    file_byte_length = len(content_bytes)
-
-    parse_result: ParseResult = parse_source(
-        content_bytes,
-        changed_file.path,
-        import_path_resolver,
+    prepared = await _prepare_file_review(
+        changed_file=changed_file,
+        review_id=review_id,
+        is_eval=is_eval,
+        import_path_resolver=import_path_resolver,
+        file_examination_sink=file_examination_sink,
+        phase_key=phase_key,
     )
+    if isinstance(prepared, _FileOutcome):
+        return prepared
+    content = prepared.content
+    content_bytes = prepared.content_bytes
+    file_byte_length = prepared.file_byte_length
+    parse_result = prepared.parse_result
+    patched_file = prepared.patched_file
+    decision = prepared.decision
+    module_all_scope_units = prepared.module_all_scope_units
+    module_added_ranges = prepared.module_added_ranges
+    module_matches = prepared.module_matches
+    primary_context = prepared.primary_context
+    primary_line_ranges = primary_context.line_ranges
+    source_side = prepared.source_side
 
-    # Handle parser exclusions before patch lookup, which can raise on malformed
-    # or duplicate patches. Pass the skip reason through without a model call.
-    if parse_result.parser_outcome == "skipped":
-        # ParseResult validator guarantees skip_reason non-None when
-        # parser_outcome="skipped"; rebind narrows for mypy.
-        parser_skip_reason = parse_result.skip_reason
-        if parser_skip_reason is None:  # validator-impossible; kept for narrowing
-            raise RuntimeError(
-                "ParseResult invariant violated: parser_outcome='skipped' "
-                "requires non-None skip_reason"
-            )
-        return await _emit_skip(
-            file_examination_sink=file_examination_sink,
-            review_id=review_id,
-            is_eval=is_eval,
-            file_path=changed_file.path,
-            phase_key=phase_key,
-            skip_reason=parser_skip_reason,
-        )
-
-    # Missing or path-rejected patch context returns None. A malformed patch can
-    # raise here, after parser exclusions have already returned.
-    patched_file = lookup_patched_file(changed_file.patch, changed_file.path)
-
-    # Validate patch/head alignment before routing: every later span uses this
-    # coordinate frame. The coordinates layer raises on mismatched added lines;
-    # only that mismatch becomes a skip (FUP-217).
-    if patched_file is not None:
-        if changed_file.content_head is None:
-            misaligned = patched_file_has_added_lines(patched_file)
-        else:
-            try:
-                added_line_byte_ranges(patched_file, changed_file.content_head)
-                misaligned = False
-            except CoordinateError:
-                misaligned = True
-        if misaligned:
-            logger.warning(
-                "patch/head-content misalignment for %s — file skipped "
-                "(PATCH_HEAD_MISALIGNED; review continues)",
-                changed_file.path,
-            )
-            return await _emit_skip(
-                file_examination_sink=file_examination_sink,
-                review_id=review_id,
-                is_eval=is_eval,
-                file_path=changed_file.path,
-                phase_key=phase_key,
-                skip_reason=SkipReason.PATCH_HEAD_MISALIGNED,
-            )
-
-    # Derive module inputs once for routing, producer admission, and cache identity
-    # (DECISIONS.md#062). The catalog sweep remains lazy.
-    module_all_scope_units, module_added_ranges = module_admission_inputs(
-        parse_result, patched_file, changed_file.content_head
-    )
-
-    # The pure degradation decision selects skip, bounded hunks, or scoped review.
-    # Its parse-failure route remains for future raw-byte intake (FUP-053).
-    decision = decide_degradation(parse_result, patched_file)
-
-    # Sweep only when module matches could rescue NO_CHANGED_SCOPE_UNITS.
-    # Reuse those matches for production; ineligible languages short-circuit
-    # (DECISIONS.md#062).
-    module_matches: tuple[ObservedMatch, ...] = ()
-    if (
-        decision.mode == "skip"
-        and decision.skip_reason is SkipReason.NO_CHANGED_SCOPE_UNITS
-        and module_added_ranges
-    ):
-        module_matches = module_level_observed_matches(
-            file_path=changed_file.path,
-            head_content=content,
-            all_scope_units=module_all_scope_units,
-            added_line_ranges=module_added_ranges,
-            import_refs=parse_result.imports,
-            lexical_bindings=parse_result.lexical_bindings,
-        )
-        if module_matches:
-            decision = decide_degradation(
-                parse_result, patched_file, module_level_observed_candidate=True
-            )
-    if decision.mode == "skip":
-        skip_reason = decision.skip_reason
-        if skip_reason is None:  # DegradationDecision guard makes this impossible; narrows mypy.
-            raise RuntimeError("DegradationDecision mode='skip' with skip_reason None")
-        return await _emit_skip(
-            file_examination_sink=file_examination_sink,
-            review_id=review_id,
-            is_eval=is_eval,
-            file_path=changed_file.path,
-            phase_key=phase_key,
-            skip_reason=skip_reason,
-        )
     degradation_reason: DegradationReason | None = decision.degradation_reason
     parse_status_for_event: _ParseStatus = decision.parse_status
     included_scope_units: tuple[ScopeUnit, ...] = decision.included_scope_units
     included_clipped_hunks: tuple[tuple[str, ...], ...] = decision.included_clipped_hunks
     degraded_mode = decision.mode == "degraded"
 
-    # Run structural queries under the registered language grammar. Degraded
-    # prompts cannot cite structural proof; an empty fired set rejects OBSERVED
-    # model proposals.
-    is_python = _is_python_file(changed_file.path)
-    query_match_id_set: frozenset[str] = (
-        frozenset()
-        if degraded_mode
-        else _build_query_match_id_set(content_bytes, file_path=changed_file.path)
+    file_prompt = _prepare_file_prompt(
+        prepared,
+        file_path=changed_file.path,
+        pass_index=pass_index,
+        review_context=review_context,
     )
-
-    # Use the same imports for cache identity and parser candidate correction.
-    # Correction applies only to module-form candidates.
+    prompt_parts = file_prompt.prompt_parts
+    query_match_id_set = file_prompt.query_match_id_set
+    degraded_evidence_byte_ranges = file_prompt.degraded_evidence_byte_ranges
+    # Keep admission/cache facts worker-owned; planning only prices the request.
+    is_python = _is_python_file(changed_file.path)
     trace_import_refs = parse_result.imports
 
-    # Build scoped context for clean files, bounded diff context for degraded ones.
-    if degraded_mode:
-        # The degradation decision guarantees both values; this check narrows them.
-        if degradation_reason is None or patched_file is None:
-            raise RuntimeError(
-                "analyze: degraded_mode true with degradation_reason/patched_file None "
-                "— upstream outcome-determination invariant violated"
-            )
-        prompt_parts = analyze_prompt.render_degraded(
-            file_path=changed_file.path,
-            bounded_hunks=bound_diff_hunks_text(
-                patched_file,
-                max_lines=_DEGRADED_HUNK_LINE_CAP,
-                max_chars=_DEGRADED_HUNK_CHAR_CAP,
-            ),
-            pass_index=pass_index,
-            degradation_reason=degradation_reason,
-        )
-    else:
-        prompt_parts = analyze_prompt.render(
-            file_path=changed_file.path,
-            scope_unit_context=_assemble_scope_unit_context(
-                included_scope_units=included_scope_units,
-                source_bytes=content_bytes,
-                fence_lang=_fence_lang_for(changed_file.path),
-            ),
-            query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
-            diff_hunks=_concat_clipped_hunks(included_clipped_hunks),
-            pass_index=pass_index,
-        )
-
     # Gate the full prompt before scope filtering can reduce it.
-    estimated_tokens = (
-        _estimate_tokens(prompt_parts.system_prompt)
-        + _estimate_tokens(prompt_parts.user_prompt)
-        + analyze_prompt.MAX_TOKENS
-    )
+    estimated_tokens = file_prompt.estimated_tokens
     if estimated_tokens > per_file_cap_tokens or estimated_tokens > remaining_budget_tokens:
         # A budget skip must retain zero-token module findings (DECISIONS.md#062).
         # Reuse routing matches, or sweep lazily if the clean route has not needed them.
@@ -2135,6 +2840,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             triviality_context=triviality_context,
             patched_file=patched_file,
             included_scope_units=included_scope_units,
+            base_scope_units=prepared.base_scope_units,
         )
         await analyze_event_sink.emit_scope_exclusion(
             ScopeExclusionEvent(
@@ -2155,7 +2861,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 )
                 if not entry.trivial
             )
-            if not kept:
+            if not kept and not primary_line_ranges:
                 # Preserve changed module findings when every function scope is trivial
                 # (DECISIONS.md#062). This guard is currently unreachable: triviality is
                 # Python-only and the eligible module query is JavaScript-only.
@@ -2206,6 +2912,10 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
                 diff_hunks=_concat_clipped_hunks(included_clipped_hunks),
                 pass_index=pass_index,
+                review_context=review_context,
+                primary_source_context=primary_context.source,
+                primary_diff_hunks=primary_context.diff_hunks,
+                primary_context_omitted=primary_context.omitted,
             )
 
     # Look up clean-pass cache entries after scope filtering. The key describes
@@ -2216,6 +2926,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         analyze_cache_store is not None
         and cache_scope is not None
         and parameterized_call_scan is not None
+        and not primary_line_ranges
     ):
         cache_key = compute_analyze_cache_key(
             system_prompt=prompt_parts.system_prompt,
@@ -2276,6 +2987,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                         is_eval=is_eval,
                         file_path=changed_file.path,
                         included_scope_units=included_scope_units,
+                        supplemental_context_manifest=supplemental_context_manifest,
                         analyze_event_sink=analyze_event_sink,
                         file_examination_sink=file_examination_sink,
                     )
@@ -2341,7 +3053,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 all_scope_units=module_all_scope_units,
                 added_line_ranges=module_added_ranges,
             )
-        if patched_file is not None and decision.emits_skip_shadow:
+        if patched_file is not None and decision.emits_skip_shadow and not primary_line_ranges:
             observed_skip_event = compute_observed_skip_shadow(
                 observed_matches,
                 file_path=changed_file.path,
@@ -2349,6 +3061,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 patched_file=patched_file,
                 head_source=content,
                 base_source=changed_file.content_base,
+                base_scope_units=prepared.base_scope_units,
                 review_id=review_id,
                 is_eval=is_eval,
             )
@@ -2392,14 +3105,28 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 observed_skip_result=_ObservedSkipResult(tuple(skip_findings)),
             )
 
-    # The model receives a manifest of clean scopes. Degraded context uses no
-    # structural manifest, as allowed by the request validator.
+    # Supplemental source has its own exact ranges; it does not change admission.
+    # Degraded primary hunks have no structural scope manifest.
     context_summary: tuple[ContextManifestEntry, ...] = (
-        ()
-        if degraded_mode
-        else _build_context_manifest(
-            changed_file.path, included_scope_units, inclusion_reason="changed_scope"
+        (
+            ()
+            if degraded_mode
+            else _build_context_manifest(
+                changed_file.path, included_scope_units, inclusion_reason="changed_scope"
+            )
         )
+        + tuple(
+            ContextManifestEntry(
+                file_path=changed_file.path,
+                scope_unit_name=f"primary changed region {start}-{end}",
+                line_start=start,
+                line_end=end,
+                inclusion_reason="changed_region",
+                source_side=source_side,
+            )
+            for start, end in primary_line_ranges
+        )
+        + supplemental_context_manifest
     )
     request = LLMRequest(
         model=analyze_model,
@@ -2426,10 +3153,20 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
 
     # Derive allowed degraded spans from the patch through coordinates, not from
     # model or prompt text. Clean-mode admission does not use these ranges.
-    degraded_context_byte_ranges = (
-        added_line_byte_ranges(patched_file, content)
-        if degraded_mode and patched_file is not None
-        else ()
+    if degraded_mode and primary_line_ranges:
+        degraded_context_byte_ranges = tuple(
+            (span.byte_start, span.byte_end)
+            for start, end in primary_line_ranges
+            for span in (line_range_to_span(start, end, content),)
+        )
+    else:
+        degraded_context_byte_ranges = (
+            added_line_byte_ranges(patched_file, content)
+            if degraded_mode and patched_file is not None
+            else ()
+        )
+    collect_trace_candidates = (
+        source_side == "head" and degradation_reason is not DegradationReason.TEXT_ONLY_CONTEXT
     )
     parser_result = parse_analyze_response(
         response.text,
@@ -2439,11 +3176,14 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         file_content=content,
         file_byte_length=file_byte_length,
         included_scope_units=included_scope_units,
+        primary_line_ranges=primary_line_ranges,
         query_match_id_set=query_match_id_set,
         degraded_mode=degraded_mode,
         active_policy_version=active_policy_version,
         degraded_context_byte_ranges=degraded_context_byte_ranges,
+        degraded_evidence_byte_ranges=degraded_evidence_byte_ranges,
         pass_index=pass_index,
+        source_side=source_side,
         finish_reason=response.finish_reason,
         # Admission uses the same parameterized-call facts included in the cache key.
         parameterized_call_scan=parameterized_call_scan,
@@ -2453,7 +3193,21 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         # The registry owns candidate form: dotted modules for Python, relative
         # specifiers for JS/TS. The parser enforces form and repository containment
         # (DECISIONS.md#024).
-        trace_candidate_form=_trace_candidate_form_for(changed_file.path),
+        collect_trace_candidates=collect_trace_candidates,
+        trace_candidate_form=(
+            _trace_candidate_form_for(changed_file.path) if collect_trace_candidates else "module"
+        ),
+    )
+    native_candidates = await _preserve_native_candidates(
+        response,
+        parser_result,
+        review_id=review_id,
+        file_path=changed_file.path,
+        pass_index=pass_index,
+        is_eval=is_eval,
+        phase_key=phase_key,
+        sink=candidate_event_sink,
+        source_side=source_side,
     )
     if parser_result.counters.n_trace_candidates_module_corrected:
         logger.info(
@@ -2564,12 +3318,15 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         estimated_tokens=estimated_tokens,
         subsumed_matches=tuple(subsumed_matches),
         producer_findings=producer_originals,
+        native_candidates=native_candidates,
     )
 
 
 async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration parallel to _process_one_file
     *,
     fetched_file: TraceFetchedFile,
+    review_context: str = "",
+    supplemental_context_manifest: tuple[ContextManifestEntry, ...] = (),
     source_finding: ReviewFinding,
     review_id: UUID,
     installation_id: int,
@@ -2583,6 +3340,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     pass_index: int,
     per_file_cap_tokens: int,
     remaining_budget_tokens: int,
+    candidate_event_sink: CandidateEventSink | None = None,
 ) -> _FileOutcome:
     """Review error-free scopes for a resolved trace target without a PR patch.
 
@@ -2677,6 +3435,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         source_finding_description=source_finding.description,
         source_finding_evidence=source_finding.evidence,
         pass_index=pass_index,
+        review_context=review_context,
     )
 
     estimated_tokens = (
@@ -2703,8 +3462,11 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     )
 
     # Mark these scopes as trace expansion rather than PR changes.
-    context_summary: tuple[ContextManifestEntry, ...] = _build_context_manifest(
-        fetched_file.path, included_scope_units, inclusion_reason="trace_expansion"
+    context_summary: tuple[ContextManifestEntry, ...] = (
+        _build_context_manifest(
+            fetched_file.path, included_scope_units, inclusion_reason="trace_expansion"
+        )
+        + supplemental_context_manifest
     )
     request = LLMRequest(
         model=analyze_model,
@@ -2758,6 +3520,16 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         import_refs=parse_result.imports,
     )
 
+    native_candidates = await _preserve_native_candidates(
+        response,
+        parser_result,
+        review_id=review_id,
+        file_path=fetched_file.path,
+        pass_index=pass_index,
+        is_eval=is_eval,
+        phase_key=None,
+        sink=candidate_event_sink,
+    )
     await _emit_parser_rejections(
         parser_result=parser_result,
         analyze_event_sink=analyze_event_sink,
@@ -2771,6 +3543,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     return _FileOutcome(
         parse_status="clean",
         parser_result=parser_result,
+        native_candidates=native_candidates,
         input_tokens=response.input_tokens,
         output_tokens=response.output_tokens,
         cache_read_tokens=response.cache_read_tokens,
@@ -2798,6 +3571,7 @@ def _lift_proposal_rejection(
         review_id=review_id,
         is_eval=is_eval,
         file_path=rej.file_path,
+        source_side=rej.source_side,
         proposal_hash=rej.proposal_hash,
         claimed_evidence_tier=rej.claimed_evidence_tier,
         claimed_finding_type_hash=rej.claimed_finding_type_hash,
@@ -2822,6 +3596,7 @@ def _lift_response_rejection(
         review_id=review_id,
         is_eval=is_eval,
         file_path=rej.file_path,
+        source_side=rej.source_side,
         response_hash=rej.response_hash,
         rejection_reason=rej.rejection_reason,
         rejection_detail=rej.rejection_detail,

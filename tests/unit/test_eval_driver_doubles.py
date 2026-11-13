@@ -1,16 +1,12 @@
-"""Unit tests for the eval driver's fixture-replay doubles (no DB, no graph).
+"""Check evaluation replay doubles without a graph or database.
 
-Covers the four `src`-local adapters in `outrider.agent.eval_driver` in
-isolation: the scripted LLM provider's `(node, call-index)` keying, the fake
-GitHub client's wire-shape fidelity (newline-wrapped base64 that survives
-intake's strip-then-`validate=True` decode), the capturing publisher, and the
-`EvalFixture` schema's `extra="forbid"` discipline. The full DB-backed run is
-covered by `tests/eval/test_run_review_driver.py`.
-"""
+Cover scripted calls, GitHub response encoding, captured publications, and strict
+fixture models. Full database-backed runs are in eval/test_run_review_driver.py."""
 
 from __future__ import annotations
 
 import base64
+import json
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -127,6 +123,34 @@ async def test_scripted_provider_returns_response_by_node_and_call_index() -> No
     assert persist.events[0].node_id == "triage"
     assert persist.events[0].input_tokens == 100
     assert persist.events[0].cost_usd > 0
+
+
+async def test_scripted_triage_serializes_fixture_paths_in_explicit_slot_order() -> None:
+    payload = {
+        "file_tiers": {"src/b.py": "deep", "src/a.py": "standard"},
+        "overall_risk": "medium",
+        "relevant_dimensions": ["code_quality"],
+        "reasoning": "Review both changed modules.",
+    }
+    fixture_text = json.dumps(payload)
+    responses = {"triage": [fixture_text]}
+    persist = _RecordingPersist()
+    provider = _FixtureScriptedProvider(
+        responses, persister=persist, triage_paths=("src/a.py", "src/b.py")
+    )
+    request = _triage_request().model_copy(
+        update={"prompt_template_version": "triage-v3", "response_schema_json": '{"type":"object"}'}
+    )
+
+    response = await provider.complete(request)
+
+    assert json.loads(response.text) == {
+        **payload,
+        "file_tiers": {"file_1": "standard", "file_2": "deep"},
+    }
+    assert responses == {"triage": [fixture_text]}
+    assert request.response_format_digest is not None
+    assert persist.events[0].response_format_digest == request.response_format_digest
 
 
 async def test_scripted_provider_raises_loud_when_exhausted() -> None:

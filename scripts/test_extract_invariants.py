@@ -1,17 +1,9 @@
 #!/usr/bin/env python3
-"""Smoke-test extract_invariants.py's validation paths.
+"""Check invariant extraction with synthetic tags and headings.
 
-Not a real pytest suite — just confirms the validator rejects the inputs
-we care about before we trust it on the real spec.
-
-NOTE ON TEST SUITE MAINTENANCE:
-The "bare N.N without § is NOT a violation" case below is load-bearing.
-It proves SECTION_RE doesn't over-fire on legitimate decimals (0.9, 0.75,
-0.5, 1.5, "Python 3.13", etc.). The confidence-is-computed-not-assigned
-invariant in the real spec literally contains "0.9, 0.75, 0.5" in its
-rule field. Without that guard test, a future refactor tightening
-SECTION_RE could pass all other cases and still break extraction on the
-real spec. Do not remove that case when pruning the test suite.
+This standalone script covers invalid tags and valid examples before the checker
+runs on the real spec. Keep the decimal-number cases: values such as 0.9 and
+Python 3.13 must not be mistaken for section references by SECTION_RE.
 """
 
 import subprocess

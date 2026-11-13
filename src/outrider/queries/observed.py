@@ -1,17 +1,8 @@
-# OBSERVED-tier query metadata per specs/2026-06-14-observed-query-library-v1.md.
-"""`QueryClass` + `ObservedQuery`: the registry-side metadata for the
-OBSERVED-tier security query library (Cost Lever 3).
+"""Describe findings that structural source checks can produce.
 
-The deterministic OBSERVED producer (`agent/nodes/analyze_observed.py`)
-maps a `QueryMatchSpan` from `queries.registry.match(id, ...)` to a
-`ReviewFinding` with NO model text: `finding_type` drives the
-`SEVERITY_POLICY` severity (never model-set), and the static
-`title`/`description` text is held here, registry-side. `query_class` is
-the default-deny routing tag (`#048` + the spec's promotion gate).
-
-Lives in `queries/` (not `ast_facts/`) because it references
-`policy.FindingType`; the parse layer (`ast_facts/`) must not depend on
-policy. `queries/` is a higher layer and may import `policy/`.
+Each declaration supplies its finding type, text and rollout setting.
+The producer applies severity policy; parser adapters remain independent of
+finding policy. See DECISIONS.md#048.
 """
 
 from __future__ import annotations
@@ -59,7 +50,8 @@ class QueryClass(StrEnum):
     """Routing class for an OBSERVED query.
 
     Default-deny per `DECISIONS.md#049`: every query is `SIGNAL_ONLY` (it
-    emits OBSERVED evidence that AUGMENTS the LLM pass, never skips it)
+    never skips the model pass). `requires_context` separately controls
+    whether a match emits a finding. A query stays signal-only
     unless explicitly promoted to `SKIP_SAFE` by a shadow comparison
     proving the skip loses no JUDGED finding. V1 seeds ZERO `SKIP_SAFE`
     queries — the class exists so the skip-routing telemetry can record
@@ -111,7 +103,7 @@ class BindingRule(BaseModel):
 
 
 class ObservedQuery(BaseModel):
-    """Registry-side metadata for one OBSERVED-tier security query.
+    """Registry metadata for a structural signal or OBSERVED finding.
 
     `title`/`description` are DETERMINISTIC static text (not generated, not
     interpolated with attacker-controlled source — the matched code rides
@@ -147,6 +139,8 @@ class ObservedQuery(BaseModel):
     title: str
     description: str
     binding: BindingRule | None = None
+    # Execution alone does not prove a hostile-input boundary (DECISIONS.md#071).
+    requires_context: bool = False
     # Globals that must be UNSHADOWED at the match site even when
     # `binding=None` (the query's receiver constraint is a TEXT match, not
     # lexical proof — `tls_env_verify_disabled` guards "process" so a local
@@ -196,6 +190,13 @@ class ObservedQuery(BaseModel):
             raise ValueError(
                 f"module_scope_eligible may not combine with SKIP_SAFE "
                 f"(module-arm matches are excluded from #049 skip coverage): "
+                f"{self.query_match_id}"
+            )
+        if self.requires_context and (
+            self.query_class is QueryClass.SKIP_SAFE or self.module_scope_eligible
+        ):
+            raise ValueError(
+                f"requires_context may not combine with SKIP_SAFE or module_scope_eligible: "
                 f"{self.query_match_id}"
             )
         return self

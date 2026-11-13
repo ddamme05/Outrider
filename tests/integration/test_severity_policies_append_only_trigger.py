@@ -1,19 +1,8 @@
-"""severity_policies append-only trigger — behavioral test.
+"""Check that stored severity policies reject updates and deletion.
 
-Backs §0c of specs/2026-05-19-analyze-foundation.md. Mirrors the shape
-of test_audit_append_only_trigger.py: introspection plus UPDATE/DELETE
-behavioral cases. The trigger guards against post-startup mutation of
-the policy row; the startup fingerprint check is once-at-lifespan, and
-a concurrent process or out-of-band UPDATE on `severity_policies` would
-otherwise tamper with the DB row while findings keep writing under the
-live mapping, causing replay divergence.
-
-Three concepts:
-
-  - Introspection: function + trigger exist with documented names.
-  - UPDATE on the genesis-seeded '1.0.0' row raises via the trigger.
-  - DELETE on the genesis-seeded '1.0.0' row raises via the trigger.
-"""
+Inspect and exercise the PostgreSQL trigger. Startup checks run only once, so
+stored mappings must also resist later mutation.
+See specs/2026-05-19-analyze-foundation.md §0c."""
 
 import pytest
 from sqlalchemy import text

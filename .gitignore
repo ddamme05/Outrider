@@ -8,8 +8,11 @@ generated/
 antigua/
 HANDOFF.md
 
-# --- Local docs (ignored now; track when public) ---
+# --- Local docs and the public generated catalog ---
 docs/
+!/docs/
+/docs/*
+!/docs/review-contract.json
 
 # --- Dashboard design mockups (local-only HTML explorations) ---
 dashboard-mockups/
@@ -100,6 +103,10 @@ dashboard/.vite/
 
 # --- Local Codex scratch ---
 .codex
+
+# --- Local tool state and codebase analysis ---
+.local/
+graphify-out/
 
 # Spikes are tracked in git (NOTES.md is kept), but spike output files aren't.
 spikes/**/__pycache__/

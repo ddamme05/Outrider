@@ -1,46 +1,12 @@
-"""severity_policies protections — semver CHECK + append-only trigger.
+"""Validate policy version numbers and protect stored severity policies.
 
 Revision ID: 3d03bca7f2be
 Revises: af138edd4b57
 Create Date: 2026-05-19
 
-Adds the protections genesis didn't have:
-
-  1. CHECK constraint `ck_severity_policies_version_semver` enforcing
-     tight bare semver shape on `severity_policies.version`:
-     `^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$`. Exactly
-     three dot-separated numeric components; the literal `0` is allowed
-     but otherwise no leading zeros (`01.0.0` rejected); no pre-release
-     or build suffix (`1.0.0-rc1` and `1.0.0+build` rejected). The
-     existing `version='1.0.0'` row (seeded by af138edd4b57_genesis.py
-     at lines 432-449) satisfies the CHECK, so the ALTER applies cleanly
-     on a populated DB. Belt-and-suspenders to the Python-side semver
-     assertion at `outrider.policy.severity::ACTIVE_POLICY_VERSION`: the
-     two regexes agree, so a value the Python guard accepts also passes
-     the DB CHECK, and the DB rejects malformed inserts even if a
-     future migration sneaks one past the Python guard.
-
-  2. Append-only trigger `trg_severity_policies_append_only` on
-     `severity_policies`, mirroring the existing `audit_events`
-     append-only discipline at af138edd4b57_genesis.py:389. Closes the
-     once-at-lifespan vulnerability: the startup fingerprint check in
-     `api/lifespan.py` verifies the DB row matches `dict(SEVERITY_POLICY)`
-     ONCE at lifespan; a concurrent process or out-of-band UPDATE on
-     `severity_policies` post-startup would tamper with the DB row while
-     findings keep being written under the live mapping, causing replay
-     divergence. The trigger makes that mutation impossible from any
-     non-superuser connection.
-
-Per `severity-policy-versioned-for-replay`: when SEVERITY_POLICY changes
-in the future (e.g., upgrading MISSING_INPUT_VALIDATION from MEDIUM to
-HIGH), the change ships as a new migration INSERTING the next semver row
-(`1.0.1`, etc.) — never as an UPDATE to an existing version row. The
-trigger enforces that discipline at the DB boundary.
-
-See:
-  - specs/2026-05-19-analyze-foundation.md §0c
-  - docs/trust-boundaries.md §2 (severity-set-by-policy)
-  - DECISIONS.md#014 (audit append-only contract; mirrored shape)
+Versions must have three numeric parts. Database triggers reject updates,
+deletes and truncation so saved reviews keep their original policy. Publish a
+changed policy as a new version instead of editing an existing row.
 """
 
 from collections.abc import Sequence

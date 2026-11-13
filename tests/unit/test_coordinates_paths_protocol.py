@@ -1,13 +1,7 @@
-"""Unit tests for `coordinates.resolve_candidate_paths` — ImportPathResolver
-Protocol implementation per `src/outrider/ast_facts/base.py`.
+"""Check import-path resolution within a validated root.
 
-Per docs/spec.md §10.1 / docs/trust-boundaries.md §5.3 (root-aware surface)
-and the ast_facts spec's Protocol contract: relative-only, no `..` traversal,
-no shell metacharacters, prefix-validated against `import_root`, and no
-symlink components anywhere up to `import_root` (final or ancestor).
-
-See DECISIONS.md#006-two-month-0-spikes-not-five for the test discipline.
-"""
+Reject traversal, shell metacharacters, and symlink components, including root
+ancestors. See docs/spec.md §10.1, docs/trust-boundaries.md §5.3, and DECISIONS.md#006."""
 
 from __future__ import annotations
 

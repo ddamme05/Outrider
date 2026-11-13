@@ -1,28 +1,8 @@
-# Trust-boundary #8 floor test for the publish node per spec §V LLM provider boundary.
-"""Pin the contract that the publish node makes ZERO LLM calls.
+"""Check that publishing cannot call an LLM or emit LLM-call events.
 
-Per the publish-node spec §V LLM provider boundary:
-
-    Publish makes ZERO LLM calls. Verified by absence of `LLMCallEvent`
-    emission and import-graph unit test.
-
-This is that import-graph unit test. Three layers of verification:
-
-  1. The `agent.nodes.publish` module does NOT import any symbol from
-     `outrider.llm.*`. (Direct-import check.)
-  2. Importing `agent.nodes.publish` does NOT transitively cause
-     `anthropic` (or any other LLM vendor SDK) to land in `sys.modules`.
-     (Transitive-import check — defends against a future helper that
-     re-exports an LLM symbol from a non-llm path.)
-  3. The publish node's source contains no `LLMCallEvent` reference.
-     (Emission check — defends against future code paths that mint
-     an LLMCallEvent and pass it to a non-LLM sink.)
-
-Trust boundary #8 (LLM provider boundary): vendor SDK imports are
-confined to `outrider.llm.*`. The publish node is not an LLM consumer;
-this test is the structural floor that pins the property even when a
-contributor adds a "just one quick" import that crosses the boundary.
-"""
+Inspect every publish implementation module for direct imports and event
+references, then check a fresh import for transitive vendor SDK loading.
+See the LLM provider boundary in docs/trust-boundaries.md §8."""
 
 from __future__ import annotations
 
@@ -43,28 +23,32 @@ def _project_root() -> Path:
     raise RuntimeError("could not locate project root")
 
 
-_PUBLISH_NODE_PATH = "src/outrider/agent/nodes/publish.py"
+def _publish_node_paths() -> list[Path]:
+    node_directory = _project_root() / "src/outrider/agent/nodes"
+    paths = sorted(node_directory.glob("publish*.py"))
+    assert paths, f"no publish implementation modules found under {node_directory}"
+    return paths
 
 
 def test_publish_node_source_imports_nothing_from_outrider_llm() -> None:
-    """`agent.nodes.publish` MUST NOT import any symbol from `outrider.llm.*`.
+    """Publish implementation modules MUST NOT import from `outrider.llm.*`.
 
     Catches direct imports — the most common future-regression shape.
     """
-    source = (_project_root() / _PUBLISH_NODE_PATH).read_text(encoding="utf-8")
-    tree = ast.parse(source)
     offending: list[str] = []
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.module
-            and node.module.startswith("outrider.llm")
-        ):
-            offending.append(f"line {node.lineno}: from {node.module} import ...")
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name.startswith("outrider.llm"):
-                    offending.append(f"line {node.lineno}: import {alias.name}")
+    for path in _publish_node_paths():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and node.module.startswith("outrider.llm")
+            ):
+                offending.append(f"{path.name}:{node.lineno}: from {node.module} import ...")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("outrider.llm"):
+                        offending.append(f"{path.name}:{node.lineno}: import {alias.name}")
     if offending:
         msg = (
             "Publish node MUST NOT import from outrider.llm.* — trust "
@@ -74,7 +58,7 @@ def test_publish_node_source_imports_nothing_from_outrider_llm() -> None:
 
 
 def test_publish_node_source_does_not_reference_llm_call_event() -> None:
-    """`agent.nodes.publish` MUST NOT reference `LLMCallEvent` in code.
+    """Publish implementation modules MUST NOT reference `LLMCallEvent` in code.
 
     The publish node makes no LLM calls; emitting an LLMCallEvent
     would either misuse the audit-event taxonomy OR signal a future
@@ -84,25 +68,21 @@ def test_publish_node_source_does_not_reference_llm_call_event() -> None:
     module docstring (which describes the ABSENCE of LLM calls) doesn't
     false-positive the test.
     """
-    source = (_project_root() / _PUBLISH_NODE_PATH).read_text(encoding="utf-8")
-    tree = ast.parse(source)
     offending: list[str] = []
-    for node in ast.walk(tree):
-        # ImportFrom: `from outrider.audit.events import LLMCallEvent`
-        if isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                if alias.name == "LLMCallEvent":
-                    offending.append(f"line {node.lineno}: import LLMCallEvent")
-        # Name reference: `LLMCallEvent(...)` or `x: LLMCallEvent` or
-        # any other code-level use of the bare name.
-        elif isinstance(node, ast.Name) and node.id == "LLMCallEvent":
-            offending.append(f"line {node.lineno}: code reference to LLMCallEvent")
-        # Attribute reference: `events.LLMCallEvent(...)`.
-        elif isinstance(node, ast.Attribute) and node.attr == "LLMCallEvent":
-            offending.append(f"line {node.lineno}: attribute reference LLMCallEvent")
+    for path in _publish_node_paths():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name == "LLMCallEvent":
+                        offending.append(f"{path.name}:{node.lineno}: import LLMCallEvent")
+            elif isinstance(node, ast.Name) and node.id == "LLMCallEvent":
+                offending.append(f"{path.name}:{node.lineno}: code reference to LLMCallEvent")
+            elif isinstance(node, ast.Attribute) and node.attr == "LLMCallEvent":
+                offending.append(f"{path.name}:{node.lineno}: attribute reference LLMCallEvent")
     if offending:
         msg = (
-            "publish.py contains code-level `LLMCallEvent` reference(s). Per spec §V "
+            "Publish implementation contains code-level `LLMCallEvent` reference(s). Per spec §V "
             "LLM provider boundary, the publish node makes ZERO LLM calls and emits "
             "no LLMCallEvent:\n  " + "\n  ".join(offending)
         )

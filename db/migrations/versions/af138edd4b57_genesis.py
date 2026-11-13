@@ -1,49 +1,13 @@
-"""genesis — V1 schema, append-only triggers, severity_policies seed.
+"""Create the initial application tables, audit protections and severity policy.
 
 Revision ID: af138edd4b57
 Revises:
 Create Date: 2026-04-27 16:56:57.039211
 
-This migration creates the V1 schema described in docs/schema.md in full —
-nine tables, two PG ENUM types, thirteen explicit indexes, every FK action
-declared (CASCADE / RESTRICT / NO ACTION / SET NULL / no FK).
-
-It also performs three things autogenerate does NOT produce:
-
-  1. Append-only triggers on audit_events and purge_audit per
-     DECISIONS.md#012 + #014. A single shared plpgsql function
-     (outrider_audit_append_only_guard) raises on UPDATE or DELETE; it is
-     applied to BOTH tables. The trigger is absolute: there is no
-     privileged-role bypass per #014. Created using DROP IF EXISTS +
-     CREATE rather than CREATE IF NOT EXISTS — PostgreSQL's
-     CREATE TRIGGER syntax does not support IF NOT EXISTS.
-
-  2. Severity policies seed row for version "1.0.0" carrying the
-     canonical SEVERITY_POLICY mapping from spec §7.4 verbatim
-     (`severity-set-by-policy`). Without this row, the RESTRICT FK from
-     findings.policy_version blocks every finding insert against a fresh
-     DB; without the canonical content, baseline severity assignment
-     would resolve to nothing. Policy versions are immutable per
-     `severity-policy-versioned-for-replay`: when the mapping changes
-     (e.g., upgrading MISSING_INPUT_VALIDATION from MEDIUM to HIGH), the
-     change ships as a new migration that inserts v1.0.1, not as an
-     UPDATE to v1.0.0. Historical reviews replay under their original
-     policy_version regardless.
-
-  3. (Implicit) ENUM type creation rides on column declarations. The two
-     metadata-scoped ENUMs (review_status_enum, anomaly_status_enum) are
-     created when their respective tables are created via inline
-     create_type=True default behavior, and dropped with the tables on
-     downgrade.
-
-See:
-  - DECISIONS.md#001-single-postgres-driver-psycopg3 (driver choice)
-  - DECISIONS.md#012-data-retention-ttls-configurable-purge-on-installationdeleted
-    (retention shape)
-  - DECISIONS.md#014-audit-events-are-metadata-only-content-purge-targets-reviews-and-findings
-    (audit append-only contract)
-  - DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only
-    (LLM content storage)
+The schema includes review content, installation records, audit history and
+the original 1.0.0 severity mapping. Triggers protect audit_events and
+purge_audit from updates and deletes. Later migrations extend this schema;
+the saved 1.0.0 policy stays fixed for replay (DECISIONS.md#012, #014, #016).
 """
 
 from collections.abc import Sequence

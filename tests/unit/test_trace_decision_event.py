@@ -1,22 +1,8 @@
-"""TraceDecisionEvent: resolution_status Literal + nullable target_file + validator rules.
+"""Check trace-decision audit events and resolution consistency.
 
-Backs DECISIONS.md#017 (Amended 2026-04-29 same-day + 2026-05-24 by #024).
-Per the #024 amendment, field shape:
-- `candidates_considered` → renamed to `proposed_import_strings` (admitted
-  import strings, two forms per #024 Amended 2026-07-03 — canonicalized
-  model candidates plus corrected from-import siblings per the #024
-  from-import amendment).
-- New `resolved_candidate_paths` carries resolver outputs (file paths).
-- Cross-field validator rules rewritten to consult `resolved_candidate_paths`
-  cardinality (not `proposed_import_strings` membership):
-  - resolved: len(resolved_candidate_paths) == 1 AND target_file ==
-    resolved_candidate_paths[0]
-  - unresolved: len(resolved_candidate_paths) == 0 AND target_file is None
-  - ambiguous: len(resolved_candidate_paths) > 1 AND target_file is None
-- Uniqueness validator split into two — one per tuple.
-- target_file + every resolved_candidate_paths element pass through
-  validate_diff_path at the audit-shadow boundary (#024 point 6).
-"""
+A resolved decision has exactly one matching target path; unresolved decisions
+have none, and ambiguous decisions have several. Validate unique proposed imports,
+unique resolved paths, and safe target paths. See DECISIONS.md#017 and #024."""
 
 import json
 from typing import Any

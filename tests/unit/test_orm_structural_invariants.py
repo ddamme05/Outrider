@@ -1,25 +1,8 @@
-"""ORM-metadata structural invariants enforced before alembic generates a migration.
+"""Check ORM timestamp types, computed-confidence omission, and audit review references.
 
-Three Python-level guards on the declarative metadata. Each one mirrors
-an integration-tier test that asserts the same property at the live-DB
-introspection level — the unit-tier check fails fast (no DB needed) when
-a developer changes a model in a way that violates the invariant, and
-the integration-tier check catches anything that slips past metadata
-(hand-edited migrations, autogenerate quirks).
-
-  - All ``_at`` (and ``timestamp``) columns use ``TIMESTAMP(timezone=True)``.
-    Mirrors ``test_timestamp_columns_aware``.
-  - The ``Finding`` model declares no ``confidence`` column.
-    Per ``confidence-is-computed-not-assigned``: confidence is a
-    computed_field on the Pydantic model, derived from evidence_tier
-    deterministically. The DB column would be a tempting place to
-    persist it, but the architecture deliberately does not.
-  - ``AuditEvent.review_id`` is plain ``Mapped[UUID]`` with no
-    ``ForeignKey``. Mirrors
-    ``test_audit_events_has_no_foreign_key_constraints``.
-
-Pure unit tests — no DB connection, no fixtures.
-"""
+These database-free checks complement migrated-schema integration tests.
+Audit review IDs must not have a foreign key; confidence is computed rather
+than stored (``confidence-is-computed-not-assigned``)."""
 
 from sqlalchemy import DateTime
 

@@ -1,13 +1,11 @@
-"""Build a review report from findings, suggested patches, and a summary.
+"""Combine findings, suggested fixes and a review summary.
 
-Validate the triage policy snapshot, reject conflicting duplicate findings,
-and cap the report before patch and summary calls. Prompt metrics exclude
-the summary call; final metrics include it.
+synthesize checks policy consistency, rejects conflicting duplicates and limits
+findings before requesting fixes or a summary. It records the finished report's
+measured totals, including any summary call. Empty findings use a fixed summary.
 
-Display text is normalized, while the audit hash binds to the raw response.
-Completion uses event-id idempotency. Full prose replay requires retained
-LLM content; the hash supports metadata-only replay after content expires.
-See specs/2026-05-28-synthesize-node.md for the persistence contract.
+The summary's audit hash uses the raw response even when display text is cleaned.
+See specs/2026-05-28-synthesize-node.md.
 """
 
 from __future__ import annotations
@@ -16,9 +14,9 @@ import contextlib
 import hashlib
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
-from outrider.agent.nodes.finding_cap import cap_findings_by_severity
+from outrider.agent.nodes.finding_cap import _collapse_by_content_hash, cap_findings_by_severity
 from outrider.agent.nodes.patch_generation import generate_patches
 from outrider.anomaly import AnomalyRuleName, AnomalySeverity
 from outrider.audit.events import ReviewPhaseEvent, SynthesizeCompletedEvent
@@ -26,12 +24,15 @@ from outrider.llm.base import LLMRequest
 from outrider.llm.parsing import strip_outer_json_fence
 from outrider.llm.pricing import PRICING_VERSION
 from outrider.policy.canonical import compute_phase_id
+from outrider.policy.publish_eligibility import verification_hold_finding_ids
 from outrider.prompts import synthesize as synthesize_prompt
 from outrider.schemas.analysis_round import MAX_FINDINGS_HARD_CAP
 from outrider.schemas.review_report import (
+    EMPTY_FINDINGS_SUMMARY_SOURCE,
     MAX_FINDINGS_PER_REPORT,
     ReviewMetrics,
     ReviewReport,
+    render_empty_findings_summary,
 )
 
 if TYPE_CHECKING:
@@ -147,7 +148,8 @@ async def _detect_and_report_divergence(
 
     Severity or policy-version disagreement is corruption. Try to report an
     anomaly, then raise even if the anomaly sink or logger fails. Keep the
-    lowest round index, then lowest finding ID, as the duplicate representative.
+    strongest admitted evidence as representative, with round index and finding
+    ID resolving equal-strength ties. Original findings are never rewritten.
     """
     by_hash: dict[str, list[tuple[int, ReviewFinding]]] = {}
     for round_index, analysis_round in enumerate(state.analysis_rounds):
@@ -194,7 +196,8 @@ async def _detect_and_report_divergence(
                 round_indices=round_indices_tuple,
             )
         entries.sort(key=lambda pair: (pair[0], str(pair[1].finding_id)))
-        kept[content_hash] = entries[0][1]
+        [representative] = _collapse_by_content_hash([entry[1] for entry in entries])
+        kept[content_hash] = representative
 
     return kept
 
@@ -277,9 +280,9 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
 ) -> dict[str, ReviewReport]:
     """Validate and merge findings, add patches, summarize, and return a review report.
 
-    Cap findings before patch and summary calls. Query metrics before the
-    summary for its prompt and after it for the final report. Anomaly reporting
-    is best-effort; divergent findings always stop the review.
+    Cap findings before patch and summary calls. Empty reports use a fixed
+    summary without a model call. Query final metrics after all model work.
+    Anomaly reporting is best-effort; divergent findings always stop the review.
     """
     started_at = time.monotonic()
 
@@ -300,6 +303,13 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     )
 
     _enforce_synthesize_input_invariants(state)
+    # The entry gate guarantees this; retain the check for type narrowing.
+    if state.triage_result is None:
+        raise FindingForgeryDetectedError(
+            "synthesize: triage_result missing past invariant gate "
+            "(_enforce_synthesize_input_invariants should have raised "
+            "at step 3 — step ordering is broken)"
+        )
     kept_by_hash = await _detect_and_report_divergence(
         state=state,
         anomaly_sink=anomaly_sink,
@@ -312,13 +322,19 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
         list(report_findings),
         soft_cap=MAX_FINDINGS_PER_REPORT,
         hard_cap=MAX_FINDINGS_HARD_CAP,
+        protected_finding_ids=verification_hold_finding_ids(
+            report_findings,
+            state.native_candidates,
+            state.candidate_assessments,
+            policy_version=state.triage_result.policy_version,
+        ),
     )
     n_findings_dropped_over_cap = len(report_dropped_findings)
     # Report gated overflow only after ReviewReport validates.
     report_gated_overflow = len(capped_findings) > MAX_FINDINGS_PER_REPORT
     report_findings = tuple(capped_findings)
 
-    # Include patch work in the prompt metrics and completion snapshot.
+    # Generate patches before the summary and final metric snapshot.
     report_findings = await generate_patches(
         report_findings,
         state,
@@ -328,48 +344,44 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
         max_suggestions=max_suggestions,
     )
 
-    # The entry gate guarantees this; retain the check for type narrowing.
-    if state.triage_result is None:
-        raise FindingForgeryDetectedError(
-            "synthesize: triage_result missing past invariant gate "
-            "(_enforce_synthesize_input_invariants should have raised "
-            "at step 3 — step ordering is broken)"
-        )
     overall_risk = state.triage_result.overall_risk
 
-    # Prompt metrics include patch work and exclude this summary call.
-    prompt_metrics = await _snapshot_review_metrics(
-        state=state,
-        synthesize_event_sink=synthesize_event_sink,
-        started_at=started_at,
-    )
-    prompt_parts = synthesize_prompt.render(
-        overall_risk=overall_risk,
-        findings=report_findings,
-        metrics=prompt_metrics,
-    )
+    summary_source: Literal["model", "empty-findings-v1"]
+    summary_model: str | None
+    if report_findings:
+        summary_source = "model"
+        summary_model = synthesize_model
+        prompt_parts = synthesize_prompt.render(
+            overall_risk=overall_risk,
+            findings=report_findings,
+        )
 
-    request = LLMRequest(
-        model=synthesize_model,
-        system_prompt=prompt_parts.system_prompt,
-        user_prompt=prompt_parts.user_prompt,
-        max_tokens=synthesize_prompt.MAX_TOKENS,
-        temperature=synthesize_prompt.TEMPERATURE,
-        review_id=state.review_id,
-        node_id="synthesize",
-        is_eval=state.is_eval,
-        prompt_template_version=synthesize_prompt.VERSION,
-        degraded_mode=False,
-    )
+        request = LLMRequest(
+            model=synthesize_model,
+            system_prompt=prompt_parts.system_prompt,
+            user_prompt=prompt_parts.user_prompt,
+            max_tokens=synthesize_prompt.MAX_TOKENS,
+            temperature=synthesize_prompt.TEMPERATURE,
+            review_id=state.review_id,
+            node_id="synthesize",
+            is_eval=state.is_eval,
+            prompt_template_version=synthesize_prompt.VERSION,
+            degraded_mode=False,
+        )
 
-    response = await provider.complete(request)
+        response = await provider.complete(request)
 
-    summary_text = strip_outer_json_fence(response.text).strip()
+        summary_text = strip_outer_json_fence(response.text).strip()
 
-    # Hash raw text so audit identity matches persisted content.
-    summary_content_hash = _compute_summary_content_hash(response.text)
+        # Hash raw text so audit identity matches persisted content.
+        summary_content_hash = _compute_summary_content_hash(response.text)
+    else:
+        summary_source = EMPTY_FINDINGS_SUMMARY_SOURCE
+        summary_model = None
+        summary_text = render_empty_findings_summary(overall_risk)
+        summary_content_hash = hashlib.sha256(summary_text.encode("utf-8")).hexdigest()
 
-    # The final snapshot includes the summary call, already persisted by the provider.
+    # Include every actual completed call, with no invented template exchange.
     final_metrics = await _snapshot_review_metrics(
         state=state,
         synthesize_event_sink=synthesize_event_sink,
@@ -402,8 +414,10 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
             review_id=state.review_id,
             is_eval=state.is_eval,
             summary_content_hash=summary_content_hash,
+            summary_source=summary_source,
             overall_risk=overall_risk,
             n_findings=len(report_findings),
+            selected_finding_ids=tuple(finding.finding_id for finding in review_report.findings),
             n_findings_dropped_over_cap=n_findings_dropped_over_cap,
             files_examined=final_metrics.files_examined,
             files_traced_beyond_diff=final_metrics.files_traced_beyond_diff,
@@ -415,7 +429,7 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
             pricing_version=PRICING_VERSION,
             # Preserve the review-start policy snapshot for replay.
             policy_version=state.triage_result.policy_version,
-            synthesize_model=synthesize_model,
+            synthesize_model=summary_model,
             profile_id=profile_id,
             reasoning_enabled=reasoning_enabled,
             profile_contract_digest=profile_contract_digest,

@@ -1,9 +1,6 @@
-"""IntakeConfig — the whole-PR size-gate thresholds (docs/spec.md §6.10).
+"""Check whole-PR size defaults and environment overrides (docs/spec.md §6.10).
 
-The spec defaults (1000 lines / 30 files) are the field defaults; OUTRIDER_INTAKE_*
-env vars override them. max_files is capped at 99 (the gate uses one GET /pulls/files
-call; GitHub per_page <= 100).
-"""
+The file-count limit must fit the single GitHub file-list request."""
 
 from __future__ import annotations
 

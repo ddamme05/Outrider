@@ -1,15 +1,7 @@
-"""Arc 2 — the probe sends PRODUCTION's request, with exactly one deliberate delta.
+"""Check that the strict-schema probe matches the production request.
 
-Without this file the probe could prove something true about a *neighbouring*
-request rather than the production candidate: a different token-limit kwarg, a
-dropped `prompt_cache_key`, a different service tier, and the paid row would
-answer a question nobody asked.
-
-Also pins the Gate-2 spend gate: `--paid` is EXECUTABLE-refused without the literal
-authorization token, not documented-refused.
-
-See `specs/2026-07-20-arc2-strict-schema-feasibility.md`.
-"""
+Only its deliberate schema change may differ. Paid mode must also require the
+literal authorization token. See specs/2026-07-20-arc2-strict-schema-feasibility.md."""
 
 from __future__ import annotations
 
@@ -102,14 +94,14 @@ def test_fired_query_ids_are_derived_not_asserted() -> None:
     assert fired <= known, f"derived ids not in the registry: {sorted(fired - known)}"
 
 
-def test_an_authentic_observed_claim_admits_and_a_fabricated_one_rejects() -> None:
-    """The distinction the whole arc rests on, over the REAL derived set."""
+def test_model_observed_rejects_for_both_real_and_fabricated_registry_ids() -> None:
+    """Only producer-owned checks establish OBSERVED evidence."""
     authentic_id = sorted(probe.FIRED_QUERY_MATCH_IDS)[0]
-    ok = probe.run_real_parser(
+    generic = probe.run_real_parser(
         probe._finding_body(evidence_tier="observed", query_match_id=authentic_id)
     )
-    assert ok.rejection_reasons == ()
-    assert [f.query_match_id for f in ok.admitted] == [authentic_id]
+    assert generic.admitted == ()
+    assert "model_observed_not_supported" in generic.rejection_reasons
 
     bad = probe.run_real_parser(
         probe._finding_body(evidence_tier="observed", query_match_id="python.not_registered")
@@ -558,28 +550,40 @@ def test_frozen_elicitations_are_byte_identical_to_the_discovery_candidates() ->
     assert len(set(plan._REFUSAL_ELICITATIONS.values())) == 3
 
 
-def test_reviewed_caps_are_exactly_the_measured_sizes() -> None:
-    """The caps ARE the measurements — no headroom, and no stale drift either.
+def test_reviewed_requests_rebuild_at_the_exact_caps(
+    arc2_reviewed_analyzer: tuple[RowMeasurement, ...],
+) -> None:
+    """Rebuild the reviewed bytes and check that the caps grant zero headroom."""
+    measured = plan.registered_measurements()
+    assert measured == arc2_reviewed_analyzer
+    assert {m.row_id: m.prompt_bytes for m in measured} == plan.REVIEWED_CAPS
 
-    Lives HERE, not in the composed-lifecycle file: that file's autouse fixture
-    replaces the refusal elicitations with short test strings, which changes the
-    measured prompt bytes. A cap-vs-measurement equality asserted under it would
-    compare against fixture-perturbed numbers rather than the ones a paid run sends.
 
-    The operator chose exact caps deliberately: each row's request digest is
-    already bound and re-derived, so drift invalidates the contract before a byte
-    cap could matter, and headroom would only loosen a redundant ceiling.
+def test_current_requests_over_reviewed_caps_refuse_before_client_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def unexpected_client(**_kwargs: object) -> None:
+        pytest.fail("client constructed with a request over its reviewed cap")
 
-    That choice needs enforcing, because a cap is a MAXIMUM: when the v5 scenario
-    shrank `acceptance_finding` from 32,357 to 32,315 bytes, the stale cap stayed
-    silently permissive by 42 bytes and no check complained. Equality is the
-    invariant the operator actually approved.
-    """
-    measured = {m.row_id: m.prompt_bytes for m in plan.registered_measurements()}
-    assert measured == plan.REVIEWED_CAPS, (
-        "REVIEWED_CAPS drifted from the measured sizes — re-run --dry-run and copy "
-        "the measured column, then have the caps re-reviewed before spending"
+    monkeypatch.setattr(probe, "RawOpenAICaptureClient", unexpected_client)
+    monkeypatch.setattr(probe, "_OUT_DIR", tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+    assert probe.run_dry() == 0
+    (manifest_path,) = tmp_path.glob("dry_run_[0-9a-f]*.json")
+    manifest = DryRunManifest.model_validate_json(manifest_path.read_bytes())
+    clean = next(m for m in manifest.measurements if m.row_id == RowId.ACCEPTANCE_CLEAN)
+    cap = plan.REVIEWED_CAPS[clean.row_id]
+    assert clean.prompt_bytes > cap
+
+    assert probe.run_paid(confirm="--i-authorize-spend", out_dir=tmp_path) == 2
+    error = capsys.readouterr().err
+    assert "REFUSED: reviewed contract does not rebuild" in error
+    cap_error = (
+        f"cap for {clean.row_id.value!r} is {cap} "
+        f"but the reviewed measurement is {clean.prompt_bytes}"
     )
+    assert cap_error in error
+    assert list(tmp_path.iterdir()) == [manifest_path]
 
 
 def test_the_vulnerable_statement_occupies_exactly_the_declared_defect_line() -> None:
@@ -637,7 +641,7 @@ def test_a_broader_admitted_span_still_fails_exact_identity() -> None:
                     "trace_path": None,
                     "title": "SQL query concatenates untrusted input",
                     "description": "user_id is concatenated into the SQL passed to execute.",
-                    "evidence": "conn.execute(...)",
+                    "evidence": plan.DEFECT_SCENARIO.source.rstrip("\n"),
                     "line_start": 1,  # the whole function, not the assembled-query line
                     "line_end": 3,
                     "trace_candidates": [],

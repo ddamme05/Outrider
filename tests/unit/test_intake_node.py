@@ -1,18 +1,9 @@
-"""Tests for `outrider.agent.nodes.intake` — the webhook→graph node.
+"""Intake behavior with stub GitHub, database and audit sinks.
 
-Covers the four behavior shapes specified by the intake-and-webhook spec:
-  - Happy path: phase 1 list + phase 2 fetch + ChangedFile assembly +
-    Command(goto='triage') return.
-  - Size-gate skip: > 1000 lines OR > 30 files → status='skipped',
-    Command(goto=END), no per-file events.
-  - Per-file oversize: fetch returns None → FileExaminationEvent(skipped,
-    OVERSIZED), file dropped from changed_files, intake still succeeds.
-  - Failure mode: any exception → phase-end emitted FIRST, then
-    status='failed' written, then re-raise.
-
-Uses hand-rolled stubs for `github_factory`, `db_factory`, and the two
-sinks; no Postgres or HTTP contact.
-"""
+Cover file listing/fetching and ChangedFile assembly, PR size limits, per-file
+skips, aggregate byte budget, cancellation and failure cleanup. Successful intake
+returns Command(goto="triage"); skipped PRs route to END. No Postgres or HTTP
+service is contacted."""
 
 from __future__ import annotations
 
@@ -218,18 +209,10 @@ def _never_called_github_factory() -> Any:
 
 
 def _stub_github_factory(gh: Any) -> Any:
-    """Wrap any stub `GitHub`-like into a `Callable[[int], GitHub]` shape.
+    """Return the supplied GitHub-shaped stub for the seed installation.
 
-    Accepts `_StubGitHub`, `_FailingGitHub`, or any other test stub that
-    duck-types as a githubkit `GitHub` for the intake call sites we
-    exercise.
-
-    The returned factory asserts the installation_id it receives matches
-    the seed state's value (12345 via `_build_state`). A regression
-    where intake passed the wrong installation_id into `github_factory`
-    (e.g., a typo using `repo_id` instead) would otherwise still pass
-    every test because the wrapper returned the stub for any input.
-    """
+    Assert installation_id=12345 from _build_state so an incorrect repository or
+    installation ID cannot silently use the same stub."""
 
     async def factory(installation_id: int) -> Any:
         assert installation_id == _EXPECTED_INSTALLATION_ID, (
@@ -795,26 +778,16 @@ def test_merge_skip_reasons_oversized_both_sides_returns_oversized() -> None:
 
 
 # ===========================================================================
-# `_ByteBudget` atomicity (audit-the-audit round MEDIUM)
+# Concurrent byte-budget reservations
 # ===========================================================================
 
 
 @pytest.mark.asyncio
 async def test_byte_budget_try_reserve_is_atomic_under_concurrent_calls() -> None:
-    """`_ByteBudget.try_reserve` MUST be atomic: under N concurrent
-    callers each requesting `cap - 1` bytes, exactly one succeeds and
-    the rest are denied. Tests the asyncio.Lock-then-check-then-set
-    sequence directly — the higher-level intake tests admit non-
-    determinism under the semaphore + stub GitHub timing, so the lock
-    invariant could regress without the intake tests catching it.
+    """Concurrent reservations cannot exceed the aggregate byte cap.
 
-    A regression that removed `async with self._lock:` and made
-    `try_reserve` a bare check-and-increment would pass the existing
-    `test_aggregate_bytes_cap_emits_oversized_when_total_exceeded`
-    because that test serializes naturally under the zero-latency
-    stub. This test explicitly fans out N parallel reservations to
-    surface the race.
-    """
+    Each caller requests cap - 1 bytes, so only one reservation may succeed. Direct
+    parallel calls exercise the budget lock independently of intake's fetch timing."""
     from outrider.agent.nodes.intake import _ByteBudget
 
     cap = 1000
@@ -1188,22 +1161,10 @@ async def test_unknown_status_logged_and_dropped(
 async def test_binary_blob_does_not_consume_budget_before_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The classify-then-reserve order is the load-bearing invariant of
-    `_classify_or_reserve_decode` (intake.py docstring lines 757-760):
-    binary/malformed bytes must NOT consume the aggregate text budget,
-    or a single binary blob in an early file would starve later valid
-    files into spurious OVERSIZED skips.
+    """Classify binary bytes before reserving the aggregate text budget.
 
-    Existing tests pin the OUTCOME of binary skip; this one pins the
-    ORDER. Setup: cap=60, binary=55 NULs, text=6 bytes valid UTF-8.
-    The regression-revealing case is when binary_size + text_size > cap
-    but text_size alone fits.
-
-      - WITH classify-first (current): binary fails NUL check without
-        reserving → used=0. Text reserves 6 → used=6 ≤ 60. Admitted.
-      - WITH reserve-first (regression): binary reserves 55 → used=55.
-        Text tries to reserve 6 → 55+6=61 > 60. REJECTED.
-    """
+    With cap=60, a 55-byte binary blob must leave room for six valid text bytes.
+    Reserving before the binary check would reject the text because 55 + 6 > 60."""
     from outrider.agent.nodes import intake as intake_mod
     from outrider.ast_facts.models import SkipReason
 
@@ -1378,25 +1339,10 @@ async def test_intake_status_write_failure_preserves_original_exception(
 async def test_intake_compound_phase_start_and_status_write_failure(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """COMPOUND failure: phase-start emit fails AND _set_review_status
-    fails. Distinct from the two separate tests above, both of which
-    fail ONE leg with the other leg healthy. A regression that worked
-    for "phase-start fail with healthy db" + "running-fetch fail with
-    failing db" but broke when BOTH fail together would only surface
-    here.
+    """Preserve the phase-start failure when the cleanup status write also fails.
 
-    Expected behavior:
-      - Original phase-start RuntimeError propagates (NOT the OSError
-        from the cleanup db write).
-      - phase_start_persisted gate fires → no orphan phase-end emitted.
-      - Both failure-handler legs run (the gate-fired warning AND the
-        status-write-failed log).
-      - No FileExaminationEvent emitted (intake never reached phase-2).
-
-    Pins that the two cleanup legs are independent (one's failure
-    doesn't prevent the other from running) and that the gate's
-    audit-integrity guarantee holds under double-failure.
-    """
+    Emit no orphan phase-end or file events. Both cleanup legs report their outcome,
+    and the original RuntimeError propagates rather than the cleanup OSError."""
     import logging
 
     state = _build_state()
@@ -1483,25 +1429,16 @@ async def test_intake_compound_phase_start_and_status_write_failure(
 
 
 # ===========================================================================
-# TaskGroup phase-2 failure (audit-the-audit round HIGH)
+# Phase-2 TaskGroup failure cleanup
 # ===========================================================================
 
 
 @pytest.mark.asyncio
 async def test_intake_phase2_failure_unwraps_taskgroup_exception() -> None:
-    """A per-file fetch failure during phase-2 TaskGroup execution:
-      - cancels sibling tasks (no FileExaminationEvent after phase-end);
-      - unwraps the ExceptionGroup so the outer handler sees the original
-        cause, NOT a wrapping group;
-      - prefers the root-cause exception over a sibling CancelledError;
-      - reaches the failure handler (phase-end emitted, status='failed').
+    """A phase-2 fetch failure cancels siblings and preserves its root cause.
 
-    Pins the audit-the-audit round HIGH finding: pre-existing failure
-    tests use `_FailingGitHub.async_list_files` which raises in phase-1
-    BEFORE the TaskGroup is created. The TaskGroup body + ExceptionGroup
-    unwrap was completely untested. A regression breaking the unwrap
-    (e.g., `eg.exceptions[0]` → `eg.args`) wouldn't fail any other test.
-    """
+    Unwrap the TaskGroup ExceptionGroup rather than exposing the group or a sibling
+    CancelledError. Emit phase-end, mark failed, and emit no later file events."""
     state = _build_state()
     files = [
         _StubFileMeta(filename="ok.py", status="added", additions=1, deletions=0),
@@ -1588,28 +1525,16 @@ async def test_intake_phase2_failure_unwraps_taskgroup_exception() -> None:
 
 
 # ===========================================================================
-# Phase-start emit failure (multi-lens audit at commit 20e4b62 HIGH)
+# Phase-start failure must not emit an unmatched phase-end
 # ===========================================================================
 
 
 @pytest.mark.asyncio
 async def test_intake_phase_start_emit_failure_does_not_emit_orphan_phase_end() -> None:
-    """A persister failure on the FIRST emit (phase-start) must NOT cause
-    the failure handler to emit a phase-end. Without the
-    `phase_start_persisted` gate, the cleanup unconditionally emits
-    phase-end and produces an end-only marker (durable phase-end with
-    no matching phase-start) — equally destructive to
-    `phase-events-bound-work` replay semantics as the orphan-start case.
+    """A failed phase-start write must not produce an orphan phase-end.
 
-    Behavior under the gate:
-      - phase-start emit raises → outer try catches in failure handler
-      - failure handler sees phase_start_persisted=False → skips phase-end
-      - status='failed' write still happens
-      - original phase-start exception propagates
-
-    A regression that drops the gate would produce `events == [<end>]`
-    instead of `events == []`.
-    """
+    The phase_start_persisted gate skips the end marker while still writing failed
+    status and propagating the original error. This preserves phase-events-bound-work."""
     state = _build_state()
 
     class _PhaseStartFailingSink:

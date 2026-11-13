@@ -1,16 +1,9 @@
-# Per specs/2026-06-12-sqli-parameterized-call-veto.md (FUP-162).
-"""The parameterized-call detection shape matrix.
+"""Check parameterized SQL call detection through the public scan API.
 
-Exercises the public scan API only (no raw tree-sitter in tests — the
-AST firewall's test rule). Safe means: execute-like method ON a
-conventional binding receiver (cursor/cur/conn/connection, or the
-Django `objects.raw` chain), first argument a PURE literal string, at
-least one further argument. Bare `execute(...)` and arbitrary-receiver
-wrappers are execute-like but never safe — binding is the callee's
-contract, and an unknown callee can interpolate. The placeholder STYLE
-inside the literal is irrelevant by design — the shape check is what
-generalizes across `%s`, `%(k)s`, `:name`, `?`, and `$1` alike.
-"""
+Safe calls need a recognized database receiver, a literal SQL string, and bound
+arguments. Bare execute calls and unknown receivers are not assumed safe;
+placeholder style does not change that rule. No raw parser trees are imported.
+See specs/2026-06-12-sqli-parameterized-call-veto.md and FUP-162."""
 
 from __future__ import annotations
 

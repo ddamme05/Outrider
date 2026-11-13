@@ -1,12 +1,7 @@
-"""SEVERITY_POLICY maps every FindingType to a FindingSeverity per spec §7.4.
+"""Check that the severity policy covers every finding type (spec §7.4).
 
-Backs `severity-set-by-policy`: baseline severity comes from this
-mapping keyed by finding type, never from model output. The test_severity
-_policies_seeded.py integration test verifies the DB side; this unit
-test verifies the in-memory dict side. If they drift, both fail loud —
-one source of truth per layer is simpler than a shared fixture file
-(audit-recommendation pattern).
-"""
+Severity comes from this mapping, never model output (``severity-set-by-policy``).
+Integration tests check stored policy seeds separately."""
 
 import pytest
 
@@ -18,7 +13,7 @@ from outrider.policy import (
 )
 from outrider.policy import severity as severity_module
 
-# The active v1.2.0 mapping, inlined. DECISIONS.md#048 extended the v1.0.0
+# The active v1.3.0 mapping, inlined. DECISIONS.md#048 extended the v1.0.0
 # spec §7.4 mapping with three OBSERVED-tier security types (Cost Lever 3);
 # DECISIONS.md#053 added seven contextual (JUDGED-pickable) security types.
 EXPECTED_ACTIVE_POLICY: dict[FindingType, FindingSeverity] = {
@@ -44,6 +39,7 @@ EXPECTED_ACTIVE_POLICY: dict[FindingType, FindingSeverity] = {
     FindingType.SSRF_METADATA: FindingSeverity.CRITICAL,
     FindingType.OPEN_REDIRECT: FindingSeverity.MEDIUM,
     FindingType.OPEN_REDIRECT_AUTHED: FindingSeverity.HIGH,
+    FindingType.CORRECTNESS_BUG: FindingSeverity.MEDIUM,
 }
 
 
@@ -66,7 +62,7 @@ def test_severity_policy_has_no_extra_keys() -> None:
 
 
 def test_severity_policy_matches_active_mapping() -> None:
-    """In-memory SEVERITY_POLICY equals the active v1.2.0 mapping verbatim."""
+    """In-memory SEVERITY_POLICY equals the active v1.3.0 mapping verbatim."""
     assert SEVERITY_POLICY == EXPECTED_ACTIVE_POLICY
 
 

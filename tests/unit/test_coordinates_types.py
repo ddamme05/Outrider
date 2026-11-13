@@ -1,13 +1,7 @@
-"""Unit tests for coordinates' boundary types: GitHubCommentLocation + CoordinateError.
+"""Check GitHub comment-location and coordinate-error validation.
 
-Covers the type-level validators only — Field(ge=1), paired-fields rule for
-multi-line comments, range rule, ConfigDict(extra='forbid'), Literal
-constraints. Per docs/spec.md §7.2 (GitHubCommentLocation canonical shape)
-and §5.6 (CoordinateError as the translator's single failure mode).
-
-Per-function tests (test_coordinates_translator.py, test_coordinates_diff_parser.py)
-land in subsequent commits as the function bodies are implemented.
-"""
+Cover positive line numbers, paired multiline fields, range ordering, and allowed
+values. Translation behavior is tested separately. See docs/spec.md §7.2 and §5.6."""
 
 from __future__ import annotations
 

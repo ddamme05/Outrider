@@ -1,14 +1,8 @@
-# Typed exceptions for the ast_facts/ surface per docs/conventions.md.
-"""Exception hierarchy.
+"""Errors raised by source parsing and structural-query lookup.
 
-Per `docs/conventions.md`: "Functions that can fail with meaningful
-variants raise typed exceptions. No `raise Exception(...)` and no
-returning `None` for 'didn't work.'"
-
-`UnknownQueryMatchId` is raised by `queries/registry.py` per the V1
-ast_facts/ spec's Implementation Sketch — defined here (not in
-`queries/errors.py`) so callers across `ast_facts/`, `queries/`, and
-`audit/` import a single error module.
+UnknownQueryMatchId lives here so ast_facts, queries and audit share one error
+type without importing each other's implementations.
+See specs/2026-04-30-ast-facts-module.md.
 """
 
 

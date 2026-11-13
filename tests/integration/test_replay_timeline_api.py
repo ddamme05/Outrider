@@ -1,25 +1,10 @@
-"""Integration tests for `GET /api/reviews/{id}/replay-timeline` (ROADMAP feature 6).
+"""Check verified replay timelines and expandable content against stored events.
 
-Proves the grouped+verified timeline contract against real seeded audit streams:
-
-- an equivalent review → grouped `.phases` + per-phase event rows + the inter-phase bucket;
-- the projected `ReplayVerdictEvent` is surfaced via the verdict, never in events/phases/bucket;
-- the FUP-125 gate: a malformed (nested) phase stream → `.phases` SUPPRESSED (the lossy
-  `_group_phases` grouping never reaches the response) — the proof FUP-125 is closed;
-- the `end is None` status-split (Codex): a NON-completed review with an open phase → equivalent +
-  phases exposed; a `completed` review with a dangling phase (publish-crash) → non-equivalent +
-  phases suppressed (NOT a 500);
-- `reconstruct`-raised (is_eval drift) → verdict only, phases null, NOT a 500;
-- 404 + auth.
-
-PR 2 (content expansion): `findings`/`llm_exchanges` carry the expandable content from the same
-verified snapshot — FULL populates it, METADATA_ONLY/MIXED redact per-item (`content_redacted`),
-override provenance comes from the `HITLDecisionEvent` stream (DECISIONS.md#034, not the V1-null
-table columns), the redaction date comes from `purge_audit`, and a non-equivalent verdict suppresses
-content the same way it suppresses `phases`. Content seeding mirrors
-`tests/integration/test_audit_replay.py`; HITL + purge_audit seeding mirrors
-`tests/integration/test_dashboard_findings_api.py`.
-"""
+Malformed or incomplete completed-review phases suppress grouping (FUP-125).
+Reconstruction failures return a verdict without phases rather than an error.
+Content comes from the verified snapshot; removed content is marked per item,
+human decisions supply override provenance, and purge records supply dates
+(DECISIONS.md#034). A failed verdict suppresses content as well as phases."""
 
 from __future__ import annotations
 

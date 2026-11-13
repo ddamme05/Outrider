@@ -1,13 +1,7 @@
-"""FileExaminationSink Protocol contract tests.
+"""Check the runtime file-examination sink protocol.
 
-Mirrors `test_phase_event_sink_protocol.py` for the sibling Protocol
-introduced by the intake-and-webhook spec. The Protocol's contract:
-runtime-checkable, single `async emit_file_examination` member, no
-signature-shape enforcement at runtime (PEP 544 caveat).
-
-`AuditPersister` satisfies this Protocol AND `PhaseEventSink` from one
-class body, sharing transaction discipline.
-"""
+Membership checks member presence, not callable signatures. AuditPersister
+implements this protocol alongside the phase-event sink."""
 
 import asyncio
 from uuid import uuid4

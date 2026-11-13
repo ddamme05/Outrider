@@ -1,13 +1,10 @@
-# FUP-170: post-cost-gate single-parse bundle for the analyze hot path.
-"""Share one post-cost-gate head parse between triviality and SQL-call facts.
+"""Share one source parse between the comment filter and SQL-call checks.
 
-The base source is parsed separately only when triviality needs it. The earlier
-parse_source call still supplies degradation and token estimates before the cost
-gate; this bundle must run afterward to preserve COST_BUDGET_EXHAUSTED precedence
-(specs/2026-06-13-analyze-parse-consolidation.md, FUP-170).
+Analysis calls this after the budget check, so a budget rejection takes
+precedence over these checks. The base version is parsed separately when the
+comment filter needs it. Callers receive facts, never raw parser objects.
 
-Raw trees stay inside ast_facts; callers receive FileTrivialityContext and
-ParameterizedCallScan domain models.
+See specs/2026-06-13-analyze-parse-consolidation.md (FUP-170).
 """
 
 from __future__ import annotations

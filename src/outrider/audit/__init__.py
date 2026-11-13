@@ -1,10 +1,8 @@
-"""Shared audit imports: events, persistence, replay, sinks, and retention.
+"""Expose review-history events, writers, replay and retention settings.
 
-Nodes and providers construct typed events. `AuditPersister` implements
-`LLMExchangePersister` and the protocols in `audit/sinks.py`; `AuditReplayer`
-reconstructs and verifies the stored stream. `PublishEligibilityEvent` and
-`PublishAttemptEvent` remain direct imports from `audit/events.py`.
-LLM event/content writes commit together under `DECISIONS.md#016`.
+AuditPersister saves typed events and AuditReplayer reconstructs their history.
+Model-call events and their retained content commit together (DECISIONS.md#016).
+PublishEligibilityEvent and PublishAttemptEvent are imported from audit/events.py.
 """
 
 from outrider.audit.config import RetentionSettings
@@ -15,6 +13,8 @@ from outrider.audit.events import (
     AuditEvent,
     AuditEventAdapter,
     AuditEventBase,
+    CandidateAssessmentEvent,
+    CandidateCheckStartedEvent,
     ContextManifestEntry,
     FileExaminationEvent,
     FindingEvent,
@@ -22,6 +22,7 @@ from outrider.audit.events import (
     HITLDecisionEvent,
     HITLRequestEvent,
     LLMCallEvent,
+    NativeCandidateEvent,
     PublishEvent,
     PublishRoutingEvent,
     ReplayVerdictEvent,
@@ -55,7 +56,12 @@ from outrider.audit.replay import (
     ReplayMode,
     ReplayReviewNotFoundError,
 )
-from outrider.audit.sinks import AnalyzeEventSink, FileExaminationSink, PhaseEventSink
+from outrider.audit.sinks import (
+    AnalyzeEventSink,
+    CandidateEventSink,
+    FileExaminationSink,
+    PhaseEventSink,
+)
 
 __all__ = [
     "AgentTransitionEvent",
@@ -74,6 +80,9 @@ __all__ = [
     "AuditPersisterReviewNotFoundError",
     "AuditPersisterSchemaInvariantError",
     "AuditReplayer",
+    "CandidateAssessmentEvent",
+    "CandidateCheckStartedEvent",
+    "CandidateEventSink",
     "ContextManifestEntry",
     "FieldDigest",
     "METADATA_ONLY_EXCEPTION_TYPES",
@@ -85,6 +94,7 @@ __all__ = [
     "HITLDecisionEvent",
     "HITLRequestEvent",
     "LLMCallEvent",
+    "NativeCandidateEvent",
     "PhaseEventSink",
     "PublishEvent",
     "PublishRoutingEvent",

@@ -1,26 +1,11 @@
-# See DECISIONS.md#069 — the FastAPI app serves the built dashboard SPA in the V1
-# production image (static assets + index.html history-fallback), behind the API
-# routers. The demo / API-only image leaves OUTRIDER_SERVE_SPA unset and this module
-# is a no-op there (Caddy serves the SPA on the demo box).
-"""Serve the built dashboard SPA from the FastAPI app (production image).
+"""Serve the built dashboard after backend routes have had a chance to match.
 
-`OUTRIDER_SERVE_SPA` is a strict tri-state contract (`DECISIONS.md#069`):
+OUTRIDER_SERVE_SPA=1 requires a built index.html; an absent setting leaves SPA
+serving disabled, and any other value is an error. Existing assets are served
+directly. Browser page routes can fall back to index.html, but missing assets
+and reserved backend paths return 404.
 
-- **absent** — deliberate demo / API-only image; no SPA mount, no ``dist/`` required.
-- **exactly** ``"1"`` — SPA required; a missing ``dist/index.html`` fails startup
-  (`RuntimeError`), so a broken production build never boots UI-less.
-- **any other present value** (``"0"``, ``""``, a typo) — configuration error; fails
-  startup rather than silently downgrading to "not declared" (which would let a
-  mistyped override boot without its UI).
-
-Route precedence (`DECISIONS.md#069`): the SPA fallback is registered AFTER every API
-router (GET/HEAD only). For a path that matched no API route it serves, in order: a real
-built file if present (any ``Accept``); else 404 if the path looks like a file (its last
-segment has an extension) — a missing asset never becomes the app shell; else, for a
-route-shaped path with ``Accept: text/html``, ``index.html`` (the SPA's own ``/reviews``
-client routes land here). Reserved backend namespaces are excluded root-and-descendant
-(404 for unknown sub-paths); a descendant-only namespace (``/setup``) serves the shell at
-the exact path but 404s its sub-paths.
+See DECISIONS.md#069.
 """
 
 from __future__ import annotations

@@ -1,9 +1,4 @@
-"""Unit tests for `ast_facts/registry.py` — the per-language adapter seam.
-
-First dedicated registry test file (the registry shipped in V1 with a
-single `.py` entry and no direct tests; the JS/TS extension makes the
-dispatch table load-bearing enough to pin).
-"""
+"""Check language-adapter registration and file-extension dispatch."""
 
 from __future__ import annotations
 
@@ -30,9 +25,7 @@ class _NullResolver:
         return []
 
 
-# `.pyi` routes to PythonAdapter so stub files keep their established
-# `skipped+GENERATED_FILENAME` audit record under the registry gate
-# (dispatch spec, open question 3).
+# Python declaration files use the same lazy adapter as runtime source.
 _ALL_EXTENSIONS = (".cjs", ".cts", ".js", ".jsx", ".mjs", ".mts", ".py", ".pyi", ".ts", ".tsx")
 
 

@@ -1,20 +1,8 @@
-"""Q5 — captures API shape regression guard.
+"""Check that named query captures contain lists of syntax nodes.
 
-Motivation: the canonical docs example in
-`aegis-docs::tree-sitter/python-source-analysis.md` §"Complete Runnable Example"
-writes `captures["function.def"]` and uses the result as a bare `Node`
-(`defn.start_byte`). On the spike's pinned stack
-(`tree-sitter==0.25.2`, `tree-sitter-python==0.25.0`), that raises
-`AttributeError: 'list' object has no attribute 'start_byte'` because the
-actual shape is `list[Node]`, not `Node`.
-
-Every other demo in this spike subscripts with `caps[key][0]`, so the list
-shape is assumed implicitly. This demo isolates the assumption so that a
-future tree-sitter release that flips the shape (either way) fails here
-first, with a clear error, before all the other demos fail mysteriously.
-
-Not a correctness check of tree-sitter; a regression guard against
-upstream API drift.
+The other demos use captures[key][0]. This focused check catches a change to
+that API shape before their node access fails. See
+aegis-docs::tree-sitter/python-source-analysis.md for the documented example.
 """
 
 import tree_sitter_python

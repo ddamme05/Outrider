@@ -1,0 +1,86 @@
+{
+  "schema": "pr-capture-v1",
+  "source": {
+    "repo": "Kludex/starlette",
+    "pr": 933,
+    "url": "https://github.com/Kludex/starlette/pull/933",
+    "base_sha": "152a05ac3ddba5456ee05fb81d0f2ea3eaf17c2b",
+    "target_base_sha": "152a05ac3ddba5456ee05fb81d0f2ea3eaf17c2b",
+    "head_sha": "f638a61dcbf9207c284c326868ef911996d34a21",
+    "merge_sha": "97257515f8806b8cc519d9850ecadd783b3008f9",
+    "created_at": "2020-05-06T02:43:44Z",
+    "updated_at": "2020-05-06T13:52:27Z",
+    "merged_at": "2020-05-06T13:52:26Z",
+    "captured_at": "2026-11-01T01:47:19.189008+00:00"
+  },
+  "fixture_sha256": "15a27ca657bcdb2089a8f6c2ec26f3057bd72e8e471ad10e252cf6e005dce054",
+  "license": {
+    "path": "LICENSE.md",
+    "sha256": "dcb95677a02240243187e964f941847d19b17821cf99e5afae684fab328c19bf",
+    "commit": "f638a61dcbf9207c284c326868ef911996d34a21",
+    "url": "https://github.com/Kludex/starlette/blob/f638a61dcbf9207c284c326868ef911996d34a21/LICENSE.md",
+    "blob_sha": "d16a60ec5b9963ef86b35a52ac92227014618e6c"
+  },
+  "files": [
+    {
+      "path": "requirements.txt",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "a46ab82bb49b037d992eef6bd1942fc9174be5279f492f40ad48585a11ca5063",
+        "commit": "152a05ac3ddba5456ee05fb81d0f2ea3eaf17c2b",
+        "url": "https://github.com/Kludex/starlette/blob/152a05ac3ddba5456ee05fb81d0f2ea3eaf17c2b/requirements.txt",
+        "blob_sha": "dc18d78975c48e0465ed703d2b410bd1b74e25f8"
+      },
+      "head": {
+        "sha256": "ab4ff7d2091696a320b7217c0590623fe48442a07d8988532f43aabf8da65991",
+        "commit": "f638a61dcbf9207c284c326868ef911996d34a21",
+        "url": "https://github.com/Kludex/starlette/blob/f638a61dcbf9207c284c326868ef911996d34a21/requirements.txt",
+        "blob_sha": "4061b395561f398d420b82c94afed46b4d8e09cc"
+      }
+    },
+    {
+      "path": "starlette/datastructures.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "fa8b52b09e2c64b12b11881f0adaa4e061ac67a2c45997e5c2217a8ce12fab43",
+        "commit": "152a05ac3ddba5456ee05fb81d0f2ea3eaf17c2b",
+        "url": "https://github.com/Kludex/starlette/blob/152a05ac3ddba5456ee05fb81d0f2ea3eaf17c2b/starlette/datastructures.py",
+        "blob_sha": "bbfd93ea5074fafd8f0917ab733edca3ea53f77a"
+      },
+      "head": {
+        "sha256": "34cbf311027bef66546ddb7f9063885d8409d189a4debf28eae60918ef53e26c",
+        "commit": "f638a61dcbf9207c284c326868ef911996d34a21",
+        "url": "https://github.com/Kludex/starlette/blob/f638a61dcbf9207c284c326868ef911996d34a21/starlette/datastructures.py",
+        "blob_sha": "8dad7b0b50c49f4da4b23dd64dabd4858f7c1566"
+      }
+    },
+    {
+      "path": "tests/test_datastructures.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "4332d672aade7460739eae1de93892fe03b5482d19fcc4133433d034438ba34d",
+        "commit": "152a05ac3ddba5456ee05fb81d0f2ea3eaf17c2b",
+        "url": "https://github.com/Kludex/starlette/blob/152a05ac3ddba5456ee05fb81d0f2ea3eaf17c2b/tests/test_datastructures.py",
+        "blob_sha": "42405c2547ed5fbf491228b57665e52b4c213834"
+      },
+      "head": {
+        "sha256": "d24783980b7504d8b59dd6be90c82ff08460dc665f1133163e34294658b051d7",
+        "commit": "f638a61dcbf9207c284c326868ef911996d34a21",
+        "url": "https://github.com/Kludex/starlette/blob/f638a61dcbf9207c284c326868ef911996d34a21/tests/test_datastructures.py",
+        "blob_sha": "87a7967875c7b0b0beaa963b399fffd49662cc74"
+      }
+    }
+  ],
+  "context_files": [],
+  "raw_files": {
+    "fixture.json": "15a27ca657bcdb2089a8f6c2ec26f3057bd72e8e471ad10e252cf6e005dce054",
+    "LICENSE": "dcb95677a02240243187e964f941847d19b17821cf99e5afae684fab328c19bf",
+    "raw/pr.json": "d40c97cddada5b661cb4c9c8709af1f91725b80712816f088bc21d5c2036972b",
+    "raw/files.json": "8c554846b46474e911a7758a334e1bc2610188c0ea7c981f8277e6af791d1ef2",
+    "raw/compare.json": "50edd1efb2e6a1195cb05cd5d04df9e5d16460d842d666c5cfd5435691c0a6a0"
+  },
+  "notes": "Parsed REST JSON, not HTTP wire capture. Complete UTF-8 source; no model answers or labels. Installation identity is an eval placeholder."
+}

@@ -1,27 +1,9 @@
-# LangGraph state object per docs/spec.md §7.1
-"""`ReviewState`: the LangGraph state envelope.
+"""Define the data saved between review workflow steps.
 
-Review execution starts with `review_id`, `pr_context`, `received_at`, and
-`is_eval`; every other slot is written by its owning node. Intake replaces
-`pr_context` with an enriched `PRContext` rather than adding another top-level slot.
-
-State round-trips through Postgres JSON via langgraph-checkpoint-postgres, so
-every field type must be JSON-serializable and runtime dependencies (DB sessions,
-HTTP clients) are never stored here — they are injected at `build_graph(...)` and
-closed over in the node callables.
-
-NOT frozen, deliberately: nodes return partial-update dicts that LangGraph merges
-through reducers, and a frozen model would force every node to construct a
-fully-formed instance on return.
-
-`validate_assignment=True` because `frozen=False` otherwise lets direct attribute
-assignment bypass the construction validators. Two nuances worth knowing: a valid
-dict-shaped payload IS validated and reconstructed into a real model instance on
-assignment (that is reconstructive validation, not a bypass), and LangGraph runs
-Pydantic validation only on the FIRST node's input — reducer-merged state and the
-graph output are not revalidated. So callers needing typed post-merge state must
-use `ReviewState.model_validate({**state.model_dump(), **delta})`;
-`model_copy(update=...)` does not revalidate.
+Nodes return partial dictionaries and LangGraph merges them using the declared
+reducers. A merge does not rerun Pydantic validation, so operations that need a
+validated model must validate explicitly. Clients and database sessions never
+belong in this state (state-is-pure-data; nodes-receive-deps-via-closure).
 """
 
 from typing import Annotated
@@ -41,6 +23,7 @@ from outrider.schemas.analyze_worker import (
     worker_outcome_slot,
 )
 from outrider.schemas.hitl import HITLDecision, HITLRequest
+from outrider.schemas.native_candidate import CandidateAssessmentRef, NativeCandidateRef
 from outrider.schemas.pr_context import PRContext
 from outrider.schemas.publish import PublishResult
 from outrider.schemas.review_report import ReviewReport
@@ -98,6 +81,22 @@ class ReviewState(BaseModel):
     trace_candidates: Annotated[
         list[TraceCandidate],
         append_with_dedup_by(lambda c: c.candidate_id),
+    ] = Field(default_factory=list)
+
+    native_candidates: Annotated[
+        list[NativeCandidateRef],
+        append_with_slot_guard(
+            lambda ref: ref.candidate_id,
+            lambda ref: semantic_digest(ref, exclude_paths=frozenset()),
+        ),
+    ] = Field(default_factory=list)
+
+    candidate_assessments: Annotated[
+        list[CandidateAssessmentRef],
+        append_with_slot_guard(
+            lambda assessment: assessment.attempt_id,
+            lambda assessment: semantic_digest(assessment, exclude_paths=frozenset()),
+        ),
     ] = Field(default_factory=list)
 
     # Overwrite reducer is safe: publish is the only writer and a graph terminal.

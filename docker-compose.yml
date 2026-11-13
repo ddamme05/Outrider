@@ -1,31 +1,8 @@
-# Outrider local development infrastructure.
-#
-# Single service today (Postgres 18 per the project stack). Structured for
-# expansion: shared anchors at the top let new services inherit the same
-# security defaults; the user-defined network slot is in place; named-volume
-# convention is established.
-#
-# Security posture (defense-in-depth, dev-grade):
-#   - Image pinned to postgres:18-bookworm (debian, not alpine — avoids musl
-#     locale edge cases for tree-sitter / pg_trgm later).
-#   - read_only root filesystem; tmpfs for /tmp and /var/run/postgresql;
-#     state lives only in the named volume mount.
-#   - cap_drop: ALL with explicit cap_add for the five caps the official
-#     entrypoint needs during initdb (CHOWN, DAC_OVERRIDE, FOWNER, SETGID,
-#     SETUID for gosu's root → postgres drop).
-#   - no-new-privileges flag prevents setuid escalation.
-#   - SCRAM-SHA-256 forced for both host and local auth via initdb args
-#     (overrides the image default which still permits md5 fallback).
-#   - Port bound to 127.0.0.1 only — not exposed to the LAN.
-#   - shm_size raised so postgres has parallel-query buffer headroom without
-#     having to grant SYS_ADMIN for shared-memory mounts.
-#   - Resource limits cap memory and CPU so a runaway query in dev can't
-#     starve the host.
-#   - JSON log driver with size + rotation caps so audit logs don't fill disk.
-#
-# Production deployment uses a different mechanism (managed Postgres or a
-# hardened k8s manifest); this file is dev/test only. The .env file it reads
-# from is gitignored — secrets never enter version control.
+# Local PostgreSQL services for development and automated tests.
+# postgres keeps development data across restarts. postgres-test uses temporary
+# storage and is the only database automated tests should use. Point
+# TEST_DATABASE_URL at postgres-test, never the development database.
+# Settings come from .env. For production, use deploy/docker-compose.prod.yml.
 
 x-security-hardened: &security-hardened
   security_opt:
@@ -43,7 +20,7 @@ x-default-logging: &default-logging
 services:
   postgres:
     <<: *security-hardened
-    image: postgres:18-bookworm
+    image: postgres:18.7-bookworm@sha256:ece55f7868da684e400f82f1030a050718adbdd65c23aa500c486f6e2950dc0f
     container_name: outrider-postgres
     restart: unless-stopped
 
@@ -155,7 +132,7 @@ services:
   # ─────────────────────────────────────────────────────────────────────
   postgres-test:
     <<: *security-hardened
-    image: postgres:18-bookworm
+    image: postgres:18.7-bookworm@sha256:ece55f7868da684e400f82f1030a050718adbdd65c23aa500c486f6e2950dc0f
     container_name: outrider-postgres-test
     restart: unless-stopped
 

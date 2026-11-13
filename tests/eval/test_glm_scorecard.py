@@ -1,35 +1,9 @@
-"""Opt-in, real-spend: Anthropic-vs-GLM scorecard over the analyze node.
+"""Optionally compare Anthropic and Baseten analysis using paid model calls.
 
-The GLM-provider-mode candidate gate (FUP-194 / FUP-196). Runs the SAME recall +
-precision scenarios as the Sonnet-vs-Haiku model-tier comparison
-(`test_model_comparison.py`), but with the **baseline = AnthropicProvider (Sonnet,
-the DEEP-tier quality bar)** and the **candidate = GLMProvider (GLM 5.2 on Baseten)**.
-Reusing the same fixtures + grader + report helpers keeps it apples-to-apples.
-
-REPORT-ONLY BY DESIGN (mirrors `test_real_model_comparison_evidence` +
-`test_synthesize_summary_comparison`): the per-scenario recall/precision/fp is printed
-for the human to read; pytest "passed" means the run COMPLETED, not that a gate passed.
-A recall delta vs Anthropic is a MODEL-CAPABILITY signal to interpret, not an automatic
-fail — GLM is a different model, not a within-family flip.
-
-The number that matters: GLM's recall (does it catch the known finding?) and precision
-(does it over-flag safe code?) vs Anthropic — and, implicitly, GLM's structured-output
-YIELD. A GLM analyze response whose JSON doesn't conform parses (after
-`strip_outer_json_fence`) to no findings → recall 0 on that scenario, so the recall
-dimension also surfaces the conformance signal that decided FUP-196 (shared-API soft
-vs self-deploy strict): the soft path was accepted on this evidence — see
-DECISIONS.md#059.
-
-Run (both keys resolve from .env via 1Password):
-  OUTRIDER_EVAL_REAL_MODELS=1 op run --env-file=.env -- \
-    uv run pytest tests/eval/test_glm_scorecard.py --is-eval -v -s
-
-Cost: 2 analyze calls/scenario (Anthropic baseline + GLM candidate) over the recall
-(`_GROUND_TRUTH_BY_FIXTURE`, 16 fixtures) + safe-code (`_SAFE_CODE_FIXTURES`, 4 fixtures)
-sets — 20 scenarios x 2 models = ~40 small analyze calls. Cost-per-review (the third
-scorecard column) is a separate
-`build_scorecard` pass; this gate measures quality + yield first.
-"""
+Both models use the same known-issue and safe-code fixtures. Passing pytest
+means collection completed, not that a quality gate passed. A person reviews
+recall, false positives and response validity; cost measurement is separate.
+Requires OUTRIDER_EVAL_REAL_MODELS=1 and credentials through op run."""
 
 from __future__ import annotations
 

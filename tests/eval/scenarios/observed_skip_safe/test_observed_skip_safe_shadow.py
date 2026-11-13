@@ -1,33 +1,10 @@
-"""observed_skip_safe eval scenario (Cost Lever 3, DECISIONS#049) — the promotion
-proof in SHADOW mode.
+"""Check proposed structural coverage without skipping the model call.
 
-A fixture promotes ONE OBSERVED query to `skip_safe` (test-local, restored by
-monkeypatch), so the file's only changed line is fully covered → the analyze node
-records a `would_skip` `ObservedSkipShadowEvent`. But V1 is shadow-only: the LLM
-STILL RUNS, and the JUDGED finding it returns shares a `content_hash` with the
-OBSERVED set, so prefer-OBSERVED (DECISIONS.md#054) evicts it in favor of the
-OBSERVED match — it surfaces as OBSERVED, leaving NO uncovered JUDGED. That is the
-no-JUDGED-loss proof that gates a real promotion.
-
-Parametrized over two candidates (Step 3a): `command_injection_subprocess_shell`
-and `unsafe_deserialization_yaml` (the 3a candidate, after its precision edit). Both
-prove the SAME contract, and the collision is SEMANTIC — the scripted LLM's JUDGED
-finding is the same file/line/finding_type as the OBSERVED match, so it collides
-through the real prefer-OBSERVED path (DECISIONS.md#054), not because fields were
-hand-shaped around the hash.
-
-This is NOT proving production skipping; it proves the promotion CONTRACT while
-still calling the model. A separate test asserts the production registry stays
-zero-`skip_safe` (the promotion never leaks past this scenario), protecting
-DECISIONS#049 from silently becoming "V1 has one skip-safe seed".
-
-Cache control (Step 3a, FUP-183): the run is pinned to `analyze_cache_store=None`
-+ `CacheMode.SHADOW` so the OBSERVED producer fires on every file. A cache SERVE
-hit reconstructs findings from the cached payload WITHOUT running the producer or
-`compute_observed_skip_shadow`, biasing the would-skip evidence base (FUP-183); the
-no-store + SHADOW pin forecloses that. These ARE the `run_review_persisting`
-defaults — pinned explicitly so a later default change cannot silently bias the proof.
-"""
+Temporarily promote a query in the test registry and confirm its coverage
+event. The scripted model proposes the same issue; only the structural
+finding survives. Keep the cache disabled so every run actually produces
+the evidence. The promotion must not escape the test or change the
+production registry (DECISIONS.md#049 and #054)."""
 
 from __future__ import annotations
 
@@ -55,8 +32,8 @@ if TYPE_CHECKING:
 
 _FILE_PATH = "src/vuln.py"
 
-_SUBPROCESS_HEAD = (
-    "import subprocess\n\n\ndef run_it(cmd):\n    return cmd\n    subprocess.run(cmd, shell=True)\n"
+_TLS_HEAD = (
+    "import requests\n\n\ndef run_it(cmd):\n    return cmd\n    requests.get(cmd, verify=False)\n"
 )
 _YAML_HEAD = "import yaml\n\n\ndef load_it(data):\n    return data\n    yaml.load(data)\n"
 
@@ -65,10 +42,10 @@ _YAML_HEAD = "import yaml\n\n\ndef load_it(data):\n    return data\n    yaml.loa
 # `_FILE_PATH` and a single changed line (line 6) fully covered by the promoted match.
 _PROMOTION_CASES: tuple[tuple[str, str, str, str], ...] = (
     (
-        "subprocess_shell",
+        "tls_verify_disabled",
         "tests/eval/fixtures/mock_github/observed_skip_safe.json",
-        "python.command_injection_subprocess_shell",
-        _SUBPROCESS_HEAD,
+        "python.tls_verify_disabled",
+        _TLS_HEAD,
     ),
     (
         "yaml_load",
@@ -235,7 +212,7 @@ async def test_observed_skip_safe_enforced_skips_llm_and_preserves_hitl(
     """Step 3b-mechanism: with `analyze_observed_skip_enforced=True` + a test-local
     skip_safe promotion, the covered file's analyze LLM call is SKIPPED, yet the
     OBSERVED finding still flows to the HITL gate. Both promoted candidates produce a
-    CRITICAL/HIGH OBSERVED finding (command_injection / unsafe_deserialization), so
+    HIGH OBSERVED finding (tls_verify_disabled / unsafe_deserialization), so
     the LOAD-BEARING assertion is that the enforced skip does NOT bypass HITL —
     `hitl-gates-high-severity` holds even when the LLM never ran for the file."""
     _promote_to_skip_safe(monkeypatch, promote_id)
@@ -269,7 +246,7 @@ async def test_observed_skip_safe_enforced_skips_llm_and_preserves_hitl(
     assert observed, "the enforced-skip file's OBSERVED finding must reach the report"
     assert not [f for f in result.findings if f.evidence_tier == EvidenceTier.JUDGED]
 
-    # 4. LOAD-BEARING (hitl-gates-high-severity): the skipped file's CRITICAL/HIGH
+    # 4. LOAD-BEARING (hitl-gates-high-severity): the skipped file's HIGH
     #    OBSERVED finding STILL gated at HITL — the enforced skip did NOT bypass the
     #    human-approval gate. This is the single most important assertion in 3b.
     assert result.hitl_gated is True, (

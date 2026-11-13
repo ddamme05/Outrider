@@ -1,10 +1,8 @@
-# See DECISIONS.md#070 — App-Manifest onboarding (setup state machine + signed state + config).
-"""App-Manifest onboarding primitives (DECISIONS.md#070).
+"""Create and connect a GitHub App for this deployment.
 
-router.py composes the manifest, conversion wrapper, and durable state machine.
-state_token.py signs callback state; nonce.py supplies the hashed, single-use
-nonce consumed by the machine. config.py validates database-mode setup settings.
-mount.py wires the router before startup dependencies and the SPA catch-all.
+router.py handles setup requests; state_machine.py saves progress; state_token.py
+and nonce.py protect the callback. mount.py installs the setup routes before
+the dashboard fallback. See DECISIONS.md#070.
 """
 
 from __future__ import annotations

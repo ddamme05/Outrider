@@ -15,6 +15,7 @@ function finding(overrides: Partial<FindingView> = {}): FindingView {
     dimension: "security",
     severity: "critical",
     evidence_tier: "judged",
+    source_side: "head",
     file_path: "app/db/users.py",
     line_start: 40,
     line_end: 43,
@@ -57,6 +58,12 @@ test("title is promoted above the description", () => {
   const desc = document.querySelector(".f-desc");
   expect(title).toHaveTextContent("Unparameterized query in the login path");
   expect(desc).toHaveTextContent("User input is interpolated straight into the SQL string.");
+});
+
+test("removed BASE evidence is labeled without a patch suggestion", () => {
+  render(<FindingCard finding={finding({ source_side: "base" })} />);
+  expect(screen.getByText("Removed BASE")).toBeInTheDocument();
+  expect(screen.queryByText("Use a parameterized query.")).toBeNull();
 });
 
 test("evidence renders in a CodeBlock <pre> with a language chip from the path", () => {

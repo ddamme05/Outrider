@@ -1,8 +1,6 @@
-"""Unit tests for `api/setup/config` — onboarding config (#070).
+"""Check onboarding URL and signing-secret settings (DECISIONS.md#070).
 
-`SetupSettings.base_url` (env `OUTRIDER_PUBLIC_BASE_URL`) shape validation + `validate_setup_config`
-requiring BOTH the public base URL and a valid state secret.
-"""
+Setup requires a valid public base URL and state secret."""
 
 from __future__ import annotations
 

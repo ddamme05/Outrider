@@ -1,24 +1,8 @@
-"""Integration tests for the Replay-% aggregation endpoint (`GET /api/metrics/replay`).
+"""Check replay metrics from persisted verdicts (DECISIONS.md#039).
 
-The stage-3 sibling of `/api/metrics` (`DECISIONS.md#039`): reads the PERSISTED
-`replay_verdict` events the background projector appends (`sweep/replay_verdict.py`) and
-returns `equivalent / total` bucketed by `reviews.completed_at`. Proves, against real seeded
-rows:
-
-- equivalent / total per the current window + the period-over-period deltas;
-- ONLY reviews carrying a persisted verdict are in the denominator — a completed-but-pending
-  review (no verdict yet) is excluded, never assumed equivalent (the projector-lag guard);
-- bucketing is by `reviews.completed_at`, NOT the verdict EVENT's timestamp — a review that
-  completed in the prior window stays in the prior window even when its verdict was projected
-  (event timestamp) inside the current window;
-- `is_eval` excluded by default, exposed with `?include_eval=true`, and a verdict whose
-  `is_eval` column DISAGREES with its review is drift, rejected in both directions (FUP-130);
-- sparse / empty windows render honest zeros; 401 without the admin key.
-
-Verdict payloads are built from the real `ReplayVerdictEvent` (faithful shape, not a
-hand-typed dict); only `replay_equivalent` is read by the endpoint, but the envelope
-validators keep the fixture honest.
-"""
+Only reviews with a verdict enter the denominator. Bucket by review completion
+time, not projection time, and reject evaluation-flag disagreement. Cover period
+comparisons, evaluation exclusion, empty windows, and authentication."""
 
 from __future__ import annotations
 

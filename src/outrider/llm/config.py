@@ -1,20 +1,12 @@
-# Per-node LLM model selection, env-backed.
-# See specs/2026-05-05-llm-provider-wrapper.md and docs/spec.md §4.2.
-# Host-aware selection via `ModelConfig.for_host` (DECISIONS.md#056); the lifespan
-# OUTRIDER_LLM_HOST read that drives it happens in the provider-factory wiring.
-"""Frozen per-node model selection with environment overrides.
+"""Choose models and reasoning settings for each review step.
 
-`ModelConfig()` uses Anthropic defaults: Sonnet for DEEP analyze and Haiku
-for the other calls (`DECISIONS.md#041/#043`). Anthropic names must match
-the family pattern and avoid the SDK's deprecated-model registry.
-
-`for_host` merges `OUTRIDER_MODEL_*` overrides over `HOST_DEFAULT_MODELS`
-(`DECISIONS.md#056`). Non-Anthropic slugs are validated by their host
-profile downstream. Call sites read these fields, rather than model literals.
+Startup settings select the host and any per-step model overrides. Call sites
+use the resulting configuration rather than embedding model names.
+See DECISIONS.md#041, #043, #056.
 """
 
 import re
-from typing import Final
+from typing import Final, Literal
 
 from anthropic.resources.messages import DEPRECATED_MODELS
 from pydantic import field_validator
@@ -22,7 +14,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from outrider.llm.host_profiles import HOST_DEFAULT_MODELS
 
-__all__ = ["ModelConfig", "is_anthropic_family_model", "model_uses_adaptive_thinking"]
+__all__ = [
+    "ModelConfig",
+    "is_anthropic_family_model",
+    "model_text_only_thinking",
+    "model_uses_adaptive_thinking",
+]
 
 # V1 Anthropic family pattern.
 # Three accepted Anthropic model-ID shapes:
@@ -47,26 +44,19 @@ def is_anthropic_family_model(slug: str) -> bool:
 
 
 def model_uses_adaptive_thinking(slug: str) -> bool:
-    """True iff `slug` is an Anthropic model of the adaptive-thinking generation
-    (Sonnet 5+, Opus 4.7+). Two API behaviors define that generation, and both
-    are what `AnthropicProvider._build_sdk_kwargs` shapes the request for:
+    """Whether the model needs explicit thinking control and no sampling parameters."""
+    return model_text_only_thinking(slug) is not None
 
-      - non-default sampling params (`temperature` / `top_p` / `top_k`) are
-        rejected with a 400, so the wrapper OMITS them; and
-      - adaptive thinking is ON by default, so the wrapper sends
-        `thinking={"type": "disabled"}` to keep the single-text-block response
-        contract (`_extract_single_text_block`).
 
-    Current-generation models (Haiku 4.5, Sonnet 4.6, Opus 4.6) return False:
-    they accept `temperature` and have thinking off by default, so the wrapper
-    keeps the legacy request shape. Non-anthropic / malformed slugs return False
-    (they take the OpenAI-compatible path, not this one). Extend the per-family
-    version boundaries when a new adaptive-thinking model lands (e.g. a next-gen
-    Haiku). Lives in config.py — the model-string knowledge boundary — so the
-    provider branches on the model without hardcoding a slug
-    (`model-strings-from-config-not-hardcoded`)."""
+def model_text_only_thinking(slug: str) -> Literal["disabled", "between_tools"] | None:
+    """Choose the thinking setting for a single text response without tools.
+
+    Sonnet 5.5 uses ``between_tools``; Sonnet 5, Opus 4.7+ and Haiku 5.5
+    use ``disabled``. Earlier models need no setting. Model-name knowledge
+    stays here rather than in the provider (`model-strings-from-config-not-hardcoded`).
+    """
     if not is_anthropic_family_model(slug):
-        return False
+        return None
     # claude-{family}-{major}[-{minor}][-{YYYYMMDD}]
     _, family, major_text, *rest = slug.split("-")
     major = int(major_text)
@@ -74,14 +64,17 @@ def model_uses_adaptive_thinking(slug: str) -> bool:
     # minor (`claude-sonnet-5-20260615`) — the greedy `(-\d+)?` group in
     # `_VALID_MODEL_PATTERN` captures a date into the minor slot when no minor is
     # given. A date is exactly `_DATED_SUFFIX_LEN` digits, so a shorter run is the
-    # minor, which keeps a three-digit minor from reading as a date. Only opus reads
-    # minor; sonnet keys on major alone.
+    # minor, which keeps a three-digit minor from reading as a date.
     minor = int(rest[0]) if rest and len(rest[0]) < _DATED_SUFFIX_LEN else 0
     if family == "sonnet":
-        return major >= 5
-    if family == "opus":
-        return (major, minor) >= (4, 7)
-    return False  # haiku: no adaptive-thinking model yet
+        if (major, minor) >= (5, 5):
+            return "between_tools"
+        return "disabled" if major >= 5 else None
+    if (family == "opus" and (major, minor) >= (4, 7)) or (
+        family == "haiku" and (major, minor) >= (5, 5)
+    ):
+        return "disabled"
+    return None
 
 
 class _EnvModelOverrides(BaseSettings):
@@ -119,31 +112,28 @@ class ModelConfig(BaseSettings):
         frozen=True,
     )
 
-    # DEEP-tier analyze runs Sonnet 5 (the adaptive-thinking generation — see
-    # `model_uses_adaptive_thinking`; the wrapper omits sampling params and
-    # disables thinking for it). triage/trace/patch/synthesize + STANDARD-tier
-    # analyze run Haiku 4.5.
-    triage_model: str = "claude-haiku-4-5"
-    analyze_model: str = "claude-sonnet-5"
-    # See DECISIONS.md#041 — the DEEP-tier model is `analyze_model`; STANDARD-tier files
-    # route here. Defaults to Haiku after the eval
-    # quality gate (PR #51) showed Haiku holds STANDARD-tier recall and does not over-flag
-    # safe code worse than Sonnet. DEEP-tier files stay on `analyze_model` (Sonnet); so do
-    # trace-fetched (no-tier) files. Override per-deployment via
-    # OUTRIDER_MODEL_STANDARD_ANALYZE_MODEL.
-    standard_analyze_model: str = "claude-haiku-4-5"
-    # See DECISIONS.md#043 — synthesize runs Haiku: nothing finding-bearing
-    # in the node is model-dependent (findings are analyze output, severity
-    # is policy-set, dedup is content-hash); the model writes only the
-    # user-facing summary PROSE, the same bounded-generation class as the
-    # already-Haiku trace/patch calls. Watch is summary quality, not
-    # findings. Override per-deployment via OUTRIDER_MODEL_SYNTHESIZE_MODEL.
-    synthesize_model: str = "claude-haiku-4-5"
-    trace_model: str = "claude-haiku-4-5"
-    # See DECISIONS.md#040 — suggested-patch generation (synthesize) uses Haiku:
-    # patch-gen is the kind of bounded generation Haiku handles, and cost is
-    # analyze-dominated, so the patch call must not be a second Sonnet call.
-    patch_model: str = "claude-haiku-4-5"
+    # DEEP-tier and trace-fetched file analysis use analyze_model.
+    triage_model: str = "claude-haiku-5-5"
+    analyze_model: str = "claude-sonnet-5-5"
+    # STANDARD-tier files route separately (DECISIONS.md#041).
+    standard_analyze_model: str = "claude-haiku-5-5"
+    # Summary prose only; findings, severity and dedup are separate (DECISIONS.md#043).
+    synthesize_model: str = "claude-haiku-5-5"
+    # Trace ranks candidates; fetched-file analysis still uses analyze_model.
+    trace_model: str = "claude-haiku-5-5"
+    # Suggested replacement text is validated by patch_generation (DECISIONS.md#040).
+    patch_model: str = "claude-haiku-5-5"
+
+    def models(self) -> tuple[str, ...]:
+        """Return the six role models in declaration order, preserving duplicates."""
+        return (
+            self.triage_model,
+            self.analyze_model,
+            self.standard_analyze_model,
+            self.synthesize_model,
+            self.trace_model,
+            self.patch_model,
+        )
 
     @field_validator(
         "triage_model",

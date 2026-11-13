@@ -1,25 +1,12 @@
-# Synthesize-output cross-boundary models per docs/spec.md §7.2 (lines 1099-1114).
-"""Synthesize's sorted findings, summary prose, and measured review metrics.
+"""Collect the final summary, findings and metrics for approval and publication.
 
-HITL and publish consume this report rather than walking analysis rounds.
-Synthesize deduplicates by content_hash and rejects cross-round severity or
-policy-version divergence. The schema rejects duplicate hashes and sorts
-findings by severity, location, and finding_id for stable checkpoint bytes.
+Findings have stable order and unique identities. The report is frozen and
+holds a tuple, but its findings remain mutable. Clone and revalidate findings
+before downstream changes. Summary text remains untrusted display data;
+recorded policy versions preserve the meaning of saved severities.
 
-Summary is untrusted LLM prose, displayed on the dashboard; publish currently
-builds its GitHub review body from deterministic finding sections. Metrics
-come from state and audit aggregates, not numbers in summary text. Summary
-model routing follows DECISIONS.md#043; retained audit metrics remain separate
-from expiring content per DECISIONS.md#014.
-
-The findings tuple is permanent per
-`DECISIONS.md#030-reviewreport-tuple-not-list-findings-field`. The frozen
-envelope is shallow: nested ReviewFinding objects remain lifecycle-mutable.
-Treat report findings as logically immutable; clone through model_validate
-for downstream changes. Per-finding policy_version and the synthesize audit
-event carry the snapshot for severity-policy-versioned-for-replay; the
-report deliberately has no policy_version field. Baseline severity remains
-severity-set-by-policy."""
+See DECISIONS.md#014, #030, #043 and severity-policy-versioned-for-replay.
+"""
 
 from collections.abc import Mapping
 from types import MappingProxyType
@@ -32,14 +19,8 @@ from outrider.schemas.analysis_round import MAX_FINDINGS_HARD_CAP
 from outrider.schemas.review_finding import ReviewFinding
 from outrider.schemas.triage_result import RiskLevel
 
-# Severity presentation order: CRITICAL first (most-severe at the top of
-# review-body lists, HITL-partition gated-set, dashboard). Wrapped in
-# MappingProxyType so runtime mutation raises TypeError — same defense-
-# in-depth shape as policy/severity.py::SEVERITY_POLICY. Inlined here
-# rather than in policy/severity.py because this is a presentation-layer
-# concern (sort order for review output), not a severity-from-policy
-# concern. Module-private: importers should use the public sorted tuple
-# on ReviewReport, not the order map directly.
+# Immutable presentation order, separate from policy's severity assignment.
+# Consumers use the sorted ReviewReport.findings tuple rather than this map.
 _SEVERITY_SORT_KEY: Final[Mapping[FindingSeverity, int]] = MappingProxyType(
     {
         FindingSeverity.CRITICAL: 0,
@@ -51,13 +32,24 @@ _SEVERITY_SORT_KEY: Final[Mapping[FindingSeverity, int]] = MappingProxyType(
 )
 
 # Per-report finding ceilings (FUP-180), mirroring `AnalysisRound`'s two-tier shape.
-# `MAX_FINDINGS_PER_REPORT` is the SOFT cap: synthesize truncates NON-gated findings
+# `MAX_FINDINGS_PER_REPORT` is the SOFT cap: synthesize truncates unprotected findings
 # across all rounds to this bound before building the report (via
-# `agent.nodes.finding_cap`). Gated (CRITICAL/HIGH) findings are NEVER dropped to fit
-# it, so the report can legitimately exceed it; the schema `max_length` below is the
+# `agent.nodes.finding_cap`). CRITICAL/HIGH and known held findings survive this
+# limit, so the report can exceed it; the schema `max_length` below is the
 # shared HARD runaway ceiling (`MAX_FINDINGS_HARD_CAP`). Since the cap runs before
 # `ReviewReport(...)`, the schema constraint is the defense-in-depth backstop.
 MAX_FINDINGS_PER_REPORT: Final[int] = 200
+
+# Persisted summary sources name immutable renderers so audit can verify them.
+EMPTY_FINDINGS_SUMMARY_SOURCE: Final = "empty-findings-v1"
+
+
+def render_empty_findings_summary(overall_risk: RiskLevel) -> str:
+    """State the retained count and upstream risk without inferring clean code."""
+    return (
+        "This review retained no findings. "
+        f"Triage classified the pull request as {overall_risk.value} risk."
+    )
 
 
 class ReviewMetrics(BaseModel):
@@ -65,44 +57,25 @@ class ReviewMetrics(BaseModel):
 
     All fields derived deterministically from audit_events + analysis_rounds
     + node wall-clock measurement. NOT computed by the LLM call; the
-    summary call produces only the summary prose. ge=0 floors match the
+    optional summary call produces only summary prose. ge=0 floors match the
     LLMCallEvent pricing-field convention (input_tokens, output_tokens,
     cost_usd) at audit/events.py:320-323.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    # See DECISIONS.md#030-reviewreport-tuple-not-list-findings-field
-    # for the canonical-record amendment establishing:
-    #   (a) `ReviewReport.findings: tuple[...]` as the permanent shape
-    #       (vs spec.md §7.3's `list[...]` — unmaintained drift), AND
-    #   (b) `ReviewMetrics` LLM-aggregate fields as `int | None` /
-    #       `float | None` — populated from the audit stream (FUP-093) but
-    #       kept nullable for append-only historical-row read-compat
-    #       (#030 amended 2026-06-03; the planned type-revert was superseded).
-    # The `files_traced_beyond_diff` union recipe Pass-1-folded under
-    # #030 is documented at `_compute_files_traced_beyond_diff` and
-    # pinned by `tests/unit/test_synthesize_files_traced_metric.py`.
+    # DECISIONS.md#030-reviewreport-tuple-not-list-findings-field fixes the report's
+    # tuple shape and nullable historical metrics. Live rows populate LLM metrics
+    # from the audit stream (FUP-093); #030 preserves older NULL payloads.
 
     # Deterministically computed from state.analysis_rounds.
     files_examined: int = Field(ge=0)
-    # Deterministically computed from
-    # `state.trace_decisions[*].(target_file | resolved_candidate_paths)`
-    # ∪ `state.trace_fetched_files[*].path`, minus `pr_context.changed_files`
-    # paths. See `_compute_files_traced_beyond_diff` for the union recipe
-    # and the "beyond diff = outside changed-files set, NOT
-    # Phase-2-fetched specifically" semantic.
+    # Union of resolved trace paths and fetched files outside the PR's changed
+    # paths, not just Phase-2 fetches. See _compute_files_traced_beyond_diff.
     files_traced_beyond_diff: int = Field(ge=0)
-    # LLM-aggregate metrics. Populated at synthesize-emit time from the
-    # audit-stream SUM over this review's `LLMCallEvent` rows
-    # (`audit/aggregates.py::aggregate_review_llm_metrics` — the same
-    # single-source helper the dashboard read-API uses, FUP-093). Kept
-    # `int | None` / `float | None` NOT because they're unpopulated, but for
-    # append-only read-compat: pre-FUP-093 rows serialize `null` here and
-    # replay re-validates historical payloads through the strict adapter, so a
-    # required type would reject them (#030, amended). A `None` now means
-    # "historical row, predates population," never the false-zero #030
-    # rejected. New rows always carry the real aggregate.
+    # aggregate_review_llm_metrics supplies the same audit-stream sums to
+    # synthesize and the dashboard (FUP-093). None means an older unpopulated row,
+    # not zero activity; replay must still accept it (#030).
     llm_calls_made: int | None = Field(default=None, ge=0)
     total_input_tokens: int | None = Field(default=None, ge=0)
     total_output_tokens: int | None = Field(default=None, ge=0)
@@ -140,16 +113,13 @@ class ReviewReport(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    # PROSE, not an audit-counting surface: numbers inside the summary are
-    # model-written and may drift on DERIVED counts (the prompt supplies a
-    # precomputed n_findings, but e.g. distinct-file counts are re-derived
-    # by the model — both Sonnet and Haiku miscounted one in the 2026-06-10
-    # side-by-side). Renderers display exact counts from `metrics` /
-    # the audit stream; never parse them out of this text.
+    # Empty reports state the retained count and upstream risk with a fixed
+    # template. Model-written prose can miscount, so render exact metrics from
+    # metrics and the audit stream rather than parsing them from summary text.
     summary: str = Field(max_length=2000)
     overall_risk: RiskLevel
     # max_length is the HARD runaway ceiling (MAX_FINDINGS_HARD_CAP), NOT the soft
-    # MAX_FINDINGS_PER_REPORT — gated findings are never dropped to fit the soft cap
+    # MAX_FINDINGS_PER_REPORT — protected findings survive the soft cap
     # (FUP-180), so the report can legitimately exceed it. Synthesize re-caps the
     # deduped cross-round union severity-ordered BEFORE building the report, so this
     # constraint is the runaway-protection backstop (checkpoint payload size +

@@ -1,0 +1,31 @@
+{
+  "schema": "saved-review-regression-v1",
+  "use": "Offline admission/scorer regression; not a model-quality or billing estimate.",
+  "role": "A real reversed line range must be rejected rather than repaired into a credited finding.",
+  "fixture": "tests/eval/fixtures/mock_github/ssrf_user_host.json",
+  "fixture_sha256": "f28110d90e068c60774a78a5e4d8e765a718c257010558adaeb49fae7ad50c55",
+  "provenance": {
+    "source_exchange": "reports/model-refresh/20261031T175134Z-bf6fb496584a/calls/000112.exchange.json",
+    "source_exchange_sha256": "95c1e392188ee33d0939158e83b3895a2ced8467da80746cde2682447575c1ca",
+    "captured_at": "2026-10-31T17:54:02.047200Z",
+    "prompt_version": "analyze-v10",
+    "system_prompt_sha256": "4520a00624438556a969fc7b28e051119ad0eb55d92d744c7c5900e82374e4d4",
+    "request_sha256": "3ad3905e6b889b7e47558cb604b173f422b810cde888f24dd2298bfbf3bc3ac3",
+    "response_kind": "Normalized LLMResponse; raw provider wire was not retained."
+  },
+  "response": {
+    "text": "{\"findings\":[{\"finding_type\":\"ssrf\",\"evidence_tier\":\"judged\",\"query_match_id\":null,\"trace_path\":null,\"title\":\"User-supplied URL passed straight to requests.get\",\"description\":\"The target URL is taken directly from request.GET['url'] and fetched with requests.get with no allowlist or host validation, so the user controls the destination host/scheme. Validate the URL against an allowlist of permitted hosts and schemes before fetching, and block private/link-local ranges.\",\"evidence\":\"target = request.GET[\\\"url\\\"]\\n        resp = requests.get(target)\",\"line_start\":5,\"line_end\":2,\"trace_candidates\":[]}]}",
+    "model": "claude-haiku-5-5",
+    "input_tokens": 429,
+    "output_tokens": 221,
+    "cache_read_tokens": 10872,
+    "cache_write_tokens": 0,
+    "finish_reason": "end_turn",
+    "latency_ms": 1977,
+    "profile_id": "anthropic",
+    "reasoning_enabled": false,
+    "profile_contract_digest": "e5a53cca1a05f1b8e37ee64ef7c42a967abbf4e2d0a9a7a0e8834580680c543b",
+    "billed_prompt_tokens": null,
+    "service_tier_actual": null
+  }
+}

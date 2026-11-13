@@ -1,24 +1,8 @@
-"""severity_policies protections — CHECK constraint behavior.
+"""Check that stored policy versions require strict bare semantic versions.
 
-Backs §0c of specs/2026-05-19-analyze-foundation.md. The migration
-3d03bca7f2be_severity_policies_protections.py adds:
-
-  1. CHECK constraint `ck_severity_policies_version_semver` enforcing
-     the strict bare-semver shape
-     `version ~ '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$'`
-     — no leading zeros (semver §2), no pre-release/build suffix.
-     Matches the ASCII-only Python guard at
-     `outrider.policy.severity._SEMVER_RE`.
-  2. Append-only trigger `trg_severity_policies_append_only` (exercised
-     separately in test_severity_policies_append_only_trigger.py).
-
-This file covers (1) and the (a)-(d) cases enumerated in §0c:
-  (a) UPDATE on the existing row raises — covered in trigger test.
-  (b) DELETE on the existing row raises — covered in trigger test.
-  (c) INSERT with malformed version (`'v1.0.0'`, `'1.0'`, `'01.0.0'`,
-      etc.) raises the CHECK.
-  (d) INSERT with new valid bare semver (`'1.0.1'`) succeeds.
-"""
+Reject leading zeros and release/build suffixes; accept a new valid version.
+The append-only trigger is tested separately.
+See specs/2026-05-19-analyze-foundation.md §0c."""
 
 import pytest
 from sqlalchemy import text

@@ -1,12 +1,6 @@
-"""Eval-harness metrics framework: 6 V1 metric Pydantic shapes per spec §11.3.
+"""Check metric models accept valid counts and reject invalid ranges or extra fields.
 
-Pure schema test — constructs each metric with valid data and confirms the
-shape rejects malformed inputs (negative values, ratios outside [0, 1],
-extra fields).
-
-The shapes only — scoring functions are non-goals here per the eval-harness
-spec.
-"""
+These tests check data shapes, not scoring."""
 
 import pytest
 from pydantic import ValidationError

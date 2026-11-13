@@ -1,51 +1,25 @@
-# Pre-flight budget planner per specs/2026-07-05-parallel-analyze.md.
-"""Allocate file budgets before parallel analyze workers start.
+"""Divide the review budget among files before their workers start.
 
-Funding follows caller order: reject estimates above the per-file cap or the
-remaining class budget. High-risk files draw reserved tokens before general
-tokens; other files draw only general tokens. A funded allocation equals the
-estimate, and an unfunded worker spends nothing.
+plan_file_budgets follows file order and gives high-risk files access to a
+reserved portion. A file that cannot fit its limit receives no allocation.
+Unused allocations are not reassigned when another file skips model review.
 
-Allocations are final. A cache hit or coverage skip does not release its reserved
-allocation to later workers, and unused tokens are not redistributed. Workers
-check their rendered estimate against the allocation; the proxy estimator is a
-calibrated heuristic, not the enforcement boundary.
-
-This module stays free of model and prompt imports for structural scenarios."""
+The estimate helps scheduling; each worker still checks its actual prompt
+estimate before calling the model. See specs/2026-07-05-parallel-analyze.md.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Final
+from dataclasses import dataclass, replace
 
 __all__ = [
-    "BYTES_PER_TOKEN",
-    "DUP_FACTOR",
     "BudgetPlan",
     "DuplicatePlannedPathError",
     "FileAllocation",
     "FileBudgetRequest",
     "plan_file_budgets",
-    "proxy_estimate_tokens",
+    "reserve_context_headroom",
 ]
-
-# Bytes-per-token divisor. Mirrors analyze's `_BYTES_PER_TOKEN` (a
-# cross-module test pins the two equal — the planner's proxy and the
-# worker's real estimate must divide by the same conservative-up
-# constant or the proxy-covers-real calibration property is meaningless).
-BYTES_PER_TOKEN: Final[int] = 3
-
-# Duplication factor for the proxy estimator: the rendered user prompt
-# embeds scope excerpts that can OVERLAP (same-file caller/callee context
-# duplicates content regions), so content + patch bytes alone bounds
-# nothing. Deliberately conservative-high at introduction — an
-# over-estimate over-reserves (utilization cost, measured via skip
-# counters), never overspends. The fan-out increment's calibration
-# property test (proxy >= real rendered estimate on every fixture) is the
-# regression gate for tightening it; this is a calibrated heuristic, not
-# a proven bound (spec: enforcement rests on the worker's
-# real-estimate-vs-allocation check, not on this constant).
-DUP_FACTOR: Final[float] = 2.0
 
 
 class DuplicatePlannedPathError(ValueError):
@@ -61,36 +35,6 @@ class DuplicatePlannedPathError(ValueError):
     def __init__(self, path: str) -> None:
         self.path = path
         super().__init__(f"duplicate canonical path in kept-file list: {path!r}")
-
-
-def proxy_estimate_tokens(
-    content_bytes: int,
-    patch_bytes: int,
-    *,
-    fixed_overhead_tokens: int,
-    dup_factor: float = DUP_FACTOR,
-) -> int:
-    """Conservative pre-render token estimate for one file's analyze call.
-
-    `ceil((dup_factor × (content_bytes + patch_bytes)) / BYTES_PER_TOKEN)
-    + fixed_overhead_tokens`. The caller supplies `fixed_overhead_tokens`,
-    which MUST cover the same fixed terms the worker's real estimate
-    carries: system-prompt tokens + user-template scaffolding + the
-    output-token reservation (`analyze_prompt.MAX_TOKENS` — the sequential
-    gate's estimate is system + user + MAX_TOKENS). Omitting the output
-    reservation systematically under-funds every file by that constant,
-    and the worker's real-estimate-vs-allocation check converts the gap
-    into spurious COST_BUDGET_EXHAUSTED skips. Computed once per review
-    from the real prompt constants — this module stays import-light and
-    never renders. Heuristic by design; see `DUP_FACTOR`.
-    """
-    if content_bytes < 0 or patch_bytes < 0:
-        raise ValueError("byte counts must be non-negative")
-    if fixed_overhead_tokens < 0:
-        raise ValueError("fixed_overhead_tokens must be non-negative")
-    variable_bytes = dup_factor * (content_bytes + patch_bytes)
-    variable_tokens = int(-(-variable_bytes // BYTES_PER_TOKEN))
-    return fixed_overhead_tokens + variable_tokens
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +175,56 @@ def plan_file_budgets(
         allocations=tuple(allocations),
         general_pool_tokens=general_pool_tokens,
         reserved_pool_tokens=reserved_pool_tokens,
+        general_remainder_tokens=remaining_general,
+        reserved_remainder_tokens=remaining_reserved,
+    )
+
+
+def reserve_context_headroom(
+    plan: BudgetPlan,
+    context_estimates: dict[str, int],
+    *,
+    per_file_cap_tokens: int,
+) -> BudgetPlan:
+    """Fund optional context from unallocated tokens without shrinking file budgets.
+
+    Each estimate includes its file's existing reservation. An extension that
+    cannot fit its class pool or per-file cap leaves that file unchanged.
+    """
+    known_paths = {allocation.path for allocation in plan.allocations}
+    if context_estimates.keys() - known_paths:
+        raise ValueError("context estimates include a file outside the baseline plan")
+    if per_file_cap_tokens < 0 or any(estimate < 0 for estimate in context_estimates.values()):
+        raise ValueError("context estimates and per-file cap must be non-negative")
+    remaining_general = plan.general_remainder_tokens
+    remaining_reserved = plan.reserved_remainder_tokens
+    allocations: list[FileAllocation] = []
+    for allocation in plan.allocations:
+        estimate = context_estimates.get(allocation.path, allocation.estimate_tokens)
+        extra_tokens = estimate - allocation.estimate_tokens
+        available = (
+            remaining_general + remaining_reserved if allocation.is_high_risk else remaining_general
+        )
+        if (
+            allocation.funded
+            and extra_tokens > 0
+            and estimate <= per_file_cap_tokens
+            and extra_tokens <= available
+        ):
+            from_reserved = min(extra_tokens, remaining_reserved) if allocation.is_high_risk else 0
+            from_general = extra_tokens - from_reserved
+            remaining_reserved -= from_reserved
+            remaining_general -= from_general
+            allocation = replace(
+                allocation,
+                estimate_tokens=estimate,
+                from_reserved_tokens=allocation.from_reserved_tokens + from_reserved,
+                from_general_tokens=allocation.from_general_tokens + from_general,
+            )
+        allocations.append(allocation)
+    return replace(
+        plan,
+        allocations=tuple(allocations),
         general_remainder_tokens=remaining_general,
         reserved_remainder_tokens=remaining_reserved,
     )

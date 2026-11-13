@@ -1,0 +1,2986 @@
+{
+  "format": "outrider-review-contract-v1",
+  "human_reference": "REVIEW_CONTRACT.md",
+  "purpose": "Generated implementation reference. Components are separate runtime shapes, not a new API endpoint, combined response envelope, or detection-quality guarantee.",
+  "regenerate": ".venv/bin/python scripts/gen_review_contract.py",
+  "check": ".venv/bin/python scripts/gen_review_contract.py --check",
+  "schema_scope": "Each component schema is self-contained. Pydantic JSON Schemas describe shape and declared constraints; custom validators and pipeline admission add rules. Only components marked constrained-decoding-schema are sent as response_schema_json.",
+  "http_api_schema": "dashboard/openapi.json",
+  "policy_version": "1.3.0",
+  "category_sources": [
+    "src/outrider/policy/severity.py:FindingType",
+    "src/outrider/policy/severity.py:SEVERITY_POLICY",
+    "src/outrider/policy/dimensions.py:FINDING_TYPE_TO_DIMENSION"
+  ],
+  "dimensions": [
+    "code_quality",
+    "security",
+    "performance",
+    "test_coverage",
+    "best_practices"
+  ],
+  "categories": [
+    {
+      "finding_type": "sql_injection",
+      "severity": "critical",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "xss",
+      "severity": "high",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "hardcoded_secret",
+      "severity": "high",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "auth_bypass",
+      "severity": "critical",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "path_traversal",
+      "severity": "high",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "missing_input_validation",
+      "severity": "medium",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "n_plus_one_query",
+      "severity": "medium",
+      "dimension": "performance"
+    },
+    {
+      "finding_type": "blocking_call_in_async",
+      "severity": "medium",
+      "dimension": "performance"
+    },
+    {
+      "finding_type": "unused_import",
+      "severity": "info",
+      "dimension": "code_quality"
+    },
+    {
+      "finding_type": "missing_error_handling",
+      "severity": "low",
+      "dimension": "code_quality"
+    },
+    {
+      "finding_type": "missing_test",
+      "severity": "low",
+      "dimension": "test_coverage"
+    },
+    {
+      "finding_type": "deprecated_api",
+      "severity": "info",
+      "dimension": "best_practices"
+    },
+    {
+      "finding_type": "command_injection",
+      "severity": "critical",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "unsafe_deserialization",
+      "severity": "high",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "tls_verify_disabled",
+      "severity": "high",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "weak_crypto",
+      "severity": "high",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "weak_password_hash",
+      "severity": "critical",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "insecure_randomness",
+      "severity": "high",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "ssrf",
+      "severity": "high",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "ssrf_metadata",
+      "severity": "critical",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "open_redirect",
+      "severity": "medium",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "open_redirect_authed",
+      "severity": "high",
+      "dimension": "security"
+    },
+    {
+      "finding_type": "correctness_bug",
+      "severity": "medium",
+      "dimension": "code_quality"
+    }
+  ],
+  "confidence": {
+    "source": "src/outrider/schemas/review_finding.py:_CONFIDENCE_BY_TIER",
+    "meaning": "Fixed evidence-tier score, not a calibrated probability of correctness.",
+    "by_evidence_tier": {
+      "observed": 0.9,
+      "inferred": 0.75,
+      "judged": 0.5
+    }
+  },
+  "candidate_assessment_combination": {
+    "source": "src/outrider/schemas/native_candidate.py:combine_candidate_assessment",
+    "meaning": "Derived provisional status. A refuted HEAD claim or demonstrated unrelated preexisting issue yields refutes. Unknown or refuted broader impact or repair advice leaves a supported local bug uncertain for review; no status removes the original finding. Historical cases retain their original combinations; repair cases show the additional v5 condition for an otherwise supported claim.",
+    "cases": [
+      {
+        "head_assessment": "supports",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "supports",
+        "status": "supports"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "refutes",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "uncertain",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "not_claimed",
+        "status": "supports"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "fix_attempt",
+        "impact_assessment": "supports",
+        "status": "supports"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "fix_attempt",
+        "impact_assessment": "refutes",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "fix_attempt",
+        "impact_assessment": "uncertain",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "fix_attempt",
+        "impact_assessment": "not_claimed",
+        "status": "supports"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "unrelated_preexisting",
+        "impact_assessment": "supports",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "unrelated_preexisting",
+        "impact_assessment": "refutes",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "unrelated_preexisting",
+        "impact_assessment": "uncertain",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "unrelated_preexisting",
+        "impact_assessment": "not_claimed",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "uncertain",
+        "impact_assessment": "supports",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "uncertain",
+        "impact_assessment": "refutes",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "uncertain",
+        "impact_assessment": "uncertain",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "uncertain",
+        "impact_assessment": "not_claimed",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "supports",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "refutes",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "uncertain",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "not_claimed",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "fix_attempt",
+        "impact_assessment": "supports",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "fix_attempt",
+        "impact_assessment": "refutes",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "fix_attempt",
+        "impact_assessment": "uncertain",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "fix_attempt",
+        "impact_assessment": "not_claimed",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "unrelated_preexisting",
+        "impact_assessment": "supports",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "unrelated_preexisting",
+        "impact_assessment": "refutes",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "unrelated_preexisting",
+        "impact_assessment": "uncertain",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "unrelated_preexisting",
+        "impact_assessment": "not_claimed",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "uncertain",
+        "impact_assessment": "supports",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "uncertain",
+        "impact_assessment": "refutes",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "uncertain",
+        "impact_assessment": "uncertain",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "uncertain",
+        "impact_assessment": "not_claimed",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "supports",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "refutes",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "uncertain",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "not_claimed",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "fix_attempt",
+        "impact_assessment": "supports",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "fix_attempt",
+        "impact_assessment": "refutes",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "fix_attempt",
+        "impact_assessment": "uncertain",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "fix_attempt",
+        "impact_assessment": "not_claimed",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "unrelated_preexisting",
+        "impact_assessment": "supports",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "unrelated_preexisting",
+        "impact_assessment": "refutes",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "unrelated_preexisting",
+        "impact_assessment": "uncertain",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "unrelated_preexisting",
+        "impact_assessment": "not_claimed",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "uncertain",
+        "impact_assessment": "supports",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "uncertain",
+        "impact_assessment": "refutes",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "uncertain",
+        "impact_assessment": "uncertain",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "uncertain",
+        "impact_assessment": "not_claimed",
+        "status": "uncertain"
+      }
+    ],
+    "repair_cases": [
+      {
+        "head_assessment": "supports",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "not_claimed",
+        "repair_assessment": "supports",
+        "status": "supports"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "not_claimed",
+        "repair_assessment": "refutes",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "not_claimed",
+        "repair_assessment": "uncertain",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "introduced_or_worsened",
+        "impact_assessment": "not_claimed",
+        "repair_assessment": "not_proposed",
+        "status": "supports"
+      }
+    ],
+    "legacy_cases": [
+      {
+        "head_assessment": "supports",
+        "change_assessment": "introduced_or_worsened",
+        "status": "supports"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "fix_attempt",
+        "status": "supports"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "unrelated_preexisting",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "supports",
+        "change_assessment": "uncertain",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "introduced_or_worsened",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "fix_attempt",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "unrelated_preexisting",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "refutes",
+        "change_assessment": "uncertain",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "introduced_or_worsened",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "fix_attempt",
+        "status": "uncertain"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "unrelated_preexisting",
+        "status": "refutes"
+      },
+      {
+        "head_assessment": "uncertain",
+        "change_assessment": "uncertain",
+        "status": "uncertain"
+      }
+    ]
+  },
+  "components": {
+    "PRContext": {
+      "source": "src/outrider/schemas/pr_context.py:PRContext",
+      "kind": "review-input",
+      "schema_mode": "validation",
+      "schema": {
+        "$defs": {
+          "ChangedFile": {
+            "additionalProperties": false,
+            "description": "One post-intake file, with status-specific source and rename fields.\n\nPer `DECISIONS.md#020`, added has head only and no deletions; removed\nhas base only and no additions; modified/renamed have both sources.\nOnly renamed carries previous_path, and it must differ from path.\nintake reads that path from GitHub's previous_filename. The validator\nchecks these rules for every construction path.",
+            "properties": {
+              "path": {
+                "title": "Path",
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "added",
+                  "modified",
+                  "removed",
+                  "renamed"
+                ],
+                "title": "Status",
+                "type": "string"
+              },
+              "additions": {
+                "minimum": 0,
+                "title": "Additions",
+                "type": "integer"
+              },
+              "deletions": {
+                "minimum": 0,
+                "title": "Deletions",
+                "type": "integer"
+              },
+              "patch": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Patch"
+              },
+              "content_base": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Content Base"
+              },
+              "content_head": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Content Head"
+              },
+              "language": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Language"
+              },
+              "previous_path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Previous Path"
+              }
+            },
+            "required": [
+              "path",
+              "status",
+              "additions",
+              "deletions"
+            ],
+            "title": "ChangedFile",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Immutable metadata and changed-file tuple for one PR review.\n\nTuple containers prevent mutation that frozen=True alone cannot block.",
+        "properties": {
+          "installation_id": {
+            "title": "Installation Id",
+            "type": "integer"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "pr_number": {
+            "minimum": 1,
+            "title": "Pr Number",
+            "type": "integer"
+          },
+          "pr_title": {
+            "title": "Pr Title",
+            "type": "string"
+          },
+          "pr_body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pr Body"
+          },
+          "base_sha": {
+            "title": "Base Sha",
+            "type": "string"
+          },
+          "head_sha": {
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "changed_files": {
+            "items": {
+              "$ref": "#/$defs/ChangedFile"
+            },
+            "title": "Changed Files",
+            "type": "array"
+          },
+          "total_additions": {
+            "minimum": 0,
+            "title": "Total Additions",
+            "type": "integer"
+          },
+          "total_deletions": {
+            "minimum": 0,
+            "title": "Total Deletions",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "installation_id",
+          "owner",
+          "repo",
+          "pr_number",
+          "pr_title",
+          "base_sha",
+          "head_sha",
+          "author",
+          "changed_files",
+          "total_additions",
+          "total_deletions"
+        ],
+        "title": "PRContext",
+        "type": "object"
+      }
+    },
+    "TriageResult": {
+      "source": "src/outrider/schemas/triage_result.py:TriageResult",
+      "kind": "validated-state-record",
+      "schema_mode": "validation",
+      "schema": {
+        "$defs": {
+          "ReviewDimension": {
+            "description": "The five review-dimension axes per spec §7.3.",
+            "enum": [
+              "code_quality",
+              "security",
+              "performance",
+              "test_coverage",
+              "best_practices"
+            ],
+            "title": "ReviewDimension",
+            "type": "string"
+          },
+          "ReviewTier": {
+            "description": "Per-file review tier produced by the triage node, per spec §4.1.2.\n\nDEEP / STANDARD / SKIM are the LLM-produced classifications; SKIP is\npopulated by the §6.10 size-cap policy gate (separate spec) when a PR\nexceeds the agentic-review thresholds (>1000 changed lines OR >30\nfiles — both PR-level metrics; §6.10 has no per-file size policy).\nLowercase serialized values match project enum convention.",
+            "enum": [
+              "deep",
+              "standard",
+              "skim",
+              "skip"
+            ],
+            "title": "ReviewTier",
+            "type": "string"
+          },
+          "RiskLevel": {
+            "description": "PR-level risk classification produced by the triage node, per spec §7.2.\n\nSame ladder shape as FindingSeverity minus INFO (no operational meaning\nat PR-level). Distinct from FindingSeverity in scope: RiskLevel measures\nthe PR as a whole; FindingSeverity measures one finding within it.\n\nAdded 2026-05-08 to close the canonical-shape gap. See spec.md §7.2\namendment + specs/2026-05-08-schema-foundation.md for rationale.",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "RiskLevel",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Triage classification plus a captured policy-version anchor.\n\nThe four classification fields are required; policy_version defaults to the\nactive version. The live triage gate rejects a different model-supplied\nversion. Frozen fields, a copied read-only file map, and canonical dimension\nordering keep checkpoint representations stable.",
+        "properties": {
+          "file_tiers": {
+            "additionalProperties": {
+              "$ref": "#/$defs/ReviewTier"
+            },
+            "title": "File Tiers",
+            "type": "object"
+          },
+          "overall_risk": {
+            "$ref": "#/$defs/RiskLevel"
+          },
+          "relevant_dimensions": {
+            "items": {
+              "$ref": "#/$defs/ReviewDimension"
+            },
+            "title": "Relevant Dimensions",
+            "type": "array"
+          },
+          "reasoning": {
+            "maxLength": 500,
+            "title": "Reasoning",
+            "type": "string"
+          },
+          "policy_version": {
+            "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+            "title": "Policy Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_tiers",
+          "overall_risk",
+          "relevant_dimensions",
+          "reasoning"
+        ],
+        "title": "TriageResult",
+        "type": "object"
+      },
+      "version": "triage-v3",
+      "notes": "Live responses use numbered file IDs, decoded to the supplied paths before constructing this state record. Policy rejects SKIP, missing/unknown paths and inactive policy versions; reasoning is clamped. Historical records keep path keys."
+    },
+    "TriageResponseWire": {
+      "source": "src/outrider/prompts/triage_schema.py:response_schema_json",
+      "kind": "constrained-decoding-schema",
+      "version": "triage-v3",
+      "example_file_count": 2,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "file_tiers": {
+            "type": "object",
+            "properties": {
+              "file_1": {
+                "type": "string",
+                "enum": [
+                  "deep",
+                  "standard",
+                  "skim"
+                ]
+              },
+              "file_2": {
+                "type": "string",
+                "enum": [
+                  "deep",
+                  "standard",
+                  "skim"
+                ]
+              }
+            },
+            "required": [
+              "file_1",
+              "file_2"
+            ],
+            "additionalProperties": false
+          },
+          "overall_risk": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "relevant_dimensions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "code_quality",
+                "security",
+                "performance",
+                "test_coverage",
+                "best_practices"
+              ]
+            }
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "policy_version": {
+            "type": "string",
+            "enum": [
+              "1.3.0"
+            ]
+          }
+        },
+        "required": [
+          "file_tiers",
+          "overall_risk",
+          "relevant_dimensions",
+          "reasoning"
+        ],
+        "additionalProperties": false
+      },
+      "notes": "Example for two files. The actual schema requires file_1 through file_N for the supplied file count; it contains no repository paths. The same count shares a schema. Native validation still checks the returned IDs and policy."
+    },
+    "AnalyzeResponseRaw": {
+      "source": "src/outrider/schemas/llm/analyze.py:AnalyzeResponseRaw",
+      "kind": "raw-model-response",
+      "schema_mode": "validation",
+      "schema": {
+        "$defs": {
+          "AnalyzeFindingProposalRaw": {
+            "additionalProperties": false,
+            "description": "Model-proposed finding as it arrives in the raw response.\n\n`finding_type` and `evidence_tier` are bounded `str` (NOT the\ncanonical enums) so a model that returns an off-list value\nsurvives Pydantic construction long enough for the parser to emit\na `FindingProposalRejectedEvent`. Admitted-layer construction is\nwhat enforces enum membership.",
+            "properties": {
+              "finding_type": {
+                "maxLength": 128,
+                "title": "Finding Type",
+                "type": "string"
+              },
+              "evidence_tier": {
+                "maxLength": 32,
+                "title": "Evidence Tier",
+                "type": "string"
+              },
+              "query_match_id": {
+                "anyOf": [
+                  {
+                    "maxLength": 256,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Query Match Id"
+              },
+              "trace_path": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Trace Path"
+              },
+              "title": {
+                "maxLength": 120,
+                "title": "Title",
+                "type": "string"
+              },
+              "description": {
+                "maxLength": 1000,
+                "title": "Description",
+                "type": "string"
+              },
+              "evidence": {
+                "maxLength": 2000,
+                "title": "Evidence",
+                "type": "string"
+              },
+              "line_start": {
+                "minimum": 1,
+                "title": "Line Start",
+                "type": "integer"
+              },
+              "line_end": {
+                "minimum": 1,
+                "title": "Line End",
+                "type": "integer"
+              },
+              "trace_candidates": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/TraceCandidateProposalRaw"
+                },
+                "maxItems": 20,
+                "title": "Trace Candidates",
+                "type": "array"
+              }
+            },
+            "required": [
+              "finding_type",
+              "evidence_tier",
+              "title",
+              "description",
+              "evidence",
+              "line_start",
+              "line_end"
+            ],
+            "title": "AnalyzeFindingProposalRaw",
+            "type": "object"
+          },
+          "TraceCandidateProposalRaw": {
+            "additionalProperties": false,
+            "description": "Model-proposed trace candidate as it arrives in the raw response.\n\nParser admits/rejects these alongside their parent finding proposals.\n\nRaw and admitted layers must be materially distinct (not just\ndefault markers), so a downstream variable typed as the raw layer\ncannot be silently passed where the admitted layer is expected.\nThe distinction is in the import field: raw layer carries\n`import_string_raw` (the model's claimed import string, unvalidated\nbounded string); admitted layer carries `import_string`\n(already passed through `coordinates.is_valid_trace_import_string` —\nNFC-normalized, per-form shape-checked: absolute/relative Python module or JS/TS\nrelative-specifier form per `DECISIONS.md#024`, Amended 2026-07-03).",
+            "properties": {
+              "import_string_raw": {
+                "maxLength": 1024,
+                "title": "Import String Raw",
+                "type": "string"
+              },
+              "reason": {
+                "maxLength": 500,
+                "title": "Reason",
+                "type": "string"
+              }
+            },
+            "required": [
+              "import_string_raw",
+              "reason"
+            ],
+            "title": "TraceCandidateProposalRaw",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Top-level wrapper around the raw findings array.\n\nPer-call output ceiling at 50 findings — defends against a runaway\nmodel emission that would otherwise saturate the audit stream.",
+        "properties": {
+          "findings": {
+            "items": {
+              "$ref": "#/$defs/AnalyzeFindingProposalRaw"
+            },
+            "maxItems": 50,
+            "title": "Findings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "findings"
+        ],
+        "title": "AnalyzeResponseRaw",
+        "type": "object"
+      },
+      "version": "analyze-v19",
+      "notes": "Bounded raw strings retain unknown categories and tiers for recorded rejection. Schema acceptance does not establish finding admission or evidence validity."
+    },
+    "AnalyzeResponseWire": {
+      "source": "src/outrider/schemas/llm/analyze.py:ANALYZE_RESPONSE_SCHEMA_JSON",
+      "kind": "constrained-decoding-schema",
+      "version": "analyze-v19",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "finding_type": {
+                  "type": "string"
+                },
+                "evidence_tier": {
+                  "type": "string"
+                },
+                "query_match_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "trace_path": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "title": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Non-empty explanation of why this is a problem and what to change, specific to the code under review. Never empty. At most 1000 characters."
+                },
+                "evidence": {
+                  "type": "string",
+                  "description": "Non-empty verbatim quote of the offending line(s) from the code under review. Never empty. At most 2000 characters."
+                },
+                "line_start": {
+                  "type": "integer"
+                },
+                "line_end": {
+                  "type": "integer"
+                },
+                "trace_candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "import_string_raw": {
+                        "type": "string"
+                      },
+                      "reason": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "import_string_raw",
+                      "reason"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "finding_type",
+                "evidence_tier",
+                "title",
+                "description",
+                "evidence",
+                "line_start",
+                "line_end"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "findings"
+        ],
+        "additionalProperties": false
+      },
+      "notes": "The actual provider schema omits some raw-model bounds and keeps category and tier values as strings. Admission validates canonical values, supplied query IDs, source ranges and evidence separately."
+    },
+    "TraceRankingResponseRaw": {
+      "source": "src/outrider/agent/nodes/trace_parser.py:TraceRankingResponseRaw",
+      "kind": "validated-model-response",
+      "schema_mode": "validation",
+      "schema": {
+        "additionalProperties": false,
+        "description": "Strict envelope for the configured trace model's ordered candidate IDs.",
+        "properties": {
+          "ranked_candidate_ids": {
+            "description": "Ordered candidate_ids in descending priority.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Ranked Candidate Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ranked_candidate_ids"
+        ],
+        "title": "TraceRankingResponseRaw",
+        "type": "object"
+      },
+      "version": "trace-v2",
+      "notes": "No response_schema_json is sent. Parser additionally requires exactly the supplied IDs once each; invalid rankings retain the supplied order."
+    },
+    "TraceDecision": {
+      "source": "src/outrider/schemas/trace_decision.py:TraceDecision",
+      "kind": "deterministic-state-record",
+      "schema_mode": "validation",
+      "schema": {
+        "additionalProperties": false,
+        "description": "One aggregate trace decision per source_finding_id.\n\nState-layer mirror of `TraceDecisionEvent` (`audit/events.py`).\nFrozen + `extra=\"forbid\"` per the cross-boundary schema discipline\nin `docs/conventions.md`. Validator-set identical to the audit event\nso a producer's construction-time guarantees survive the lift.",
+        "properties": {
+          "source_finding_id": {
+            "format": "uuid",
+            "title": "Source Finding Id",
+            "type": "string"
+          },
+          "target_file": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target File"
+          },
+          "reason": {
+            "maxLength": 500,
+            "title": "Reason",
+            "type": "string"
+          },
+          "resolution_status": {
+            "enum": [
+              "resolved",
+              "unresolved",
+              "ambiguous"
+            ],
+            "title": "Resolution Status",
+            "type": "string"
+          },
+          "proposed_import_strings": {
+            "items": {
+              "maxLength": 1024,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Proposed Import Strings",
+            "type": "array"
+          },
+          "resolved_candidate_paths": {
+            "items": {
+              "maxLength": 1024,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Resolved Candidate Paths",
+            "type": "array"
+          },
+          "trace_path": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Trace Path"
+          }
+        },
+        "required": [
+          "source_finding_id",
+          "target_file",
+          "reason",
+          "resolution_status",
+          "proposed_import_strings",
+          "resolved_candidate_paths"
+        ],
+        "title": "TraceDecision",
+        "type": "object"
+      }
+    },
+    "CandidateCheckResponseWire": {
+      "source": "src/outrider/agent/candidate_checks.py:_response_schema",
+      "kind": "constrained-decoding-schema",
+      "version": "native-candidate-check-v5",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "type": "string"
+          },
+          "head_assessment": {
+            "type": "string",
+            "enum": [
+              "supports",
+              "refutes",
+              "uncertain"
+            ]
+          },
+          "impact_assessment": {
+            "type": "string",
+            "enum": [
+              "supports",
+              "refutes",
+              "uncertain",
+              "not_claimed"
+            ]
+          },
+          "change_assessment": {
+            "type": "string",
+            "enum": [
+              "introduced_or_worsened",
+              "fix_attempt",
+              "unrelated_preexisting",
+              "uncertain"
+            ]
+          },
+          "repair_assessment": {
+            "type": "string",
+            "enum": [
+              "supports",
+              "refutes",
+              "uncertain",
+              "not_proposed"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "suggested_finding_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "sql_injection",
+                  "xss",
+                  "hardcoded_secret",
+                  "auth_bypass",
+                  "path_traversal",
+                  "missing_input_validation",
+                  "n_plus_one_query",
+                  "blocking_call_in_async",
+                  "unused_import",
+                  "missing_error_handling",
+                  "missing_test",
+                  "deprecated_api",
+                  "command_injection",
+                  "unsafe_deserialization",
+                  "tls_verify_disabled",
+                  "weak_crypto",
+                  "weak_password_hash",
+                  "insecure_randomness",
+                  "ssrf",
+                  "ssrf_metadata",
+                  "open_redirect",
+                  "open_redirect_authed",
+                  "correctness_bug"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "snippet_id": {
+                  "type": "string"
+                },
+                "line_start": {
+                  "type": "integer"
+                },
+                "line_end": {
+                  "type": "integer"
+                },
+                "quote": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "snippet_id",
+                "line_start",
+                "line_end",
+                "quote"
+              ]
+            }
+          }
+        },
+        "required": [
+          "candidate_id",
+          "head_assessment",
+          "impact_assessment",
+          "change_assessment",
+          "repair_assessment",
+          "reason",
+          "suggested_finding_type",
+          "citations"
+        ]
+      },
+      "notes": "Opt-in investigation output. Citation identity, exact quotes, ranges and source-side requirements are validated after generation. The combined status and suggested severity are derived by code, not returned by the model."
+    },
+    "NativeCandidateRef": {
+      "source": "src/outrider/schemas/native_candidate.py:NativeCandidateRef",
+      "kind": "retained-candidate-metadata",
+      "schema_mode": "serialization",
+      "schema": {
+        "$defs": {
+          "EvidenceTier": {
+            "description": "How a finding's claim is justified.\n\nOBSERVED: structural — a tree-sitter query in the registry matched\n          the location, and the match id is recorded.\nINFERRED: structural-by-reference — the agent walked the ast_facts\n          trace from a known scope to the claim site, and the\n          traversal path is recorded.\nJUDGED:   model interpretation only. No structural evidence is\n          claimed. Lower confidence by construction.\n\nValues are lowercase per docs/spec.md §7.3, matching the convention\nof FindingType and FindingSeverity. The Python member names are\nuppercase (PEP 8); only the serialized string values are lowercase.",
+            "enum": [
+              "observed",
+              "inferred",
+              "judged"
+            ],
+            "title": "EvidenceTier",
+            "type": "string"
+          },
+          "FindingSeverity": {
+            "description": "Severity tier assigned by SEVERITY_POLICY, never by the model.",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low",
+              "info"
+            ],
+            "title": "FindingSeverity",
+            "type": "string"
+          },
+          "FindingType": {
+            "description": "Categories admitted by the analyzer and used by the severity policy.\n\nThe analyzer records rejections before applying the severity policy.",
+            "enum": [
+              "sql_injection",
+              "xss",
+              "hardcoded_secret",
+              "auth_bypass",
+              "path_traversal",
+              "missing_input_validation",
+              "n_plus_one_query",
+              "blocking_call_in_async",
+              "unused_import",
+              "missing_error_handling",
+              "missing_test",
+              "deprecated_api",
+              "command_injection",
+              "unsafe_deserialization",
+              "tls_verify_disabled",
+              "weak_crypto",
+              "weak_password_hash",
+              "insecure_randomness",
+              "ssrf",
+              "ssrf_metadata",
+              "open_redirect",
+              "open_redirect_authed",
+              "correctness_bug"
+            ],
+            "title": "FindingType",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "review_id": {
+            "format": "uuid",
+            "title": "Review Id",
+            "type": "string"
+          },
+          "source_exchange_event_id": {
+            "format": "uuid",
+            "title": "Source Exchange Event Id",
+            "type": "string"
+          },
+          "response_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Response Hash",
+            "type": "string"
+          },
+          "proposal_index": {
+            "maximum": 49,
+            "minimum": 0,
+            "title": "Proposal Index",
+            "type": "integer"
+          },
+          "file_path": {
+            "maxLength": 1024,
+            "title": "File Path",
+            "type": "string"
+          },
+          "source_side": {
+            "default": "head",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Source Side",
+            "type": "string"
+          },
+          "pass_index": {
+            "minimum": 0,
+            "title": "Pass Index",
+            "type": "integer"
+          },
+          "initial_disposition": {
+            "enum": [
+              "admitted",
+              "rejected",
+              "malformed"
+            ],
+            "title": "Initial Disposition",
+            "type": "string"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "raw_proposal_invalid",
+                  "query_match_id_not_in_registry",
+                  "trace_path_not_admissible",
+                  "finding_type_not_in_enum",
+                  "evidence_tier_not_in_enum",
+                  "span_outside_scope_unit",
+                  "span_outside_file",
+                  "span_outside_degraded_context",
+                  "sql_injection_on_parameterized_call",
+                  "schema_construction_failed",
+                  "evidence_quote_invalid",
+                  "model_observed_not_supported"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rejection Reason"
+          },
+          "proposal_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proposal Hash"
+          },
+          "finding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Finding Id"
+          },
+          "content_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Content Hash"
+          },
+          "finding_type": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FindingType"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FindingSeverity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "evidence_tier": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/EvidenceTier"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Policy Version"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "review_id",
+          "source_exchange_event_id",
+          "response_hash",
+          "proposal_index",
+          "file_path",
+          "pass_index",
+          "initial_disposition"
+        ],
+        "title": "NativeCandidateRef",
+        "type": "object"
+      }
+    },
+    "CandidateCheckStarted": {
+      "source": "src/outrider/schemas/native_candidate.py:CandidateCheckStarted",
+      "kind": "investigation-attempt-metadata",
+      "schema_mode": "serialization",
+      "schema": {
+        "$defs": {
+          "CandidateSnippetRef": {
+            "additionalProperties": false,
+            "properties": {
+              "snippet_id": {
+                "pattern": "^[a-f0-9]{64}$",
+                "title": "Snippet Id",
+                "type": "string"
+              },
+              "file_path": {
+                "maxLength": 1024,
+                "title": "File Path",
+                "type": "string"
+              },
+              "source_side": {
+                "default": "head",
+                "enum": [
+                  "head",
+                  "base"
+                ],
+                "title": "Source Side",
+                "type": "string"
+              },
+              "line_start": {
+                "minimum": 1,
+                "title": "Line Start",
+                "type": "integer"
+              },
+              "line_end": {
+                "minimum": 1,
+                "title": "Line End",
+                "type": "integer"
+              },
+              "source_hash": {
+                "pattern": "^[a-f0-9]{64}$",
+                "title": "Source Hash",
+                "type": "string"
+              },
+              "text_hash": {
+                "pattern": "^[a-f0-9]{64}$",
+                "title": "Text Hash",
+                "type": "string"
+              }
+            },
+            "required": [
+              "snippet_id",
+              "file_path",
+              "line_start",
+              "line_end",
+              "source_hash",
+              "text_hash"
+            ],
+            "title": "CandidateSnippetRef",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "source_exchange_event_id": {
+            "format": "uuid",
+            "title": "Source Exchange Event Id",
+            "type": "string"
+          },
+          "prompt_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Prompt Hash",
+            "type": "string"
+          },
+          "question_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Question Hash",
+            "type": "string"
+          },
+          "model": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "snippets": {
+            "items": {
+              "$ref": "#/$defs/CandidateSnippetRef"
+            },
+            "maxItems": 8,
+            "title": "Snippets",
+            "type": "array"
+          },
+          "response_contract": {
+            "anyOf": [
+              {
+                "enum": [
+                  "head-and-change-v1",
+                  "head-change-and-impact-v1",
+                  "head-change-impact-and-repair-v1"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Response Contract"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "attempt_id",
+          "source_exchange_event_id",
+          "prompt_hash",
+          "question_hash",
+          "model",
+          "snippets"
+        ],
+        "title": "CandidateCheckStarted",
+        "type": "object"
+      }
+    },
+    "CandidateAssessmentRef": {
+      "source": "src/outrider/schemas/native_candidate.py:CandidateAssessmentRef",
+      "kind": "investigation-result-metadata",
+      "schema_mode": "serialization",
+      "schema": {
+        "$defs": {
+          "CandidateCitationRef": {
+            "additionalProperties": false,
+            "properties": {
+              "snippet_id": {
+                "pattern": "^[a-f0-9]{64}$",
+                "title": "Snippet Id",
+                "type": "string"
+              },
+              "file_path": {
+                "maxLength": 1024,
+                "title": "File Path",
+                "type": "string"
+              },
+              "source_side": {
+                "default": "head",
+                "enum": [
+                  "head",
+                  "base"
+                ],
+                "title": "Source Side",
+                "type": "string"
+              },
+              "line_start": {
+                "minimum": 1,
+                "title": "Line Start",
+                "type": "integer"
+              },
+              "line_end": {
+                "minimum": 1,
+                "title": "Line End",
+                "type": "integer"
+              },
+              "quote_hash": {
+                "pattern": "^[a-f0-9]{64}$",
+                "title": "Quote Hash",
+                "type": "string"
+              }
+            },
+            "required": [
+              "snippet_id",
+              "file_path",
+              "line_start",
+              "line_end",
+              "quote_hash"
+            ],
+            "title": "CandidateCitationRef",
+            "type": "object"
+          },
+          "FindingSeverity": {
+            "description": "Severity tier assigned by SEVERITY_POLICY, never by the model.",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low",
+              "info"
+            ],
+            "title": "FindingSeverity",
+            "type": "string"
+          },
+          "FindingType": {
+            "description": "Categories admitted by the analyzer and used by the severity policy.\n\nThe analyzer records rejections before applying the severity policy.",
+            "enum": [
+              "sql_injection",
+              "xss",
+              "hardcoded_secret",
+              "auth_bypass",
+              "path_traversal",
+              "missing_input_validation",
+              "n_plus_one_query",
+              "blocking_call_in_async",
+              "unused_import",
+              "missing_error_handling",
+              "missing_test",
+              "deprecated_api",
+              "command_injection",
+              "unsafe_deserialization",
+              "tls_verify_disabled",
+              "weak_crypto",
+              "weak_password_hash",
+              "insecure_randomness",
+              "ssrf",
+              "ssrf_metadata",
+              "open_redirect",
+              "open_redirect_authed",
+              "correctness_bug"
+            ],
+            "title": "FindingType",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "assessment_exchange_event_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Assessment Exchange Event Id"
+          },
+          "status": {
+            "enum": [
+              "supports",
+              "refutes",
+              "uncertain"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "head_assessment": {
+            "anyOf": [
+              {
+                "enum": [
+                  "supports",
+                  "refutes",
+                  "uncertain"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Head Assessment"
+          },
+          "change_assessment": {
+            "anyOf": [
+              {
+                "enum": [
+                  "introduced_or_worsened",
+                  "fix_attempt",
+                  "unrelated_preexisting",
+                  "uncertain"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Change Assessment"
+          },
+          "impact_assessment": {
+            "anyOf": [
+              {
+                "enum": [
+                  "supports",
+                  "refutes",
+                  "uncertain",
+                  "not_claimed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Impact Assessment"
+          },
+          "repair_assessment": {
+            "anyOf": [
+              {
+                "enum": [
+                  "supports",
+                  "refutes",
+                  "uncertain",
+                  "not_proposed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Repair Assessment"
+          },
+          "outcome": {
+            "enum": [
+              "completed",
+              "interrupted",
+              "content_unavailable",
+              "invalid_response",
+              "provider_failed",
+              "budget_exhausted"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "suggested_finding_type": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FindingType"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "suggested_severity": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FindingSeverity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "policy_version": {
+            "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "citations": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/CandidateCitationRef"
+            },
+            "maxItems": 8,
+            "title": "Citations",
+            "type": "array"
+          },
+          "reason_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason Hash"
+          },
+          "reason_length": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason Length"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "attempt_id",
+          "status",
+          "outcome",
+          "policy_version"
+        ],
+        "title": "CandidateAssessmentRef",
+        "type": "object"
+      },
+      "notes": "Contains references and hashes rather than raw reason or source text. Legacy records can omit repair, impact or all assessment axes; current v5 responses require local HEAD, broader impact, PR relationship and repair-advice judgments."
+    },
+    "ReviewFinding": {
+      "source": "src/outrider/schemas/review_finding.py:ReviewFinding",
+      "kind": "admitted-finding",
+      "schema_mode": "serialization",
+      "schema": {
+        "$defs": {
+          "EvidenceTier": {
+            "description": "How a finding's claim is justified.\n\nOBSERVED: structural — a tree-sitter query in the registry matched\n          the location, and the match id is recorded.\nINFERRED: structural-by-reference — the agent walked the ast_facts\n          trace from a known scope to the claim site, and the\n          traversal path is recorded.\nJUDGED:   model interpretation only. No structural evidence is\n          claimed. Lower confidence by construction.\n\nValues are lowercase per docs/spec.md §7.3, matching the convention\nof FindingType and FindingSeverity. The Python member names are\nuppercase (PEP 8); only the serialized string values are lowercase.",
+            "enum": [
+              "observed",
+              "inferred",
+              "judged"
+            ],
+            "title": "EvidenceTier",
+            "type": "string"
+          },
+          "FindingSeverity": {
+            "description": "Severity tier assigned by SEVERITY_POLICY, never by the model.",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low",
+              "info"
+            ],
+            "title": "FindingSeverity",
+            "type": "string"
+          },
+          "FindingType": {
+            "description": "Categories admitted by the analyzer and used by the severity policy.\n\nThe analyzer records rejections before applying the severity policy.",
+            "enum": [
+              "sql_injection",
+              "xss",
+              "hardcoded_secret",
+              "auth_bypass",
+              "path_traversal",
+              "missing_input_validation",
+              "n_plus_one_query",
+              "blocking_call_in_async",
+              "unused_import",
+              "missing_error_handling",
+              "missing_test",
+              "deprecated_api",
+              "command_injection",
+              "unsafe_deserialization",
+              "tls_verify_disabled",
+              "weak_crypto",
+              "weak_password_hash",
+              "insecure_randomness",
+              "ssrf",
+              "ssrf_metadata",
+              "open_redirect",
+              "open_redirect_authed",
+              "correctness_bug"
+            ],
+            "title": "FindingType",
+            "type": "string"
+          },
+          "PublishDestination": {
+            "description": "Publish destination selected from coordinate translation, per spec §4.1.7.\n\nPublish assigns the field after coordinates resolves the location;\nanalyze leaves it None. Backs publish-routes-through-coordinates.",
+            "enum": [
+              "inline_comment",
+              "review_body",
+              "dashboard_only"
+            ],
+            "title": "PublishDestination",
+            "type": "string"
+          },
+          "ReviewDimension": {
+            "description": "The five review-dimension axes per spec §7.3.",
+            "enum": [
+              "code_quality",
+              "security",
+              "performance",
+              "test_coverage",
+              "best_practices"
+            ],
+            "title": "ReviewDimension",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "description": "One finding produced by the agent's review of a PR.\n\nConstruction-time validators enforce the proof boundary\n(`enforce_proof_boundary` from policy/findings) and the line\nconstraint (`line_end >= line_start`). Confidence is a computed\nfield, not a settable attribute.",
+        "properties": {
+          "finding_id": {
+            "format": "uuid",
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "review_id": {
+            "format": "uuid",
+            "title": "Review Id",
+            "type": "string"
+          },
+          "installation_id": {
+            "title": "Installation Id",
+            "type": "integer"
+          },
+          "policy_version": {
+            "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "finding_type": {
+            "$ref": "#/$defs/FindingType"
+          },
+          "dimension": {
+            "$ref": "#/$defs/ReviewDimension"
+          },
+          "severity": {
+            "$ref": "#/$defs/FindingSeverity"
+          },
+          "evidence_tier": {
+            "$ref": "#/$defs/EvidenceTier"
+          },
+          "source_side": {
+            "default": "head",
+            "enum": [
+              "head",
+              "base"
+            ],
+            "title": "Source Side",
+            "type": "string"
+          },
+          "file_path": {
+            "maxLength": 1024,
+            "title": "File Path",
+            "type": "string"
+          },
+          "line_start": {
+            "minimum": 1,
+            "title": "Line Start",
+            "type": "integer"
+          },
+          "line_end": {
+            "title": "Line End",
+            "type": "integer"
+          },
+          "title": {
+            "maxLength": 120,
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 1000,
+            "title": "Description",
+            "type": "string"
+          },
+          "evidence": {
+            "maxLength": 2000,
+            "title": "Evidence",
+            "type": "string"
+          },
+          "suggested_fix": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Suggested Fix"
+          },
+          "query_match_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query Match Id"
+          },
+          "trace_path": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Trace Path"
+          },
+          "original_severity": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FindingSeverity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "override_reason": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Override Reason"
+          },
+          "overrider_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Overrider Id"
+          },
+          "publish_destination": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PublishDestination"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "content_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "proposal_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Proposal Hash",
+            "type": "string"
+          },
+          "confidence": {
+            "description": "Deterministic mapping from evidence_tier per spec §7.3.\n\nOBSERVED=0.9, INFERRED=0.75, JUDGED=0.5. Read-only at the\ndescriptor level — assigning to `.confidence` raises\nAttributeError regardless of model frozen-ness.",
+            "readOnly": true,
+            "title": "Confidence",
+            "type": "number"
+          }
+        },
+        "required": [
+          "review_id",
+          "installation_id",
+          "policy_version",
+          "finding_type",
+          "dimension",
+          "severity",
+          "evidence_tier",
+          "file_path",
+          "line_start",
+          "line_end",
+          "title",
+          "description",
+          "evidence",
+          "content_hash",
+          "proposal_hash",
+          "confidence"
+        ],
+        "title": "ReviewFinding",
+        "type": "object"
+      },
+      "notes": "Serialization includes computed confidence. Policy, proof-boundary, coordinate and identity validators enforce rules beyond the exported JSON Schema."
+    },
+    "SummaryText": {
+      "source": "src/outrider/agent/nodes/synthesize.py:synthesize",
+      "kind": "assembled-summary",
+      "version": "synthesize-v5",
+      "empty_findings_source": "empty-findings-v1",
+      "schema": {
+        "maxLength": 2000,
+        "title": "Summary",
+        "type": "string"
+      },
+      "notes": "Nonempty reports use plain model prose, not JSON, with no response schema. Empty reports use the versioned fixed summary without a model call. The completion event identifies the source and hashes raw model or exact template bytes. The final report bounds text. Risk and metrics come from upstream state and code."
+    },
+    "PatchSuggestionBatch": {
+      "source": "src/outrider/agent/nodes/patch_generation.py:PatchSuggestionBatch",
+      "kind": "validated-model-response",
+      "schema_mode": "validation",
+      "schema": {
+        "$defs": {
+          "PatchSuggestion": {
+            "additionalProperties": false,
+            "description": "One proposed fix, keyed by finding_id, with an exact target-line echo.\n\nMissing/non-UUID IDs and wrong field types reject the batch. Optional fields\nallow apply_patch_batch to discard unusable items independently. A null\nreplacement means no suggested fix (DECISIONS.md#040).",
+            "properties": {
+              "finding_id": {
+                "format": "uuid",
+                "title": "Finding Id",
+                "type": "string"
+              },
+              "original_line": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Original Line"
+              },
+              "replacement_line": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Replacement Line"
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Reason"
+              }
+            },
+            "required": [
+              "finding_id"
+            ],
+            "title": "PatchSuggestion",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "description": "The strict envelope for one batched patch-gen response.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/PatchSuggestion"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "PatchSuggestionBatch",
+        "type": "object"
+      },
+      "version": "patch-v1",
+      "notes": "Separate optional patch call; no response_schema_json is sent. Replacement eligibility, target-line equality and output safety are checked by code."
+    },
+    "ReviewReport": {
+      "source": "src/outrider/schemas/review_report.py:ReviewReport",
+      "kind": "assembled-review-output",
+      "schema_mode": "serialization",
+      "schema": {
+        "$defs": {
+          "EvidenceTier": {
+            "description": "How a finding's claim is justified.\n\nOBSERVED: structural — a tree-sitter query in the registry matched\n          the location, and the match id is recorded.\nINFERRED: structural-by-reference — the agent walked the ast_facts\n          trace from a known scope to the claim site, and the\n          traversal path is recorded.\nJUDGED:   model interpretation only. No structural evidence is\n          claimed. Lower confidence by construction.\n\nValues are lowercase per docs/spec.md §7.3, matching the convention\nof FindingType and FindingSeverity. The Python member names are\nuppercase (PEP 8); only the serialized string values are lowercase.",
+            "enum": [
+              "observed",
+              "inferred",
+              "judged"
+            ],
+            "title": "EvidenceTier",
+            "type": "string"
+          },
+          "FindingSeverity": {
+            "description": "Severity tier assigned by SEVERITY_POLICY, never by the model.",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low",
+              "info"
+            ],
+            "title": "FindingSeverity",
+            "type": "string"
+          },
+          "FindingType": {
+            "description": "Categories admitted by the analyzer and used by the severity policy.\n\nThe analyzer records rejections before applying the severity policy.",
+            "enum": [
+              "sql_injection",
+              "xss",
+              "hardcoded_secret",
+              "auth_bypass",
+              "path_traversal",
+              "missing_input_validation",
+              "n_plus_one_query",
+              "blocking_call_in_async",
+              "unused_import",
+              "missing_error_handling",
+              "missing_test",
+              "deprecated_api",
+              "command_injection",
+              "unsafe_deserialization",
+              "tls_verify_disabled",
+              "weak_crypto",
+              "weak_password_hash",
+              "insecure_randomness",
+              "ssrf",
+              "ssrf_metadata",
+              "open_redirect",
+              "open_redirect_authed",
+              "correctness_bug"
+            ],
+            "title": "FindingType",
+            "type": "string"
+          },
+          "PublishDestination": {
+            "description": "Publish destination selected from coordinate translation, per spec §4.1.7.\n\nPublish assigns the field after coordinates resolves the location;\nanalyze leaves it None. Backs publish-routes-through-coordinates.",
+            "enum": [
+              "inline_comment",
+              "review_body",
+              "dashboard_only"
+            ],
+            "title": "PublishDestination",
+            "type": "string"
+          },
+          "ReviewDimension": {
+            "description": "The five review-dimension axes per spec §7.3.",
+            "enum": [
+              "code_quality",
+              "security",
+              "performance",
+              "test_coverage",
+              "best_practices"
+            ],
+            "title": "ReviewDimension",
+            "type": "string"
+          },
+          "ReviewFinding": {
+            "additionalProperties": false,
+            "description": "One finding produced by the agent's review of a PR.\n\nConstruction-time validators enforce the proof boundary\n(`enforce_proof_boundary` from policy/findings) and the line\nconstraint (`line_end >= line_start`). Confidence is a computed\nfield, not a settable attribute.",
+            "properties": {
+              "finding_id": {
+                "format": "uuid",
+                "title": "Finding Id",
+                "type": "string"
+              },
+              "review_id": {
+                "format": "uuid",
+                "title": "Review Id",
+                "type": "string"
+              },
+              "installation_id": {
+                "title": "Installation Id",
+                "type": "integer"
+              },
+              "policy_version": {
+                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+                "title": "Policy Version",
+                "type": "string"
+              },
+              "finding_type": {
+                "$ref": "#/$defs/FindingType"
+              },
+              "dimension": {
+                "$ref": "#/$defs/ReviewDimension"
+              },
+              "severity": {
+                "$ref": "#/$defs/FindingSeverity"
+              },
+              "evidence_tier": {
+                "$ref": "#/$defs/EvidenceTier"
+              },
+              "source_side": {
+                "default": "head",
+                "enum": [
+                  "head",
+                  "base"
+                ],
+                "title": "Source Side",
+                "type": "string"
+              },
+              "file_path": {
+                "maxLength": 1024,
+                "title": "File Path",
+                "type": "string"
+              },
+              "line_start": {
+                "minimum": 1,
+                "title": "Line Start",
+                "type": "integer"
+              },
+              "line_end": {
+                "title": "Line End",
+                "type": "integer"
+              },
+              "title": {
+                "maxLength": 120,
+                "title": "Title",
+                "type": "string"
+              },
+              "description": {
+                "maxLength": 1000,
+                "title": "Description",
+                "type": "string"
+              },
+              "evidence": {
+                "maxLength": 2000,
+                "title": "Evidence",
+                "type": "string"
+              },
+              "suggested_fix": {
+                "anyOf": [
+                  {
+                    "maxLength": 2000,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Suggested Fix"
+              },
+              "query_match_id": {
+                "anyOf": [
+                  {
+                    "maxLength": 200,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Query Match Id"
+              },
+              "trace_path": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Trace Path"
+              },
+              "original_severity": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FindingSeverity"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "override_reason": {
+                "anyOf": [
+                  {
+                    "maxLength": 1000,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Override Reason"
+              },
+              "overrider_id": {
+                "anyOf": [
+                  {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Overrider Id"
+              },
+              "publish_destination": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/PublishDestination"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "content_hash": {
+                "pattern": "^[a-f0-9]{64}$",
+                "title": "Content Hash",
+                "type": "string"
+              },
+              "proposal_hash": {
+                "pattern": "^[a-f0-9]{64}$",
+                "title": "Proposal Hash",
+                "type": "string"
+              },
+              "confidence": {
+                "description": "Deterministic mapping from evidence_tier per spec §7.3.\n\nOBSERVED=0.9, INFERRED=0.75, JUDGED=0.5. Read-only at the\ndescriptor level — assigning to `.confidence` raises\nAttributeError regardless of model frozen-ness.",
+                "readOnly": true,
+                "title": "Confidence",
+                "type": "number"
+              }
+            },
+            "required": [
+              "review_id",
+              "installation_id",
+              "policy_version",
+              "finding_type",
+              "dimension",
+              "severity",
+              "evidence_tier",
+              "file_path",
+              "line_start",
+              "line_end",
+              "title",
+              "description",
+              "evidence",
+              "content_hash",
+              "proposal_hash",
+              "confidence"
+            ],
+            "title": "ReviewFinding",
+            "type": "object"
+          },
+          "ReviewMetrics": {
+            "additionalProperties": false,
+            "description": "Per-review statistics computed in synthesize, per spec.md:1106-1114.\n\nAll fields derived deterministically from audit_events + analysis_rounds\n+ node wall-clock measurement. NOT computed by the LLM call; the\noptional summary call produces only summary prose. ge=0 floors match the\nLLMCallEvent pricing-field convention (input_tokens, output_tokens,\ncost_usd) at audit/events.py:320-323.",
+            "properties": {
+              "files_examined": {
+                "minimum": 0,
+                "title": "Files Examined",
+                "type": "integer"
+              },
+              "files_traced_beyond_diff": {
+                "minimum": 0,
+                "title": "Files Traced Beyond Diff",
+                "type": "integer"
+              },
+              "llm_calls_made": {
+                "anyOf": [
+                  {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Llm Calls Made"
+              },
+              "total_input_tokens": {
+                "anyOf": [
+                  {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Total Input Tokens"
+              },
+              "total_output_tokens": {
+                "anyOf": [
+                  {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Total Output Tokens"
+              },
+              "total_cost_usd": {
+                "anyOf": [
+                  {
+                    "maximum": 100.0,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Total Cost Usd"
+              },
+              "wall_clock_seconds": {
+                "maximum": 86400,
+                "minimum": 0,
+                "title": "Wall Clock Seconds",
+                "type": "number"
+              }
+            },
+            "required": [
+              "files_examined",
+              "files_traced_beyond_diff",
+              "wall_clock_seconds"
+            ],
+            "title": "ReviewMetrics",
+            "type": "object"
+          },
+          "RiskLevel": {
+            "description": "PR-level risk classification produced by the triage node, per spec §7.2.\n\nSame ladder shape as FindingSeverity minus INFO (no operational meaning\nat PR-level). Distinct from FindingSeverity in scope: RiskLevel measures\nthe PR as a whole; FindingSeverity measures one finding within it.\n\nAdded 2026-05-08 to close the canonical-shape gap. See spec.md §7.2\namendment + specs/2026-05-08-schema-foundation.md for rationale.",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "RiskLevel",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Output of the synthesize node, per spec.md:1099-1104.\n\n`findings` is the deduplicated set across all analysis rounds, keyed by\ncontent_hash. The canonical-sort validator enforces deterministic\nJSON-payload identity for checkpoint comparison + audit content-hashing:\nsame logical findings serialize to the same bytes regardless of which\nround emitted each instance.\n\nDuplicate content_hash entries are rejected at the schema layer (defense\nin depth on top of synthesize's node-side dedup). A producer that\nconstructs a ReviewReport with two findings sharing a content_hash is\nbypassing synthesize's dedup contract — fail-loud here surfaces the bug\nrather than silently accepting it.",
+        "properties": {
+          "summary": {
+            "maxLength": 2000,
+            "title": "Summary",
+            "type": "string"
+          },
+          "overall_risk": {
+            "$ref": "#/$defs/RiskLevel"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/$defs/ReviewFinding"
+            },
+            "maxItems": 256,
+            "title": "Findings",
+            "type": "array"
+          },
+          "metrics": {
+            "$ref": "#/$defs/ReviewMetrics"
+          }
+        },
+        "required": [
+          "summary",
+          "overall_risk",
+          "findings",
+          "metrics"
+        ],
+        "title": "ReviewReport",
+        "type": "object"
+      }
+    },
+    "HITLRequest": {
+      "source": "src/outrider/schemas/hitl.py:HITLRequest",
+      "kind": "human-approval-request",
+      "schema_mode": "validation",
+      "schema": {
+        "additionalProperties": false,
+        "description": "Agent's gate envelope when it interrupts the graph for HITL approval.\n\nFrozen: the request is the snapshot of the gate context at interrupt time.\nA new request is constructed if the gate is re-entered; the old one is\nnot mutated.",
+        "properties": {
+          "findings_requiring_approval": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 256,
+            "title": "Findings Requiring Approval",
+            "type": "array"
+          },
+          "auto_post_findings": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Auto Post Findings",
+            "type": "array"
+          },
+          "verification_hold_finding_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 256,
+            "title": "Verification Hold Finding Ids",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "findings_requiring_approval",
+          "auto_post_findings",
+          "created_at",
+          "expires_at"
+        ],
+        "title": "HITLRequest",
+        "type": "object"
+      }
+    },
+    "HITLDecision": {
+      "source": "src/outrider/schemas/hitl.py:HITLDecision",
+      "kind": "human-approval-decision",
+      "schema_mode": "validation",
+      "schema": {
+        "$defs": {
+          "FindingSeverity": {
+            "description": "Severity tier assigned by SEVERITY_POLICY, never by the model.",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low",
+              "info"
+            ],
+            "title": "FindingSeverity",
+            "type": "string"
+          },
+          "PerFindingDecision": {
+            "additionalProperties": false,
+            "description": "One reviewer's decision on one finding.\n\nFrozen: a per-finding decision is final at construction and cannot be mutated.\n\nCanonical source of HITL override provenance: the `findings`-table override\ncolumns are read-model projections of this (carried on `HITLDecisionEvent`),\nnever the other way around. See DECISIONS.md#034.",
+            "properties": {
+              "finding_id": {
+                "format": "uuid",
+                "title": "Finding Id",
+                "type": "string"
+              },
+              "outcome": {
+                "$ref": "#/$defs/PerFindingOutcome"
+              },
+              "reason": {
+                "maxLength": 500,
+                "title": "Reason",
+                "type": "string"
+              },
+              "override_severity": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FindingSeverity"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "original_severity": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FindingSeverity"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "finding_id",
+              "outcome",
+              "reason"
+            ],
+            "title": "PerFindingDecision",
+            "type": "object"
+          },
+          "PerFindingOutcome": {
+            "description": "Per-finding HITL decision outcomes per spec §7.4.",
+            "enum": [
+              "approve",
+              "reject",
+              "suppress",
+              "severity_override"
+            ],
+            "title": "PerFindingOutcome",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Reviewer's full decision set for a HITL gate, final at submission.\n\nFrozen: the submitted decision is final at construction. Per spec §7.4\nthe field is `decisions: tuple[PerFindingDecision, ...]` (NOT\n`per_finding_decisions`; tuple-not-list for true immutability — see\nmodule docstring); the dashboard endpoint constructs this from reviewer\ninput and the graph resumes with Command(resume=hitl_decision).",
+        "properties": {
+          "reviewer_id": {
+            "maxLength": 100,
+            "title": "Reviewer Id",
+            "type": "string"
+          },
+          "decisions": {
+            "items": {
+              "$ref": "#/$defs/PerFindingDecision"
+            },
+            "title": "Decisions",
+            "type": "array"
+          },
+          "annotation": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Annotation"
+          },
+          "decided_at": {
+            "format": "date-time",
+            "title": "Decided At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reviewer_id",
+          "decisions",
+          "decided_at"
+        ],
+        "title": "HITLDecision",
+        "type": "object"
+      }
+    }
+  }
+}

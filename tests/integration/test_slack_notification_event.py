@@ -1,11 +1,7 @@
-"""AuditPersister.emit_slack_notification() — persist + replay the Slack
-notification audit event (dashboard-in-Slack V1).
+"""Check stored and replayed Slack notification events.
 
-Pins that the event_id-PK row carries channel_id / message_ts / kind / posted_at
-in the JSONB payload, reconstructs via `AuditEventAdapter` (replay-equivalence),
-is event_id-PK idempotent (re-emit the same event → one row), and threads
-`is_eval` to the top-level column. Mirrors test_observed_skip_shadow_event.py.
-"""
+Channel, message timestamp, kind, posting time, and evaluation flag must survive
+the JSONB round trip. Repeating an event ID must leave one row."""
 
 from __future__ import annotations
 

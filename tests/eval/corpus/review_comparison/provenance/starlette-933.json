@@ -1,0 +1,199 @@
+{
+  "head_commit": {
+    "sha": "f638a61dcbf9207c284c326868ef911996d34a21",
+    "node_id": "MDY6Q29tbWl0MTM4NTk3MzcyOmY2MzhhNjFkY2JmOTIwN2MyODRjMzI2ODY4ZWY5MTE5OTZkMzRhMjE=",
+    "commit": {
+      "author": {
+        "name": "abersheeran",
+        "email": "me@abersheeran.com",
+        "date": "2020-05-06T10:07:36Z"
+      },
+      "committer": {
+        "name": "abersheeran",
+        "email": "me@abersheeran.com",
+        "date": "2020-05-06T10:07:36Z"
+      },
+      "message": "little change",
+      "tree": {
+        "sha": "4d15bad38189c8c1cb470b99cce84312d37c09f2",
+        "url": "https://api.github.com/repos/Kludex/starlette/git/trees/4d15bad38189c8c1cb470b99cce84312d37c09f2"
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/git/commits/f638a61dcbf9207c284c326868ef911996d34a21",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null,
+        "verified_at": null
+      }
+    },
+    "url": "https://api.github.com/repos/Kludex/starlette/commits/f638a61dcbf9207c284c326868ef911996d34a21",
+    "html_url": "https://github.com/Kludex/starlette/commit/f638a61dcbf9207c284c326868ef911996d34a21",
+    "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/f638a61dcbf9207c284c326868ef911996d34a21/comments",
+    "author": {
+      "login": "abersheeran",
+      "id": 25364828,
+      "node_id": "MDQ6VXNlcjI1MzY0ODI4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/25364828?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/abersheeran",
+      "html_url": "https://github.com/abersheeran",
+      "followers_url": "https://api.github.com/users/abersheeran/followers",
+      "following_url": "https://api.github.com/users/abersheeran/following{/other_user}",
+      "gists_url": "https://api.github.com/users/abersheeran/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/abersheeran/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/abersheeran/subscriptions",
+      "organizations_url": "https://api.github.com/users/abersheeran/orgs",
+      "repos_url": "https://api.github.com/users/abersheeran/repos",
+      "events_url": "https://api.github.com/users/abersheeran/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/abersheeran/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "abersheeran",
+      "id": 25364828,
+      "node_id": "MDQ6VXNlcjI1MzY0ODI4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/25364828?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/abersheeran",
+      "html_url": "https://github.com/abersheeran",
+      "followers_url": "https://api.github.com/users/abersheeran/followers",
+      "following_url": "https://api.github.com/users/abersheeran/following{/other_user}",
+      "gists_url": "https://api.github.com/users/abersheeran/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/abersheeran/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/abersheeran/subscriptions",
+      "organizations_url": "https://api.github.com/users/abersheeran/orgs",
+      "repos_url": "https://api.github.com/users/abersheeran/repos",
+      "events_url": "https://api.github.com/users/abersheeran/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/abersheeran/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "bb15192285e13b540feda5b2c83aab0d31aff818",
+        "url": "https://api.github.com/repos/Kludex/starlette/commits/bb15192285e13b540feda5b2c83aab0d31aff818",
+        "html_url": "https://github.com/Kludex/starlette/commit/bb15192285e13b540feda5b2c83aab0d31aff818"
+      }
+    ],
+    "stats": {
+      "total": 25,
+      "additions": 13,
+      "deletions": 12
+    },
+    "files": [
+      {
+        "sha": "8dad7b0b50c49f4da4b23dd64dabd4858f7c1566",
+        "filename": "starlette/datastructures.py",
+        "status": "modified",
+        "additions": 7,
+        "deletions": 9,
+        "changes": 16,
+        "blob_url": "https://github.com/Kludex/starlette/blob/f638a61dcbf9207c284c326868ef911996d34a21/starlette%2Fdatastructures.py",
+        "raw_url": "https://github.com/Kludex/starlette/raw/f638a61dcbf9207c284c326868ef911996d34a21/starlette%2Fdatastructures.py",
+        "contents_url": "https://api.github.com/repos/Kludex/starlette/contents/starlette%2Fdatastructures.py?ref=f638a61dcbf9207c284c326868ef911996d34a21",
+        "patch": "@@ -434,31 +434,29 @@ def __init__(\n         self.file = file\n \n     @property\n-    def in_memory(self) -> bool:\n-        return (\n-            isinstance(self.file, tempfile.SpooledTemporaryFile)\n-            and not self.file._rolled  # type: ignore\n-        )\n+    def _in_memory(self) -> bool:\n+        rolled_to_disk = getattr(self.file, \"_rolled\", True)\n+        return not rolled_to_disk\n \n     async def write(self, data: typing.Union[bytes, str]) -> None:\n-        if self.in_memory:\n+        if self._in_memory:\n             self.file.write(data)  # type: ignore\n         else:\n             await run_in_threadpool(self.file.write, data)\n \n     async def read(self, size: int = -1) -> typing.Union[bytes, str]:\n-        if self.in_memory:\n+        if self._in_memory:\n             return self.file.read(size)\n         return await run_in_threadpool(self.file.read, size)\n \n     async def seek(self, offset: int) -> None:\n-        if self.in_memory:\n+        if self._in_memory:\n             self.file.seek(offset)\n         else:\n             await run_in_threadpool(self.file.seek, offset)\n \n     async def close(self) -> None:\n-        if self.in_memory:\n+        if self._in_memory:\n             self.file.close()\n         else:\n             await run_in_threadpool(self.file.close)"
+      },
+      {
+        "sha": "87a7967875c7b0b0beaa963b399fffd49662cc74",
+        "filename": "tests/test_datastructures.py",
+        "status": "modified",
+        "additions": 6,
+        "deletions": 3,
+        "changes": 9,
+        "blob_url": "https://github.com/Kludex/starlette/blob/f638a61dcbf9207c284c326868ef911996d34a21/tests%2Ftest_datastructures.py",
+        "raw_url": "https://github.com/Kludex/starlette/raw/f638a61dcbf9207c284c326868ef911996d34a21/tests%2Ftest_datastructures.py",
+        "contents_url": "https://api.github.com/repos/Kludex/starlette/contents/tests%2Ftest_datastructures.py?ref=f638a61dcbf9207c284c326868ef911996d34a21",
+        "patch": "@@ -213,14 +213,17 @@ def test_queryparams():\n     assert QueryParams(q) == q\n \n \n+class TestUploadFile(UploadFile):\n+    spool_max_size = 1024\n+\n+\n @pytest.mark.asyncio\n async def test_upload_file():\n-    UploadFile.spool_max_size = 1024\n-    big_file = UploadFile(\"big-file\")\n+    big_file = TestUploadFile(\"big-file\")\n     await big_file.write(b\"big-data\" * 512)\n     await big_file.write(b\"big-data\")\n     await big_file.seek(0)\n-    await big_file.read(1024)\n+    assert await big_file.read(1024) == b\"big-data\" * 128\n     await big_file.close()\n \n "
+      }
+    ]
+  },
+  "selected_file_last_touch": [
+    {
+      "sha": "f638a61dcbf9207c284c326868ef911996d34a21",
+      "node_id": "MDY6Q29tbWl0MTM4NTk3MzcyOmY2MzhhNjFkY2JmOTIwN2MyODRjMzI2ODY4ZWY5MTE5OTZkMzRhMjE=",
+      "commit": {
+        "author": {
+          "name": "abersheeran",
+          "email": "me@abersheeran.com",
+          "date": "2020-05-06T10:07:36Z"
+        },
+        "committer": {
+          "name": "abersheeran",
+          "email": "me@abersheeran.com",
+          "date": "2020-05-06T10:07:36Z"
+        },
+        "message": "little change",
+        "tree": {
+          "sha": "4d15bad38189c8c1cb470b99cce84312d37c09f2",
+          "url": "https://api.github.com/repos/Kludex/starlette/git/trees/4d15bad38189c8c1cb470b99cce84312d37c09f2"
+        },
+        "url": "https://api.github.com/repos/Kludex/starlette/git/commits/f638a61dcbf9207c284c326868ef911996d34a21",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/Kludex/starlette/commits/f638a61dcbf9207c284c326868ef911996d34a21",
+      "html_url": "https://github.com/Kludex/starlette/commit/f638a61dcbf9207c284c326868ef911996d34a21",
+      "comments_url": "https://api.github.com/repos/Kludex/starlette/commits/f638a61dcbf9207c284c326868ef911996d34a21/comments",
+      "author": {
+        "login": "abersheeran",
+        "id": 25364828,
+        "node_id": "MDQ6VXNlcjI1MzY0ODI4",
+        "avatar_url": "https://avatars.githubusercontent.com/u/25364828?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/abersheeran",
+        "html_url": "https://github.com/abersheeran",
+        "followers_url": "https://api.github.com/users/abersheeran/followers",
+        "following_url": "https://api.github.com/users/abersheeran/following{/other_user}",
+        "gists_url": "https://api.github.com/users/abersheeran/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/abersheeran/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/abersheeran/subscriptions",
+        "organizations_url": "https://api.github.com/users/abersheeran/orgs",
+        "repos_url": "https://api.github.com/users/abersheeran/repos",
+        "events_url": "https://api.github.com/users/abersheeran/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/abersheeran/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "abersheeran",
+        "id": 25364828,
+        "node_id": "MDQ6VXNlcjI1MzY0ODI4",
+        "avatar_url": "https://avatars.githubusercontent.com/u/25364828?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/abersheeran",
+        "html_url": "https://github.com/abersheeran",
+        "followers_url": "https://api.github.com/users/abersheeran/followers",
+        "following_url": "https://api.github.com/users/abersheeran/following{/other_user}",
+        "gists_url": "https://api.github.com/users/abersheeran/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/abersheeran/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/abersheeran/subscriptions",
+        "organizations_url": "https://api.github.com/users/abersheeran/orgs",
+        "repos_url": "https://api.github.com/users/abersheeran/repos",
+        "events_url": "https://api.github.com/users/abersheeran/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/abersheeran/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "bb15192285e13b540feda5b2c83aab0d31aff818",
+          "url": "https://api.github.com/repos/Kludex/starlette/commits/bb15192285e13b540feda5b2c83aab0d31aff818",
+          "html_url": "https://github.com/Kludex/starlette/commit/bb15192285e13b540feda5b2c83aab0d31aff818"
+        }
+      ]
+    }
+  ]
+}

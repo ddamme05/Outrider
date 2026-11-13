@@ -1,13 +1,8 @@
-# See specs/2026-05-23-trace-node.md (Q3 resolution).
-"""`TraceFetchedFile` schema tests.
+"""Check immutable fetched-file records and validated paths.
 
-Pins frozen + extra="forbid", path field validator (re-runs
-validate_diff_path), required fields (no defaults), three-field V1
-shape (path / content_head / source_finding_id) per spec Q3 revision
-post-Codex round-7 (no source_import_string / source_proposal_hash —
-those would diverge under retry; provenance recovers via
-state.trace_decisions cross-reference).
-"""
+Required fields are path, head content, and source finding ID. Recover other
+provenance from trace decisions rather than duplicate retry-sensitive fields.
+See specs/2026-05-23-trace-node.md Q3."""
 
 from __future__ import annotations
 

@@ -1,12 +1,7 @@
-"""Integration tests for `GET /api/reviews/{review_id}/events` (FUP-133).
+"""Check the ordered, typed audit-event API (FUP-133).
 
-The events endpoint returns a review's full audit stream as the typed `AuditEvent`
-union, ordered by `sequence_number`, reconstructed through the SHARED
-`reconstruct_event_from_row` helper — so it inherits replay's historical tolerance
-(DECISIONS.md#032) and row-consistency check. These tests seed FULL, valid event
-payloads (unlike the partial JSONB-extraction rows in test_dashboard_reviews_api.py)
-because the endpoint deserializes each row into a real event.
-"""
+Seed valid event payloads and reconstruct them through the shared replay reader,
+including stored-row compatibility and consistency checks (DECISIONS.md#032)."""
 
 from __future__ import annotations
 

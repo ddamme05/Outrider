@@ -1,11 +1,7 @@
-"""enforce_proof_boundary admits INFERRED only with a non-empty trace_path.
+"""Check that INFERRED proof requires a non-empty recorded trace path.
 
-Backs ``evidence-tier-schema-enforced``. The INFERRED tier is the
-structural-by-reference claim — the agent walked the ast_facts trace
-from a known scope to the claim site, and the traversal path is
-recorded. Without a non-empty ``trace_path``, the LLM is claiming a
-traversal it didn't perform; the validator rejects it.
-"""
+This validates the required artifact, not whether a traversal actually happened
+(``evidence-tier-schema-enforced``)."""
 
 import pytest
 

@@ -1,33 +1,17 @@
-# Cross-boundary ReviewFinding per docs/spec.md §7.3 + docs/trust-boundaries.md §1
-"""ReviewFinding + ReviewDimension + PublishDestination cross-boundary models.
+"""Describe an admitted finding and its policy-derived fields.
 
-ReviewFinding is the Pydantic carrier for every finding the agent produces.
-It registers `enforce_proof_boundary` from `policy/findings.py` as a
-model_validator so OBSERVED-without-query_match_id and INFERRED-without-
-trace_path raise at construction time per `evidence-tier-schema-enforced`.
-The `confidence` field is a `@computed_field` deriving deterministically
-from `evidence_tier` per `confidence-is-computed-not-assigned` (OBSERVED=0.9,
-INFERRED=0.75, JUDGED=0.5 per spec §7.3).
+Evidence validation establishes the tier; confidence is derived from that tier
+and severity comes from policy. Publication changes require revalidation.
+Audit history uses frozen copies so later workflow changes cannot rewrite it.
 
-ReviewFinding is **NOT frozen** because it has a multi-stage lifecycle:
-the analyze node constructs it with later-set fields at None;
-publish assigns `publish_destination` after coordinates computes the
-GitHub-comment location; the HITL flow
-may later set the override fields when a reviewer issues a SEVERITY_OVERRIDE
-decision. Mutability lets each stage write its fields directly without
-requiring `model_copy(update=...)` boilerplate. The audit-replay guarantee
-for findings rides on `FindingEvent` (which IS frozen and append-only via
-the audit_events trigger), not on `ReviewFinding`'s in-memory mutability.
-
-PublishDestination uses uppercase Python member names with lowercase
-serialized string values per spec §4.1.7, same convention as
-EvidenceTier / FindingType / FindingSeverity.
+See severity-set-by-policy, confidence-is-computed-not-assigned and
+audit-events-frozen-extra-forbid.
 """
 
 from collections.abc import Mapping
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Annotated, Any, Final, Self
+from typing import Annotated, Any, Final, Literal, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
@@ -89,22 +73,10 @@ class ReviewFinding(BaseModel):
     field, not a settable attribute.
     """
 
-    # Not frozen: multi-stage lifecycle. See module docstring.
-    # validate_assignment=True: lifecycle writes (publish_destination,
-    # override fields) re-run model_validators + Field constraints + enum
-    # typing on every assignment, so post-construction mutations cannot
-    # bypass the proof boundary, the line constraint, or the typed-enum
-    # gates. Without this, `finding.severity = "garbage"` would silently
-    # admit; with it, the assignment raises.
-    #
-    # WARNING — DO NOT USE `model_copy(update={...})` on a ReviewFinding.
-    # Pydantic v2's `model_copy` skips ALL model_validators even when
-    # `validate_assignment=True`, so a copy-with-update that flips
-    # severity silently bypasses `_enforce_severity_matches_policy`,
-    # `_enforce_dimension_lockstep`, `_enforce_override_triplet_coherence`,
-    # and `_verify_content_hash`. For multi-field lifecycle updates,
-    # use `ReviewFinding.model_validate({**finding.model_dump(), **delta})`
-    # which routes through the full validator chain.
+    # Lifecycle assignments revalidate proof, policy, path/line constraints and identity.
+    # model_copy(update=...) bypasses those validators even with
+    # validate_assignment=True. For multi-field updates, use
+    # ReviewFinding.model_validate({**finding.model_dump(), **delta}).
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
     def validated_clone(self) -> "ReviewFinding":
@@ -132,19 +104,13 @@ class ReviewFinding(BaseModel):
     dimension: ReviewDimension
     severity: FindingSeverity
     evidence_tier: EvidenceTier
-    # Repo-relative POSIX, post-`validate_diff_path` normalized — same
-    # contract `AnalysisRound.files_examined` enforces at the schema
-    # layer. (TraceCandidate uses `is_valid_trace_import_string` on its
-    # `import_string` field instead — the two-form dispatcher for
-    # dotted-module / relative-specifier shape per DECISIONS.md#024,
-    # Amended 2026-07-03.) Without this,
-    # a path that fails `validate_diff_path` could ride on the finding
-    # through replay and be rejected at the publisher boundary only —
-    # too late. `max_length=1024` matches sibling path-bearing fields
-    # (`AnalysisRound.files_examined`, `TraceFetchedFile.path`,
-    # `FileExaminationEvent.file_path` audit shadow); without the cap a
-    # pathological model output could push an unbounded string through
-    # the finding admission path.
+    source_side: Literal["head", "base"] = Field(
+        default="head", exclude_if=lambda value: value == "head"
+    )
+    # Validate repo-relative POSIX paths at admission, not just publication.
+    # The 1024-character cap matches the other path-bearing schemas and events.
+    # TraceCandidate instead validates module/specifier syntax through
+    # is_valid_trace_import_string (DECISIONS.md#024).
     file_path: Annotated[str, Field(max_length=1024)]
     line_start: int = Field(ge=1)
     line_end: int
@@ -190,19 +156,11 @@ class ReviewFinding(BaseModel):
     # in `FindingEvent` joins via this field, so the shape MUST match the
     # corresponding event's `finding_content_hash` (also patterned).
     content_hash: Annotated[str, Field(pattern=SHA256_HEX_PATTERN)]
-    # SHA-256 hex digest of the raw proposal that produced this finding,
-    # computed via `outrider.policy.canonical.compute_proposal_hash`. Per
-    # `DECISIONS.md#025` (Accepted 2026-05-24), admitted findings carry
-    # `proposal_hash` so trace can join `state.trace_candidates` (whose
-    # `source_proposal_hash` field is the same digest) to admitted
-    # `finding_id`s. **Provenance, NOT content identity** — explicitly
-    # NOT part of `compute_finding_content_hash` recipe (#025 point 3):
-    # `content_hash` is `(file_path, line, type)`-derived and stays
-    # stable across LLM phrasing variation; `proposal_hash` is the
-    # full-proposal digest and DIFFERS when the LLM rewrites
-    # title/description/evidence (#022 PR/file-scoped semantics).
-    # Required (no default) — analyze's admission path stamps this from
-    # `compute_proposal_hash` output. Mirror on `FindingEvent.proposal_hash`.
+    # compute_proposal_hash identifies the raw proposal so trace candidates can
+    # join to admitted finding IDs (DECISIONS.md#025). It records provenance and
+    # stays outside content identity (#025): content_hash covers location/type,
+    # while proposal_hash also changes with model phrasing (#022).
+    # Admission supplies this required value; FindingEvent mirrors it.
     proposal_hash: Annotated[str, Field(pattern=SHA256_HEX_PATTERN)]
 
     @field_validator("file_path")
@@ -218,6 +176,15 @@ class ReviewFinding(BaseModel):
         schema-floor discipline.)
         """
         return validate_diff_path(path)
+
+    @model_validator(mode="after")
+    def _enforce_base_source_limits(self) -> Self:
+        if self.source_side == "base":
+            if self.evidence_tier != EvidenceTier.JUDGED or self.query_match_id or self.trace_path:
+                raise ValueError("BASE findings require judged evidence without structural proof")
+            if self.suggested_fix is not None:
+                raise ValueError("BASE findings cannot carry a suggested fix")
+        return self
 
     @model_validator(mode="before")
     @classmethod
@@ -377,14 +344,8 @@ class ReviewFinding(BaseModel):
                 f"partial state is a producer bug that would bypass `hitl-gates-"
                 f"high-severity` by claiming an override that never happened."
             )
-        # No-op override rejection: when the override envelope is set,
-        # `severity` MUST differ from `original_severity` — otherwise the
-        # override claims a reviewer-changed-the-severity event that did
-        # nothing. A reviewer's intent to ACK-without-change is the
-        # `APPROVE` outcome on `PerFindingDecision`, NOT a SEVERITY_OVERRIDE
-        # with identical values. Catches the producer-bug class where a
-        # HITL UI submits the override path without checking whether the
-        # reviewer actually changed the value.
+        # An unchanged severity is APPROVE, not SEVERITY_OVERRIDE; match the
+        # PerFindingDecision contract before accepting override provenance.
         if all_set and self.severity == self.original_severity:
             raise ValueError(
                 f"ReviewFinding HITL override claims SEVERITY_OVERRIDE but "
@@ -394,16 +355,8 @@ class ReviewFinding(BaseModel):
                 f"change is the `PerFindingDecision.APPROVE` outcome, not a "
                 f"SEVERITY_OVERRIDE with identical values."
             )
-        # Non-blank override_reason when envelope is set. The triplet's
-        # `is None` check admits `override_reason=""` and
-        # `override_reason="   "` because they're not None. But
-        # `PerFindingDecision` (the cross-boundary HITL decision shape)
-        # already rejects empty reasons via `Field(max_length=500)` +
-        # the non-APPROVE-needs-reason validator. The ReviewFinding's
-        # carrier-side check must align: an override without a substantive
-        # reason is the bug class the `PerFindingDecision.outcome !=
-        # APPROVE requires reason` rule defends against. `strip() == ""`
-        # catches both empty and whitespace-only strings.
+        # A present but blank reason passes the triplet's None check. Reject it
+        # here to match PerFindingDecision's substantive-reason requirement.
         if all_set and self.override_reason is not None and not self.override_reason.strip():
             raise ValueError(
                 f"ReviewFinding HITL override has blank override_reason "
@@ -447,6 +400,7 @@ class ReviewFinding(BaseModel):
             line_start=self.line_start,
             line_end=self.line_end,
             finding_type=self.finding_type,
+            source_side=self.source_side,
         )
         if self.content_hash != expected:
             raise ValueError(

@@ -1,15 +1,7 @@
-"""Lifespan FUP-006 closure — RejectLLMContentFilter re-registered post-handler-add.
+"""Check content-log filtering on handlers added after package import (FUP-006).
 
-`outrider/__init__.py` calls `register_filter_on_all_handlers()` at import
-time, which covers handlers present at that moment. uvicorn / FastAPI
-register their own handlers later, during app startup; without a
-re-invocation hook, those handlers are unfiltered.
-
-The lifespan's `register_filter_on_all_handlers()` call closes the gap.
-This test boots a minimal app whose lifespan runs the call, simulates a
-late handler addition, asserts the filter rejects content records on
-the actual handler chain.
-"""
+Application startup must register the filter again so handlers installed by
+the server also reject LLM content records."""
 
 from __future__ import annotations
 

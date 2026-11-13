@@ -1,22 +1,8 @@
-# See DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult
-# — `test_enforce_policy_rejects_llm_injected_policy_version` is the
-# executable contract pin for #028's Rule (d) producer-side gate.
-"""Triage node body unit tests per the triage-node spec.
+"""Check triage results, policy enforcement, failures, and phase events.
 
-Tests cover:
-- Happy path with phase-event bracket
-- Schema-violation propagation (malformed JSON, wrong enum casing)
-- Reasoning-length clamp at the boundary (>500 chars is normalized, not rejected)
-- Provider-failure propagation (LLMProviderError subclasses)
-- Policy-violation: SKIP, unknown path, missing path — each pinned with
-  dangling-start phase-event pattern
-- Helper isolation tests (_enforce_triage_policy)
-- Input-boundary regression (PR title with format metacharacters)
-- Model-config wiring (request.model is the closure-captured value)
-
-Tests use a `MockLLMProvider` constructed inline (not a fixture) for
-clarity — each test sets up the canned response it wants.
-"""
+Use scripted responses to cover invalid proposals, untrusted text, bounded
+reasoning, and configured models. Reject model-supplied policy versions so the
+captured policy remains authoritative. See DECISIONS.md#028."""
 
 from __future__ import annotations
 
@@ -28,6 +14,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import UUID, uuid4
 
 import pytest
+from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
 from outrider.agent.nodes.triage import (
@@ -133,6 +120,13 @@ def _build_triage_json(
     )
 
 
+def _build_wire_triage_json(*, file_tiers: dict[str, str] | None = None) -> str:
+    """Build explicit provider file IDs without inspecting the request."""
+    if file_tiers is None:
+        file_tiers = {"file_1": "standard"}
+    return _build_triage_json(file_tiers=file_tiers)
+
+
 @dataclasses.dataclass
 class _Plan:
     """What the MockLLMProvider does on .complete(request)."""
@@ -185,7 +179,7 @@ async def test_triage_happy_path_returns_validated_triage_result(
 ) -> None:
     """Provider returns valid JSON → node returns {'triage_result': <validated>}."""
     state = _build_state()
-    plan = _Plan(response_text=_build_triage_json())
+    plan = _Plan(response_text=_build_wire_triage_json())
     provider = MockLLMProvider(plan)
 
     result = await triage(
@@ -204,6 +198,56 @@ async def test_triage_happy_path_returns_validated_triage_result(
 
 
 @pytest.mark.asyncio
+async def test_triage_request_limits_file_ids_and_restores_original_paths(
+    recording_phase_event_sink: _RecordingPhaseEventSinkLike,
+) -> None:
+    from outrider.policy.severity import ACTIVE_POLICY_VERSION
+
+    paths = ("src/service.py", "config/limits.yaml")
+    state = _build_state(files=tuple(_build_changed_file(path=p) for p in paths))
+    reply = _build_wire_triage_json(file_tiers={"file_1": "deep", "file_2": "standard"})
+    provider = MockLLMProvider(_Plan(raise_exc=LLMTimeoutError("request recorded")))
+
+    with pytest.raises(LLMTimeoutError, match="request recorded"):
+        await triage(
+            state,
+            provider=provider,
+            triage_model="claude-haiku-4-5",
+            phase_event_sink=recording_phase_event_sink,
+        )
+    request = provider.received_requests[0]
+    assert request.response_schema_json is not None
+    assert all(path not in request.response_schema_json for path in paths)
+    validator = Draft202012Validator(json.loads(request.response_schema_json))
+    valid = json.loads(reply)
+    validator.validate(valid)
+    validator.validate({**valid, "policy_version": ACTIVE_POLICY_VERSION})
+
+    invalid = [
+        {**valid, "file_tiers": {"file_1": "deep"}},
+        {**valid, "file_tiers": {**valid["file_tiers"], "file_3": "skim"}},
+        {**valid, "file_tiers": {"file_1": "skip", "file_2": "standard"}},
+        {**valid, "overall_risk": "extreme"},
+        {**valid, "relevant_dimensions": ["unknown_dimension"]},
+        {**valid, "unexpected": "extra field"},
+    ]
+    for payload in invalid:
+        assert not validator.is_valid(payload), payload
+
+    result = await triage(
+        state,
+        provider=MockLLMProvider(_Plan(response_text=reply)),
+        triage_model="claude-haiku-4-5",
+        phase_event_sink=recording_phase_event_sink,
+    )
+    assert dict(result["triage_result"].file_tiers) == {
+        paths[0]: ReviewTier.DEEP,
+        paths[1]: ReviewTier.STANDARD,
+    }
+    assert result["triage_result"].policy_version == ACTIVE_POLICY_VERSION
+
+
+@pytest.mark.asyncio
 async def test_triage_emits_start_and_end_phase_events_bracketing(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,
 ) -> None:
@@ -211,7 +255,7 @@ async def test_triage_emits_start_and_end_phase_events_bracketing(
     bracketing the provider call. Both carry the same review_id and same
     phase_id. Pins phase-events-bound-work."""
     state = _build_state()
-    plan = _Plan(response_text=_build_triage_json())
+    plan = _Plan(response_text=_build_wire_triage_json())
     provider = MockLLMProvider(plan)
 
     await triage(
@@ -281,11 +325,14 @@ async def test_triage_propagates_llm_provider_error_with_dangling_start(
     "bad_json_response,desc",
     [
         ("not-json-at-all", "non-JSON"),
-        (json.dumps({"file_tiers": {}, "overall_risk": "LOW"}), "uppercase risk"),
+        (
+            json.dumps({"file_tiers": {"file_1": "standard"}, "overall_risk": "LOW"}),
+            "uppercase risk",
+        ),
         (
             json.dumps(
                 {
-                    "file_tiers": {"src/example.py": "DEEP"},  # uppercase
+                    "file_tiers": {"file_1": "DEEP"},  # uppercase
                     "overall_risk": "low",
                     "relevant_dimensions": [],
                     "reasoning": "x",
@@ -293,14 +340,17 @@ async def test_triage_propagates_llm_provider_error_with_dangling_start(
             ),
             "uppercase tier",
         ),
-        (json.dumps({"file_tiers": {}, "extra_unknown_field": "x"}), "extra field"),
+        (
+            json.dumps({"file_tiers": {"file_1": "standard"}, "extra_unknown_field": "x"}),
+            "extra field",
+        ),
         # NOTE: >500-char reasoning is NO LONGER a propagation case — it is clamped
         # to the cap at the boundary (see test_validate_triage_response_* below).
         # unknown dimension value (not in ReviewDimension enum)
         (
             json.dumps(
                 {
-                    "file_tiers": {"src/example.py": "standard"},
+                    "file_tiers": {"file_1": "standard"},
                     "overall_risk": "low",
                     "relevant_dimensions": ["unknown_dimension"],
                     "reasoning": "x",
@@ -376,7 +426,7 @@ async def test_triage_rejects_skip_tier_with_dangling_start(
     failure mode (per Round 6 cleanup)."""
     state = _build_state()
     plan = _Plan(
-        response_text=_build_triage_json(file_tiers={"src/example.py": "skip"}),
+        response_text=_build_wire_triage_json(file_tiers={"file_1": "skip"}),
     )
     provider = MockLLMProvider(plan)
 
@@ -394,28 +444,22 @@ async def test_triage_rejects_skip_tier_with_dangling_start(
 
 
 # ---------------------------------------------------------------------------
-# Policy-violation: unknown path
+# Policy-violation: unknown file ID
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_triage_rejects_unknown_path(
+async def test_triage_rejects_unknown_file_id(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,
 ) -> None:
-    """LLM returns a path not in changed_files → TriagePolicyViolationError
-    naming the rule. Also pins the dangling-start phase-event pattern:
-    start emitted, end NOT emitted on policy failure. Message content is
-    pinned by `test_enforce_policy_message_uses_bounded_sample_with_hash`
-    below; here we only assert the rule fires."""
+    """An extra provider file ID fails before tiers can reach analysis."""
     state = _build_state(files=(_build_changed_file(path="src/foo.py"),))
     plan = _Plan(
-        response_text=_build_triage_json(
-            file_tiers={"unrelated/bar.py": "standard", "src/foo.py": "deep"}
-        ),
+        response_text=_build_wire_triage_json(file_tiers={"file_2": "standard", "file_1": "deep"}),
     )
     provider = MockLLMProvider(plan)
 
-    with pytest.raises(TriagePolicyViolationError, match="unknown paths"):
+    with pytest.raises(TriagePolicyViolationError, match="unknown"):
         await triage(
             state,
             provider=provider,
@@ -429,30 +473,26 @@ async def test_triage_rejects_unknown_path(
 
 
 # ---------------------------------------------------------------------------
-# Policy-violation: missing path
+# Policy-violation: missing file ID
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_triage_rejects_missing_path(
+async def test_triage_rejects_missing_file_id(
     recording_phase_event_sink: _RecordingPhaseEventSinkLike,
 ) -> None:
-    """LLM omits a changed-file path from file_tiers → TriagePolicyViolationError
-    naming the rule. Also pins the dangling-start phase-event pattern:
-    start emitted, end NOT emitted on policy failure. Message content is
-    pinned by `test_enforce_policy_message_uses_bounded_sample_with_hash`
-    below; here we only assert the rule fires."""
+    """A missing provider file ID leaves only the start phase event."""
     state = _build_state(
         files=(
             _build_changed_file(path="src/a.py"),
             _build_changed_file(path="src/b.py"),
         ),
     )
-    # Only classify a.py; b.py missing
-    plan = _Plan(response_text=_build_triage_json(file_tiers={"src/a.py": "deep"}))
+    # file_2 corresponds to b.py and is missing from the reply.
+    plan = _Plan(response_text=_build_wire_triage_json(file_tiers={"file_1": "deep"}))
     provider = MockLLMProvider(plan)
 
-    with pytest.raises(TriagePolicyViolationError, match="missing paths"):
+    with pytest.raises(TriagePolicyViolationError, match="missing"):
         await triage(
             state,
             provider=provider,
@@ -728,7 +768,7 @@ async def test_pr_title_with_format_metacharacters_does_not_escape(
             changed_files=(_build_changed_file(path="src/example.py"),),
         ),
     )
-    plan = _Plan(response_text=_build_triage_json())
+    plan = _Plan(response_text=_build_wire_triage_json())
     provider = MockLLMProvider(plan)
 
     await triage(
@@ -758,7 +798,7 @@ async def test_triage_uses_injected_triage_model_not_hardcoded(
     argument — never a hardcoded string in the node body. Pins
     `model-strings-from-config-not-hardcoded`."""
     state = _build_state()
-    plan = _Plan(response_text=_build_triage_json())
+    plan = _Plan(response_text=_build_wire_triage_json())
     provider = MockLLMProvider(plan)
 
     custom_model_id = "claude-test-model-id-not-real"
@@ -781,7 +821,7 @@ async def test_triage_threads_is_eval_false_from_state_to_request_and_phase_even
     audit rows (LLMCallEvent + 2x ReviewPhaseEvent) will all be tagged
     production. Pins the canonical default path."""
     state = _build_state(is_eval=False)
-    plan = _Plan(response_text=_build_triage_json())
+    plan = _Plan(response_text=_build_wire_triage_json())
     provider = MockLLMProvider(plan)
 
     await triage(
@@ -809,7 +849,7 @@ async def test_triage_threads_is_eval_true_from_state_to_request_and_phase_event
     exactly the bug docs/testing.md "Eval isolation end-to-end" is
     designed to prevent. Pin both threadings."""
     state = _build_state(is_eval=True)
-    plan = _Plan(response_text=_build_triage_json())
+    plan = _Plan(response_text=_build_wire_triage_json())
     provider = MockLLMProvider(plan)
 
     await triage(
@@ -836,7 +876,7 @@ async def test_triage_request_carries_canonical_constants(
     from outrider.prompts.triage import MAX_TOKENS, TEMPERATURE, VERSION
 
     state = _build_state()
-    plan = _Plan(response_text=_build_triage_json())
+    plan = _Plan(response_text=_build_wire_triage_json())
     provider = MockLLMProvider(plan)
 
     await triage(
@@ -870,7 +910,7 @@ async def test_triage_does_not_mutate_input_state(
     mutation as a bug; pin pre-image now."""
     state = _build_state()
     snapshot = state.model_dump(mode="json")
-    plan = _Plan(response_text=_build_triage_json())
+    plan = _Plan(response_text=_build_wire_triage_json())
     provider = MockLLMProvider(plan)
 
     await triage(
@@ -895,7 +935,7 @@ async def test_phase_event_review_id_matches_state_review_id_type(
     """ReviewState.review_id is UUID; ReviewPhaseEvent.review_id is UUID
     too. The closure must pass them through unchanged."""
     state = _build_state()
-    plan = _Plan(response_text=_build_triage_json())
+    plan = _Plan(response_text=_build_wire_triage_json())
     provider = MockLLMProvider(plan)
 
     await triage(
@@ -939,7 +979,7 @@ async def test_triage_propagates_end_phase_sink_failure_after_successful_work() 
 
     Pins that triage doesn't silently swallow audit-infra failures."""
     state = _build_state()
-    plan = _Plan(response_text=_build_triage_json())
+    plan = _Plan(response_text=_build_wire_triage_json())
     provider = MockLLMProvider(plan)
     raise_on_end = _RaiseOnEndSink()
 
@@ -979,7 +1019,7 @@ async def test_triage_propagates_start_phase_sink_failure_before_any_work() -> N
             self.events.append(event)
 
     state = _build_state()
-    plan = _Plan(response_text=_build_triage_json())
+    plan = _Plan(response_text=_build_wire_triage_json())
     provider = MockLLMProvider(plan)
     raise_on_start = _RaiseOnStartSink()
 
@@ -1009,7 +1049,7 @@ async def test_triage_handles_empty_changed_files_end_to_end(
     The helper isolation test `test_enforce_policy_empty_expected_with_empty_actual`
     covers the pure function; this test covers the full node flow."""
     state = _build_state(files=())
-    plan = _Plan(response_text=_build_triage_json(file_tiers={}))
+    plan = _Plan(response_text=_build_wire_triage_json(file_tiers={}))
     provider = MockLLMProvider(plan)
 
     result = await triage(
@@ -1041,14 +1081,10 @@ async def test_triage_handles_special_path_characters(
     path: str,
     desc: str,
 ) -> None:
-    """Policy gate uses set arithmetic on path strings. Spaces, unicode,
-    and deep paths must survive the round-trip through render → JSON →
-    `_enforce_triage_policy` set arithmetic without normalization
-    artifacts. Sibling to the input-boundary regression test, but at the
-    path-content layer rather than the format-string layer."""
+    """A numbered reply must restore spaces, Unicode and nested paths exactly."""
     state = _build_state(files=(_build_changed_file(path=path),))
     plan = _Plan(
-        response_text=_build_triage_json(file_tiers={path: "standard"}),
+        response_text=_build_wire_triage_json(file_tiers={"file_1": "standard"}),
     )
     provider = MockLLMProvider(plan)
 
@@ -1077,7 +1113,7 @@ async def test_phase_id_is_deterministic_sha256_hex(
     from outrider.policy.canonical import SHA256_HEX_PATTERN, compute_phase_id
 
     state = _build_state()
-    plan = _Plan(response_text=_build_triage_json())
+    plan = _Plan(response_text=_build_wire_triage_json())
     provider = MockLLMProvider(plan)
 
     await triage(
@@ -1115,7 +1151,7 @@ async def test_triage_tolerates_json_tagged_fenced_response(
     `strip_outer_json_fence` runtime defense, triage parses the fenced
     response successfully instead of crashing with ValidationError."""
     state = _build_state()
-    inner = _build_triage_json()
+    inner = _build_wire_triage_json()
     fenced = f"```json\n{inner}\n```"
     plan = _Plan(response_text=fenced)
     provider = MockLLMProvider(plan)
@@ -1144,7 +1180,7 @@ async def test_triage_tolerates_bare_fenced_response(
     """Some models emit ```\\n{...}\\n``` without the `json` tag.
     The runtime defense tolerates that shape too."""
     state = _build_state()
-    inner = _build_triage_json()
+    inner = _build_wire_triage_json()
     fenced = f"```\n{inner}\n```"
     plan = _Plan(response_text=fenced)
     provider = MockLLMProvider(plan)
@@ -1170,7 +1206,7 @@ async def test_triage_still_rejects_malformed_fence(
     not arbitrary recovery. Pins the policy boundary so future model
     misbehavior doesn't tempt anyone to widen the helper."""
     state = _build_state()
-    inner = _build_triage_json()
+    inner = _build_wire_triage_json()
     malformed = f"```json\n{inner}"  # opener but no closer
     plan = _Plan(response_text=malformed)
     provider = MockLLMProvider(plan)

@@ -1,17 +1,8 @@
-"""Analyze parser contract + step-by-step behavior tests.
+"""Analyze parser contracts and admission flow, organized by spec §6 step.
 
-Pins the §6 parser module: the public surface (frozen dataclasses +
-signatures) AND the admission flow as each step lands. Sections marked
-by spec §6 step number.
-
-Sections (in spec §6 step order): scaffolding (frozen+slots discipline,
-signature pin, field sets, audit-context exclusion, module `__all__`),
-step 0 (response parse + response-level rejection), commit-2 helper
-unit tests (proposal_hash + rejection-payload helper), commit-3 +
-commit-4 admission tests (enum + producer + span), commit-5 finding
-construction + trace-candidate collection, commit-6 audit-fold
-regression pins.
-"""
+Cover the frozen public data types and signatures, response decoding, proposal
+hashes, rejection metadata, enum/producer/span admission, finding construction,
+trace candidates and audit failures."""
 
 import dataclasses
 import inspect
@@ -28,6 +19,9 @@ from outrider.agent.nodes.analyze_parser import (
 )
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import FindingType
+
+_CITABLE_SOURCE = "e\n" * 100
+
 
 # ---------------------------------------------------------------------------
 # Frozen + slots discipline
@@ -164,6 +158,7 @@ def test_proposal_rejection_field_set() -> None:
     expected = {
         "proposal_hash",
         "file_path",
+        "source_side",
         "claimed_finding_type_hash",
         "claimed_finding_type_len",
         "claimed_evidence_tier",
@@ -199,6 +194,7 @@ def test_response_rejection_field_set() -> None:
     fields = {f.name for f in dataclasses.fields(ResponseRejection)}
     expected = {
         "file_path",
+        "source_side",
         "response_hash",
         "rejection_reason",
         "rejection_detail",
@@ -323,6 +319,9 @@ def test_parse_analyze_response_signature() -> None:
         # the default) or "specifier" (JS/TS leading-dot relative
         # specifiers, containment-checked at admission).
         "trace_candidate_form",
+        "primary_line_ranges",
+        "degraded_evidence_byte_ranges",
+        "source_side",
     }
     kwonly = {name for name, p in params.items() if p.kind == inspect.Parameter.KEYWORD_ONLY}
     assert kwonly == expected_kwonly, (
@@ -371,8 +370,8 @@ def _call_parser(response_text: str, **overrides: object) -> ParserResult:
         "review_id": uuid4(),
         "installation_id": 12345,
         "file_path": "src/x.py",
-        "file_content": "",
-        "file_byte_length": 0,
+        "file_content": _CITABLE_SOURCE,
+        "file_byte_length": 200,
         "included_scope_units": (),
         "query_match_id_set": frozenset(),
         "degraded_mode": False,
@@ -418,10 +417,17 @@ def test_step0_non_truncation_keeps_validation_error_detail() -> None:
     assert "truncated at the max_tokens" not in result.response_rejection.rejection_detail
 
 
-def test_step0_valid_json_wrong_shape_returns_response_rejection() -> None:
-    """Valid JSON but wrong shape (missing required `findings` key) also
-    fails parsing and routes to the response-rejection path."""
-    result = _call_parser('{"not_findings": []}')
+@pytest.mark.parametrize(
+    "response",
+    [
+        '{"not_findings": []}',
+        '{"findings": {}}',
+        '{"findings": [NaN]}',
+        '{"findings": [' + ",".join(["{}"] * 51) + "]}",
+    ],
+)
+def test_step0_invalid_envelope_returns_response_rejection(response: str) -> None:
+    result = _call_parser(response)
     assert result.response_rejection is not None
     assert result.response_rejection.rejection_reason == "raw_response_unparseable"
 
@@ -454,9 +460,12 @@ def test_step0_rejection_detail_does_not_contain_response_text() -> None:
     distinctive sentinel and verify the sentinel does not appear."""
     sentinel = "SENSITIVE_CONTENT_DO_NOT_LEAK_42"
     result = _call_parser(f'{{"findings": [{{"evidence": "{sentinel}"}}]}}')
-    assert result.response_rejection is not None
-    detail = result.response_rejection.rejection_detail
+    assert result.response_rejection is None
+    detail = result.proposal_rejections[0].rejection_detail
     assert sentinel not in detail, f"rejection_detail leaked response text. Detail: {detail!r}"
+    envelope = _call_parser('{"findings": [], "' + sentinel + '": "private value"}')
+    assert envelope.response_rejection is not None
+    assert sentinel not in envelope.response_rejection.rejection_detail
 
 
 def test_step0_rejection_detail_is_within_field_max_length() -> None:
@@ -472,8 +481,9 @@ def test_step0_rejection_detail_is_within_field_max_length() -> None:
     )
     response = '{"findings": [' + ",".join([bogus_finding] * 50) + "]}"
     result = _call_parser(response)
-    assert result.response_rejection is not None
-    assert len(result.response_rejection.rejection_detail) <= 500
+    assert result.response_rejection is None
+    assert result.counters.n_proposals_seen == result.counters.n_proposals_rejected == 50
+    assert all(len(rejection.rejection_detail) <= 500 for rejection in result.proposal_rejections)
 
 
 def test_step0_rejection_detail_uses_json_pointer_format() -> None:
@@ -484,8 +494,8 @@ def test_step0_rejection_detail_uses_json_pointer_format() -> None:
     # A response where findings[0] has a missing required field — produces
     # an error with location ("findings", 0, "<field>").
     result = _call_parser('{"findings": [{}]}')
-    assert result.response_rejection is not None
-    detail = result.response_rejection.rejection_detail
+    assert result.response_rejection is None
+    detail = result.proposal_rejections[0].rejection_detail
     # At minimum, the format must show `findings[0].<something>` shape
     assert "findings[0]" in detail, (
         f"rejection_detail does not use JSON-pointer format. Got: {detail!r}"
@@ -605,7 +615,7 @@ def test_malformed_fence_still_routes_to_response_rejection() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Spec §6 commit-2 scaffold — proposal iteration + rejection-payload helper
+# Spec §6 — proposal iteration and rejection metadata
 # (no admission decisions yet; commit 3 wires the admission checks)
 # ---------------------------------------------------------------------------
 
@@ -724,6 +734,98 @@ def _minimal_proposal(**overrides: object) -> dict[str, object]:
     return base
 
 
+def test_correctness_bug_reaches_policy_classification() -> None:
+    from outrider.policy.severity import ACTIVE_POLICY_VERSION
+
+    source = "def ratio(value):\n    return 10 / value\n"
+    proposal = _minimal_proposal(
+        finding_type="correctness_bug",
+        title="Zero divisor crashes ratio",
+        description="Calling ratio(0) raises ZeroDivisionError instead of returning a ratio.",
+        evidence="    return 10 / value",
+        line_start=2,
+        line_end=2,
+    )
+    result = _call_parser(
+        _build_response_json(proposal),
+        file_content=source,
+        file_byte_length=len(source.encode()),
+        primary_line_ranges=((1, 2),),
+        active_policy_version=ACTIVE_POLICY_VERSION,
+    )
+
+    assert result.proposal_rejections == ()
+    (finding,) = result.admitted_findings
+    assert finding.finding_type == "correctness_bug"
+    assert finding.severity == "medium"
+    assert finding.dimension == "code_quality"
+    assert finding.evidence_tier == "judged"
+    assert finding.policy_version == ACTIVE_POLICY_VERSION
+
+
+@pytest.mark.parametrize("damage", ["title", "trace_reason", "range", "extra_field", "not_object"])
+def test_malformed_proposal_does_not_discard_valid_siblings(damage: str) -> None:
+    valid = _minimal_proposal(title="Keep this supported finding")
+    malformed = _minimal_proposal()
+    if damage == "title":
+        malformed["title"] = "x" * 121
+    elif damage == "trace_reason":
+        malformed["trace_candidates"] = [{"import_string_raw": "app.utils", "reason": "x" * 501}]
+    elif damage == "range":
+        malformed["line_start"], malformed["line_end"] = 2, 1
+    elif damage == "extra_field":
+        malformed["PRIVATE_SOURCE_DO_NOT_LOG"] = "PRIVATE_VALUE_DO_NOT_LOG"
+    invalid_item = "PRIVATE_SOURCE_DO_NOT_LOG" if damage == "not_object" else malformed
+    import json
+
+    result = _call_parser(
+        json.dumps({"findings": [invalid_item, valid, invalid_item]}),
+        included_scope_units=(_build_scope_unit(),),
+    )
+    assert result.response_rejection is None
+    assert [finding.title for finding in result.admitted_findings] == [valid["title"]]
+    assert result.counters.n_proposals_seen == 3
+    assert result.counters.n_proposals_rejected == 2
+    assert result.counters.n_findings_emitted == 1
+    assert result.trace_candidates == ()
+    assert len({rejection.proposal_hash for rejection in result.proposal_rejections}) == 2
+    for rejection in result.proposal_rejections:
+        assert rejection.rejection_reason == "raw_proposal_invalid"
+        assert rejection.claimed_finding_type_hash is None
+        assert rejection.claimed_finding_type_len is None
+        assert rejection.claimed_evidence_tier is None
+        assert "PRIVATE" not in rejection.rejection_detail
+
+
+def test_malformed_proposal_identity_binds_source_response_and_position() -> None:
+    import hashlib
+    import json
+
+    raw = '{"findings": [{}, {}]}'
+    result = _call_parser(raw)
+    hashes = [item.proposal_hash for item in result.proposal_rejections]
+    assert hashes[0] != hashes[1]
+    payload = {
+        "recipe": "malformed-analyze-proposal-v1",
+        "source_file_path": "src/x.py",
+        "response_hash": hashlib.sha256(raw.encode()).hexdigest(),
+        "proposal_index": 0,
+    }
+    expected = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert hashes[0] == expected
+    assert _call_parser(raw).proposal_rejections[0].proposal_hash == hashes[0]
+    assert (
+        _call_parser(raw, file_path="src/./x.py").proposal_rejections[0].proposal_hash == hashes[0]
+    )
+    assert (
+        _call_parser(raw, file_path="src/other.py").proposal_rejections[0].proposal_hash
+        != hashes[0]
+    )
+    assert _call_parser(raw + " ").proposal_rejections[0].proposal_hash != hashes[0]
+
+
 def _build_scope_unit(
     *, line_start: int = 1, line_end: int = 10, byte_start: int = 0, byte_end: int = 100
 ):  # type: ignore[no-untyped-def]
@@ -808,27 +910,19 @@ def test_step4_observed_rejects_fabricated_query_match_id() -> None:
     assert rej.rejection_detail == "fabricated_id"
 
 
-def test_step4_observed_passes_when_query_match_id_in_registry() -> None:
-    """Happy path: OBSERVED proposal with a real registry id passes
-    producer admission AND span admission (containing scope unit
-    supplied), reaches `ReviewFinding` construction, and is admitted."""
+def test_step4_model_observed_rejects_even_when_structure_id_fired() -> None:
     response = _build_response_json(
-        _minimal_proposal(
-            evidence_tier="observed",
-            query_match_id="real_id",
-        )
+        _minimal_proposal(evidence_tier="observed", query_match_id="python.function_definition")
     )
     result = _call_parser(
         response,
-        query_match_id_set=frozenset({"real_id"}),
+        query_match_id_set=frozenset({"python.function_definition"}),
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,  # unused on the clean path (line-space gate); kept harmless
     )
-    assert result.proposal_rejections == ()
-    assert len(result.admitted_findings) == 1
-    finding = result.admitted_findings[0]
-    assert finding.evidence_tier == EvidenceTier.OBSERVED
-    assert finding.query_match_id == "real_id"
+    assert not result.admitted_findings
+    [rejection] = result.proposal_rejections
+    assert rejection.rejection_reason == "model_observed_not_supported"
+    assert rejection.claimed_evidence_tier is EvidenceTier.OBSERVED
 
 
 def test_step4_inferred_rejects_on_pass_0_no_trace_context_yet() -> None:
@@ -870,7 +964,7 @@ def test_step4_inferred_admits_on_pass_1_with_valid_trace_path() -> None:
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
         pass_index=1,
         valid_trace_path_elements=valid_set,
     )
@@ -900,7 +994,7 @@ def test_step4_inferred_rejects_on_pass_1_with_ungrounded_trace_path() -> None:
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
         pass_index=1,
         valid_trace_path_elements=valid_set,
     )
@@ -940,7 +1034,7 @@ def test_step4_judged_skips_producer_admission() -> None:
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
     )
     assert result.proposal_rejections == ()
     assert len(result.admitted_findings) == 1
@@ -1014,20 +1108,18 @@ def test_step5_clean_line_range_inside_scope_unit_passes_admission() -> None:
 
 
 def test_step5_clean_line_range_inside_indented_scope_admits() -> None:
-    """FUP-126 reproduction: a finding on the FIRST line of a non-file-head,
-    indented scope unit (a method whose token `byte_start` is past column 0)
-    is admitted under line-space containment. The pre-fix byte gate rejected
-    this (`su.byte_start > whole-line span byte_start`) — the silent
-    findings-loss bug."""
-    # Scope unit at lines 5-20, byte_start=26 (indented — four lines precede
-    # it). A finding on line 6 anchored by the model at the clip head used to
-    # come in as byte 0, failing `26 <= 0`; now it's line 6 in [5, 20].
-    response = _build_response_json(_minimal_proposal(line_start=6, line_end=6))
-    scope = _build_scope_unit(line_start=5, line_end=20, byte_start=26, byte_end=400)
-    result = _call_parser(response, included_scope_units=(scope,))
+    """A method's indentation does not exclude an exact quote on its first line."""
+    source = "class Example:\n\n\n\n    def f():\n        return 1\n"
+    response = _build_response_json(_minimal_proposal(line_start=5, line_end=5, evidence="def f"))
+    scope = _build_scope_unit(
+        line_start=5, line_end=6, byte_start=source.index("def f"), byte_end=len(source)
+    )
+    result = _call_parser(
+        response, included_scope_units=(scope,), file_content=source, file_byte_length=len(source)
+    )
     assert result.proposal_rejections == ()
     assert len(result.admitted_findings) == 1
-    assert result.admitted_findings[0].line_start == 6
+    assert result.admitted_findings[0].line_start == 5
 
 
 def test_step5_clean_line_range_outside_all_scope_units_rejects() -> None:
@@ -1082,13 +1174,14 @@ def test_step5_degraded_line_range_within_file_passes_admission() -> None:
     """Degraded-outcome happy path: the line range translates to a byte span
     within file bounds AND inside the addable degraded context → admission passes
     → finding admitted. No scope units consulted in degraded mode."""
-    response = _build_response_json(_minimal_proposal(line_start=2, line_end=3))
+    response = _build_response_json(_minimal_proposal(line_start=2, line_end=3, evidence="b\nc"))
     result = _call_parser(
         response,
         degraded_mode=True,
         file_content=_DEGRADED_SRC,
         file_byte_length=len(_DEGRADED_SRC.encode()),
         degraded_context_byte_ranges=_DEGRADED_CTX_LINES_2_3,
+        degraded_evidence_byte_ranges=_DEGRADED_CTX_LINES_2_3,
     )
     assert result.proposal_rejections == ()
     assert len(result.admitted_findings) == 1
@@ -1137,7 +1230,7 @@ def test_step5_degraded_does_not_consult_scope_units() -> None:
     `span_within_file` + `span_within_degraded_context`, not line-space scope
     containment. Even an empty scope-unit tuple still admits when the line range is
     in file and inside the addable degraded context."""
-    response = _build_response_json(_minimal_proposal(line_start=2, line_end=3))
+    response = _build_response_json(_minimal_proposal(line_start=2, line_end=3, evidence="b\nc"))
     result = _call_parser(
         response,
         degraded_mode=True,
@@ -1145,6 +1238,7 @@ def test_step5_degraded_does_not_consult_scope_units() -> None:
         file_byte_length=len(_DEGRADED_SRC.encode()),
         included_scope_units=(),  # ignored in degraded mode
         degraded_context_byte_ranges=_DEGRADED_CTX_LINES_2_3,
+        degraded_evidence_byte_ranges=_DEGRADED_CTX_LINES_2_3,
     )
     assert result.proposal_rejections == ()
     assert len(result.admitted_findings) == 1
@@ -1215,7 +1309,7 @@ def test_step8_admitted_finding_severity_from_policy_table() -> None:
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
     )
     assert len(result.admitted_findings) == 1
     finding = result.admitted_findings[0]
@@ -1234,7 +1328,7 @@ def test_step8_admitted_finding_dimension_from_mapping_table() -> None:
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
     )
     finding = result.admitted_findings[0]
     assert finding.dimension == FINDING_TYPE_TO_DIMENSION[FindingType.SQL_INJECTION]
@@ -1248,7 +1342,7 @@ def test_step8_admitted_finding_policy_version_from_closure() -> None:
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
         active_policy_version="1.2.3",
     )
     finding = result.admitted_findings[0]
@@ -1266,7 +1360,7 @@ def test_step8_admitted_finding_review_and_installation_ids() -> None:
         review_id=review_id,
         installation_id=99999,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
     )
     finding = result.admitted_findings[0]
     assert finding.review_id == review_id
@@ -1335,7 +1429,7 @@ def test_step10_trace_candidates_collected_from_admitted_proposal() -> None:
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
     )
     assert len(result.admitted_findings) == 1
     assert len(result.trace_candidates) == 1
@@ -1441,7 +1535,7 @@ def test_hallucinated_module_emits_corrected_sibling() -> None:
     result = _call_parser(
         _candidate_response("svc.utils.normalize_owner"),
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
         import_refs=(_from_import_ref("svc.db", ("normalize_owner", "run_query")),),
     )
     assert [c.import_string for c in result.trace_candidates] == [
@@ -1461,7 +1555,7 @@ def test_coincidental_trailing_name_collision_preserves_original() -> None:
     result = _call_parser(
         _candidate_response("myproject.settings"),
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
         import_refs=(_from_import_ref("django.conf", ("settings",)),),
     )
     assert [c.import_string for c in result.trace_candidates] == [
@@ -1477,7 +1571,7 @@ def test_consistent_symbol_form_candidate_gets_no_sibling() -> None:
     result = _call_parser(
         _candidate_response("svc.db.run_query"),
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
         import_refs=(_from_import_ref("svc.db", ("normalize_owner", "run_query")),),
     )
     assert [c.import_string for c in result.trace_candidates] == ["svc.db.run_query"]
@@ -1492,7 +1586,7 @@ def test_module_form_submodule_import_gets_no_sibling() -> None:
     result = _call_parser(
         _candidate_response("svc.db"),
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
         import_refs=(_from_import_ref("svc", ("db",)),),
     )
     assert [c.import_string for c in result.trace_candidates] == ["svc.db"]
@@ -1506,7 +1600,7 @@ def test_bare_symbol_candidate_gets_corrected_sibling() -> None:
     result = _call_parser(
         _candidate_response("normalize_owner"),
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
         import_refs=(_from_import_ref("svc.db", ("normalize_owner",)),),
     )
     assert [c.import_string for c in result.trace_candidates] == [
@@ -1523,7 +1617,7 @@ def test_unmatched_candidate_gets_no_sibling() -> None:
     result = _call_parser(
         _candidate_response("pkg.ghost"),
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
         import_refs=(_from_import_ref("svc.db", ("run_query",)),),
     )
     assert [c.import_string for c in result.trace_candidates] == ["pkg.ghost"]
@@ -1537,7 +1631,7 @@ def test_relative_and_star_imports_do_not_correct() -> None:
     result = _call_parser(
         _candidate_response("svc.utils.run_query"),
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
         import_refs=(
             _from_import_ref(".db", ("run_query",), kind="relative"),
             _from_import_ref("svc.legacy", (), kind="star"),
@@ -1554,7 +1648,7 @@ def test_later_from_import_shadows_earlier() -> None:
     result = _call_parser(
         _candidate_response("wrong.place.helper"),
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
         import_refs=(
             _from_import_ref("first.mod", ("helper",), line=1),
             _from_import_ref("second.mod", ("helper",), line=2),
@@ -1573,7 +1667,7 @@ def test_invalid_import_ref_module_emits_no_sibling() -> None:
     result = _call_parser(
         _candidate_response("svc.utils.run_query"),
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
         import_refs=(_from_import_ref("123bad", ("run_query",)),),
     )
     assert [c.import_string for c in result.trace_candidates] == ["svc.utils.run_query"]
@@ -1588,7 +1682,7 @@ def test_invalid_module_does_not_resurrect_shadowed_valid_module() -> None:
     result = _call_parser(
         _candidate_response("wrong.place.helper"),
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
         import_refs=(
             _from_import_ref("first.mod", ("helper",), line=1),
             _from_import_ref("123bad", ("helper",), line=2),
@@ -1607,7 +1701,7 @@ def test_nfd_imported_name_still_matches_nfc_candidate() -> None:
     result = _call_parser(
         _candidate_response(f"wrong.mod.{nfc_name}"),
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
         import_refs=(_from_import_ref("real.mod", (nfd_name,)),),
     )
     assert [c.import_string for c in result.trace_candidates] == [
@@ -1647,7 +1741,7 @@ def test_counters_reflect_admitted_and_rejected_mix() -> None:
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
     )
     assert result.counters.n_proposals_seen == 3
     assert result.counters.n_findings_emitted == 2
@@ -1671,7 +1765,7 @@ def test_counter_accounting_equation_holds() -> None:
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
     )
     assert result.counters.n_proposals_seen == (
         result.counters.n_findings_emitted + result.counters.n_proposals_rejected
@@ -1679,7 +1773,7 @@ def test_counter_accounting_equation_holds() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Spec §6 commit-6 — audit-fold regression pins
+# Spec §6 — admission failures and audit outcomes
 # ---------------------------------------------------------------------------
 
 
@@ -1707,11 +1801,11 @@ def test_hostile_import_string_does_not_crash_parser() -> None:
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
     )
     assert len(result.admitted_findings) == 1  # parent admitted
     assert len(result.trace_candidates) == 0  # hostile candidate dropped
-    # Sharp-edges F1 audit-fold: the drop is counted, not silent.
+    # Rejected proposals remain counted in the audit outcome.
     assert result.counters.n_trace_candidates_dropped_malformed == 1
 
 
@@ -1726,7 +1820,7 @@ def test_admitted_finding_carries_proposal_hash_from_compute_recipe() -> None:
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
     )
     assert len(result.admitted_findings) == 1
     admitted = result.admitted_findings[0]
@@ -1773,7 +1867,7 @@ def test_dropped_malformed_counter_increments_per_dropped_candidate() -> None:
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
     )
     assert len(result.trace_candidates) == 1  # only the valid one
     assert result.counters.n_trace_candidates_emitted == 1
@@ -1836,7 +1930,7 @@ def test_decomposed_unicode_import_string_uses_canonical_nfc_form() -> None:
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
     )
     assert len(result.admitted_findings) == 1
     assert len(result.trace_candidates) == 1
@@ -1886,24 +1980,11 @@ def test_query_match_id_rejection_detail_preserves_safe_chars() -> None:
 def test_narrow_exception_handler_lets_unexpected_propagate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Sharp-edges M4 + adversarial M2: the `except ValidationError`
-    block used to catch every exception class (MemoryError,
-    RecursionError, etc.) and fold them into
-    `schema_construction_failed`. Narrowed so genuinely-unexpected
-    failures propagate as bugs rather than as misleading rejections.
+    """Unexpected exceptions propagate instead of becoming schema rejections.
 
-    To prove narrowing actually narrows: monkeypatch the
-    `compute_finding_content_hash` call (evaluated as a `ReviewFinding`
-    argument, so it raises inside the try-block before construction
-    begins) to raise a `RuntimeError`. The parser MUST propagate it
-    instead of folding
-    to `schema_construction_failed`. A re-broadening to
-    `except Exception` would catch the RuntimeError and produce a
-    rejection event — this test would fail with `RuntimeError` not
-    raised, naming the regression precisely.
-
-    Companion smoke assertion preserves the happy path.
-    """
+    Raise RuntimeError from finding-hash computation inside the construction try
+    block. Only ValidationError belongs to schema_construction_failed; broadening
+    the handler would swallow this failure. The companion call checks valid input."""
     from outrider.agent.nodes import analyze_parser
 
     # Smoke: clean admission still works (sanity that the test setup
@@ -1912,7 +1993,7 @@ def test_narrow_exception_handler_lets_unexpected_propagate(
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
     )
     assert len(result.admitted_findings) == 1
 
@@ -1928,7 +2009,7 @@ def test_narrow_exception_handler_lets_unexpected_propagate(
         _call_parser(
             response,
             included_scope_units=(_build_scope_unit(),),
-            file_content="x" * 200,
+            file_content=_CITABLE_SOURCE,
         )
 
 
@@ -1961,7 +2042,7 @@ def test_validation_error_folds_to_schema_construction_failed(
     result = _call_parser(
         response,
         included_scope_units=(_build_scope_unit(),),
-        file_content="x" * 200,
+        file_content=_CITABLE_SOURCE,
     )
 
     assert len(result.admitted_findings) == 0
@@ -2016,7 +2097,11 @@ def _veto_parser_kwargs() -> dict[str, object]:
     return {
         "file_content": _PARAMETERIZED_SOURCE,
         "file_byte_length": len(_PARAMETERIZED_SOURCE.encode("utf-8")),
-        "included_scope_units": (_build_scope_unit(line_start=1, line_end=6),),
+        "included_scope_units": (
+            _build_scope_unit(
+                line_start=1, line_end=6, byte_end=len(_PARAMETERIZED_SOURCE.encode())
+            ),
+        ),
         "parameterized_call_scan": _parameterized_scan(),
     }
 
@@ -2099,10 +2184,8 @@ def test_veto_not_fired_on_the_unsafe_call_itself() -> None:
     assert finding.finding_type == FindingType.SQL_INJECTION
 
 
-def test_veto_requires_judged_tier_observed_sqli_admits() -> None:
-    """An OBSERVED sql_injection with a registry-valid query_match_id is
-    NOT vetoed — the veto is scoped to JUDGED claims; structural-evidence
-    tiers carry their own deterministic proof requirements."""
+def test_generic_structure_id_cannot_bypass_sqli_veto_as_observed() -> None:
+    """Generic function structure cannot promote a model SQL claim to OBSERVED."""
     response = _build_response_json(
         _minimal_proposal(
             finding_type="sql_injection",
@@ -2115,8 +2198,9 @@ def test_veto_requires_judged_tier_observed_sqli_admits() -> None:
     kwargs = _veto_parser_kwargs()
     kwargs["query_match_id_set"] = frozenset({"python.function_definition"})
     result = _call_parser(response, **kwargs)
-    [finding] = result.admitted_findings
-    assert finding.evidence_tier == EvidenceTier.OBSERVED
+    assert not result.admitted_findings
+    [rejection] = result.proposal_rejections
+    assert rejection.rejection_reason == "model_observed_not_supported"
 
 
 # ---------------------------------------------------------------------------
@@ -2248,3 +2332,66 @@ def test_specifier_form_never_enters_from_import_correction() -> None:
     assert len(result.trace_candidates) == 1
     assert result.trace_candidates[0].import_string == "./db"
     assert result.counters.n_trace_candidates_module_corrected == 0
+
+
+@pytest.mark.parametrize("tier", ["judged", "observed"])
+def test_primary_changed_regions_admit_only_judged_locations(tier: str) -> None:
+    result = _call_parser(
+        _build_response_json(
+            _minimal_proposal(
+                evidence_tier=tier, query_match_id="python.test" if tier == "observed" else None
+            )
+        ),
+        included_scope_units=(),
+        primary_line_ranges=((1, 1),),
+        file_content="REQUIRE_AUTH = False\n",
+        file_byte_length=len("REQUIRE_AUTH = False\n"),
+        query_match_id_set=frozenset({"python.test"}),
+    )
+    assert len(result.admitted_findings) == (1 if tier == "judged" else 0)
+    if tier == "observed":
+        assert result.proposal_rejections[0].rejection_reason == "model_observed_not_supported"
+
+
+@pytest.mark.parametrize(
+    ("quote", "accepted"),
+    [
+        ('return "value"', True),
+        ('return "value"\n', True),
+        ('require_auth(user)\n    return "value"', True),
+        ("return", True),
+        ("", False),
+        ("  \n\t", False),
+        ("require_auth(admin)", False),
+        ("require_auth(user)", False),
+        ('return "other"', False),
+        ('require_auth(user)\nreturn "value"', False),
+    ],
+)
+def test_model_quote_must_be_exact_visible_and_overlap_location(quote: str, accepted: bool) -> None:
+    from outrider.ast_facts.registry import parse_source
+    from outrider.coordinates import COORDINATES_IMPORT_PATH_RESOLVER
+
+    source = (
+        'def run(user):\n    require_auth(user)\n    return "value"\n\n'
+        'def other():\n    return "other"\n'
+    )
+    facts = parse_source(source.encode(), "app.py", COORDINATES_IMPORT_PATH_RESOLVER)
+    scopes = tuple(scope for scope in facts.scope_units if scope.name == "run")
+    result = _call_parser(
+        _build_response_json(
+            _minimal_proposal(finding_type="auth_bypass", evidence=quote, line_start=3, line_end=3)
+        ),
+        file_content=source,
+        file_byte_length=len(source.encode()),
+        included_scope_units=scopes,
+    )
+    assert len(result.admitted_findings) == int(accepted)
+    if not accepted:
+        [rejection] = result.proposal_rejections
+        assert rejection.rejection_reason == "evidence_quote_invalid"
+        assert rejection.rejection_detail in {
+            "empty_quote",
+            "not_in_source",
+            "outside_primary_claim_span",
+        }

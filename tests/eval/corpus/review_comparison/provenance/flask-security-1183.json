@@ -1,0 +1,427 @@
+{
+  "head_commit": {
+    "sha": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+    "node_id": "C_kwDOA17yBtoAKDUxYTAyNDU3NDQ3Mzg3Y2EyMTNmN2I2YzVmZTkwZjE1OGViZDNjNmU",
+    "commit": {
+      "author": {
+        "name": "Chris Wagner",
+        "email": "jwag.wagner@gmail.com",
+        "date": "2026-03-05T02:31:44Z"
+      },
+      "committer": {
+        "name": "Chris Wagner",
+        "email": "jwag.wagner@gmail.com",
+        "date": "2026-03-05T02:31:44Z"
+      },
+      "message": "Add support for using Social Login (OAuth) for reauthentication (verify).\n\nAlso - change documentation to refer to Social Login (OAuth) which is more user-facing friendly\nChange the button labels to 'Continue with github' - will do the login button in another PR.\nImproved JSON payload for reauthentication responses, /us-verify, and /verify by adding whether OAuth feature is enabled and which\nproviders are configured.\n\nclose #1165",
+      "tree": {
+        "sha": "4208664b9a0c3c6874d48de881a7de2032e45907",
+        "url": "https://api.github.com/repos/pallets-eco/flask-security/git/trees/4208664b9a0c3c6874d48de881a7de2032e45907"
+      },
+      "url": "https://api.github.com/repos/pallets-eco/flask-security/git/commits/51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null,
+        "verified_at": null
+      }
+    },
+    "url": "https://api.github.com/repos/pallets-eco/flask-security/commits/51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+    "html_url": "https://github.com/pallets-eco/flask-security/commit/51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+    "comments_url": "https://api.github.com/repos/pallets-eco/flask-security/commits/51a02457447387ca213f7b6c5fe90f158ebd3c6e/comments",
+    "author": {
+      "login": "jwag956",
+      "id": 1002831,
+      "node_id": "MDQ6VXNlcjEwMDI4MzE=",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1002831?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/jwag956",
+      "html_url": "https://github.com/jwag956",
+      "followers_url": "https://api.github.com/users/jwag956/followers",
+      "following_url": "https://api.github.com/users/jwag956/following{/other_user}",
+      "gists_url": "https://api.github.com/users/jwag956/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/jwag956/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/jwag956/subscriptions",
+      "organizations_url": "https://api.github.com/users/jwag956/orgs",
+      "repos_url": "https://api.github.com/users/jwag956/repos",
+      "events_url": "https://api.github.com/users/jwag956/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/jwag956/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "jwag956",
+      "id": 1002831,
+      "node_id": "MDQ6VXNlcjEwMDI4MzE=",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1002831?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/jwag956",
+      "html_url": "https://github.com/jwag956",
+      "followers_url": "https://api.github.com/users/jwag956/followers",
+      "following_url": "https://api.github.com/users/jwag956/following{/other_user}",
+      "gists_url": "https://api.github.com/users/jwag956/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/jwag956/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/jwag956/subscriptions",
+      "organizations_url": "https://api.github.com/users/jwag956/orgs",
+      "repos_url": "https://api.github.com/users/jwag956/repos",
+      "events_url": "https://api.github.com/users/jwag956/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/jwag956/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "url": "https://api.github.com/repos/pallets-eco/flask-security/commits/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+        "html_url": "https://github.com/pallets-eco/flask-security/commit/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19"
+      }
+    ],
+    "stats": {
+      "total": 528,
+      "additions": 468,
+      "deletions": 60
+    },
+    "files": [
+      {
+        "sha": "65442673b6ee883c0386594ab39271da5e8d66b5",
+        "filename": "CHANGES.rst",
+        "status": "modified",
+        "additions": 1,
+        "deletions": 0,
+        "changes": 1,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/CHANGES.rst",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/CHANGES.rst",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/CHANGES.rst?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -13,6 +13,7 @@ Features & Improvements\n - (:pr:`1170`) Add API :py:meth:`.UserMixin.check_tf_required` to allow applications to control which users\n   require two-factor authentication.\n - (:issue:`1178`) Add Cache-Control headers.\n+- (:issue:`1165`) Add support for using Social Login (OAuth) for verification.\n \n Fixes\n +++++"
+      },
+      {
+        "sha": "91e1763f33aed13d43e97cca5dd7052d603389fd",
+        "filename": "docs/configuration.rst",
+        "status": "modified",
+        "additions": 53,
+        "deletions": 4,
+        "changes": 57,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Fconfiguration.rst",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Fconfiguration.rst",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/docs%2Fconfiguration.rst?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -181,6 +181,8 @@ These configuration keys are used globally across all features.\n     When this is enabled, the following must also be defined:\n \n     - :py:data:`SECURITY_POST_OAUTH_LOGIN_VIEW`  (if :py:data:`SECURITY_OAUTH_ENABLE` is True)\n+    - :py:data:`SECURITY_POST_OAUTH_VERIFY_VIEW`  (if :py:data:`SECURITY_OAUTH_ENABLE` is True)\n+    - :py:data:`SECURITY_VERIFY_ERROR_VIEW`  (if :py:data:`SECURITY_OAUTH_ENABLE` is True)\n     - :py:data:`SECURITY_LOGIN_ERROR_VIEW`\n     - :py:data:`SECURITY_CONFIRM_ERROR_VIEW`\n     - :py:data:`SECURITY_POST_CHANGE_EMAIL_VIEW`\n@@ -412,7 +414,7 @@ These configuration keys are used globally across all features.\n .. py:data:: SECURITY_FRESHNESS\n \n     A timedelta used to protect endpoints that alter sensitive information.\n-    This is used to protect the following endpoints:\n+    This is used to protect the following Flask Security endpoints:\n \n         - :py:data:`SECURITY_US_SETUP_URL`\n         - :py:data:`SECURITY_TWO_FACTOR_SETUP_URL`\n@@ -421,13 +423,17 @@ These configuration keys are used globally across all features.\n         - :py:data:`SECURITY_MULTI_FACTOR_RECOVERY_CODES`\n         - :py:data:`SECURITY_CHANGE_EMAIL_URL`\n \n+    This can also be used to protect application endpoints with the :meth:`flask_security.auth_required` decorator.\n+\n     Setting this to a negative number will disable any freshness checking and\n     the endpoints:\n \n         - :py:data:`SECURITY_VERIFY_URL`\n         - :py:data:`SECURITY_US_VERIFY_URL`\n         - :py:data:`SECURITY_US_VERIFY_SEND_CODE_URL`\n         - :py:data:`SECURITY_WAN_VERIFY_URL`\n+        - :py:data:`SECURITY_OAUTH_VERIFY_START_URL`\n+        - :py:data:`SECURITY_OAUTH_VERIFY_RESPONSE_URL`\n \n     won't be registered.\n     Setting this to 0 results in undefined behavior.\n@@ -1939,8 +1945,8 @@ Additional relevant configuration variables:\n     * :py:data:`SECURITY_TOTP_SECRETS` - TOTP/passlib is used to generate the codes.\n     * :py:data:`SECURITY_TOTP_ISSUER`\n \n-Social Oauth\n--------------\n+Social Login (OAuth)\n+--------------------\n     .. versionadded:: 5.1.0\n \n .. py:data:: SECURITY_OAUTH_ENABLE\n@@ -1968,15 +1974,54 @@ Social Oauth\n .. py:data:: SECURITY_POST_OAUTH_LOGIN_VIEW\n \n     Specifies the view/URL to redirect to after a successful authentication (login)\n-    using social oauth.\n+    using social login (OAuth).\n     This is only valid if :py:data:`SECURITY_REDIRECT_BEHAVIOR` == ``\"spa\"``.\n     Query params in the redirect will contain `identity` and `email`.\n \n     Default: ``None``.\n \n     .. versionadded:: 5.4.0\n \n+.. py:data:: SECURITY_OAUTH_VERIFY_START_URL\n+\n+    Endpoint for starting an Oauth reauthentication/verify operation.\n+\n+    Default: ``\"/login/oauth-verify-start\"``\n+\n+    .. versionadded:: 5.8.0\n+\n+.. py:data:: SECURITY_OAUTH_VERIFY_RESPONSE_URL\n+\n+    Endpoint used as the Oauth verify redirect.\n+\n+    Default: ``\"/login/oauth-verify-response\"``\n+\n+    .. versionadded:: 5.8.0\n+\n+.. py:data:: SECURITY_POST_OAUTH_VERIFY_VIEW\n+\n+    Specifies the view/URL to redirect to after a successful reauthentication (verify)\n+    using social login/oauth.\n+    This is only valid if :py:data:`SECURITY_REDIRECT_BEHAVIOR` == ``\"spa\"``.\n+    Query params in the redirect will contain `identity` and `email`.\n+\n+    Default: ``None``.\n+\n+    .. versionadded:: 5.8.0\n+\n+.. py:data:: SECURITY_VERIFY_ERROR_VIEW\n+\n+    Specifies the view/URL to redirect to after the following login/authentication errors:\n+\n+    * GET on oauth-verify-response where there was an OAuth protocol error.\n+    * GET on oauth-verify-response where the returned identity isn't registered.\n+\n+    This is only valid if :py:data:`SECURITY_REDIRECT_BEHAVIOR` == ``\"spa\"``.\n+    Query params in the redirect will contain the error type and message.\n+\n+    Default: ``None``.\n \n+    .. versionadded:: 5.8.0\n \n Feature Flags\n -------------\n@@ -2015,6 +2060,8 @@ A list of all URLs and Views:\n * :py:data:`SECURITY_MULTI_FACTOR_RECOVERY_URL` ``\"/mf-recovery\"``\n * :py:data:`SECURITY_OAUTH_START_URL` ``\"/login/oauthstart\"``\n * :py:data:`SECURITY_OAUTH_RESPONSE_URL` ``\"/login/oauthresponse\"``\n+* :py:data:`SECURITY_OAUTH_VERIFY_START_URL` ``\"/login/oauth-verify-start\"``\n+* :py:data:`SECURITY_OAUTH_VERIFY_RESPONSE_URL` ``\"/login/oauth-verify-response\"``\n * :py:data:`SECURITY_TWO_FACTOR_SELECT_URL` ``\"/tf-select\"``\n * :py:data:`SECURITY_TWO_FACTOR_SETUP_URL` ``\"/tf-setup\"``\n * :py:data:`SECURITY_TWO_FACTOR_TOKEN_VALIDATION_URL` ``\"/tf-validate\"``\n@@ -2029,6 +2076,7 @@ A list of all URLs and Views:\n * :py:data:`SECURITY_POST_RESET_VIEW`\n * :py:data:`SECURITY_POST_CHANGE_VIEW`\n * :py:data:`SECURITY_POST_OAUTH_LOGIN_VIEW`\n+* :py:data:`SECURITY_POST_OAUTH_VERIFY_VIEW`\n * :py:data:`SECURITY_UNAUTHORIZED_VIEW`\n * :py:data:`SECURITY_RESET_VIEW`\n * :py:data:`SECURITY_RESET_ERROR_VIEW`\n@@ -2041,6 +2089,7 @@ A list of all URLs and Views:\n * :py:data:`SECURITY_US_VERIFY_URL`\n * :py:data:`SECURITY_US_VERIFY_SEND_CODE_URL`\n * :py:data:`SECURITY_US_POST_SETUP_VIEW`\n+* :py:data:`SECURITY_VERIFY_ERROR_VIEW`\n * :py:data:`SECURITY_WAN_REGISTER_URL`\n * :py:data:`SECURITY_WAN_SIGNIN_URL`\n * :py:data:`SECURITY_WAN_DELETE_URL`"
+      },
+      {
+        "sha": "3a6b7cba59b96f76c6758f7ef5f56b47b1547b42",
+        "filename": "docs/customizing.rst",
+        "status": "modified",
+        "additions": 2,
+        "deletions": 0,
+        "changes": 2,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Fcustomizing.rst",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Fcustomizing.rst",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/docs%2Fcustomizing.rst?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -91,6 +91,8 @@ The following is a list of all the available context processor decorators:\n * ``tf_token_validation_context_processor``: Two factor token validation view\n * ``us_signin_context_processor``: Unified sign in view\n * ``us_setup_context_processor``: Unified sign in setup view\n+* ``us_verify_context_processor``: Unified sign in verify view\n+* ``verify_context_processor``: Verify view\n * ``wan_register_context_processor``: WebAuthn registration view\n * ``wan_signin_context_processor``: WebAuthn sign in view\n * ``wan_verify_context_processor``: WebAuthn verify view"
+      },
+      {
+        "sha": "5e4746abc494d388d106461fdd503e518fc079fc",
+        "filename": "docs/features.rst",
+        "status": "modified",
+        "additions": 4,
+        "deletions": 4,
+        "changes": 8,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Ffeatures.rst",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Ffeatures.rst",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/docs%2Ffeatures.rst?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -284,10 +284,10 @@ registered. They can be completely disabled or their names can be changed.\n Run ``flask --help`` and look for users and roles.\n \n \n-Social/OAuth Authentication\n-----------------------------\n+Social Login (OAuth) Authentication\n+------------------------------------\n Flask-Security provides a thin layer which integrates `authlib`_ with Flask-Security\n-views and features (such as two-factor authentication). Flask-Security is shipped\n+views and features (such as two-factor authentication and verify). Flask-Security is shipped\n with support for github and google - others can be added by the application (see `loginpass`_\n for many examples).\n \n@@ -306,7 +306,7 @@ We have seen issues with some providers when `SESSION_COOKIE_SAMESITE` = \"strict\n The handshake (sometimes just the first time when the user is being asked to accept your application)\n fails due to the session cookie not getting sent as part of the redirect.\n \n-A very simple example of configuring social auth with Flask-Security is available\n+A very simple example of configuring social login with Flask-Security is available\n in the `examples` directory.\n \n .. _Click: https://palletsprojects.com/p/click/"
+      },
+      {
+        "sha": "4889a3289116f0c9a9fd2073d66b787e25670560",
+        "filename": "docs/index.rst",
+        "status": "modified",
+        "additions": 2,
+        "deletions": 2,
+        "changes": 4,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Findex.rst",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Findex.rst",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/docs%2Findex.rst?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -21,8 +21,8 @@ Flask application. They include:\n 5. Password management (recovery and resetting) (optional)\n 6. Username management (configuration, recovery, change) (optional)\n 7. Two-factor authentication via email, SMS, authenticator (optional)\n-8. WebAuthn Support (optional)\n-9. 'social'/OAuth for authentication (e.g. google, github, ..) (optional)\n+8. Passkey (Webauthn) Support (optional)\n+9. Social Login (OAuth) for authentication (e.g. google, github, ..) (optional)\n 10. Change email (optional)\n 11. Login tracking (optional)\n 12. JSON/Ajax Support"
+      },
+      {
+        "sha": "429d471b75ed85d6e80ee42a25b820f7156be665",
+        "filename": "docs/openapi.yaml",
+        "status": "modified",
+        "additions": 64,
+        "deletions": 4,
+        "changes": 68,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Fopenapi.yaml",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Fopenapi.yaml",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/docs%2Fopenapi.yaml?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -249,6 +249,14 @@ paths:\n                     description: <\n                       True if caller has a registered WebAuthn Key which has a `usage` that\n                       is allowed by the SECURITY_WAN_ALLOW_AS_VERIFY configuration setting.\n+                  oauth_enabled:\n+                    type: boolean\n+                    description: True if SECURITY_OAUTH_ENABLE is True\n+                  oauth_providers:\n+                    type: array\n+                    items:\n+                      type: string\n+                      description: A list of OAuth providers that have been registered.\n     post:\n       summary: Verify/Reauthentication\n       parameters:\n@@ -998,6 +1006,14 @@ paths:\n                     description: <\n                       True if caller has a registered WebAuthn Key which has a `usage` that\n                       is allowed by the SECURITY_WAN_ALLOW_AS_VERIFY configuration setting.\n+                  oauth_enabled:\n+                    type: boolean\n+                    description: True if SECURITY_OAUTH_ENABLE is True\n+                  oauth_providers:\n+                    type: array\n+                    items:\n+                      type: string\n+                      description: A list of OAuth providers that have been registered.\n     post:\n       summary: Unified sign in verify/reauthentication\n       parameters:\n@@ -2081,12 +2097,13 @@ paths:\n           type: string\n           description: provider name as registered with OAuth (e.g. 'github')\n     post:\n-      summary: Start a 'social'/Oauth authentication exchange.\n+      summary: Start a Social Login (OAuth) authentication exchange.\n       responses:\n         302:\n           description: >\n-            Redirect to OAuth provider. The redirect URL will pass along, if provided,\n-            the value of the `next` query argument. If the caller is already\n+            Redirect to OAuth provider. The value of the `next` query argument will be\n+            stored in the session and retrieved when the OAuth provider\n+            performs a GET on the redirect URL. If the caller is already\n             authenticated redirect will be to ``SECURITY_POST_LOGIN_VIEW``\n         400:\n           description: Caller is already authenticated\n@@ -2112,7 +2129,7 @@ paths:\n           headers:\n             Location:\n               description: |\n-                On spa-success: SECURITY_POST_OAUTH_ LOGIN_VIEW?identity={identity}&email={email}\n+                On spa-success: SECURITY_POST_OAUTH_LOGIN_VIEW?identity={identity}&email={email}\n \n                 On spa-oauth-error: SECURITY_LOGIN_ERROR_VIEW?error={msg}\n \n@@ -2121,6 +2138,49 @@ paths:\n                 On form-success: `next` or SECURITY_POST_LOGIN_VIEW\n               schema:\n                 type: string\n+  /login/oauth-verify-start/{name}:\n+    parameters:\n+      - name: name\n+        in: path\n+        required: true\n+        schema:\n+          type: string\n+          description: provider name as registered with OAuth (e.g. 'github')\n+    post:\n+      summary: Start a Social Login (OAuth) reauthentication exchange.\n+      responses:\n+        302:\n+          description: >\n+            Redirect to OAuth provider. The value of the `next` query argument will be\n+            stored in the session and retrieved when the OAuth provider\n+            performs a GET on the redirect URL.\n+  /login/oauth-verify-response/{name}:\n+    parameters:\n+      - name: name\n+        in: path\n+        required: true\n+        schema:\n+          type: string\n+          description: provider name as registered with OAuth (e.g. 'github')\n+    get:\n+      summary: Response from OAuth provider.\n+      responses:\n+        302:\n+          description: >\n+            Caller will be redirected based on whether successful or not and whether\n+            __SECURITY_REDIRECT_BEHAVIOR__ == 'spa'.\n+          headers:\n+            Location:\n+              description: |\n+                On spa-success: SECURITY_POST_OAUTH_VERIFY_VIEW?identity={identity}&email={email}\n+\n+                On spa-oauth-error: SECURITY_VERIFY_ERROR_VIEW?error={msg}\n+\n+                On spa-unknown-user: SECURITY_VERIFY_ERROR_VIEW?error={msg}\n+\n+                On form-success: `next` or SECURITY_POST_VERIFY_VIEW\n+              schema:\n+                type: string\n \n \n components:"
+      },
+      {
+        "sha": "5718e3f1d3b577fcdffd7b3ea541c0582c3e68a8",
+        "filename": "docs/patterns.rst",
+        "status": "modified",
+        "additions": 2,
+        "deletions": 1,
+        "changes": 3,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Fpatterns.rst",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Fpatterns.rst",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/docs%2Fpatterns.rst?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -90,7 +90,8 @@ can be protected by requiring a 'fresh' or recent authentication. Flask-Security\n     - :func:`.auth_required` takes parameters that define how recent the authentication must have happened. In addition a grace\n       period can be specified so that multiple step operations don't require reauthentication in the middle.\n     - A default :meth:`.Security.reauthn_handler` that is called when a request fails the recent authentication check.\n-    - :py:data:`SECURITY_VERIFY_URL`, :py:data:`SECURITY_US_VERIFY_URL`, :py:data:`SECURITY_WAN_VERIFY_URL` endpoints\n+    - :py:data:`SECURITY_VERIFY_URL`, :py:data:`SECURITY_US_VERIFY_URL`, :py:data:`SECURITY_WAN_VERIFY_URL`,\n+      :py:data:`SECURITY_OAUTH_VERIFY_START_URL` endpoints\n       that request the user to reauthenticate.\n     - ``VerifyForm``, ``UsVerifyForm``, ``WebAuthnVerifyForm`` forms that can be extended.\n "
+      },
+      {
+        "sha": "02eb45e21eec1942fe79e7eddacc4f5e8732e254",
+        "filename": "docs/spa.rst",
+        "status": "modified",
+        "additions": 2,
+        "deletions": 0,
+        "changes": 2,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Fspa.rst",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Fspa.rst",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/docs%2Fspa.rst?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -53,6 +53,8 @@ An example configuration:\n     SECURITY_RESET_ERROR_VIEW = \"/reset-password-error\"\n     SECURITY_LOGIN_ERROR_VIEW = \"/login-error\"\n     SECURITY_POST_OAUTH_LOGIN_VIEW = \"/post-oauth-login\"\n+    SECURITY_POST_OAUTH_VERIFY_VIEW = \"/post-oauth-verify\"\n+    SECURITY_VERIFY_ERROR_VIEW = \"/verify-error\"\n     SECURITY_REDIRECT_BEHAVIOR = \"spa\"\n \n     # CSRF protection is critical for all session-based browser UIs"
+      },
+      {
+        "sha": "9569d800772be164225ca542fa27b9c87383bb08",
+        "filename": "docs/two_factor_configurations.rst",
+        "status": "modified",
+        "additions": 1,
+        "deletions": 1,
+        "changes": 2,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Ftwo_factor_configurations.rst",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/docs%2Ftwo_factor_configurations.rst",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/docs%2Ftwo_factor_configurations.rst?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -210,4 +210,4 @@ The decision whether to require a second factor after primary authentication is\n The default implementation returns True if :py:data:`SECURITY_TWO_FACTOR_REQUIRED` is set OR the user has a two-factor method already setup AND\n recent two-factor authentication isn't 'valid' (see above).\n \n-This method can be overridden in the applications User class. A common use case might be to require two-factor for any user with the 'admin' role.\n+This method can be overridden in the application's User class. A common use case might be to require two-factor for any user with the 'admin' role."
+      },
+      {
+        "sha": "3e6dad904eb8e1ad774c5311b938d627a8015ad7",
+        "filename": "examples/oauth/server/app.py",
+        "status": "modified",
+        "additions": 10,
+        "deletions": 1,
+        "changes": 11,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/examples%2Foauth%2Fserver%2Fapp.py",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/examples%2Foauth%2Fserver%2Fapp.py",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/examples%2Foauth%2Fserver%2Fapp.py?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -1,5 +1,5 @@\n \"\"\"\n-Copyright 2020-2024 by J. Christopher Wagner (jwag). All rights reserved.\n+Copyright 2020-2026 by J. Christopher Wagner (jwag). All rights reserved.\n :license: MIT, see LICENSE for more details.\n \n A simple example of utilizing Flask-Security's OAuth glue layer.\n@@ -20,6 +20,7 @@\n     \"GITHUB_CLIENT_ID\" and \"GITHUB_CLIENT_SECRET\".\n    See: https://docs.authlib.org/en/latest/client/flask.html# for details.\n    (look under profile->settings->developer settings)\n+   The redirect_url should be set to https://<your app>/login\n 2) Register yourself (with your github email) with this application.\n \n Note: by default this uses an in-memory DB - so everytime you restart you lose all\n@@ -90,6 +91,7 @@ def create_app():\n     app.config[\"SECURITY_TOTP_SECRETS\"] = {\n         \"1\": \"TjQ9Qa31VOrfEzuPy4VHQWPCTmRzCnFzMKLxXYiZu9B\"\n     }\n+    app.config[\"SECURITY_TOTP_ISSUER\"] = \"me\"\n     # app.config[\"SESSION_COOKIE_SAMESITE\"] = \"strict\"\n \n     # As of Flask-SQLAlchemy 2.4.0 it is easy to pass in options directly to the\n@@ -139,6 +141,13 @@ def create_app():\n     def home():\n         return render_template_string(\"Hello {{ current_user.email }}\")\n \n+    @app.route(\"/superfresh\")\n+    @auth_required(within=1, grace=0)\n+    def superfresh():\n+        return render_template_string(\n+            \"Hello {{ current_user.email }} you are super fresh!\"\n+        )\n+\n     @app.route(\"/\")\n     def root():\n         return redirect(\"/home\")"
+      },
+      {
+        "sha": "19f672911912139c14973ae75e2926325e97f673",
+        "filename": "flask_security/core.py",
+        "status": "modified",
+        "additions": 4,
+        "deletions": 0,
+        "changes": 4,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Fcore.py",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Fcore.py",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/flask_security%2Fcore.py?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -197,10 +197,12 @@\n     \"POST_LOGOUT_VIEW\": \"/\",\n     \"LOGIN_ERROR_VIEW\": None,  # spa\n     \"POST_OAUTH_LOGIN_VIEW\": None,  # spa\n+    \"POST_OAUTH_VERIFY_VIEW\": None,  # spa\n     \"CONFIRM_ERROR_VIEW\": None,  # spa\n     \"POST_CONFIRM_VIEW\": None,  # spa\n     \"RESET_VIEW\": None,  # spa\n     \"RESET_ERROR_VIEW\": None,  # spa\n+    \"VERIFY_ERROR_VIEW\": None,  # spa\n     \"POST_RESET_VIEW\": None,\n     \"POST_CHANGE_VIEW\": None,\n     \"POST_VERIFY_VIEW\": None,\n@@ -275,6 +277,8 @@\n     \"OAUTH_BUILTIN_PROVIDERS\": [\"github\", \"google\"],\n     \"OAUTH_START_URL\": \"/login/oauthstart\",\n     \"OAUTH_RESPONSE_URL\": \"/login/oauthresponse\",\n+    \"OAUTH_VERIFY_START_URL\": \"/login/oauth-verify-start\",\n+    \"OAUTH_VERIFY_RESPONSE_URL\": \"/login/oauth-verify-response\",\n     \"CONFIRM_EMAIL_WITHIN\": \"5 days\",\n     \"RESET_PASSWORD_WITHIN\": \"1 days\",\n     \"LOGIN_WITHOUT_CONFIRMATION\": False,"
+      },
+      {
+        "sha": "82e61cfa50e2b6dd80b4ebdcfc35cb40343cbf07",
+        "filename": "flask_security/decorators.py",
+        "status": "modified",
+        "additions": 8,
+        "deletions": 4,
+        "changes": 12,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Fdecorators.py",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Fdecorators.py",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/flask_security%2Fdecorators.py?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -5,7 +5,7 @@\n Flask-Security decorators module\n \n :copyright: (c) 2012-2019 by Matt Wright.\n-:copyright: (c) 2019-2024 by J. Christopher Wagner (jwag).\n+:copyright: (c) 2019-2026 by J. Christopher Wagner (jwag).\n :license: MIT, see LICENSE for more details.\n \"\"\"\n \n@@ -100,6 +100,10 @@ def default_reauthn_handler(within, grace):\n         payload[\"has_webauthn_verify_credential\"] = has_webauthn(\n             current_user, cv(\"WAN_ALLOW_AS_VERIFY\")\n         )\n+        payload[\"oauth_enabled\"] = cv(\"OAUTH_ENABLE\")\n+        payload[\"oauth_providers\"] = (\n+            _security.oauthglue.provider_names if cv(\"OAUTH_ENABLE\") else []\n+        )\n         return _security._render_json(payload, 401, None, None)\n \n     view = \"us_verify\" if cv(\"UNIFIED_SIGNIN\") else \"verify\"\n@@ -197,7 +201,7 @@ def handle_csrf(method: str, json_response: bool = False) -> ResponseValue | Non\n \n         #) csrfProtect already checked and accepted the token\n \n-    This means in the default config - CSRF is done as part of form validation\n+    This means in the default config - CSRF is done as part of form validation,\n     not here. Only if the application calls CSRFProtect(app) will this method\n     do anything. Furthermore - since this is called PRIOR to form instantiation\n     if the request is JSON - it MUST send the csrf_token as a header.\n@@ -288,7 +292,7 @@ def decorated(*args, **kwargs):\n             return current_app.ensure_sync(fn)(*args, **kwargs)\n         return _security._unauthn_handler([\"token\"])\n \n-    return t.cast(DecoratedView, decorated)\n+    return decorated\n \n \n def auth_required(\n@@ -625,4 +629,4 @@ def wrapper(*args, **kwargs):\n                 return redirect(get_url(cv(\"POST_LOGIN_VIEW\")))\n         return current_app.ensure_sync(f)(*args, **kwargs)\n \n-    return t.cast(DecoratedView, wrapper)\n+    return wrapper"
+      },
+      {
+        "sha": "08b7d8b55033054d9b437ee4b7627b37cab2d361",
+        "filename": "flask_security/oauth_glue.py",
+        "status": "modified",
+        "additions": 124,
+        "deletions": 34,
+        "changes": 158,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Foauth_glue.py",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Foauth_glue.py",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/flask_security%2Foauth_glue.py?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -4,13 +4,14 @@\n \n Class and methods to glue our login path with authlib for to support 'social' auth.\n \n-:copyright: (c) 2022-2024 by J. Christopher Wagner (jwag).\n+:copyright: (c) 2022-2026 by J. Christopher Wagner (jwag).\n :license: MIT, see LICENSE for more details.\n \n \"\"\"\n \n from __future__ import annotations\n \n+import time\n import typing as t\n \n try:\n@@ -27,7 +28,7 @@\n from flask import abort, after_this_request, redirect, request, session\n from flask_login import current_user\n \n-from .decorators import unauth_csrf\n+from .decorators import auth_required, unauth_csrf\n from .oauth_provider import (\n     OauthCbType,\n     FsOAuthProvider,\n@@ -52,6 +53,7 @@\n if t.TYPE_CHECKING:  # pragma: no cover\n     import flask\n     from flask.typing import ResponseValue\n+    from flask_security import UserMixin\n \n \n @unauth_csrf()\n@@ -60,7 +62,7 @@ def oauthstart(name: str) -> ResponseValue:\n     Name is a pre-registered OAuth provider.\n     TODO: remember me?\n     \"\"\"\n-    assert _security.oauthglue\n+    assert _security.oauthglue is not None\n     if is_user_authenticated(current_user):\n         # Just redirect current_user to POST_LOGIN_VIEW.\n         # For json - return an error.\n@@ -81,7 +83,29 @@ def oauthstart(name: str) -> ResponseValue:\n     session.pop(\"fs_oauth_next\", None)\n     if request.args.get(\"next\"):\n         session[\"fs_oauth_next\"] = request.args.get(\"next\")\n-    return _security.oauthglue.get_redirect(name)\n+    return _security.oauthglue.get_redirect(name, \"oauthresponse\")\n+\n+\n+def _oauth_response_common(name: str) -> tuple[t.Any, UserMixin | None] | t.NoReturn:\n+    \"\"\"\n+    Common code for oauth response (login or verify)\n+    This can abort or raise an OAuthError or return a\n+    tuple of (field_value, user)\n+    \"\"\"\n+    assert _security.oauthglue is not None\n+    authlib_provider = _security.oauthglue.authlib_provider(name)\n+    oauth_provider = _security.oauthglue.providers.get(name)\n+    if not authlib_provider or not oauth_provider:\n+        # this should only happen with purposeful bad API call\n+        abort(404)  # TODO - redirect... to where?\n+    # This parses the Flask Request and can raise an OAuthError\n+    token = authlib_provider.authorize_access_token()\n+\n+    field_name, field_value = oauth_provider.fetch_identity_cb(\n+        _security.oauthglue.oauth_app, token\n+    )\n+    user = _security.datastore.find_user(**{field_name: field_value})\n+    return field_value, user\n \n \n def oauthresponse(name: str) -> ResponseValue:\n@@ -91,27 +115,18 @@ def oauthresponse(name: str) -> ResponseValue:\n     We may have stored the original 'next' in the session\n     N.B. all responses MUST be redirects.\n     \"\"\"\n-    assert _security.oauthglue\n-    authlib_provider = _security.oauthglue.authlib_provider(name)\n+    assert _security.oauthglue is not None\n     oauth_provider = _security.oauthglue.providers.get(name)\n-    if not authlib_provider or not oauth_provider:\n-        # this should only happen with purposeful bad API call\n-        abort(404)  # TODO - redirect... to where?\n-    # This parses the Flask Request\n     try:\n-        token = authlib_provider.authorize_access_token()\n+        field_value, user = _oauth_response_common(name)\n     except OAuthError as e:\n         \"\"\"One known way this can happen is if the session cookie 'samesite'\n         is set to 'strict' and e.g. the first time the user goes to github\n         and has to authorize this app and then redirect - the session\n         cookie isn't sent - and by default that is where the state is kept.\n         \"\"\"\n-        return oauth_provider.oauth_response_failure(e)\n-\n-    field_name, value = oauth_provider.fetch_identity_cb(\n-        _security.oauthglue.oauth_app, token\n-    )\n-    user = _security.datastore.find_user(**{field_name: value})\n+        assert oauth_provider is not None\n+        return oauth_provider.oauth_response_failure(\"LOGIN_ERROR_VIEW\", e)\n     if user:\n         after_this_request(view_commit)\n         next_loc = session.pop(\"fs_oauth_next\", None)\n@@ -120,34 +135,92 @@ def oauthresponse(name: str) -> ResponseValue:\n         )\n         if response:\n             return response\n-        # two factor not required - login user\n+        # two-factor not required - login user\n         login_user(user)\n         if cv(\"REDIRECT_BEHAVIOR\") == \"spa\":\n-            return redirect(\n-                get_url(\n-                    cv(\"POST_OAUTH_LOGIN_VIEW\"), qparams=user.get_redirect_qparams()\n-                )\n+            redirect_url = get_url(\n+                cv(\"POST_OAUTH_LOGIN_VIEW\"), qparams=user.get_redirect_qparams()\n+            )\n+        else:\n+            redirect_url = get_post_action_redirect(\n+                \"SECURITY_POST_LOGIN_VIEW\", dict(next=next_loc)\n             )\n-        redirect_url = get_post_action_redirect(\n-            \"SECURITY_POST_LOGIN_VIEW\", dict(next=next_loc)\n-        )\n         return redirect(redirect_url)\n     # Seems ok to show identity - the only identity it could be is the callers\n     # so seems no way this can be used to enumerate registered users.\n-    m, c = get_message(\"IDENTITY_NOT_REGISTERED\", id=value)\n+    m, c = get_message(\"IDENTITY_NOT_REGISTERED\", id=field_value)\n     if cv(\"REDIRECT_BEHAVIOR\") == \"spa\":\n         return redirect(get_url(cv(\"LOGIN_ERROR_VIEW\"), qparams={c: m}))\n     do_flash(m, c)\n     # TODO: should redirect to where we came from?\n     return redirect(url_for_security(\"login\"))\n \n \n+@auth_required(lambda: cv(\"API_ENABLED_METHODS\"))\n+def oauth_verify_start(name: str) -> ResponseValue:\n+    \"\"\"\n+    Re-authenticate to reset freshness time.\n+    With a forms-based app this is the result of a reauthn_handler redirect.\n+    \"\"\"\n+    # we never want to return here or to the redirect location.\n+    # Some providers match on entire redirect url - so we don't want to\n+    # store next there. Use session.\n+    assert _security.oauthglue is not None\n+    session.pop(\"fs_oauth_next\", None)\n+    if request.args.get(\"next\"):\n+        session[\"fs_oauth_next\"] = request.args.get(\"next\")\n+    return _security.oauthglue.get_redirect(name, \"oauth_verify_response\")\n+\n+\n+def oauth_verify_response(name: str) -> ResponseValue:\n+    \"\"\"\n+    Callback from oauth provider - response is provider-specific\n+    Since this is a callback from oauth provider - there is no form,\n+    We may have stored the original 'next' in the session\n+    N.B. all responses MUST be redirects.\n+    \"\"\"\n+    assert _security.oauthglue is not None\n+    oauth_provider = _security.oauthglue.providers.get(name)\n+    try:\n+        field_value, user = _oauth_response_common(name)\n+    except OAuthError as e:\n+        \"\"\"One known way this can happen is if the session cookie 'samesite'\n+        is set to 'strict' and e.g. the first time the user goes to github\n+        and has to authorize this app and then redirect - the session\n+        cookie isn't sent - and by default that is where the state is kept.\n+        \"\"\"\n+        assert oauth_provider is not None\n+        return oauth_provider.oauth_response_failure(\"VERIFY_ERROR_VIEW\", e)\n+    next_loc = session.pop(\"fs_oauth_next\", None)\n+    if user:\n+        # verified - so set freshness time.\n+        session[\"fs_paa\"] = time.time()\n+        if cv(\"REDIRECT_BEHAVIOR\") == \"spa\":\n+            redirect_url = get_url(\n+                cv(\"POST_OAUTH_VERIFY_VIEW\"), qparams=user.get_redirect_qparams()\n+            )\n+        else:\n+            do_flash(*get_message(\"REAUTHENTICATION_SUCCESSFUL\"))\n+            redirect_url = get_post_action_redirect(\n+                \"SECURITY_POST_VERIFY_VIEW\", dict(next=next_loc)\n+            )\n+        return redirect(redirect_url)\n+\n+    m, c = get_message(\"IDENTITY_NOT_REGISTERED\", id=field_value)\n+    if cv(\"REDIRECT_BEHAVIOR\") == \"spa\":\n+        return redirect(get_url(cv(\"VERIFY_ERROR_VIEW\"), qparams={c: m}))\n+    do_flash(m, c)\n+    # Go back to verify - this is the same logic as in default_reauthn_handler\n+    view = \"us_verify\" if cv(\"UNIFIED_SIGNIN\") else \"verify\"\n+    return redirect(url_for_security(view, next=next_loc))\n+\n+\n class OAuthGlue:\n     \"\"\"\n     Provide the necessary glue between the Flask-Security login process and\n     authlib oauth client code.\n \n-    There are some builtin providers which can be used or not - configured via\n+    There are some builtin providers that can be used or not - configured via\n     :py:data:`SECURITY_OAUTH_BUILTIN_PROVIDERS`. Any other provider can be registered\n     using :py:meth:`register_provider_ext`.\n \n@@ -158,6 +231,9 @@ class OAuthGlue:\n     .. versionchanged:: 5.4.0\n         Added register_provider_ext which allows applications more control to\n         manage new providers (such as extended error handling).\n+\n+    .. versionchanged:: 5.8.0\n+        Added endpoints for verify using OAuth.\n     \"\"\"\n \n     def __init__(self, app: flask.Flask, oauthapp: OAuth | None = None):\n@@ -187,19 +263,33 @@ def _create_blueprint(self, app: flask.Flask, bp: flask.Blueprint) -> None:\n             endpoint=\"oauthresponse\",\n         )(oauthresponse)\n \n-    def get_redirect(self, name: str, **values: t.Any) -> ResponseValue:\n+        if cv(\"FRESHNESS\", app=app).total_seconds() >= 0:\n+            verify_start_url = cv(\"OAUTH_VERIFY_START_URL\", app=app)\n+            bp.route(\n+                verify_start_url + slash_url_suffix(verify_start_url, \"<name>\"),\n+                methods=[\"POST\"],\n+                endpoint=\"oauth_verify_start\",\n+            )(oauth_verify_start)\n+            verify_response_url = cv(\"OAUTH_VERIFY_RESPONSE_URL\", app=app)\n+            bp.route(\n+                verify_response_url + slash_url_suffix(verify_response_url, \"<name>\"),\n+                methods=[\"GET\"],\n+                endpoint=\"oauth_verify_response\",\n+            )(oauth_verify_response)\n+\n+    def get_redirect(\n+        self, name: str, endpoint: str, **values: t.Any\n+    ) -> ResponseValue | t.NoReturn:\n         authlib_provider = self.authlib_provider(name)\n         if not authlib_provider:\n-            return abort(404)\n-        start_uri = url_for_security(\n-            \"oauthresponse\", name=name, _external=True, **values\n-        )\n+            abort(404)\n+        start_uri = url_for_security(endpoint, name=name, _external=True, **values)\n         redirect_url = authlib_provider.authorize_redirect(start_uri)\n         return redirect_url\n \n     @property\n-    def provider_names(self):\n-        return self.providers.keys()\n+    def provider_names(self) -> list[str]:\n+        return list(self.providers.keys())\n \n     @property\n     def oauth_app(self):"
+      },
+      {
+        "sha": "c0b02064b5ae1453b5d7af62ed293b6f1e36f0fa",
+        "filename": "flask_security/oauth_provider.py",
+        "status": "modified",
+        "additions": 2,
+        "deletions": 2,
+        "changes": 4,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Foauth_provider.py",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Foauth_provider.py",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/flask_security%2Foauth_provider.py?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -81,7 +81,7 @@ def fetch_identity_cb(self, oauth: OAuth, token: t.Any) -> tuple[str, t.Any]:\n             raise NotImplementedError\n         return self._fetch_identity_cb(oauth, token)\n \n-    def oauth_response_failure(self, e: OAuthError) -> ResponseValue:\n+    def oauth_response_failure(self, error_view: str, e: OAuthError) -> ResponseValue:\n         \"\"\"Called if authlib authorize_access_token throws an error.\n \n         N.B. flashing doesn't seem to work in some cases - if the session\n@@ -91,7 +91,7 @@ def oauth_response_failure(self, e: OAuthError) -> ResponseValue:\n             \"OAUTH_HANDSHAKE_ERROR\", exerror=e.error, exdesc=e.description\n         )\n         if cv(\"REDIRECT_BEHAVIOR\") == \"spa\":\n-            return redirect(get_url(cv(\"LOGIN_ERROR_VIEW\"), qparams={c: m}))\n+            return redirect(get_url(cv(error_view), qparams={c: m}))\n         do_flash(m, c)\n         return redirect(url_for_security(\"login\"))\n "
+      },
+      {
+        "sha": "85e8b57ceb99e1eb8cacaa0daa19e41c46faa3a1",
+        "filename": "flask_security/templates/security/us_verify.html",
+        "status": "modified",
+        "additions": 14,
+        "deletions": 0,
+        "changes": 14,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Ftemplates%2Fsecurity%2Fus_verify.html",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Ftemplates%2Fsecurity%2Fus_verify.html",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/flask_security%2Ftemplates%2Fsecurity%2Fus_verify.html?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -30,5 +30,19 @@ <h2>{{ _fsdomain(\"Use a Passkey to Reauthenticate\") }}</h2>\n       {{ render_field(wan_verify_form.submit) }}\n     </form>\n   {% endif %}\n+  {% if security.oauthglue %}\n+    <hr class=\"fs-gap\">\n+    <h2>{{ _fsdomain(\"Use Social Login to Reauthenticate\") }}</h2>\n+    {% for provider in security.oauthglue.provider_names %}\n+      <div class=\"fs-gap\">\n+        <form method=\"post\" id=\"{{ provider }}_form\" name=\"{{ provider }}_form\">\n+          <input id=\"{{ provider }}\" name=\"{{ provider }}\" type=\"submit\" value=\"{{ _fsdomain('Continue with %(provider)s', provider=provider) }}\" formaction=\"{{ url_for_security('oauth_verify_start', name=provider) }}{{ prop_next() }}\">\n+          {% if csrf_token is defined %}\n+            <input id=\"{{ provider }}_csrf_token\" name=\"{{ provider }}_csrf_token\" type=\"hidden\" value=\"{{ csrf_token() }}\">\n+          {% endif %}\n+        </form>\n+      </div>\n+    {% endfor %}\n+  {% endif %}\n   {% include \"security/_menu.html\" %}\n {% endblock content %}"
+      },
+      {
+        "sha": "d5e2448800395d26051e87df2ed4f573b63f7088",
+        "filename": "flask_security/templates/security/verify.html",
+        "status": "modified",
+        "additions": 14,
+        "deletions": 0,
+        "changes": 14,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Ftemplates%2Fsecurity%2Fverify.html",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Ftemplates%2Fsecurity%2Fverify.html",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/flask_security%2Ftemplates%2Fsecurity%2Fverify.html?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -19,4 +19,18 @@ <h2>{{ _fsdomain(\"Use a Passkey to Reauthenticate\") }}</h2>\n       {{ render_field(wan_verify_form.submit) }}\n     </form>\n   {% endif %}\n+  {% if security.oauthglue %}\n+    <hr class=\"fs-gap\">\n+    <h2>{{ _fsdomain(\"Use Social Login to Reauthenticate\") }}</h2>\n+    {% for provider in security.oauthglue.provider_names %}\n+      <div class=\"fs-gap\">\n+        <form method=\"post\" id=\"{{ provider }}_form\" name=\"{{ provider }}_form\">\n+          <input id=\"{{ provider }}\" name=\"{{ provider }}\" type=\"submit\" value=\"{{ _fsdomain('Continue with %(provider)s', provider=provider) }}\" formaction=\"{{ url_for_security('oauth_verify_start', name=provider) }}{{ prop_next() }}\">\n+          {% if csrf_token is defined %}\n+            <input id=\"{{ provider }}_csrf_token\" name=\"{{ provider }}_csrf_token\" type=\"hidden\" value=\"{{ csrf_token() }}\">\n+          {% endif %}\n+        </form>\n+      </div>\n+    {% endfor %}\n+  {% endif %}\n {% endblock content %}"
+      },
+      {
+        "sha": "825ecfa3bf5bb9796974e38bccc3f96acfe3379f",
+        "filename": "flask_security/unified_signin.py",
+        "status": "modified",
+        "additions": 7,
+        "deletions": 1,
+        "changes": 8,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Funified_signin.py",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Funified_signin.py",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/flask_security%2Funified_signin.py?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -664,6 +664,12 @@ def us_verify() -> ResponseValue:\n             \"available_methods\": cv(\"US_ENABLED_METHODS\"),\n             \"code_methods\": code_methods,\n             \"has_webauthn_verify_credential\": webauthn_available,\n+            \"oauth_enabled\": cv(\"OAUTH_ENABLE\"),\n+            \"oauth_providers\": (\n+                _security.oauthglue.provider_names  # type: ignore[union-attr]\n+                if cv(\"OAUTH_ENABLE\")\n+                else []\n+            ),\n         }\n         return base_render_json(form, additional=payload)\n \n@@ -958,7 +964,7 @@ def us_setup() -> ResponseValue:\n def us_setup_validate(token: str) -> ResponseValue:\n     \"\"\"\n     Validate new setup.\n-    The token is the state variable which is signed and timed\n+    The token is the state variable that is signed and timed\n     and contains all the state that once confirmed will be stored in the user record.\n     \"\"\"\n     form = t.cast("
+      },
+      {
+        "sha": "68917d9cf78b3657921eaeb998bc0f8440c7a290",
+        "filename": "flask_security/views.py",
+        "status": "modified",
+        "additions": 4,
+        "deletions": 0,
+        "changes": 4,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Fviews.py",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/flask_security%2Fviews.py",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/flask_security%2Fviews.py?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -261,6 +261,10 @@ def verify():\n     if _security._want_json(request):\n         payload = {\n             \"has_webauthn_verify_credential\": webauthn_available,\n+            \"oauth_enabled\": cv(\"OAUTH_ENABLE\"),\n+            \"oauth_providers\": (\n+                _security.oauthglue.provider_names if cv(\"OAUTH_ENABLE\") else []\n+            ),\n         }\n         return base_render_json(form, additional=payload)\n "
+      },
+      {
+        "sha": "f106fe62a9352330f4e35b37d83d91d2054f18f2",
+        "filename": "tests/test_misc.py",
+        "status": "modified",
+        "additions": 2,
+        "deletions": 0,
+        "changes": 2,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/tests%2Ftest_misc.py",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/tests%2Ftest_misc.py",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/tests%2Ftest_misc.py?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -1177,6 +1177,8 @@ def test_verify_fresh_json(app, client, get_message):\n     response = client.get(\"/fresh\", headers=headers)\n     assert response.status_code == 401\n     assert response.json[\"response\"][\"reauth_required\"]\n+    assert not response.json[\"response\"][\"oauth_enabled\"]\n+    assert not response.json[\"response\"][\"oauth_providers\"]\n \n     response = client.get(\"/verify\")\n     assert b\"Reauthenticate\" in response.data"
+      },
+      {
+        "sha": "06ef549169543db3a2a59977e310b2cbd434a860",
+        "filename": "tests/test_oauthglue.py",
+        "status": "modified",
+        "additions": 146,
+        "deletions": 2,
+        "changes": 148,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/tests%2Ftest_oauthglue.py",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/tests%2Ftest_oauthglue.py",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/tests%2Ftest_oauthglue.py?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -4,7 +4,7 @@\n \n OAuth glue tests - oauthglue is a very thin shim between FS and authlib\n \n-:copyright: (c) 2022-2024 by J. Christopher Wagner (jwag).\n+:copyright: (c) 2022-2026 by J. Christopher Wagner (jwag).\n :license: MIT, see LICENSE for more details.\n \"\"\"\n \n@@ -18,14 +18,17 @@\n from flask_security import FsOAuthProvider\n from tests.test_utils import (\n     authenticate,\n+    capture_flashes,\n     check_location,\n     get_csrf_token,\n     get_form_action,\n     get_form_input_value,\n     get_session,\n     init_app_with_options,\n     is_authenticated,\n+    json_authenticate,\n     logout,\n+    reset_fresh,\n     setup_tf_sms,\n )\n \n@@ -337,7 +340,8 @@ def fetch_identity_cb(self, oauth, token):\n             profile = resp.json()\n             return \"email\", profile[\"email\"]\n \n-        def oauth_response_failure(self, e):\n+        def oauth_response_failure(self, error_view, e):\n+            assert isinstance(e, MismatchingStateError)\n             return redirect(\"/uh-oh\")\n \n     init_app_with_options(\n@@ -367,3 +371,143 @@ def oauth_response_failure(self, e):\n     assert response.status_code in [302, 303]\n     assert check_location(app, response.location, \"/post_login\")\n     assert is_authenticated(client, get_message)\n+\n+\n+@pytest.mark.settings(oauth_enable=True, post_verify_view=\"/post_verify\")\n+def test_verify(app, sqlalchemy_datastore, get_message):\n+    init_app_with_options(\n+        app, sqlalchemy_datastore, **{\"security_args\": {\"oauth\": MockOAuth()}}\n+    )\n+    client = app.test_client()\n+\n+    # just authenticate using github\n+    client.get(\"/login/oauthresponse/github\", follow_redirects=False)\n+    assert is_authenticated(client, get_message)\n+\n+    reset_fresh(client, app.config[\"SECURITY_FRESHNESS\"])\n+    # This will return the /verify form\n+    response = client.get(\"/fresh\", follow_redirects=True)\n+    github_url = get_form_action(response, 1)\n+    assert \"oauth-verify-start\" in github_url\n+    response = client.post(github_url, follow_redirects=False)\n+    assert \"/whatever\" in response.location\n+    session = get_session(response)\n+    assert \"fs_oauth_next\" in session\n+\n+    with capture_flashes() as flashes:\n+        response = client.get(\n+            \"/login/oauth-verify-response/github\", follow_redirects=True\n+        )\n+    assert flashes[0][\"category\"] == \"info\"\n+    assert flashes[0][\"message\"].encode(\"utf-8\") == get_message(\n+        \"REAUTHENTICATION_SUCCESSFUL\"\n+    )\n+    assert b\"Fresh Only\" in response.data\n+    session = get_session(response)\n+    assert \"fs_oauth_next\" not in session\n+\n+\n+@pytest.mark.settings(oauth_enable=True)\n+def test_verify_unknown_user(app, sqlalchemy_datastore, get_message):\n+    init_app_with_options(\n+        app, sqlalchemy_datastore, **{\"security_args\": {\"oauth\": MockOAuth()}}\n+    )\n+    client = app.test_client()\n+    authenticate(client)\n+    oauth_app = app.security.oauthglue.oauth_app\n+    oauth_app.github.set_identity(\"jwag@lp.com\")  # this will cause response to fail\n+\n+    reset_fresh(client, app.config[\"SECURITY_FRESHNESS\"])\n+    response = client.get(\"/fresh\", follow_redirects=True)\n+    github_url = get_form_action(response, 1)\n+    response = client.post(github_url, follow_redirects=False)\n+\n+    with capture_flashes() as flashes:\n+        redirect_url = urllib.parse.urlsplit(urllib.parse.unquote(response.location))\n+        local_redirect = urllib.parse.parse_qs(redirect_url.query)[\"redirect_uri\"][0]\n+        response = client.get(local_redirect, follow_redirects=True)\n+    assert flashes[0][\"category\"] == \"error\"\n+    assert flashes[0][\"message\"].encode(\"utf-8\") == get_message(\n+        \"IDENTITY_NOT_REGISTERED\", id=\"jwag@lp.com\"\n+    )\n+    assert b\"Reauthenticate\" in response.data\n+    session = get_session(response)\n+    assert \"fs_oauth_next\" not in session\n+\n+\n+@pytest.mark.settings(\n+    oauth_enable=True,\n+    oauth_builtin_providers=[\"github\"],\n+    post_oauth_verify_view=\"/post_oauth_verify\",\n+    redirect_host=\"myui.com:8090\",\n+    redirect_behavior=\"spa\",\n+)\n+def test_verify_spa(app, sqlalchemy_datastore, get_message):\n+    headers = {\"Accept\": \"application/json\", \"Content-Type\": \"application/json\"}\n+    init_app_with_options(\n+        app, sqlalchemy_datastore, **{\"security_args\": {\"oauth\": MockOAuth()}}\n+    )\n+    client = app.test_client()\n+    json_authenticate(client)\n+\n+    reset_fresh(client, app.config[\"SECURITY_FRESHNESS\"])\n+    response = client.get(\"/fresh\", headers=headers)\n+    assert response.json[\"response\"][\"reauth_required\"]\n+    assert response.json[\"response\"][\"oauth_enabled\"]\n+    assert response.json[\"response\"][\"oauth_providers\"] == [\"github\"]\n+\n+    response = client.post(\"/login/oauth-verify-start/github\", follow_redirects=False)\n+    assert \"/whatever\" in response.location\n+\n+    # this is what github would call\n+    response = client.get(\"/login/oauth-verify-response/github\", follow_redirects=False)\n+    assert (\n+        response.location == \"//myui.com:8090/post_oauth_verify?\"\n+        \"email=matt%40lp.com&identity=matt%40lp.com\"\n+    )\n+\n+\n+@pytest.mark.settings(\n+    oauth_enable=True, redirect_behavior=\"spa\", verify_error_view=\"/verify-error\"\n+)\n+def test_verify_unknown_user_spa(app, sqlalchemy_datastore, get_message):\n+    init_app_with_options(\n+        app, sqlalchemy_datastore, **{\"security_args\": {\"oauth\": MockOAuth()}}\n+    )\n+    client = app.test_client()\n+    json_authenticate(client)\n+\n+    reset_fresh(client, app.config[\"SECURITY_FRESHNESS\"])\n+    oauth_app = app.security.oauthglue.oauth_app\n+    oauth_app.github.set_identity(\"jwag@lp.com\")\n+\n+    # what github would have called\n+    response = client.get(\"/login/oauth-verify-response/github\")\n+    assert \"/verify-error\" in response.location\n+    assert \"not+registered\" in response.location\n+\n+\n+@pytest.mark.settings(\n+    oauth_enable=True, redirect_behavior=\"spa\", verify_error_view=\"/verify-error\"\n+)\n+def test_verify_spa_exc(app, sqlalchemy_datastore, get_message):\n+    init_app_with_options(\n+        app, sqlalchemy_datastore, **{\"security_args\": {\"oauth\": MockOAuth()}}\n+    )\n+    client = app.test_client()\n+    json_authenticate(client)\n+    # try fake oauth exception\n+    from authlib.integrations.base_client.errors import MismatchingStateError\n+\n+    oauth_app = app.security.oauthglue.oauth_app\n+    oauth_app.github.set_exception(MismatchingStateError)\n+    response = client.get(\"/login/oauth-verify-response/github\", follow_redirects=False)\n+    split = urlsplit(response.location)\n+    assert \"/verify-error\" == split.path\n+    qparams = dict(parse_qsl(split.query))\n+    msg = get_message(\n+        \"OAUTH_HANDSHAKE_ERROR\",\n+        exerror=\"mismatching_state\",\n+        exdesc=\"CSRF Warning! State not equal in request and response.\",\n+    )\n+    assert qparams[\"error\"] == msg.decode()"
+      },
+      {
+        "sha": "8e4e825ad38c7dc1ab88707f22bc28a47a5cd485",
+        "filename": "tests/test_unified_signin.py",
+        "status": "modified",
+        "additions": 2,
+        "deletions": 0,
+        "changes": 2,
+        "blob_url": "https://github.com/pallets-eco/flask-security/blob/51a02457447387ca213f7b6c5fe90f158ebd3c6e/tests%2Ftest_unified_signin.py",
+        "raw_url": "https://github.com/pallets-eco/flask-security/raw/51a02457447387ca213f7b6c5fe90f158ebd3c6e/tests%2Ftest_unified_signin.py",
+        "contents_url": "https://api.github.com/repos/pallets-eco/flask-security/contents/tests%2Ftest_unified_signin.py?ref=51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "patch": "@@ -1067,6 +1067,8 @@ def test_verify_json(app, client, get_message):\n     assert set(response.json[\"response\"][\"code_methods\"]) == {\n         \"email\",\n     }\n+    assert not response.json[\"response\"][\"oauth_enabled\"]\n+    assert not response.json[\"response\"][\"oauth_providers\"]\n \n     response = client.post(\n         \"us-verify/send-code\","
+      }
+    ]
+  },
+  "selected_file_last_touch": [
+    {
+      "sha": "51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+      "node_id": "C_kwDOA17yBtoAKDUxYTAyNDU3NDQ3Mzg3Y2EyMTNmN2I2YzVmZTkwZjE1OGViZDNjNmU",
+      "commit": {
+        "author": {
+          "name": "Chris Wagner",
+          "email": "jwag.wagner@gmail.com",
+          "date": "2026-03-05T02:31:44Z"
+        },
+        "committer": {
+          "name": "Chris Wagner",
+          "email": "jwag.wagner@gmail.com",
+          "date": "2026-03-05T02:31:44Z"
+        },
+        "message": "Add support for using Social Login (OAuth) for reauthentication (verify).\n\nAlso - change documentation to refer to Social Login (OAuth) which is more user-facing friendly\nChange the button labels to 'Continue with github' - will do the login button in another PR.\nImproved JSON payload for reauthentication responses, /us-verify, and /verify by adding whether OAuth feature is enabled and which\nproviders are configured.\n\nclose #1165",
+        "tree": {
+          "sha": "4208664b9a0c3c6874d48de881a7de2032e45907",
+          "url": "https://api.github.com/repos/pallets-eco/flask-security/git/trees/4208664b9a0c3c6874d48de881a7de2032e45907"
+        },
+        "url": "https://api.github.com/repos/pallets-eco/flask-security/git/commits/51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/pallets-eco/flask-security/commits/51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+      "html_url": "https://github.com/pallets-eco/flask-security/commit/51a02457447387ca213f7b6c5fe90f158ebd3c6e",
+      "comments_url": "https://api.github.com/repos/pallets-eco/flask-security/commits/51a02457447387ca213f7b6c5fe90f158ebd3c6e/comments",
+      "author": {
+        "login": "jwag956",
+        "id": 1002831,
+        "node_id": "MDQ6VXNlcjEwMDI4MzE=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/1002831?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/jwag956",
+        "html_url": "https://github.com/jwag956",
+        "followers_url": "https://api.github.com/users/jwag956/followers",
+        "following_url": "https://api.github.com/users/jwag956/following{/other_user}",
+        "gists_url": "https://api.github.com/users/jwag956/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/jwag956/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/jwag956/subscriptions",
+        "organizations_url": "https://api.github.com/users/jwag956/orgs",
+        "repos_url": "https://api.github.com/users/jwag956/repos",
+        "events_url": "https://api.github.com/users/jwag956/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/jwag956/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "jwag956",
+        "id": 1002831,
+        "node_id": "MDQ6VXNlcjEwMDI4MzE=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/1002831?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/jwag956",
+        "html_url": "https://github.com/jwag956",
+        "followers_url": "https://api.github.com/users/jwag956/followers",
+        "following_url": "https://api.github.com/users/jwag956/following{/other_user}",
+        "gists_url": "https://api.github.com/users/jwag956/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/jwag956/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/jwag956/subscriptions",
+        "organizations_url": "https://api.github.com/users/jwag956/orgs",
+        "repos_url": "https://api.github.com/users/jwag956/repos",
+        "events_url": "https://api.github.com/users/jwag956/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/jwag956/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+          "url": "https://api.github.com/repos/pallets-eco/flask-security/commits/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19",
+          "html_url": "https://github.com/pallets-eco/flask-security/commit/0c152879e2f877d9d00d4dfb88ab3dd73c68ab19"
+        }
+      ]
+    }
+  ]
+}

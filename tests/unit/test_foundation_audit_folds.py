@@ -1,20 +1,8 @@
-# See specs/2026-05-19-analyze-foundation.md — foundation-wide crazy-audit folds.
-"""Foundation-wide crazy-audit fold tests.
+"""Check shared analysis contracts across models and policy helpers.
 
-Pins each fold from the 4-lens foundation-wide audit so a future
-refactor that loosens the guarantee fires loud:
-
-- I-1: `outrider.policy` does NOT re-export `dimensions` or `canonical`.
-- I-3: `SkipReason.stage()` returns "parser" or "analyze" correctly.
-- I-7: `verify_lockstep` is public (no underscore prefix).
-- DevEx F1: `ScopeUnit.to_span()` returns a Span with matching bytes.
-- DevEx F3: typed hash wrappers (proposal/response/round/candidate)
-  produce stable digests + correct byte-level encoding.
-- DI F1: schema-level path validators reject non-canonical paths.
-- DI F2: `ReviewFinding._enforce_dimension_lockstep` rejects drift.
-- DI F4 (cleanup): canonicalize_for_hash rejects BaseModel values.
-- Adv M1: `policy_version` field requires bare semver.
-"""
+Cover public exports, skip stages, scope conversion, canonical hashes, paths,
+dimension agreement, model rejection by canonical encoding, and policy versions.
+See specs/2026-05-19-analyze-foundation.md."""
 
 from __future__ import annotations
 

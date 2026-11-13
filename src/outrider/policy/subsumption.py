@@ -1,24 +1,8 @@
-# See DECISIONS.md#055 + specs/2026-06-21-cross-type-subsumption.md.
-"""`SUBSUMES` cross-type finding relation + module-load well-formedness guard.
+"""Remove a broader finding when a more specific one covers the same range.
 
-Sibling to `policy/dimensions.py` and `policy/severity.py`: a finding-TYPE
-relation (a fact about the taxonomy), so it lives with the other type-keyed
-canonical tables. The analyze merge consumes it as a lookup — never an inline
-rule — the same way it consumes severity/dimension.
-
-`SUBSUMES` is **sparse**: it maps a more-specific *subsumer* finding_type to
-the broader *subsumed* finding_types it absorbs on the same line span. Seeded
-with one edge: `weak_password_hash ⊐ weak_crypto` — a password hash IS a
-weak-crypto use, more specifically classified, so when both land on the same
-`md5` line the contextual CRITICAL should win over the structural HIGH.
-
-Unlike `SEVERITY_POLICY`, this relation is NOT version-pinned for replay: it
-decides which finding is ADMITTED at analyze time, not how a stored finding's
-severity is reconstructed at replay (the survivor's tier/severity/hash are
-self-describing). It DOES change admitted-finding semantics, so `SUBSUMES_DIGEST`
-is folded into the analyze cache key (`cache/key.py`) so a relation edit
-auto-invalidates cached rows. The map is append-only by the same #021-style
-review discipline that governs `FINDING_TYPE_TO_DIMENSION`, asserted at load.
+The declared rules determine which types can replace others; removal must not
+lower severity. These rules participate in the analysis-cache identity.
+See DECISIONS.md#021, #055.
 """
 
 from __future__ import annotations

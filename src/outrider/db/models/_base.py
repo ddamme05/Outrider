@@ -1,11 +1,8 @@
-"""Declarative base + the two PostgreSQL ENUM types declared at MetaData scope.
+"""Share the SQLAlchemy model base and database enum definitions.
 
-Living separately from `__init__.py` so model files can `from ._base import Base`
-without triggering a circular import through the package init's re-exports.
-
-The two PG ENUMs are intentionally distinct database objects per docs/schema.md
-"Two distinct PG ENUM types" — sharing one would block adding a value to one
-status column without affecting the other and would cross-pollute static checking.
+Review and anomaly statuses use separate database enum types even where their
+values overlap. Keeping the shared declarations here avoids model-import
+cycles.
 """
 
 from sqlalchemy.dialects.postgresql import ENUM

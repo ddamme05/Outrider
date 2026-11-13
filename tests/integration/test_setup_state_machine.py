@@ -1,10 +1,7 @@
-"""Integration tests for `api/setup/state_machine` against a real Postgres (#070).
+"""Check onboarding state transitions and recovery against PostgreSQL.
 
-Covers what unit tests can't: the CAS transitions, the concurrent-init reject, the atomic
-delete-on-consume nonce + replay reject, the single-active-row collision on activate, orphan/reset,
-and lazy + startup recovery (stale CONVERTING, expired AWAITING_CALLBACK). The state machine is the
-onboarding spine, so its DB-level concurrency + recovery behavior is the load-bearing surface.
-"""
+Cover concurrent initialization, one-time nonces, activation collisions, resets,
+and recovery of stale or expired setup states (DECISIONS.md#070)."""
 
 from __future__ import annotations
 

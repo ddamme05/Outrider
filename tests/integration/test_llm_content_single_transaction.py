@@ -1,19 +1,7 @@
-"""LLMCallEvent + LLM_CALL_CONTENT single-transaction insert constraint.
+"""Check that an LLM audit event and its content are inserted atomically.
 
-Per ``DECISIONS.md#016``: the LLMCallEvent audit row insert and the
-LLM_CALL_CONTENT row insert happen in the same DB transaction or
-neither happens. The replay tool's mode distinction (full /
-metadata-only / hybrid-refused) depends on this — a present-audit/
-missing-content pair would be ambiguous between "purged per retention"
-(correct) and "insert failed" (a third state the dashboard cannot
-distinguish from the first).
-
-The constraint is enforced at the application layer (the agent's LLM
-call wrapper inserts both rows in one transaction), not by a DB-level
-constraint. This test verifies the transactional behavior the
-application code MUST honor: if the second insert fails, the first
-must not be visible afterward.
-"""
+A failed content insert must roll back the audit row. Otherwise replay cannot
+distinguish an insert failure from content removed by retention (DECISIONS.md#016)."""
 
 import pytest
 from sqlalchemy import text

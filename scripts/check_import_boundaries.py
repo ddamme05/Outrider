@@ -1,37 +1,13 @@
 #!/usr/bin/env python
-"""Trust-boundary import lint — the deterministic CI/pre-commit floor (FUP-005).
+"""Check vendor imports and forbidden shell calls (FUP-005).
 
-Enforces the HARD-STOP vendor-SDK + shell-exec boundaries from
-`docs/trust-boundaries.md` (allowlists mirror the `check-trust-boundaries` skill):
+The rules below list allowed locations. They enforce docs/trust-boundaries.md
+in CI and pre-commit (DECISIONS.md#038); langsmith is forbidden (DECISIONS.md#058).
+Tree-sitter checks include tests with named exceptions. Other vendor checks
+cover application code, and imports inside TYPE_CHECKING still count.
 
-  - `tree_sitter` / `tree_sitter_python` / `tree_sitter_javascript` /
-    `tree_sitter_typescript` — only in `ast_facts/` + `queries/`
-    (+ the two ast_facts test files). AST firewall (§4).
-  - `anthropic` / `openai` — only in `llm/`; `langsmith` — forbidden in all project code
-    (its tracing importer was removed, DECISIONS.md#058; stays transitive). Boundary §8.
-  - `githubkit` — only in `github/` + `api/webhooks/`. GitHub SDK boundary (§5 + §8).
-  - `slack_sdk` — only in `notify/`. Slack notification boundary (vendor-sdks-only-in-wrappers).
-  - no `subprocess` import / `os.system` / `os.popen` anywhere in `src/outrider/`.
-    Input boundary, shell (§5 sub-rule 1).
-
-This is the deterministic floor (DECISIONS.md#038): the in-session skill catches
-Claude-authored edits; this catches commits made OUTSIDE a Claude session (manual
-commits, force-pushes). Imports inside `if TYPE_CHECKING:`
-count the same as runtime imports (the AST firewall is a type-surface boundary).
-
-OUT OF SCOPE (stay with the skill + reviewer — soft, with legitimate exceptions,
-not reliably lint-detectable): coordinate math outside `coordinates/`, path ops,
-vendor wire-format normalization, and vendor-SDK / `subprocess` use in tests.
-
-Test-scan asymmetry is by design: the AST firewall scans `tests/` (tree_sitter has no
-legit test use — fixtures use ast_facts models; the 2 allowlisted test files are the
-only exceptions), but the vendor-SDK rules do NOT. Per the check-trust-boundaries skill,
-direct anthropic/openai/githubkit imports in tests are SURFACE-tier, not hard-stop:
-`tests/unit/test_llm_*.py` legitimately import SDK symbols (wrapper tests + wire-shape
-fixtures), which an import-lint can't distinguish from illicit client construction — the
-reviewer adjudicates. This mirrors the skill's hard-stop/surface split exactly.
-
-Exit 0 if clean; exit 1 + a per-violation report (`file:line  rule — detail`).
+Path handling, coordinate math and SDK use in tests need contextual review.
+Exit 0 means clean; exit 1 reports each file, line and broken rule.
 """
 
 from __future__ import annotations

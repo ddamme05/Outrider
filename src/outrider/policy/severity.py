@@ -1,27 +1,10 @@
-# Severity policy per docs/trust-boundaries.md §2 (severity-set-by-policy)
-"""FindingType + FindingSeverity enums + SEVERITY_POLICY dict.
+"""Assign severity from finding type using the versioned policy.
 
-The LLM identifies a FindingType from a constrained enum; SEVERITY_POLICY
-(a static dict keyed by FindingType) assigns severity. Reviewers can
-override via PerFindingDecision.outcome = SEVERITY_OVERRIDE with a
-required reason. Model output does NOT determine severity anywhere in
-the pipeline — every read of severity goes through SEVERITY_POLICY (or
-the override path), never through model JSON.
+The model does not choose severity. Human overrides are validated separately.
+A rule change requires a new policy version and matching migration/startup
+checks so replay can interpret saved reviews.
 
-Policy versions are stored in the severity_policies table keyed by
-version string per `severity-policy-versioned-for-replay`; replay at
-time T uses the version in effect at T, not the current one. The
-versioned loader lives in `policy/versions.py`. Mutating SEVERITY_POLICY
-in place would invalidate every historical review's replay; mapping
-changes ship as new policy versions seeded by new migrations.
-
-`ACTIVE_POLICY_VERSION` is the write-time source: it identifies which
-row in `severity_policies` the live `SEVERITY_POLICY` mapping
-corresponds to. Whenever `SEVERITY_POLICY` changes, `ACTIVE_POLICY_VERSION`
-bumps in the same commit AND a migration seeds the new row. The startup
-fingerprint check in `api/lifespan.py` compares the live mapping to the
-DB row keyed by this constant at lifespan; mismatches fail loud before
-accepting webhooks.
+See severity-set-by-policy and severity-policy-versioned-for-replay.
 """
 
 import re
@@ -32,13 +15,9 @@ from typing import Final
 
 
 class FindingType(StrEnum):
-    """The constrained enum the LLM classifies findings under.
+    """Categories admitted by the analyzer and used by the severity policy.
 
-    The retry/normalize/anomaly path that turns a model-produced string
-    into a FindingType enum value (or anomalies if no safe match) is the
-    analyze node's responsibility per `finding-type-enum-constrained`.
-    This enum is the type system; the analyze node is what bridges from
-    untrusted model output to it.
+    The analyzer records rejections before applying the severity policy.
     """
 
     SQL_INJECTION = "sql_injection"
@@ -68,6 +47,7 @@ class FindingType(StrEnum):
     SSRF_METADATA = "ssrf_metadata"
     OPEN_REDIRECT = "open_redirect"
     OPEN_REDIRECT_AUTHED = "open_redirect_authed"
+    CORRECTNESS_BUG = "correctness_bug"
 
 
 class FindingSeverity(StrEnum):
@@ -115,6 +95,7 @@ SEVERITY_POLICY: Final[Mapping[FindingType, FindingSeverity]] = MappingProxyType
         FindingType.SSRF_METADATA: FindingSeverity.CRITICAL,
         FindingType.OPEN_REDIRECT: FindingSeverity.MEDIUM,
         FindingType.OPEN_REDIRECT_AUTHED: FindingSeverity.HIGH,
+        FindingType.CORRECTNESS_BUG: FindingSeverity.MEDIUM,
     }
 )
 
@@ -137,7 +118,7 @@ _SEMVER_RE: Final[re.Pattern[str]] = re.compile(BARE_SEMVER_PATTERN, re.ASCII)
 # 1.2.0 adds the contextual security types per DECISIONS.md#053 (seeded by
 # the severity_policies 1.2.0 migration). Additive — 1.1.0 reviews replay
 # untouched per `severity-policy-versioned-for-replay`.
-ACTIVE_POLICY_VERSION: Final[str] = "1.2.0"
+ACTIVE_POLICY_VERSION: Final[str] = "1.3.0"
 if not _SEMVER_RE.fullmatch(ACTIVE_POLICY_VERSION):
     raise RuntimeError(
         f"ACTIVE_POLICY_VERSION must be bare ASCII semver (no v prefix, no "

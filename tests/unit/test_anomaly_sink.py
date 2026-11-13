@@ -1,13 +1,6 @@
-"""Unit tests for the AnomalySink Protocol + the AnomalyPersister
-config-error path.
+"""Check the anomaly sink protocol, rule names, and persister configuration errors.
 
-Durable persister behavior (on_conflict_do_nothing semantics, partial-
-index match) is covered in integration tests against postgres-test;
-this file pins:
-  - Protocol surface (runtime_checkable, single emit method)
-  - AnomalyPersister config-error path (None session_factory raises)
-  - AnomalyRuleName enum value pin
-"""
+Database writes and duplicate suppression are covered by integration tests."""
 
 from __future__ import annotations
 

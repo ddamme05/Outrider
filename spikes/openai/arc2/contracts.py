@@ -1,33 +1,11 @@
-"""The Arc 2 generation + evaluation authorities.
+"""Describe the requests and grading rules for the strict-schema experiment.
 
-Three strict, closed artifacts with a one-way transition between them:
+LockedProbeContract defines the offline plan. DryRunManifest records the built
+requests; after operator review, PaidProbeContract binds their identities and
+reviewed caps for a paid run. Human approval is not inferred from a stored flag.
 
-    LockedProbeContract
-        |  builds (offline, free)
-        v
-    DryRunManifest          <- content-addressed
-        |  operator review
-        v
-    PaidProbeContract
-
-Deliberately NOT one contract with an `unlocked` boolean and nullable `FROZEN_*`
-constants. That earlier shape was circular: the single contract was declared to
-own the per-row caps AND the source dry-run digest, while those values are
-PRODUCED by the reviewed dry run it was supposed to precede. A boolean cannot
-express a one-way transition between two different sets of known facts, and the
-open-state shape is the same defect this arc has had to remove from the row
-evidence, the manifest, and the classifier.
-
-**Identity vs observation.** `EvaluationContract` owns identity only — what the
-grader IS. It holds no counts: a count is a response-derived OBSERVATION, and an
-artifact that asserts its own observations attests to itself. Observed counts are
-derived by the verifier from hash-verified fixture bytes.
-
-**No `reviewed=True` flag.** Human review is the trust anchor and cannot be
-represented as a forgeable field. What IS mechanized is that
-`PaidProbeContract.from_reviewed` copies immutable identity from its verified
-parents rather than accepting it again, so a caller can supply only the reviewed
-cap values.
+EvaluationContract describes the grader, while verifier.py derives observed
+counts from the saved response files. Contracts do not certify their own results.
 """
 
 from __future__ import annotations

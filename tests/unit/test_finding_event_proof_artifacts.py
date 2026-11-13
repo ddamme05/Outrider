@@ -1,11 +1,9 @@
-"""FindingEvent proof + severity + computed-field surfaces.
+"""Check finding-event proof, severity, and field restrictions.
 
-Backs `evidence-tier-schema-enforced` (validator wired at the audit-event
-layer per the spec, not just at ReviewFinding), `severity-set-by-policy`,
-`finding-type-enum-constrained`, and `confidence-is-computed-not-assigned`
-(by absence — confidence is NOT a field on the event; replay re-derives it
-from evidence_tier).
-"""
+Events enforce proof and policy, constrain finding types, and omit confidence
+because it is computed during replay (``evidence-tier-schema-enforced``,
+``severity-set-by-policy``, ``finding-type-enum-constrained``, and
+``confidence-is-computed-not-assigned``)."""
 
 from typing import Any
 from uuid import uuid4

@@ -1,11 +1,6 @@
-"""Tests for `outrider.llm.parsing.strip_outer_json_fence`.
+"""Check removal of exactly one well-formed outer JSON Markdown fence.
 
-Defends the policy boundary: tolerate exactly one well-formed outer
-markdown fence, leave everything else for Pydantic to reject cleanly.
-The helper is the runtime defense behind the "Do NOT wrap the JSON in
-markdown code fences" prompt instructions that Haiku in particular
-sometimes ignores.
-"""
+Other content stays unchanged for schema validation to reject."""
 
 from __future__ import annotations
 

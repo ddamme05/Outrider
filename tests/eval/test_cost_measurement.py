@@ -1,40 +1,11 @@
-"""Grounded, zero-spend cost-per-review measurement (COST_ANALYSIS.md P(-1)).
+"""Exercise review-cost accounting without paid model calls.
 
-This is the repo's first cost-measurement harness. It drives the REAL 7-node graph
-(`run_review`) over representative PR fixtures with a `CostProbe` attached, so every
-LLM call's INPUT tokens are counted from the actually-rendered system+user prompt
-(via the production `_estimate_tokens`) and priced through the production cost path
-(`compute_cost_usd` -> `LLMCallEvent` -> the aggregate SUM). No Anthropic spend.
+Run the real graph over fixtures. Inputs use byte-based estimates of rendered
+prompts; outputs use scripted response sizes. The baseline models no cache
+hits, and separate cases explore caching and model-tier assumptions. These
+are modeled costs, not measured provider bills or production review costs.
 
-What it grounds and what it models:
-  - INPUT tokens: REAL (the graph builds real prompts from the fixture's file content
-    + scope context + system templates). Bounded by `_estimate_tokens` = UTF-8 bytes//3,
-    which the docstring documents as a CONSERVATIVE UPPER bound (FUP-049 tracks a
-    tokenizer-grade estimate), so the input cost is an over-estimate, not a tight figure.
-  - OUTPUT tokens: MODELED. No real completion exists; the measured number uses the
-    fixture's scripted-response size, and the report sweeps output to show sensitivity
-    (output bills at ~5x input, so it moves the number materially).
-  - CACHING: 0 hits BY CHOICE in the baseline runs — the probe defaults to
-    `model_cache=False`, so this measures the uncached cost shape. The analyze
-    prompt DOES drive a cross-file stable cache prefix (since the analyze-v4
-    cache-packing repartition); the cache-modeled proof lives in
-    `test_cache_packing_cross_file_proof` below.
-  - MODEL TIER: `standard_analyze_model` now defaults to Haiku (the eval-gated flip,
-    DECISIONS.md#041), but these 5 representative fixtures are all DEEP-tier, so analyze
-    routes to `analyze_model` (Sonnet) for every file regardless of the flip — this stays
-    the all-Sonnet baseline the COST_ANALYSIS naive figure assumes. The flip's saving lands
-    on STANDARD-tier files (a 3x same-token reduction, Sonnet $3/$15 vs Haiku $1/$5 per
-    MTok); the analyze STANDARD->Haiku lever below projects it on this measured analyze call.
-
-Run it explicitly (it spins an ephemeral DB per fixture, so it is slow):
-
-    docker compose up -d postgres-test
-    set -a && source <(grep -E '^TEST_' .env) && set +a
-    uv run pytest tests/eval/test_cost_measurement.py --is-eval -s
-
-The `-s` shows the printed report; the test also asserts loose sanity bounds so a
-gross cost regression (or a broken cost path) fails CI.
-"""
+Requires postgres-test and --is-eval. Use -s to see the printed reports."""
 
 from __future__ import annotations
 

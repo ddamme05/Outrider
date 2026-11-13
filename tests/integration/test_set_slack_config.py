@@ -1,12 +1,7 @@
-"""set_slack_config + get_slack_config persistence helpers (commits 6.3d / 6.4c).
+"""Check storage and retrieval of Slack configuration for active installations.
 
-After `alembic upgrade head`: set_slack_config persists the five `slack_*` columns on
-an ACTIVE install (returns True, ciphertext round-trips byte-for-byte) and refuses a
-tombstoned or absent install (returns False). get_slack_config reads back the channel +
-ciphertext for an ACTIVE install, returning None when unconfigured, tombstoned (#012), or
-absent. The bot token is stored/returned as opaque ciphertext bytes (DECISIONS.md#051) —
-neither helper sees plaintext.
-"""
+Missing or tombstoned installations are rejected. Bot-token ciphertext must
+round-trip unchanged; neither helper handles plaintext (DECISIONS.md#051 and #012)."""
 
 from __future__ import annotations
 

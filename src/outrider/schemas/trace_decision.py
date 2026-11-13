@@ -1,17 +1,9 @@
-# See specs/2026-05-23-trace-node.md (Q3 / Q4) and DECISIONS.md#017 × #024.
-"""One state-layer trace decision per source finding, mirrored in audit.
+"""Record the outcome of a related-file inspection request.
 
-Per `DECISIONS.md#017` and `DECISIONS.md#024`, the reducer key is
-source_finding_id alone, including unresolved/ambiguous outcomes. Candidate
-import strings use the shared two-form validator; resolved paths and an
-optional target use validate_diff_path. Tuples are unique and sorted to
-match TraceDecisionEvent's canonical bytes.
-
-Resolved means exactly one path and target_file equal to it. Unresolved
-means no paths and no target. Ambiguous means multiple paths and no target.
-V1 resolutions come from GitHub API probes; the filesystem-aware resolver
-is a separate future surface. Proposed strings retain the original admitted
-candidate alongside any from-import correction siblings."""
+One decision per finding is mirrored in audit history. Saved paths are unique
+and sorted, and import syntax is validated before the decision is accepted.
+See DECISIONS.md#017, #024.
+"""
 
 from __future__ import annotations
 
@@ -84,7 +76,7 @@ class TraceDecision(BaseModel):
     @classmethod
     def _enforce_canonical_proposed_import_strings(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         """Per-element `is_valid_trace_import_string` + deterministic sort
-        so the schema layer enforces the same two-form canonical shape
+        so the schema layer enforces the same syntax-dispatched canonical shape
         (`DECISIONS.md#024`, Amended 2026-07-03) that
         `TraceCandidate.import_string` guarantees at the singleton
         boundary. Defense in depth against a direct state-layer

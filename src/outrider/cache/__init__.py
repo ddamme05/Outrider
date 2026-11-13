@@ -1,10 +1,8 @@
-# Per specs/2026-06-11-file-hash-analyze-cache.md — the file-hash analyze cache.
-"""Expose analyze-cache identity, storage, and retention types (cost lever #8).
+"""Expose the file-analysis cache key and database store.
 
-compute_analyze_cache_key owns the versioned recipe, including host identity
-(DECISIONS.md#056). AnalyzeCacheStore supplies scoped live entries and bounded
-writes. The analyze node chooses shadow telemetry or serving through CacheMode;
-shadow does not itself skip the model, while deterministic coverage still can.
+The cache can record a potential hit without skipping analysis, or serve a
+validated result when configured to do so. See DECISIONS.md#056 and
+specs/2026-06-11-file-hash-analyze-cache.md.
 """
 
 from outrider.cache.key import ANALYZE_CACHE_KEY_VERSION, compute_analyze_cache_key

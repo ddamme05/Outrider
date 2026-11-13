@@ -1,40 +1,13 @@
-# Per specs/2026-06-11-file-hash-analyze-cache.md — the cache store.
-"""DB-backed store for the file-hash analyze cache.
+"""Read and save cached file-analysis results within a tenant's scope.
 
-Three operations, all async (I/O path):
+resolve_scope identifies the installation, repository and test partition.
+lookup ignores expired entries and can exclude the current review's own writes.
+write keeps a valid first result
+and can replace an expired one. CacheStoreError lets analysis fall back to
+normal review when the database operation fails.
 
-- `resolve_scope(review_id)` — the canonical tenant identity
-  `(installation_id, repo_id, is_eval, retention_expires_at)` from the
-  `reviews` row. The key's scope components come from HERE, never from
-  `PRContext`'s mutable `owner`/`repo` strings.
-- `lookup(cache_key, *, is_eval)` — entry or None, scoped to the
-  caller's `is_eval` partition (READ isolation, `DECISIONS.md#046`: the
-  key folds installation/repo but NOT is_eval, so an eval review must
-  never read a production row). An expired row
-  (`retention_expires_at <= now()` on the DATABASE clock — the same
-  clock the retention sweep deletes with, so the lookup-time and
-  sweep-time layers of the no-resurrection rule can never disagree
-  under app-host skew) is a MISS by query shape. The optional
-  `exclude_source_review_id` filters out rows the current review wrote
-  itself — a crash/retry re-execution of analyze must not read its own
-  first attempt's writes as hits.
-- `write(...)` — `INSERT ON CONFLICT (cache_key) DO UPDATE ... WHERE`
-  the existing row is expired: concurrent same-key reviews race
-  benignly (first writer wins while the row is LIVE; later writers
-  no-op), but an expired-but-unswept row is refreshed in place — a
-  plain DO NOTHING would brick the key until the sweep physically
-  deletes the stale row. `retention_expires_at = min(now + CACHE_TTL,
-  source review retention)` so a cache row never outlives its source.
-
-DB failures raise `CacheStoreError` (typed, per `docs/conventions.md`),
-NOT raw SQLAlchemy errors: the analyze node contains that one type to
-keep the shadow cache non-fatal without blind `except Exception`.
-
-The store is injected at `build_graph(...)` and closed over
-(`nodes-receive-deps-via-closure`); `None` in its place disables the
-cache entirely — the eval driver's default for scenarios that don't
-exercise it. Eval reviews that DO wire a store use the cache scoped to
-is_eval rows (the `lookup` predicate, `DECISIONS.md#046`), not a bypass.
+Services are injected rather than saved in state (nodes-receive-deps-via-closure).
+See DECISIONS.md#046 and specs/2026-06-11-file-hash-analyze-cache.md.
 """
 
 from __future__ import annotations

@@ -120,6 +120,11 @@ export function FindingCard({
           <span className={`dim-w-${dimension}`}>{dimensionLabel(dimension)}</span>
         </span>
         <span className="f-loc mono">{findingLocation(finding)}</span>
+        {finding.source_side === "base" ? (
+          <span className="ft-tag" title="Evidence is from the removed file; it is absent from HEAD.">
+            Removed BASE
+          </span>
+        ) : null}
       </div>
 
       <FindingBody finding={finding} evidenceTier={evidenceTier} />
@@ -171,7 +176,7 @@ function FindingBody({ finding, evidenceTier }: { finding: FindingView; evidence
         <CodeBlock code={finding.evidence} filePath={finding.file_path} />
       ) : null}
 
-      {!finding.content_redacted && finding.suggested_fix ? (
+      {!finding.content_redacted && finding.source_side !== "base" && finding.suggested_fix ? (
         <div className="f-fix">
           <b>Suggested fix:</b> {finding.suggested_fix}
         </div>

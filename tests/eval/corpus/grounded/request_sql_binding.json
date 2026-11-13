@@ -1,0 +1,25 @@
+{
+  "installation_id": 9000,
+  "owner": "examples",
+  "repo": "account-service",
+  "pr_number": 2,
+  "base_sha": "0000000000000000000000000000000000000000",
+  "head_sha": "1111111111111111111111111111111111111111",
+  "pr_title": "Account lookup",
+  "pr_body": "Add an account-name lookup endpoint backed by SQLite.",
+  "author": "developer",
+  "total_additions": 15,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "app/lookup.py",
+      "status": "added",
+      "additions": 15,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,15 @@\n+def handle_request(request):\n+    \"\"\"Return account ids matching the name in the request.\"\"\"\n+    import sqlite3\n+\n+    connection = sqlite3.connect(\":memory:\")\n+    try:\n+        connection.execute(\"CREATE TABLE accounts (id INTEGER, name TEXT)\")\n+        connection.executemany(\n+            \"INSERT INTO accounts VALUES (?, ?)\", ((1, \"alice\"), (2, \"bob\"))\n+        )\n+        name = request[\"name\"]\n+        query = \"SELECT id FROM accounts WHERE name = ?\"\n+        return [row[0] for row in connection.execute(query, (name,))]\n+    finally:\n+        connection.close()\n",
+      "content_base": null,
+      "content_head": "def handle_request(request):\n    \"\"\"Return account ids matching the name in the request.\"\"\"\n    import sqlite3\n\n    connection = sqlite3.connect(\":memory:\")\n    try:\n        connection.execute(\"CREATE TABLE accounts (id INTEGER, name TEXT)\")\n        connection.executemany(\n            \"INSERT INTO accounts VALUES (?, ?)\", ((1, \"alice\"), (2, \"bob\"))\n        )\n        name = request[\"name\"]\n        query = \"SELECT id FROM accounts WHERE name = ?\"\n        return [row[0] for row in connection.execute(query, (name,))]\n    finally:\n        connection.close()\n"
+    }
+  ],
+  "llm_responses": {}
+}

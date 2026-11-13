@@ -1,37 +1,16 @@
 #!/usr/bin/env python3
-"""Interactive end-to-end smoke runner — watch a review flow through the graph.
+"""Run the integration smoke scenario and print its review trace.
 
-The narrating sibling of `tests/integration/test_e2e_smoke.py`. That pytest is
-the authoritative CI gate; this script RUNS the same scenario and prints what
-happened so you can eyeball the whole pipeline end to end:
+The graph, database writes and replay are real. The model and GitHub are local
+substitutes, so this makes no external API calls. The script shares fixtures and
+checks with tests/integration/test_e2e_smoke.py; that test is the maintained CI
+check, while this is an interactive developer tool.
 
-    real compiled graph  ->  real AuditPersister/ReviewStatusPersister/AnomalyPersister
-    ->  real Postgres  ->  publish  ->  replay-equivalence.
-
-It reuses the test's fakes + scenario verbatim (single source of truth — no second
-less-governed scenario to drift), so what you watch here is exactly what CI gates.
-The only fakes are the two network boundaries: a scripted LLM (no Anthropic call)
-and a fake GitHub (stub fetch + recording publisher).
-
-This is a DEVELOPER smoke / demo harness, not a stable operator runbook: it
-imports private helpers from the test module, so its surface tracks the test, not
-a public contract. For the authoritative gate, run the pytest.
-
-Crucially, the exit verdict is NOT just "replay passed": the script re-runs the
-SAME hard checks the pytest asserts (publish posted inline, review completed,
-PublishEvent landed, finding emitted, expected phase coverage, FULL-mode replay)
-and FAILS (exit 1) if any of them fail — so a broken pipeline cannot print
-green. Each check prints PASS/FAIL individually.
-
-Run it (needs the postgres-test container up, like any integration test):
-
-    docker compose up -d postgres-test
-    set -a && source .env && set +a            # provides TEST_DATABASE_URL
+Start postgres-test, configure TEST_DATABASE_URL, then run:
     uv run python scripts/smoke_e2e.py
 
-It creates a throwaway DB on the test container, migrates it, runs the review,
-prints the trace + audit stream + per-check verdicts, then drops the DB. Exit
-code 0 = every check passed, 1 = something broke (or setup failed).
+It creates and migrates a temporary database, checks publication and replay,
+prints the results, and drops the database. Exit 0 requires every check to pass.
 """
 
 from __future__ import annotations

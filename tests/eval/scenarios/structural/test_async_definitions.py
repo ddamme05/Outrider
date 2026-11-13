@@ -1,18 +1,7 @@
-"""Structural eval scenario: async def + async with parse cleanly.
+"""Check that async definitions and async-with blocks produce valid source scopes.
 
-Per spec §11.2: `async def` and `async with` parse into the canonical
-`ScopeUnit` shape (`kind="function"` for `async def`; line spans cover
-the async syntax).
-
-The canonical `ScopeUnit` does NOT distinguish async at the structural
-layer (`kind: Literal["function", "method", "class"]` per spec §5.4
-line 480) — async-ness is semantic, not structural. This test asserts
-existing fields handle async syntax without breaking; it does NOT
-assert any async-specific field.
-
-V1: live (flipped on the ast_facts/ V1 spec landing). Calls `parse_python`
-directly and gates current ast_facts behavior for async definitions.
-"""
+Call the parser directly without a model. Async functions use the existing
+function scope type; no async-specific field is expected."""
 
 from unittest.mock import MagicMock
 

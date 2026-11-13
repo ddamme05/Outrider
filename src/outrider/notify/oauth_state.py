@@ -18,6 +18,8 @@ import time
 from dataclasses import dataclass
 from hashlib import sha256
 
+from outrider.policy.secret_placeholders import SECRET_PLACEHOLDERS as _PLACEHOLDER_SECRETS
+
 __all__ = [
     "STATE_SECRET_ENV",
     "SlackInstallState",
@@ -53,22 +55,6 @@ class SlackInstallState:
     exp: int
 
 
-# Known placeholders (mirrors github/config.py / dashboard/config.py /
-# notify/config.py — keep in sync). The state secret is the CSRF unforgeability
-# root, so a verbatim .env.example / weak default is rejected, same discipline as
-# the auth secrets (unlike the lower-stakes truncation-marker secret, which only
-# rejects empty).
-_PLACEHOLDER_SECRETS: frozenset[str] = frozenset(
-    {
-        "replace-me",
-        "replace-me-with-a-long-random-secret",
-        "change-me",
-        "changeme",
-        "secret",
-        "password",
-        "your-secret-here",
-    }
-)
 # Minimum length (chars) for the state secret. A short, non-placeholder secret
 # (e.g. "hunter2") slips past the placeholder set but still has too little entropy
 # to be a credible HMAC/CSRF root. 32 is the floor a `secrets.token_urlsafe(32)`

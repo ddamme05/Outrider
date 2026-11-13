@@ -1,17 +1,8 @@
-"""Q3 — webhook signature verification (HMAC-SHA256, time-constant compare).
+"""Check valid and invalid GitHub webhook signatures.
 
-The invariant ``webhook-signature-constant-time-compare`` names
-``hmac.compare_digest`` as the primitive. This demo proves:
-
-1. The primitive works: we compute a signature with ``hmac.new(...).hexdigest()``,
-   prepend ``sha256=``, compare with ``hmac.compare_digest``, positive + negative.
-2. ``githubkit.webhooks.verify`` (documented as time-constant) agrees with the
-   primitive on both good and bad signatures. Using the SDK's wrapper in
-   production and the primitive in a test is fine because they produce the
-   same result; the demo asserts they agree.
-3. A same-length-but-wrong signature still fails — this is the exact case
-   ``hmac.compare_digest`` defends against (``==`` would short-circuit on
-   the first byte).
+Compare the local HMAC-SHA256 result with githubkit's verification helper,
+including a same-length wrong signature. The intended comparison primitive is
+hmac.compare_digest (webhook-signature-constant-time-compare).
 """
 
 from __future__ import annotations

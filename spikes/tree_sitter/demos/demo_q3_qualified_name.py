@@ -1,11 +1,7 @@
-"""Q3 — qualified-name derivation.
+"""Build names such as ClassName.method_name from enclosing syntax nodes.
 
-spec §5.4 requires ``ScopeUnit.qualified_name`` in the form
-``"ClassName.method_name"`` (and, by extension, deeper nestings).
-
-Walk from a function_definition upward: skip ``decorated_definition``,
-``block``, and ``module`` nodes; collect the ``name`` field of every
-``function_definition`` or ``class_definition`` encountered; join with '.'.
+Walk outward through functions and classes, skipping wrapper nodes, then join
+their names. This checks the ScopeUnit.qualified_name shape in spec §5.4.
 """
 
 from pathlib import Path

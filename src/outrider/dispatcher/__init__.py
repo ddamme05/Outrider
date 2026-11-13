@@ -1,25 +1,10 @@
-"""Review dispatcher seam between the webhook handler and graph execution.
+"""Queue a review after the webhook has accepted its request.
 
-`ReviewDispatcher.dispatch(state)` is the contract for handing a seed
-`ReviewState` from the webhook receiver to background graph execution.
-V1 ships `BackgroundTasksDispatcher` (FastAPI in-process); V2 will ship
-`CeleryDispatcher` (durable broker). The Protocol is uniform; the
-composition seam differs — per the intake-and-webhook spec, V1 is
-**per-request** (built via FastAPI `Depends` from the request-scoped
-`BackgroundTasks`), V2 will be **lifespan-singleton** (one instance
-constructed at startup).
+Dispatchers receive seed review data and run the workflow within a shared
+concurrency limit. PRContext is built before scheduling, so a task needs no
+open request session.
 
-The package also exports the dispatch-concurrency surface: `DispatchConfig`
-(the `OUTRIDER_MAX_CONCURRENT_REVIEWS` ceiling) and `concurrency_limited`
-(the semaphore wrapper the lifespan composes around `run_graph` to bound
-concurrently-executing reviews — FUP-164 / `DECISIONS.md#045`).
-
-Why state, not review_id, per `DECISIONS.md#020` (Amended 2026-05-08):
-the seed `ReviewState` carries the seed `PRContext` required at graph
-start; the alternative (loading state from durable storage at run_graph
-start) was rejected for adding a storage layer no other component
-needs. `ReviewState` is JSON-serializable so V2's Celery implementation
-round-trips the same payload through the broker without code changes.
+See DECISIONS.md#020, #045 and FUP-164.
 """
 
 from outrider.dispatcher.background_tasks import BackgroundTasksDispatcher

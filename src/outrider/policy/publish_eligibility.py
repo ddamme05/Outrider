@@ -1,21 +1,13 @@
-# V1 publish eligibility gate per specs/2026-05-21-publish-node.md Q3 + the
-# HITL-aware extension per specs/2026-05-26-hitl-node.md Group 6.
-"""Policy gate for whether a finding may proceed to publish routing.
+"""Decide whether a finding is approved for publication.
 
-Routing and eligibility are separate per DECISIONS.md #023. An eligible
-finding may still be dashboard-only; the gate does not record a GitHub receipt.
-The matching HITL decision is found first, then fabricated overrides are
-rejected before the severity gate. CRITICAL/HIGH require a request-backed
-reviewer decision; MEDIUM/LOW/INFO pass the baseline gate.
+Destination routing is separate. High, critical and verification-held findings
+need approval tied to the request; overrides must match that decision.
+Missing or inconsistent approval data cannot grant permission to post.
+The explicit severity table must cover every severity, so a new value cannot
+silently bypass approval.
 
-Override legitimacy also has a schema check in audit/events.py at
-`PublishEligibilityEvent._enforce_override_legitimacy`, per
-`DECISIONS.md#023` Amended 2026-05-27. This gate requires the decision's
-baseline and applied severity to match the finding exactly.
-
-The immutable severity mapping must be total at import. Set-membership
-shortcuts for severity gating are forbidden by the spec's implementation
-discipline. All HITL context is passed explicitly; no module state is read."""
+See DECISIONS.md#023 and specs/2026-05-26-hitl-node.md.
+"""
 
 from __future__ import annotations
 
@@ -31,7 +23,9 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from uuid import UUID
 
+    from outrider.policy import FindingType
     from outrider.schemas.hitl import HITLDecision, HITLRequest, PerFindingDecision
+    from outrider.schemas.native_candidate import CandidateAssessmentRef, NativeCandidateRef
     from outrider.schemas.review_finding import ReviewFinding
 
 
@@ -47,8 +41,8 @@ class _V1SeverityBaseline(StrEnum):
     Internal — the public surface is the `is_eligible_for_v1_publish`
     function which converts this into the public `(PublishEligibility,
     PublishEligibilityReason | None)` tuple. CRITICAL/HIGH severities
-    require a HITL decision to materialize; MEDIUM/LOW/INFO are always
-    eligible per the gate-set partition.
+    require a HITL decision to materialize. MEDIUM/LOW/INFO pass this baseline;
+    a separate verification hold can still require approval.
     """
 
     ELIGIBLE = "eligible"
@@ -138,11 +132,56 @@ HITL_ADMITTING_OUTCOMES: Final[frozenset[PerFindingOutcome]] = frozenset(
 )
 
 
+def verification_hold_finding_ids(
+    findings: Sequence[ReviewFinding],
+    native_candidates: Sequence[NativeCandidateRef],
+    assessments: Sequence[CandidateAssessmentRef],
+    *,
+    policy_version: str,
+) -> tuple[UUID, ...]:
+    """Require human review of disputed claims and removed-source findings.
+
+    Any incomplete, disputed or stale attempt keeps the hold. Another model
+    assertion cannot clear counterevidence; the existing human decision can.
+    """
+    by_candidate: dict[str, list[CandidateAssessmentRef]] = {}
+    for assessment in assessments:
+        by_candidate.setdefault(assessment.candidate_id, []).append(assessment)
+    disputed: set[tuple[str, FindingType | None, FindingSeverity | None]] = set()
+    for candidate in native_candidates:
+        if candidate.initial_disposition != "admitted" or candidate.content_hash is None:
+            continue
+        for assessment in by_candidate.get(candidate.candidate_id, ()):
+            if (
+                candidate.policy_version != policy_version
+                or assessment.policy_version != policy_version
+                or assessment.outcome != "completed"
+                or assessment.status != "supports"
+                or (
+                    assessment.suggested_finding_type is not None
+                    and assessment.suggested_finding_type != candidate.finding_type
+                )
+            ):
+                disputed.add((candidate.content_hash, candidate.finding_type, candidate.severity))
+    return tuple(
+        sorted(
+            finding.finding_id
+            for finding in findings
+            if finding.source_side == "base"
+            or (
+                disputed
+                and (finding.content_hash, finding.finding_type, finding.severity) in disputed
+            )
+        )
+    )
+
+
 def is_eligible_for_v1_publish(
     finding: ReviewFinding,
     *,
     hitl_request: HITLRequest | None,
     hitl_decision: HITLDecision | None,
+    verification_hold: bool = False,
 ) -> tuple[PublishEligibility, PublishEligibilityReason | None]:
     """Return eligibility and a withholding reason before publish routing.
 
@@ -151,14 +190,15 @@ def is_eligible_for_v1_publish(
     match its baseline and applied severity. This blocks forged downgrades
     before the effective severity can pass the baseline gate.
 
-    MEDIUM/LOW/INFO then pass. CRITICAL/HIGH require a HITL request, a matching
-    decision, and membership in the request's gated finding set. APPROVE and
+    MEDIUM/LOW/INFO pass unless verification-held. Held findings and CRITICAL/HIGH
+    require a HITL request, a matching decision, and request membership. APPROVE and
     SEVERITY_OVERRIDE admit; REJECT and SUPPRESS withhold. Missing request or
     decision gets its distinct withholding reason. ELIGIBLE permits routing;
     WITHHELD prevents GitHub materialization."""
     matching_decision = _find_decision_for(
         finding_id=finding.finding_id, hitl_decision=hitl_decision
     )
+    verification_hold = verification_hold or finding.source_side == "base"
 
     # Validate a claimed override before effective severity can admit it.
     # Request membership blocks invented approvals; exact severity matching
@@ -178,12 +218,32 @@ def is_eligible_for_v1_publish(
                 PublishEligibilityReason.UNEXPECTED_OVERRIDE_FIELDS_PRESENT,
             )
 
-    # Defense (2): severity gate.
+    requested_hold = (
+        hitl_request is not None
+        and finding.finding_id in hitl_request.verification_hold_finding_ids
+    )
+    if verification_hold and not requested_hold:
+        return (
+            PublishEligibility.WITHHELD,
+            PublishEligibilityReason.HITL_REQUIRED_NODE_ABSENT,
+        )
+    if (
+        requested_hold
+        and not is_hitl_gated_severity(finding.original_severity or finding.severity)
+        and matching_decision is not None
+        and matching_decision.outcome == PerFindingOutcome.SEVERITY_OVERRIDE
+    ):
+        return (
+            PublishEligibility.WITHHELD,
+            PublishEligibilityReason.UNEXPECTED_OVERRIDE_FIELDS_PRESENT,
+        )
+
+    # Severity and recorded verification holds share the approval gate.
     baseline = _V1_SEVERITY_GATE[finding.severity]
-    if baseline is _V1SeverityBaseline.ELIGIBLE:
+    if baseline is _V1SeverityBaseline.ELIGIBLE and not requested_hold:
         return (PublishEligibility.ELIGIBLE, None)
 
-    # CRITICAL/HIGH path: consult HITL state.
+    # Approval path: consult the saved HITL request and decision.
     if hitl_request is None:
         # Wiring bypass — HITL never ran. Defense-in-depth (the graph
         # routes analyze/trace -> hitl unconditionally per Group 5).

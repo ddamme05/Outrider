@@ -12,14 +12,14 @@
       "unexpected_emission": 0
     },
     {
-      "accepted_miss": 0,
+      "accepted_miss": 2,
       "false_positive": 0,
       "improvement": 0,
       "not_graded": 0,
       "query_match_id": "javascript.command_injection_eval",
       "regression": 0,
       "true_negative": 1,
-      "true_positive": 2,
+      "true_positive": 0,
       "unexpected_emission": 0
     },
     {
@@ -78,14 +78,14 @@
       "residual_tag": null
     },
     {
-      "current_outcome": "emitted",
-      "detail": "emitted as expected",
+      "current_outcome": "denied_at_production",
+      "detail": "denied at 'denied_at_production' as documented (residual: requires_context)",
       "file": "src/routes/captcha.ts",
-      "grade": "true_positive",
+      "grade": "accepted_miss",
       "kind": "expected_finding",
-      "observed_outcome": "emitted",
+      "observed_outcome": "denied_at_production",
       "query_match_id": "javascript.command_injection_eval",
-      "residual_tag": null
+      "residual_tag": "requires_context"
     },
     {
       "current_outcome": null,
@@ -118,25 +118,25 @@
       "residual_tag": "module_presence_file_level"
     },
     {
-      "current_outcome": "emitted",
-      "detail": "emitted as expected",
+      "current_outcome": "denied_at_production",
+      "detail": "denied at 'denied_at_production' as documented (residual: requires_context)",
       "file": "src/routes/userProfile.ts",
-      "grade": "true_positive",
+      "grade": "accepted_miss",
       "kind": "expected_finding",
-      "observed_outcome": "emitted",
+      "observed_outcome": "denied_at_production",
       "query_match_id": "javascript.command_injection_eval",
-      "residual_tag": null
+      "residual_tag": "requires_context"
     }
   ],
   "totals": {
-    "accepted_miss": 2,
+    "accepted_miss": 4,
     "false_positive": 0,
     "improvement": 0,
     "not_graded": 0,
     "query_match_id": "(total)",
     "regression": 0,
     "true_negative": 3,
-    "true_positive": 3,
+    "true_positive": 1,
     "unexpected_emission": 0
   }
 }

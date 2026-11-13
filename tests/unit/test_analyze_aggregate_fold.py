@@ -1,13 +1,8 @@
-# Aggregate-fold pins per specs/2026-07-05-parallel-analyze.md + DECISIONS.md#063.
-"""`fold_worker_outcomes` pins.
+"""Check that folding file outcomes is deterministic and preserves accounting.
 
-The load-bearing properties: completion-order determinism (same
-`round_id` from any ordering), the sequential dedup/collapse/cap chain,
-the post-cap recompute by ORIGIN IDENTITY feeding a real
-`AnalyzeCompletedEvent` whose accounting equation validates, the
-zero-worker empty pass, non-aliasing (cloned findings), and fail-loud
-inputs (mixed passes, duplicate paths).
-"""
+Cover deduplication, finding limits, origin-based counts, copied findings, empty
+passes, and invalid worker inputs. See specs/2026-07-05-parallel-analyze.md
+and DECISIONS.md#063."""
 
 from __future__ import annotations
 
@@ -23,6 +18,7 @@ from outrider.agent.nodes.analyze_aggregate import (
     FoldInputError,
     fold_worker_outcomes,
 )
+from outrider.agent.nodes.analyze_worker_build import worker_outcome_from_parser
 from outrider.ast_facts.models import SkipReason
 from outrider.audit.events import AnalyzeCompletedEvent, compute_finding_content_hash
 from outrider.policy import EvidenceTier
@@ -149,13 +145,14 @@ def test_mixed_passes_and_duplicate_paths_fail_loud() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cross_file_pair_dedup_and_hash_collapse() -> None:
+@pytest.mark.parametrize("variant_tier", [EvidenceTier.JUDGED, EvidenceTier.OBSERVED])
+def test_cross_file_pair_dedup_and_hash_collapse(variant_tier: EvidenceTier) -> None:
     """Same (content_hash, proposal_hash) admitted once; differing
-    proposal_hash with same content_hash collapses first-wins — the
-    sequential _admit_with_dedup + FUP-180 collapse chain."""
+    proposal_hash with the same content_hash keeps stronger admitted evidence,
+    retaining the first original when evidence strength is equal."""
     f1 = _finding("src/a.py")
     twin = _finding("src/a.py")  # same content_hash, same proposal_hash
-    variant = _finding("src/a.py", proposal_hash="b" * 64)  # same hash, new prose
+    variant = _finding("src/a.py", proposal_hash="b" * 64, tier=variant_tier)
     outcome = _parser_outcome(
         "src/a.py",
         n_proposals_seen=3,
@@ -164,6 +161,39 @@ def test_cross_file_pair_dedup_and_hash_collapse() -> None:
     fold = _fold((outcome,))
     assert len(fold.round.findings) == 1  # pair-dedup then hash-collapse
     assert fold.n_findings_emitted == 1
+    assert fold.round.findings[0].finding_id == (
+        variant.finding_id if variant_tier is EvidenceTier.OBSERVED else f1.finding_id
+    )
+
+
+def test_selected_variant_keeps_its_actual_producer_origin() -> None:
+    model_claim = _finding("src/a.py", tier=EvidenceTier.OBSERVED)
+    produced = _finding("src/a.py", tier=EvidenceTier.OBSERVED, proposal_hash="b" * 64)
+    outcome = worker_outcome_from_parser(
+        path="src/a.py",
+        pass_index=0,
+        review_tier=ReviewTier.DEEP,
+        parse_status="clean",
+        admitted_findings=(model_claim, produced),
+        producer_findings=(produced,),
+        trace_candidates=(),
+        subsumed_matches=(),
+        n_proposals_seen=2,
+        n_proposals_rejected=0,
+        n_responses_rejected=0,
+        n_proposals_superseded_by_observed=1,
+        n_trace_candidates_dropped_malformed=0,
+        input_tokens=0,
+        output_tokens=0,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        cost=Decimal("0"),
+        estimated_tokens=0,
+    )
+    fold = _fold((outcome,))
+    assert fold.round.findings[0].finding_id == model_claim.finding_id
+    assert fold.n_findings_observed == 0
+    assert fold.n_proposals_dropped == 0
 
 
 def test_post_cap_recompute_by_origin_identity_feeds_a_valid_event() -> None:

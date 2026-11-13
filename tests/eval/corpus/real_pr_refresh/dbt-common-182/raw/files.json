@@ -1,0 +1,38 @@
+[
+  {
+    "sha": "0fddf2f70e2ef989b2b2dd391e68bf8b2bcd0720",
+    "filename": ".changes/unreleased/Security-20240808-154439.yaml",
+    "status": "added",
+    "additions": 6,
+    "deletions": 0,
+    "changes": 6,
+    "blob_url": "https://github.com/dbt-labs/dbt-common/blob/5656f48554842d13305c395dc7f0147f73ca9ac4/.changes%2Funreleased%2FSecurity-20240808-154439.yaml",
+    "raw_url": "https://github.com/dbt-labs/dbt-common/raw/5656f48554842d13305c395dc7f0147f73ca9ac4/.changes%2Funreleased%2FSecurity-20240808-154439.yaml",
+    "contents_url": "https://api.github.com/repos/dbt-labs/dbt-common/contents/.changes%2Funreleased%2FSecurity-20240808-154439.yaml?ref=5656f48554842d13305c395dc7f0147f73ca9ac4",
+    "patch": "@@ -0,0 +1,6 @@\n+kind: Security\n+body: Fix arbitrary file write during tarfile extraction\n+time: 2024-08-08T15:44:39.601346-05:00\n+custom:\n+    Author: aranke\n+    PR: \"182\""
+  },
+  {
+    "sha": "5ab681fb8ffb5919976d225a5b45885aea619475",
+    "filename": "dbt_common/clients/system.py",
+    "status": "modified",
+    "additions": 27,
+    "deletions": 1,
+    "changes": 28,
+    "blob_url": "https://github.com/dbt-labs/dbt-common/blob/5656f48554842d13305c395dc7f0147f73ca9ac4/dbt_common%2Fclients%2Fsystem.py",
+    "raw_url": "https://github.com/dbt-labs/dbt-common/raw/5656f48554842d13305c395dc7f0147f73ca9ac4/dbt_common%2Fclients%2Fsystem.py",
+    "contents_url": "https://api.github.com/repos/dbt-labs/dbt-common/contents/dbt_common%2Fclients%2Fsystem.py?ref=5656f48554842d13305c395dc7f0147f73ca9ac4",
+    "patch": "@@ -52,6 +52,7 @@ class FindMatchingParams:\n     root_path: str\n     relative_paths_to_search: List[str]\n     file_pattern: str\n+\n     # ignore_spec: Optional[PathSpec] = None\n \n     def __init__(\n@@ -608,11 +609,36 @@ def rename(from_path: str, to_path: str, force: bool = False) -> None:\n     shutil.move(from_path, to_path)\n \n \n+def safe_extract(tarball: tarfile.TarFile, path: str = \".\") -> None:\n+    \"\"\"\n+    Fix for CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')\n+    Solution copied from https://github.com/mindsdb/mindsdb/blob/main/mindsdb/utilities/fs.py\n+    \"\"\"\n+\n+    def _is_within_directory(directory, target):\n+        abs_directory = os.path.abspath(directory)\n+        abs_target = os.path.abspath(target)\n+        prefix = os.path.commonprefix([abs_directory, abs_target])\n+        return prefix == abs_directory\n+\n+    # for py >= 3.12\n+    if hasattr(tarball, \"data_filter\"):\n+        tarball.extractall(path, filter=\"data\")\n+    else:\n+        members = tarball.getmembers()\n+        for member in members:\n+            member_path = os.path.join(path, member.name)\n+            if not _is_within_directory(path, member_path):\n+                raise tarfile.OutsideDestinationError(member, path)\n+\n+        tarball.extractall(path, members=members)\n+\n+\n def untar_package(tar_path: str, dest_dir: str, rename_to: Optional[str] = None) -> None:\n     tar_path = convert_path(tar_path)\n     tar_dir_name = None\n     with tarfile.open(tar_path, \"r:gz\") as tarball:\n-        tarball.extractall(dest_dir)\n+        safe_extract(tarball, dest_dir)\n         tar_dir_name = os.path.commonprefix(tarball.getnames())\n     if rename_to:\n         downloaded_path = os.path.join(dest_dir, tar_dir_name)"
+  },
+  {
+    "sha": "34c6f49cc369b153d89e201ab2979c4dbeb5f495",
+    "filename": "tests/unit/test_system_client.py",
+    "status": "modified",
+    "additions": 15,
+    "deletions": 0,
+    "changes": 15,
+    "blob_url": "https://github.com/dbt-labs/dbt-common/blob/5656f48554842d13305c395dc7f0147f73ca9ac4/tests%2Funit%2Ftest_system_client.py",
+    "raw_url": "https://github.com/dbt-labs/dbt-common/raw/5656f48554842d13305c395dc7f0147f73ca9ac4/tests%2Funit%2Ftest_system_client.py",
+    "contents_url": "https://api.github.com/repos/dbt-labs/dbt-common/contents/tests%2Funit%2Ftest_system_client.py?ref=5656f48554842d13305c395dc7f0147f73ca9ac4",
+    "patch": "@@ -268,3 +268,18 @@ def test_untar_package_empty(self) -> None:\n             with self.assertRaises(tarfile.ReadError) as exc:\n                 dbt_common.clients.system.untar_package(named_file.name, self.tempdest)\n             self.assertEqual(\"empty file\", str(exc.exception))\n+\n+    def test_untar_package_outside_directory(self) -> None:\n+        with NamedTemporaryFile(\n+            prefix=\"my-package.2\", suffix=\".tar.gz\", dir=self.tempdir, delete=False\n+        ) as named_tar_file:\n+            tar_file_full_path = named_tar_file.name\n+            with NamedTemporaryFile(prefix=\"a\", suffix=\".txt\", dir=self.tempdir) as file_a:\n+                file_a.write(b\"some text in the text file\")\n+                relative_file_a = \"/../\" + os.path.basename(file_a.name)\n+                with tarfile.open(fileobj=named_tar_file, mode=\"w:gz\") as tar:\n+                    tar.addfile(tarfile.TarInfo(relative_file_a), open(file_a.name))\n+\n+        assert tarfile.is_tarfile(tar.name)\n+        with self.assertRaises(tarfile.OutsideDestinationError):\n+            dbt_common.clients.system.untar_package(tar_file_full_path, self.tempdest)"
+  }
+]

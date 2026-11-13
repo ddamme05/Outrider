@@ -1,10 +1,7 @@
-"""ContextManifestEntry: nested model frozen + extra=forbid + Literal vocabulary.
+"""Check immutable context-manifest entries and their allowed vocabulary.
 
-Backs `audit-events-frozen-extra-forbid` for nested payload classes.
-Pydantic frozen=True on the outer LLMCallEvent does NOT propagate to nested
-model classes; ContextManifestEntry must carry its own frozen+extra=forbid
-or else entries inside the tuple could be mutated post-construction.
-"""
+Nested models need their own frozen/extra-forbid configuration; freezing the
+outer LLM event alone does not protect them (``audit-events-frozen-extra-forbid``)."""
 
 import pytest
 from pydantic import ValidationError
@@ -41,14 +38,16 @@ def test_context_manifest_entry_extra_forbid() -> None:
         _build_entry(unknown_field="oops")
 
 
-def test_context_manifest_entry_inclusion_reason_admits_three_canonical_values() -> None:
-    """changed_scope / same_file_context / trace_expansion all admit."""
+def test_context_manifest_entry_inclusion_reason_admits_canonical_values() -> None:
+    """Production context reasons and the evaluation reference reason all admit."""
     entry_changed = _build_entry(inclusion_reason="changed_scope")
     entry_same = _build_entry(inclusion_reason="same_file_context")
     entry_trace = _build_entry(inclusion_reason="trace_expansion")
+    entry_reference = _build_entry(inclusion_reason="captured_reference")
     assert entry_changed.inclusion_reason == "changed_scope"
     assert entry_same.inclusion_reason == "same_file_context"
     assert entry_trace.inclusion_reason == "trace_expansion"
+    assert entry_reference.inclusion_reason == "captured_reference"
 
 
 def test_context_manifest_entry_inclusion_reason_rejects_other_values() -> None:

@@ -1,16 +1,8 @@
-"""Q4 — byte/point duality on multi-byte UTF-8.
+"""Check source locations around non-ASCII text.
 
-python-source-analysis.md uses ``source[start_byte:end_byte].decode("utf-8")``
-to extract text from a node. For that to be correct on files with non-ASCII
-identifiers or emoji:
-
-1. start_byte/end_byte must always land on UTF-8 character boundaries.
-2. start_point/end_point (row, column-in-bytes) must stay consistent with
-   start_byte/end_byte — decoding slices taken either way must produce the
-   same text.
-
-Coordinate translation (spec §5.6) uses bytes; if points and bytes ever
-disagree, coordinates.tree_sitter_to_github() has no single correct answer.
+Compare tree-sitter byte offsets with row/byte-column positions and decode the
+selected text. Both must identify the same UTF-8 slices for the coordinate
+translation described in spec §5.6 and python-source-analysis.md.
 """
 
 from pathlib import Path

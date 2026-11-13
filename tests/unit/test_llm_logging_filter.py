@@ -1,12 +1,7 @@
-"""Three-tier recursive content-leak filter (AC#17 + AC#21).
+"""Check recursive content filtering and registration on log handlers.
 
-Tier 0 (type-based, every logger, recursive)
-Tier 1 (key-name, every logger, recursive)
-Tier 2 (key-name, outrider.llm.* only, recursive)
-
-Plus filter installation on handlers (AC#23) — the round-15 fix where
-filters must attach to handlers, not loggers.
-"""
+Filter content objects and sensitive keys across loggers, with additional keys
+blocked under outrider.llm. Handlers must carry the filter too."""
 
 from __future__ import annotations
 

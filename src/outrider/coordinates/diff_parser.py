@@ -1,9 +1,11 @@
-"""diff_line_to_scope + path validators + file-in-patch helper.
+"""Read changed lines from patches and validate repository paths.
 
-Per docs/spec.md §5.6 (diff_line_to_scope), §10.1 (path validation),
-and §4.1.7 (publish routing — the file-in-patch helper backs the
-publish-routes-through-coordinates invariant). The ImportPathResolver
-Protocol implemented here is canonical at src/outrider/ast_facts/base.py.
+The exported helpers locate patch files, check commentable lines and resolve
+import candidates. Path checks reject traversal rather than normalizing it
+into an accepted location. This package owns all coordinate translation
+(coordinates-module-is-sole-translator).
+
+See docs/spec.md §5.5 and docs/trust-boundaries.md §5.
 """
 
 from __future__ import annotations
@@ -35,27 +37,10 @@ if TYPE_CHECKING:
 # downstream consumers.
 _SHELL_METACHARS_RE: Final = re.compile(r"[;&|`$()<>\n\r\x00*?~\[\]{}'\"]")
 
-# Unicode bidi-override and invisible-format characters per CVE-2021-42574
-# ("Trojan Source"). A path containing U+202E (RLO) renders left-to-right
-# in editors and audit logs differently from what the bytes say it is —
-# e.g., `report‮xls.py` displays as `reportyp.slx`. Operators reading
-# audit logs or PR dashboards would see a different filename than the one
-# actually fetched from GitHub.
-#
-# Narrow reject set — only chars that enable the trojan-source disguise
-# AND have no legitimate filename use:
-#   - U+200B Zero Width Space (invisible, no legitimate filename use)
-#   - U+200E, U+200F LTR/RTL Mark (bidi format)
-#   - U+202A-U+202E LRE/RLE/PDF/LRO/RLO (bidi format, CVE-2021-42574 core)
-#   - U+2066-U+2069 LRI/RLI/FSI/PDI (bidi isolate, CVE-2021-42574 core)
-#   - U+FEFF Byte Order Mark / Zero Width No-Break Space (invisible)
-#
-# Deliberately EXCLUDED from reject (legitimate in real scripts):
-#   - U+200C Zero Width Non-Joiner (Persian, Arabic word-joining)
-#   - U+200D Zero Width Joiner (Hindi/Devanagari conjuncts, emoji ZWJ
-#     sequences, ligature control)
-# Including these would block legitimate non-Latin-script filename
-# contributors.
+# Reject bidi controls and invisible format characters that disguise filenames
+# in logs or the dashboard (Trojan Source, CVE-2021-42574).
+# Keep U+200C/U+200D: non-joiners and joiners support Persian/Arabic word joining,
+# Devanagari conjuncts and emoji sequences in legitimate filenames.
 _TROJAN_SOURCE_CHARS_RE: Final = re.compile("[\u200b\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 
 # Reject paths whose FIRST path component is `.git` (case-insensitive).
@@ -266,7 +251,7 @@ def _has_symlink_component(absolute: Path, root: Path) -> bool:
 def is_valid_relative_specifier(value: str) -> str:
     """Validate and NFC-normalize a JS/TS relative import specifier.
 
-    The relative-specifier form of the two-form `TraceCandidate.import_string`
+    The relative-specifier form of the syntax-dispatched `TraceCandidate.import_string`
     contract per `DECISIONS.md#024` (Amended 2026-07-03). SHAPE-ONLY and
     context-free: repo-escape containment is deliberately NOT this validator's
     contract — it requires the importing file's directory, which the schema
@@ -276,7 +261,7 @@ def is_valid_relative_specifier(value: str) -> str:
 
     Raises ValueError on invalid input; returns the NFC-normalized value on
     valid input — same raise/return shape as `is_valid_import_string`, its
-    module-form sibling, so the two-form dispatcher
+    module-form sibling, so the syntax-dispatched dispatcher
     (`is_valid_trace_import_string`) composes them uniformly.
 
     Accepted shape: exactly `.` or `..`, or a POSIX path beginning with `./`
@@ -340,68 +325,54 @@ def is_valid_relative_specifier(value: str) -> str:
 
 
 def is_relative_specifier_form(value: str) -> bool:
-    """THE two-form syntactic discriminator per `DECISIONS.md#024`
-    (Amended 2026-07-03): a leading `.` selects the relative-specifier
-    form; anything else is the module form. Exported so every dispatch
-    site — the `is_valid_trace_import_string` validator and the trace
-    node's probe-path construction — shares one partition rule; a future
-    third form changes it here or nowhere.
+    """Identify JS/TS path syntax separately from Python dotted-relative imports."""
+    return value in (".", "..") or value.startswith(("./", "../"))
+
+
+def is_python_relative_import_form(value: str) -> bool:
+    """Leading dots without JS/TS path syntax select Python-relative validation."""
+    return value.startswith(".") and not is_relative_specifier_form(value)
+
+
+def is_valid_python_relative_import_string(value: str) -> str:
+    """Canonicalize a nonempty dotted module following one or more relative dots.
+
+    Identifier, keyword and Unicode safety rules match absolute Python imports.
+    Repository containment needs the importing file and is checked by callers.
     """
-    return value.startswith(".")
+    if not is_python_relative_import_form(value):
+        raise ValueError("Python relative import requires leading dots and a module name")
+    module = value.lstrip(".")
+    level = len(value) - len(module)
+    return "." * level + is_valid_import_string(module)
 
 
 def is_valid_trace_import_string(value: str) -> str:
-    """Shared two-form validator for `TraceCandidate.import_string`.
+    """Validate absolute/relative Python modules or a JS/TS relative specifier.
 
-    THE single dispatch point for the two-form contract per `DECISIONS.md#024`
-    (Amended 2026-07-03): a leading `.` selects the relative-specifier form
-    (`is_valid_relative_specifier`); anything else is the module form
-    (`is_valid_import_string`). The two validators partition the value
-    space — a dotted Python import string can never begin with `.` (the
-    module form rejects leading dots) and a relative specifier always
-    does — so no value is accepted by both forms and no fallback branch
-    exists.
-
-    The three shape-validation sites — `TraceCandidate.import_string`,
-    `TraceDecision._enforce_canonical_proposed_import_strings`, and
-    `TraceDecisionEvent`'s audit-shadow validator — all dispatch through
-    this helper so the state ↔ audit canonical-bytes lockstep holds for
-    both forms. Raises ValueError on invalid input; returns the
-    NFC-normalized canonical value otherwise.
+    Syntax selects one form without fallback. Candidate, decision and audit
+    validators share this owner so their canonical bytes stay identical.
+    Admission checks the import form against the source language. Path construction
+    checks repository containment; Python-relative paths require a `.py` source anchor.
     """
+    if is_python_relative_import_form(value):
+        return is_valid_python_relative_import_string(value)
     if is_relative_specifier_form(value):
         return is_valid_relative_specifier(value)
     return is_valid_import_string(value)
 
 
-# Pragmatic-six extension fan-out for relative-specifier resolution, in
-# a deterministic pinned order, per `DECISIONS.md#024` (Amended
-# 2026-07-03): four file suffixes on the target stem plus two
-# directory-index names — preceded by the LITERAL joined target when
-# the specifier's final segment already carries a REGISTERED JS/TS
-# extension (`_LITERAL_TARGET_SUFFIXES` below, per the amendment's
-# extension-bearing addendum; 7-path worst case).
-# The order fixes probe/budget sequencing ONLY —
-# no consumer applies Node-style extension priority: two or more real
-# paths resolve as `ambiguous` under the M8 single-target contract
-# (both in trace probes and the adapter's filesystem twin). `.mjs` /
-# `.cjs` are deliberately excluded from the FAN-OUT set only (rare as
-# import targets for extensionless specifiers; widen on eval evidence,
-# not speculation — FUP-212). They DO trigger the literal-target probe
-# when named explicitly, like every registered extension.
+# Resolve relative specifiers through six candidates in pinned order
+# (DECISIONS.md#024), preceded by a literal target for a registered JS/TS suffix.
+# Order controls probe spending, not extension priority: multiple real paths are
+# ambiguous. Extensionless fan-out excludes .mjs/.cjs (FUP-212); explicit names
+# still receive the literal-target probe.
 _RELATIVE_SPECIFIER_SUFFIXES: Final = (".js", ".jsx", ".ts", ".tsx")
 _RELATIVE_SPECIFIER_INDEX_NAMES: Final = ("index.js", "index.ts")
 
-# Literal-target trigger set (#024 addendum, widened same day): every
-# REGISTERED JS/TS extension, not just the fan-out four — Outrider
-# analyzes `.mjs`/`.cjs`/`.mts`/`.cts` files, so a specifier naming one
-# literally must be able to resolve it ("registered" is the principled
-# line: trace fetches feed pass-1 analysis, which needs a registered
-# adapter). Used ONLY for the literal-first probe; the fan-out set
-# above is unchanged. Kept as a local tuple (coordinates does not
-# import ast_facts at runtime); a cross-module test pins it equal to
-# the registry's JS/TS extension groups so registry growth fails loud
-# here instead of drifting.
+# Literal probes accept every registered JS/TS extension (#024 addendum),
+# including .mjs/.cjs/.mts/.cts. Keep the tuple local to avoid an ast_facts runtime
+# dependency; a parity test pins it to the registry's extension groups.
 _LITERAL_TARGET_SUFFIXES: Final = (
     ".js",
     ".jsx",

@@ -1,10 +1,8 @@
-# See specs/2026-05-19-analyze-foundation.md §6.
-"""Map each FindingType to its policy-assigned review dimension.
+"""Declare the review dimensions and their finding types.
 
-The model proposes a constrained finding type; the parser derives its
-dimension from the immutable `FINDING_TYPE_TO_DIMENSION` table. Import-time
-`verify_lockstep` requires the FindingType enum, severity keys, and dimension
-keys to agree before analysis runs."""
+Prompts and validation share this mapping. Adding a dimension requires updating
+the corresponding review schemas and prompt contracts together.
+"""
 
 from __future__ import annotations
 
@@ -45,6 +43,7 @@ FINDING_TYPE_TO_DIMENSION: Final[Mapping[FindingType, ReviewDimension]] = Mappin
         FindingType.SSRF_METADATA: ReviewDimension.SECURITY,
         FindingType.OPEN_REDIRECT: ReviewDimension.SECURITY,
         FindingType.OPEN_REDIRECT_AUTHED: ReviewDimension.SECURITY,
+        FindingType.CORRECTNESS_BUG: ReviewDimension.CODE_QUALITY,
     }
 )
 

@@ -48,7 +48,7 @@ test("unparseable JSON rejects as a protocol error", async () => {
   await expect(fetchSetupStatus()).rejects.toBeInstanceOf(SetupProtocolError);
 });
 
-test("valid JSON of the wrong shape rejects — the `as` cast could not catch this", async () => {
+test("valid JSON with unexpected fields rejects as a protocol error", async () => {
   server.use(http.get(STATUS, () => HttpResponse.json({ unexpected: "payload" })));
   await expect(fetchSetupStatus()).rejects.toBeInstanceOf(SetupProtocolError);
 });

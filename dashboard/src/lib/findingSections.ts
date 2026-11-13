@@ -1,8 +1,7 @@
-// Dashboard labels use the API's lowercase enum values. Shared finding labels
-// and LANGUAGE_BY_EXT mirror src/outrider/presentation/finding_sections.py.
-// tests/unit/test_finding_sections_ts_parity.py checks shared-map equality and
-// coverage of the publish/HITL enums in the dashboard-only maps.
-// Label helpers fall back to the received value when a label is missing.
+// Display names for finding fields and code-block languages.
+// Shared maps mirror src/outrider/presentation/finding_sections.py; the parity
+// check in tests/unit/test_finding_sections_ts_parity.py keeps them in agreement
+// and checks the dashboard's review-decision maps. Unknown values display as received.
 
 export const SEVERITY_LABEL: Record<string, string> = {
   critical: "Critical",
@@ -25,6 +24,7 @@ export const TYPE_LABEL: Record<string, string> = {
   missing_error_handling: "Missing error handling",
   missing_test: "Missing test",
   deprecated_api: "Deprecated API",
+  correctness_bug: "Correctness bug",
   command_injection: "Command injection",
   unsafe_deserialization: "Unsafe deserialization",
   tls_verify_disabled: "TLS verification disabled",

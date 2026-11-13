@@ -1,34 +1,12 @@
-# See DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only
-# (this module defines the sink Protocols consumed by the persister
-# whose atomic-emit contract `#016` establishes).
-"""Sink Protocols for agent-node-emitted audit events.
+"""Define the event-writer contracts injected into review nodes.
 
-Nodes consume these Protocols instead of touching DB code directly, which keeps
-audit-table writes out of node call sites and lets tests inject recorders.
+Production writers persist before returning or raise, and support concurrent
+calls. Test writers keep every emission so duplicate writes remain visible.
+AuditPersister implements these contracts with a session per call.
 
-Eight Protocols live here, grouped by event family or emitting component. The ninth,
-`LLMExchangePersister`, lives in `llm/base.py` because LLM-exchange persistence
-belongs to the LLM provider boundary — no node emits `LLMCallEvent` directly.
-`AuditPersister` implements all nine from one body, sharing its transaction and
-session-per-call discipline.
-
-Shared emission rules:
-
-  - Durable emitters persist before returning or raise. A sink that returns
-    success without persisting is the failure the `isinstance` gate at build time
-    cannot catch.
-  - Durable implementations are safe under concurrent invocation. `AuditPersister`
-    isolates concurrent operations with fresh `AsyncSession`s; publish-lock
-    acquisition uses one session per probe.
-  - Test recorders deliberately do not deduplicate, so double emissions remain
-    visible.
-
-Each Protocol below documents only what is unique to it: its events, its
-idempotency key, and any behaviour that departs from the above.
-
-`@runtime_checkable` throughout lets `build_graph` reject a sink missing a member
-at construction time. Per PEP 544 that check sees member presence only, never
-signature shape; mypy strict is the write-time gate for signatures.
+The model-exchange writer belongs to llm/base.py; nodes never emit those events
+directly (DECISIONS.md#016). build_graph checks required writer methods at
+startup; static type checks validate their signatures.
 """
 
 from contextlib import AbstractAsyncContextManager
@@ -41,10 +19,13 @@ from outrider.audit.events import (
     AnalyzeResponseRejectedEvent,
     CacheLookupEvent,
     CacheServeEvent,
+    CandidateAssessmentEvent,
+    CandidateCheckStartedEvent,
     FileExaminationEvent,
     FindingProposalRejectedEvent,
     HITLDecisionEvent,
     HITLRequestEvent,
+    NativeCandidateEvent,
     ObservedSkipShadowEvent,
     PublishAttemptEvent,
     PublishEligibilityEvent,
@@ -90,6 +71,17 @@ class FileExaminationSink(Protocol):
     async def emit_file_examination(self, event: FileExaminationEvent) -> None:
         """Persist a single file-examination event."""
         ...
+
+
+@runtime_checkable
+class CandidateEventSink(Protocol):
+    """Persist proposal references and bounded check attempts without raw content."""
+
+    async def emit_native_candidate(self, event: NativeCandidateEvent) -> None: ...
+
+    async def emit_candidate_check_started(self, event: CandidateCheckStartedEvent) -> None: ...
+
+    async def emit_candidate_assessment(self, event: CandidateAssessmentEvent) -> None: ...
 
 
 @runtime_checkable
@@ -361,6 +353,7 @@ class SlackEventSink(Protocol):
 
 __all__ = [
     "AnalyzeEventSink",
+    "CandidateEventSink",
     "FileExaminationSink",
     "HITLEventSink",
     "PhaseEventSink",

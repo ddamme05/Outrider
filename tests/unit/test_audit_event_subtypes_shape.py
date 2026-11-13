@@ -1,23 +1,7 @@
-"""Every spec §8.2 audit subtype admits with valid fields + correct event_type.
+"""Check discriminator values and valid construction for the spec §8.2 event types.
 
-Parametrized over the 12 V1 event types per spec §8.2 (`AgentTransitionEvent`,
-`ReviewPhaseEvent`, `LLMCallEvent`, `FileExaminationEvent`, `FindingEvent`,
-`TraceDecisionEvent`, `HITLRequestEvent`, `HITLDecisionEvent`,
-`PublishEvent`, `PublishRoutingEvent`, `PublishEligibilityEvent`,
-`PublishAttemptEvent`). Each tuple is `(event_class, expected_literal,
-minimal_kwargs)`; construction must succeed and `event.event_type` must
-equal the literal — confirms the discriminator value is wired correctly
-on every subtype.
-
-**Scope note (post-PR review fold):** the three analyze-foundation
-event additions (`AnalyzeCompletedEvent`, `FindingProposalRejectedEvent`,
-`AnalyzeResponseRejectedEvent` per `specs/2026-05-19-analyze-foundation.md`
-§5) are NOT in this parametrized SUBTYPES tuple — they have their own
-dedicated test file at `tests/unit/test_analyze_audit_events.py` that
-exercises their validators end-to-end. This file's central parametrize
-covers §8.2 only; "all subtypes" framings on the file's docstring used
-to overclaim and were corrected here.
-"""
+The analysis-specific events have separate validator tests in
+test_analyze_audit_events.py; this table is not the complete event union."""
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -679,7 +663,7 @@ def test_llm_call_event_rejects_duplicate_context_summary_entries() -> None:
 
 
 def test_phase_key_present_on_exactly_the_analyze_emitted_carriers() -> None:
-    """The ten analyze-emitted event types carry nullable `phase_key`
+    """Analyze-emitted event types carry nullable `phase_key`
     (default None — sequential-era rows), and EVERY other member of the
     `AuditEvent` union does NOT: the field is per-carrier phase attribution,
     not an AuditEventBase-wide column. Enumerating the full union (not a
@@ -696,6 +680,7 @@ def test_phase_key_present_on_exactly_the_analyze_emitted_carriers() -> None:
         CacheLookupEvent,
         CacheServeEvent,
         FindingProposalRejectedEvent,
+        NativeCandidateEvent,
         ObservedSkipShadowEvent,
         ScopeExclusionEvent,
     )
@@ -711,6 +696,7 @@ def test_phase_key_present_on_exactly_the_analyze_emitted_carriers() -> None:
         FindingProposalRejectedEvent,
         AnalyzeResponseRejectedEvent,
         AnalyzeCompletedEvent,
+        NativeCandidateEvent,
     }
     union_members = set(get_args(get_args(AuditEvent)[0]))
     assert carriers < union_members  # carriers are real union members

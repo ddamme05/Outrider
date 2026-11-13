@@ -1,10 +1,8 @@
-"""Install-event dispatch handlers against a real DB (Arc B2, DECISIONS.md#012 + #065).
+"""Check installation webhook handlers against PostgreSQL.
 
-Verifies the cache-hint upsert semantics: `installation` created/deleted/suspend/unsuspend and
-`installation_repositories` added/removed, plus idempotency under webhook redelivery and the
-re-add (`removed_at -> NULL`) semantics. The handlers take a session; these tests own the
-transaction (as the router does) and query on a fresh connection to assert.
-"""
+Cover lifecycle and repository membership updates, redelivery, and repository
+re-addition. Tests own the transaction and inspect results on a fresh connection.
+See DECISIONS.md#012 and #065."""
 
 from __future__ import annotations
 

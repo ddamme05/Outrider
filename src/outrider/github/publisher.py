@@ -1,15 +1,10 @@
-# GitHub PR-review publisher per specs/2026-05-21-publish-node.md §6 + §3h.
-"""Post a GitHub review or find a prior successful post during crash recovery.
+"""Post a prepared GitHub review and find earlier attempts by their marker.
 
-The publish node supplies sanitized comments and a marker-first review body.
-create_review makes one POST and normalizes the response into GitHubReviewCreated
-(vendor-payloads-normalized-at-boundary). HTTP 422 becomes a typed validation or
-secondary-rate-limit failure; there is no per-comment retry.
+The publish node owns routing and retry decisions. This wrapper sends the
+sanitized body/comments together and exposes GitHub's result. Individual
+comments are not retried separately.
 
-find_existing_review_on_head_sha walks bounded review pages and matches the
-body prefix, head commit, and Bot author. This recovers a POST that succeeded
-before its PublishEvent was recorded. Every request here pins the REST version
-required by specs/2026-05-21-publish-node.md §6 and docs/spec.md §4.1.7.
+See docs/trust-boundaries.md and specs/2026-05-21-publish-node.md.
 """
 
 from __future__ import annotations

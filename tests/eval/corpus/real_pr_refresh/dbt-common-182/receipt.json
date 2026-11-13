@@ -1,0 +1,81 @@
+{
+  "schema": "pr-capture-v1",
+  "source": {
+    "repo": "dbt-labs/dbt-common",
+    "pr": 182,
+    "url": "https://github.com/dbt-labs/dbt-common/pull/182",
+    "base_sha": "c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342",
+    "target_base_sha": "c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342",
+    "head_sha": "5656f48554842d13305c395dc7f0147f73ca9ac4",
+    "merge_sha": "35af6540b1f4a1c58cac895e6205a4092383e6e3",
+    "created_at": "2024-08-08T19:54:49Z",
+    "updated_at": "2026-03-02T13:03:18Z",
+    "merged_at": "2024-08-19T17:25:39Z",
+    "captured_at": "2026-10-31T22:47:43.494952+00:00"
+  },
+  "fixture_sha256": "66757ae717bf19ef4ff2c03977719d79752c1c9e9aaf97c01ad0e5f9082c6b85",
+  "license": {
+    "path": "LICENSE",
+    "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "commit": "5656f48554842d13305c395dc7f0147f73ca9ac4",
+    "url": "https://github.com/dbt-labs/dbt-common/blob/5656f48554842d13305c395dc7f0147f73ca9ac4/LICENSE",
+    "blob_sha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
+  },
+  "files": [
+    {
+      "path": ".changes/unreleased/Security-20240808-154439.yaml",
+      "status": "added",
+      "previous_path": null,
+      "base": null,
+      "head": {
+        "sha256": "b1d714bc64b6588fd34b228faa13604c889874a524960bad804b48541c08735f",
+        "commit": "5656f48554842d13305c395dc7f0147f73ca9ac4",
+        "url": "https://github.com/dbt-labs/dbt-common/blob/5656f48554842d13305c395dc7f0147f73ca9ac4/.changes/unreleased/Security-20240808-154439.yaml",
+        "blob_sha": "0fddf2f70e2ef989b2b2dd391e68bf8b2bcd0720"
+      }
+    },
+    {
+      "path": "dbt_common/clients/system.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "202172facf884026d734298bd0b4e997246f9cd2bc6139fb04bd7fbc331f7eb2",
+        "commit": "c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342",
+        "url": "https://github.com/dbt-labs/dbt-common/blob/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342/dbt_common/clients/system.py",
+        "blob_sha": "afa7f744080cecfdb4891f87bff11c272917aaa3"
+      },
+      "head": {
+        "sha256": "6a8501b4eb9756690eca3e888612776386bb245ccf3b617fccac8eb73df1cb8e",
+        "commit": "5656f48554842d13305c395dc7f0147f73ca9ac4",
+        "url": "https://github.com/dbt-labs/dbt-common/blob/5656f48554842d13305c395dc7f0147f73ca9ac4/dbt_common/clients/system.py",
+        "blob_sha": "5ab681fb8ffb5919976d225a5b45885aea619475"
+      }
+    },
+    {
+      "path": "tests/unit/test_system_client.py",
+      "status": "modified",
+      "previous_path": null,
+      "base": {
+        "sha256": "50b3784d844b472bf865f1a753d55743f453529335f160dbc076d28ffceca49e",
+        "commit": "c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342",
+        "url": "https://github.com/dbt-labs/dbt-common/blob/c9cc99e42fe9b23dcd067ccd4d411f5a3d4f5342/tests/unit/test_system_client.py",
+        "blob_sha": "d2cf27eddf281d9525aa1cfe3f84815d3adebced"
+      },
+      "head": {
+        "sha256": "7ee70cb4cfaeebfbb14650a622e75fa49a137f8babdf5efb8c96ded90dbe4675",
+        "commit": "5656f48554842d13305c395dc7f0147f73ca9ac4",
+        "url": "https://github.com/dbt-labs/dbt-common/blob/5656f48554842d13305c395dc7f0147f73ca9ac4/tests/unit/test_system_client.py",
+        "blob_sha": "34c6f49cc369b153d89e201ab2979c4dbeb5f495"
+      }
+    }
+  ],
+  "context_files": [],
+  "raw_files": {
+    "fixture.json": "66757ae717bf19ef4ff2c03977719d79752c1c9e9aaf97c01ad0e5f9082c6b85",
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "raw/pr.json": "3db32bd2556fb13aa56544200c1f8706e394e649a3000e7b0638400e7258d5fb",
+    "raw/files.json": "85e45f02ef3e6eba5b7f4d7eecb87934379758489e060d8617af71544a887f92",
+    "raw/compare.json": "6a7529de0f488235071888d6f05b24965f3cbe658db3c7b93bfc59a7b265add1"
+  },
+  "notes": "Parsed REST JSON, not HTTP wire capture. Complete UTF-8 source; no model answers or labels. Installation identity is an eval placeholder."
+}

@@ -1,34 +1,8 @@
-# See specs/2026-05-28-synthesize-node.md §Severity policy.
-# See DECISIONS.md#028-per-review-policy-version-snapshot-anchor-on-triageresult
-# — `test_synthesize_blocks_first_finding_poisoning` + the H-1 / H-2
-# defense suite are #028's snapshot-anchor + forge-defense contract pins.
-"""Regression + defense tests for the synthesize node body.
+"""Check synthesis input meaning and entry defenses.
 
-Pins:
-- **F1 regression** (prompt None-safety): `prompts/synthesize.py::render`
-  must not crash when `ReviewMetrics` LLM-aggregate fields are `None`
-  (the nullable-for-historical-compat shape, #030). The original implementation used
-  `{value:.4f}` format specs which raise `TypeError` against
-  `NoneType`; the fix renders "unknown" for None.
-
-- **H-1 defense** (policy_version smuggle): synthesize rejects findings
-  carrying `policy_version != state.triage_result.policy_version` at
-  node entry. The triage-captured snapshot is the trusted anchor (set
-  upstream of analyze, immune to attacker control via forged finding[0]).
-  `ReviewFinding._enforce_severity_matches_policy` short-circuits on
-  non-active policy_version — a forged finding with arbitrary severity
-  would survive the schema check and the audit row. Synthesize fails
-  closed via `FindingForgeryDetectedError`.
-
-- **H-2 defense** (original_severity smuggle): synthesize rejects
-  findings carrying `original_severity != None` at node entry. HITL
-  has not run; `original_severity` is set only by HITL after a
-  reviewer override. A finding with the field pre-set indicates a
-  forged HITL-override triplet attempting to bypass the gated set.
-
-Companion to `test_synthesize_audit_events.py` (schema/discriminator
-tests). This file covers the node body's entry-side invariants.
-"""
+An empty supplied finding list is not a safety assurance. Finding policy versions must match
+the captured triage policy, and pre-approval severity overrides are rejected.
+See specs/2026-05-28-synthesize-node.md, DECISIONS.md#028, and #030."""
 
 from __future__ import annotations
 
@@ -43,62 +17,16 @@ from outrider.agent.nodes.synthesize import (
 from outrider.policy import FindingSeverity, FindingType
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts.synthesize import render
-from outrider.schemas import ReviewMetrics
 from outrider.schemas.triage_result import RiskLevel
 
-# ---------------------------------------------------------------------------
-# F1 — prompts/synthesize.py::render must be None-safe on LLM aggregates
-# ---------------------------------------------------------------------------
 
-
-def test_render_does_not_crash_on_none_llm_aggregates() -> None:
-    """`ReviewMetrics` LLM-aggregate fields can be `None` (historical rows /
-    nullable per #030). `render` must not raise TypeError on `:.4f` format vs
-    NoneType.
-
-    Reproduces the sharp-edges F1 audit finding: original implementation
-    used `f"${metrics.total_cost_usd:.4f}"` which crashes when
-    total_cost_usd is None — every synthesize call would have failed
-    before reaching the LLM provider.
-    """
-    metrics = ReviewMetrics(
-        files_examined=3,
-        files_traced_beyond_diff=1,
-        wall_clock_seconds=12.5,
-        # LLM aggregates left None here (nullable per #030 — render must handle it).
-    )
-    # MUST NOT raise.
-    parts = render(overall_risk=RiskLevel.MEDIUM, findings=(), metrics=metrics)
-    # Verify the None values render as "unknown" rather than "None"
-    # (more reader-friendly + None signals "unknown" for historical rows).
-    assert "unknown" in parts.user_prompt
-    # Per Pass-1 multi-lens audit test-quality lens: the prior slice
-    # `split("Metrics:")[1].split("Wall clock:")[0]` was anchored on
-    # template heading layout. A regression that rendered `None` AFTER
-    # "Wall clock:" would silently pass. Stronger property assertion:
-    # the entire user_prompt must not contain the literal " None" or
-    # ": None" — both patterns that would surface a `format(None)` or
-    # `str(None)` leak.
-    assert " None" not in parts.user_prompt
-    assert ": None" not in parts.user_prompt
-
-
-def test_render_handles_concrete_llm_aggregates_when_present() -> None:
-    """When LLM aggregates ARE populated (future post-FUP), render
-    must format them correctly: `:.4f` on cost, `:d` on counts."""
-    metrics = ReviewMetrics(
-        files_examined=3,
-        files_traced_beyond_diff=1,
-        llm_calls_made=4,
-        total_input_tokens=12_345,
-        total_output_tokens=678,
-        total_cost_usd=1.2345,
-        wall_clock_seconds=12.5,
-    )
-    parts = render(overall_risk=RiskLevel.MEDIUM, findings=(), metrics=metrics)
-    assert "LLM calls made: 4" in parts.user_prompt
-    assert "12345 in / 678 out" in parts.user_prompt
-    assert "$1.2345" in parts.user_prompt
+def test_empty_findings_do_not_assert_a_clean_review() -> None:
+    """A supplied empty list carries no assurance that source is bug-free."""
+    parts = render(overall_risk=RiskLevel.HIGH, findings=())
+    assert "Overall risk: high" in parts.user_prompt
+    assert "Findings (0 total):" in parts.user_prompt
+    assert "(no findings)" in parts.user_prompt
+    assert "clean review" not in parts.user_prompt
 
 
 def _non_active_policy_version() -> str:
@@ -415,21 +343,10 @@ async def test_policy_version_axis_divergence_emits_anomaly_and_raises() -> None
 
 
 def test_summary_content_hash_helper_is_input_sensitive() -> None:
-    """Helper-level contract: `_compute_summary_content_hash` produces
-    DIFFERENT outputs for different inputs. Catches a return-constant
-    regression (the helper accidentally hardcoded a value, or stopped
-    consuming its argument).
+    """Different response text must produce different summary hashes.
 
-    Per Pass-1 multi-lens audit test-quality lens: previously this test
-    also re-derived `expected = sha256(text.encode("utf-8")).hexdigest()`
-    and asserted equality — tautological with the impl. Dropped that
-    assertion; kept the input-sensitivity inequality which catches a
-    distinct (if narrower) regression class. The call-site contract
-    (synthesize MUST pass raw `response.text` not stripped) is pinned by
-    `test_synthesize_call_site_hashes_raw_response_text_not_stripped`
-    below via source inspection — that's the non-vacuous regression
-    gate.
-    """
+    This catches a constant-return helper. The companion call-site check verifies
+    that synthesis supplies raw response.text rather than stripped summary_text."""
     from outrider.agent.nodes.synthesize import _compute_summary_content_hash
 
     raw_response_text = '```json\n"This is the summary prose."\n```'
@@ -443,23 +360,10 @@ def test_summary_content_hash_helper_is_input_sensitive() -> None:
 
 
 def test_synthesize_call_site_hashes_raw_response_text_not_stripped() -> None:
-    """Call-site contract: `synthesize.py` MUST pass raw `response.text`
-    to `_compute_summary_content_hash`, NOT `summary_text` (the
-    post-`strip_outer_json_fence` form).
+    """Hash raw response.text to bind synthesis to persisted completion bytes.
 
-    Pins the regression Codex 2026-05-28 caught. Hashing stripped would
-    break identity binding to `llm_call_content.completion` (which
-    persists raw — see `audit/persister.py::_persist_llm_call_event`)
-    the moment a host wraps a response in ```json``` fences.
-
-    Non-vacuous regression gate: source inspection catches a swap of
-    `response.text` ↔ `summary_text` at the call site. A behavior-level
-    test would require a 50-line state stub + mock provider just to
-    invoke synthesize() once; this catches the same regression in two
-    asserts. Pairs with the helper-level test above which pins the
-    helper's identity. Both layers needed: helper proves
-    "sha256 of bytes," call site proves "passed the right bytes."
-    """
+    Stripping a provider's JSON fence first would change that identity. Source
+    inspection pins the call argument; the companion test checks input sensitivity."""
     import inspect
 
     from outrider.agent.nodes import synthesize as synthesize_module

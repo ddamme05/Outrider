@@ -1,13 +1,7 @@
-"""PublishResult + PublishEvent three-channel accounting fields (DECISIONS.md#050).
+"""Check inline, review-body, and dashboard-only publish counts (DECISIONS.md#050).
 
-Commit 1 of publish-review-body-materialization: the two new count fields
-(`review_body_findings_posted`, `dashboard_only_findings_surfaced`) exist on both
-the state result and the audit event, default to 0 (so the existing factories +
-the current emit stay valid — the routing loop threads the real counts in a later
-commit), and a historical `PublishEvent` row lacking them reconstructs cleanly
-under `AuditEventAdapter` (replay historical-tolerance). `comments_posted` stays
-the inline count.
-"""
+Newer count fields default to zero when absent from stored events. The existing
+comments_posted field remains the inline-comment count."""
 
 from __future__ import annotations
 

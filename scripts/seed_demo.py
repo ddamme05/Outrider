@@ -1,37 +1,19 @@
 #!/usr/bin/env python3
-"""Seed the demo Postgres with the curated review set, then snapshot to demo_seed.sql.
+"""Populate the demo database with reviewed examples and export demo_seed.sql.
 
-Runs every demo fixture + the #6 "Outrider reviewing Outrider" git-range showcase
-through the REAL graph (real Claude) into ONE persistent, isolated demo database,
-validates each capture against the spec's acceptance gate, and `pg_dump`s the
-result so the deploy re-seeds with ZERO Claude respend.
-specs/2026-06-21-demo-deployment.md ("Seed mechanism" + "Acceptance checks").
+This is a paid run: each entry goes through the real graph and Claude, using
+scripts/live_claude_smoke.py's scenario builders. Each review gets a distinct head
+ID. Capture checks reject missing expected findings, rejected model responses,
+unexpected budget skips and missing approval/audit records before exporting
+(specs/2026-06-21-demo-deployment.md). Some entries explicitly allow budget skips.
 
-This is a PAID run (one real review per seed entry). It reuses
-scripts/live_claude_smoke.py's proven machinery (the scenario builders + `_run`),
-so the seed path and the smoke path cannot drift. Each entry gets a unique
-`head_sha` so N reviews of the same (repo, pr_number) don't collide on the
-`(repo_id, pr_number, head_sha)` natural key.
+Start postgres-test and configure ANTHROPIC_API_KEY and TEST_DATABASE_URL:
+    uv run python scripts/seed_demo.py
 
-The capture gate (the recall safeguard — why a 21-file kitchen sink once shipped a
-thin review): for every seeded review assert (a) no COST_BUDGET_EXHAUSTED skip
-(except entries with `allow_cost_starvation=True` — the 27-file self-review, whose
-largest modules exceed the absolute per-file token cap by design), (b) no
-finding_proposal_rejected AND no analyze_response_rejected (a wholesale degraded
-analyze), (c) every expected finding type is present, and (d) the expected HITL /
-audit rows exist. A review that fails any check is reported and the seed exits
-non-zero — a dud is never dumped.
-
-Run it:
-
-    docker compose up -d postgres-test
-    export ANTHROPIC_API_KEY=sk-ant-...
-    export TEST_DATABASE_URL=postgresql+psycopg://...:5433/outrider_test
-    uv run python scripts/seed_demo.py             # seed + validate + dump
-    uv run python scripts/seed_demo.py --dry-run   # print the plan; no DB, no Claude
-
-Exit 0 = every entry captured cleanly and demo_seed.sql was written.
-1 = a capture check failed (a dud — not dumped). 2 = setup / credentials missing.
+--dry-run prints the plan without database or model calls. A successful run
+writes demo_seed.sql so deployments can reuse the saved results without paying
+for another review. Exit 1 reports failed capture checks; exit 2 reports setup
+problems.
 """
 
 from __future__ import annotations

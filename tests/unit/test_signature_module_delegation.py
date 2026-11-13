@@ -1,10 +1,4 @@
-"""Confirm `api/webhooks/signature.py::verify_signature` delegates to
-`outrider.github.webhooks.verify_webhook_signature` with arguments
-forwarded unchanged.
-
-Closes the two-module path so neither half can silently drift from the
-other.
-"""
+"""Check that the webhook API forwards signature arguments unchanged to the GitHub wrapper."""
 
 from __future__ import annotations
 

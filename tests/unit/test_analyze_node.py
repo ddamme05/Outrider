@@ -1,40 +1,16 @@
-"""Analyze node body tests — spec §7.
+"""Analyze node behavior against spec §7.
 
-Covers file-outcome coverage, changed-region intersection, and
-registry-query firing:
-
-1. **Clean file** — tier=DEEP, parses cleanly, model returns admittable
-   proposal → 1 admitted finding; FileExaminationEvent(parse_status="clean").
-2. **Triage-skipped** — tier=SKIM → file NOT in iteration scope.
-3. **Parser rejection** — tier=DEEP, model returns proposal that
-   fails enum admission → ProposalRejection lifted.
-4. **Budget skip** — tier=DEEP, estimated cost exceeds per-file cap.
-5. **NO_REVIEWABLE_CONTEXT** — content_head and content_base both None.
-6. **NO_CHANGED_SCOPE_UNITS** — clean parse, patch doesn't intersect
-   any scope unit.
-7. **Degraded mode (has_error in changed region)** — clean parse but
-   the patched scope unit has `has_error=True`; degraded LLM call
-   with `degradation_reason="tree_has_error_in_changed_regions"`.
-8. **Changed-region intersection trims `included_scope_units`** — a
-   file with two functions, patch only touches one → only that
-   scope unit reaches the prompt + parser admission.
-9. **Registry-query firing** — `query_match_id_set` constructed from
-   the file's per-language structural set
-   (`queries.registry.structural_query_ids_for`) against the file
-   content; non-empty for a typical Python file, empty by registration
-   for JS/TS.
-
-Test infrastructure: inline recorder sinks + mock LLM provider + mock
-ImportPathResolver. Per the user direction: "without special mocks
-beyond provider/context inputs" — all scenarios share the same
-scaffolding; only the file content + tier map + provider response differ.
-"""
+Exercise clean and degraded review, parser rejection, budget and context skips,
+changed-scope selection, and language-registry query matches. Shared recorder
+sinks, an LLM double and an ImportPathResolver double isolate external services;
+scenarios vary file content, tier maps and provider responses."""
 
 from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from difflib import unified_diff
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 from uuid import UUID
@@ -145,6 +121,7 @@ def _lift_finding_event(
         finding_type=finding.finding_type,
         severity=finding.severity,
         file_path=finding.file_path,
+        source_side=finding.source_side,
         line_start=finding.line_start,
         line_end=finding.line_end,
         dimension=finding.dimension,
@@ -838,13 +815,8 @@ async def test_reserve_rescues_high_risk_file_under_budget_pressure(
     reserve — and a benign file at position 4 (app/d.py) starves in the SAME run,
     which is the re-prioritization the reserve exists to produce."""
     monkeypatch.setattr("outrider.agent.nodes.analyze._estimate_tokens", lambda _text: 0)
-    # Pin the planner PROXY to the same E the worker's real estimate produces
-    # under the zero-text patch (fixed overhead = MAX_TOKENS = E; the byte-
-    # variable term would break the exact-fit regime) — the reserve semantics
-    # under test are the PLAN's, funded through the real plan_file_budgets.
-    monkeypatch.setattr(
-        "outrider.agent.nodes.analyze.proxy_estimate_tokens", lambda *_a, **_k: _E_TOKENS
-    )
+    # Zero text estimates leave the fixed output reservation in both planner
+    # and worker, isolating reserve ordering from the contents of each file.
     deps["total_review_budget_tokens"] = _RESERVE_TEST_BUDGET
     paths = ["app/a.py", "app/b.py", "app/c.py", "app/d.py", "app/danger.py"]
     changed = (
@@ -878,13 +850,8 @@ async def test_benign_file_starves_where_high_risk_would_be_rescued(
     difference from the rescue case is the signature in the patch, so the flipped
     outcome (examined → skipped) isolates the reserve's effect to policy.recall."""
     monkeypatch.setattr("outrider.agent.nodes.analyze._estimate_tokens", lambda _text: 0)
-    # Pin the planner PROXY to the same E the worker's real estimate produces
-    # under the zero-text patch (fixed overhead = MAX_TOKENS = E; the byte-
-    # variable term would break the exact-fit regime) — the reserve semantics
-    # under test are the PLAN's, funded through the real plan_file_budgets.
-    monkeypatch.setattr(
-        "outrider.agent.nodes.analyze.proxy_estimate_tokens", lambda *_a, **_k: _E_TOKENS
-    )
+    # Zero text estimates leave the fixed output reservation in both planner
+    # and worker, isolating reserve ordering from the contents of each file.
     deps["total_review_budget_tokens"] = _RESERVE_TEST_BUDGET
     paths = ["app/a.py", "app/b.py", "app/c.py", "app/d.py", "app/benign.py"]
     changed = tuple(_build_changed_file(path=p) for p in paths)
@@ -914,13 +881,8 @@ async def test_reserve_is_bounded_second_high_risk_overflows(
     exhaust the budget, so BOTH high-risk files would skip. The reserve is what
     admits the first one (`h1`); the second (`h2`) skipping is the bound."""
     monkeypatch.setattr("outrider.agent.nodes.analyze._estimate_tokens", lambda _text: 0)
-    # Pin the planner PROXY to the same E the worker's real estimate produces
-    # under the zero-text patch (fixed overhead = MAX_TOKENS = E; the byte-
-    # variable term would break the exact-fit regime) — the reserve semantics
-    # under test are the PLAN's, funded through the real plan_file_budgets.
-    monkeypatch.setattr(
-        "outrider.agent.nodes.analyze.proxy_estimate_tokens", lambda *_a, **_k: _E_TOKENS
-    )
+    # Zero text estimates leave the fixed output reservation in both planner
+    # and worker, isolating reserve ordering from the contents of each file.
     deps["total_review_budget_tokens"] = _RESERVE_TEST_BUDGET
     paths = ["app/a.py", "app/b.py", "app/c.py", "app/d.py", "app/h1.py", "app/h2.py"]
     changed = (
@@ -959,13 +921,8 @@ async def test_reserve_not_wasted_when_high_risk_iterates_early(
     + 2 benign, skipping app/c.py too (throughput 3, reserve wasted). The
     `app/c.py examined` + `calls == 4` assertions fail under general-first."""
     monkeypatch.setattr("outrider.agent.nodes.analyze._estimate_tokens", lambda _text: 0)
-    # Pin the planner PROXY to the same E the worker's real estimate produces
-    # under the zero-text patch (fixed overhead = MAX_TOKENS = E; the byte-
-    # variable term would break the exact-fit regime) — the reserve semantics
-    # under test are the PLAN's, funded through the real plan_file_budgets.
-    monkeypatch.setattr(
-        "outrider.agent.nodes.analyze.proxy_estimate_tokens", lambda *_a, **_k: _E_TOKENS
-    )
+    # Zero text estimates leave the fixed output reservation in both planner
+    # and worker, isolating reserve ordering from the contents of each file.
     deps["total_review_budget_tokens"] = _RESERVE_TEST_BUDGET
     paths = ["app/danger.py", "app/a.py", "app/b.py", "app/c.py", "app/d.py"]
     changed = (
@@ -1176,6 +1133,13 @@ async def test_is_eval_propagates_through_emitted_events(deps: dict[str, Any]) -
     assert all(e.is_eval for e in phase_events)
     assert all(e.is_eval for e in fe_events)
     assert all(e.is_eval for e in analyze_events)
+    counts = (len(phase_events), len(deps["provider"].calls))
+    with pytest.raises(ValueError, match="only for evaluation reviews"):
+        await run_analyze_pass(
+            _build_review_state(is_eval=False),
+            {**deps, "called_function_context_enabled": True},
+        )
+    assert (len(phase_events), len(deps["provider"].calls)) == counts
 
 
 # ---------------------------------------------------------------------------
@@ -1650,17 +1614,10 @@ def test_is_python_file_matches_registry_case_insensitivity() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_changed_scope_units_when_patch_targets_outside_scopes(
+async def test_changed_lines_outside_scopes_get_primary_context(
     deps: dict[str, Any],
 ) -> None:
-    """Clean parse + patch whose target lines fall outside every scope
-    unit's line range → `skipped+NO_CHANGED_SCOPE_UNITS`. Example:
-    `_SIMPLE_PY` has functions at lines 1-2 and 4-6; a patch targeting
-    line 8 (past the file end, just a comment append) intersects nothing.
-    """
-    # Patch adds a trailing comment line at target line 8. `_SIMPLE_PY`
-    # is 6 lines; the comment lands after both functions, outside any
-    # scope unit's line range.
+    """A changed module line receives bounded primary context without a fake scope."""
     extended_content = _SIMPLE_PY + b"# trailing comment\n"
     out_of_scope_patch = (
         "--- a/src/example.py\n"
@@ -1676,8 +1633,10 @@ async def test_no_changed_scope_units_when_patch_targets_outside_scopes(
 
     fe_events = deps["file_examination_sink"].events
     assert len(fe_events) == 1
-    assert fe_events[0].skip_reason == SkipReason.NO_CHANGED_SCOPE_UNITS
-    assert len(deps["provider"].calls) == 0
+    assert fe_events[0].skip_reason is None
+    [request] = deps["provider"].calls
+    assert any(entry.inclusion_reason == "changed_region" for entry in request.context_summary)
+    assert "7 | # trailing comment" in request.user_prompt
 
 
 @pytest.mark.asyncio
@@ -1702,17 +1661,11 @@ async def test_no_patch_clean_parse_skips_as_no_changed_scope_units(
 async def test_parser_skipped_file_skips_before_patch_lookup(
     deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A parser-skipped file (VENDORED `vendor/*` path) is skipped BEFORE
-    `lookup_patched_file` runs.
+    """Parser-skipped files return before patch lookup.
 
-    Regression for the degradation-decision extraction: `lookup_patched_file`
-    RAISES `CoordinateError` on a malformed/duplicate patch (it returns None only
-    for the absent cases), and a skipped file may carry such a patch (the skip is
-    path/size-keyed, independent of patch validity). Calling it for a skipped file
-    would crash the whole pass (no try/except per the module's provider-failure
-    policy). Here `lookup_patched_file` is stubbed to raise unconditionally; the
-    test passes only because the parser-skip return fires first — `analyze` must
-    not raise, and the file skips cleanly with `VENDORED`."""
+    A VENDORED path may carry a malformed patch because path-based exclusion is
+    independent of patch validity. A lookup stub that always raises proves the
+    parser-skip path bypasses lookup and retains the VENDORED outcome."""
     import outrider.agent.nodes.analyze as analyze_mod
     from outrider.coordinates.errors import CoordinateError, CoordinateErrorKind
 
@@ -1777,12 +1730,10 @@ async def test_registry_query_firing_populates_query_match_id_list(
 
 
 @pytest.mark.asyncio
-async def test_observed_proposal_with_registered_query_id_admits(
+async def test_generic_registry_match_does_not_prove_a_model_bug(
     deps: dict[str, Any],
 ) -> None:
-    """A model proposal claiming `evidence_tier=observed` with a
-    `query_match_id` that's actually in the file's registry-fired set
-    → admitted through the parser's OBSERVED admission step."""
+    """A function-definition match does not establish SQL injection."""
     response_json = json.dumps(
         {
             "findings": [
@@ -1807,10 +1758,9 @@ async def test_observed_proposal_with_registered_query_id_admits(
     result = await run_analyze_pass(state, deps)
 
     round_ = result["analysis_rounds"][0]
-    assert len(round_.findings) == 1
-    assert round_.findings[0].evidence_tier == "observed"
-    assert round_.findings[0].query_match_id == "python.function_definition"
-    assert len(deps["analyze_event_sink"].proposal_rejections) == 0
+    assert not round_.findings
+    [rejection] = deps["analyze_event_sink"].proposal_rejections
+    assert rejection.rejection_reason == "model_observed_not_supported"
 
 
 @pytest.mark.asyncio
@@ -2151,14 +2101,7 @@ async def test_misaligned_degraded_route_file_skips_instead_of_aborting(
 async def test_head_missing_with_added_lines_skips_as_misaligned(
     deps: dict[str, Any],
 ) -> None:
-    """FUP-217 head-anchor pin: added lines are head-side coordinates, so a
-    file whose head content is ABSENT but whose patch carries added lines has
-    nothing to anchor against — probing the base fallback would validate head
-    coordinates against the wrong text and pass wrongly. The ChangedFile
-    schema makes this reachable only via a removed-status file (base-only)
-    whose vendor patch anomalously carries added lines — the patch string is
-    not cross-validated against status. Must skip as the misalignment class,
-    zero LLM spend."""
+    """A removed file's patch cannot add HEAD source; reject it before model use."""
     cf = ChangedFile(
         path="src/index.js",
         status="removed",
@@ -2183,20 +2126,16 @@ async def test_head_missing_with_added_lines_skips_as_misaligned(
     fe_events = deps["file_examination_sink"].events
     assert len(fe_events) == 1
     assert fe_events[0].parse_status == "skipped"
-    assert fe_events[0].skip_reason is SkipReason.PATCH_HEAD_MISALIGNED
+    assert fe_events[0].skip_reason is SkipReason.PATCH_BASE_MISALIGNED
     assert deps["provider"].calls == []
     assert result["analysis_rounds"][0].findings == ()
 
 
 @pytest.mark.asyncio
-async def test_deletion_only_base_content_file_proceeds_unprobed(
+async def test_removed_file_with_partial_removal_patch_skips_as_misaligned(
     deps: dict[str, Any],
 ) -> None:
-    """FUP-217 head-anchor control: a removed file (base content only,
-    deletion-only patch — no added lines) has nothing that anchors on head
-    coordinates, so the probe does not fire and pre-probe behavior is
-    preserved exactly (here: NO_CHANGED_SCOPE_UNITS skip, not a misalignment
-    skip)."""
+    """Removed status requires a complete BASE removal, not a partial deletion."""
     cf = ChangedFile(
         path="src/index.js",
         status="removed",
@@ -2221,17 +2160,16 @@ async def test_deletion_only_base_content_file_proceeds_unprobed(
     fe_events = deps["file_examination_sink"].events
     assert len(fe_events) == 1
     assert fe_events[0].parse_status == "skipped"
-    assert fe_events[0].skip_reason is SkipReason.NO_CHANGED_SCOPE_UNITS
+    assert fe_events[0].skip_reason is SkipReason.PATCH_BASE_MISALIGNED
     assert deps["provider"].calls == []
     assert result["analysis_rounds"][0].findings == ()
 
 
 @pytest.mark.asyncio
-async def test_module_only_diff_without_eligible_match_still_skips(
+async def test_module_only_diff_without_producer_is_reviewed(
     deps: dict[str, Any],
 ) -> None:
-    """Revert-the-fold control: a module-only JS diff with NO eligible match
-    keeps today's NO_CHANGED_SCOPE_UNITS skip — no LLM call, no findings."""
+    """Unregistered module behavior still reaches JUDGED model review."""
     content = b"const y = 2;\nconst x = 1;\n"
     patch = (
         "--- a/src/index.js\n+++ b/src/index.js\n@@ -1,1 +1,2 @@\n+const y = 2;\n const x = 1;\n"
@@ -2246,15 +2184,20 @@ async def test_module_only_diff_without_eligible_match_still_skips(
         pr_context=_build_pr_context(changed_files=(cf,)),
         triage_result=_build_triage_result(file_tiers={"src/index.js": ReviewTier.DEEP}),
     )
+    proposal = json.loads(_build_finding_proposal_json(line_start=1, line_end=1))
+    proposal["findings"][0]["evidence"] = "const y = 2;"
+    deps["provider"] = _StubLLMProvider(json.dumps(proposal))
 
     result = await run_analyze_pass(state, deps)
 
     fe_events = deps["file_examination_sink"].events
     assert len(fe_events) == 1
-    assert fe_events[0].parse_status == "skipped"
-    assert fe_events[0].skip_reason is SkipReason.NO_CHANGED_SCOPE_UNITS
-    assert deps["provider"].calls == []
-    assert result["analysis_rounds"][0].findings == ()
+    assert fe_events[0].parse_status == "clean"
+    assert fe_events[0].skip_reason is None
+    [request] = deps["provider"].calls
+    assert "1 | const y = 2;" in request.user_prompt
+    assert request.context_summary[0].inclusion_reason == "changed_region"
+    assert result["analysis_rounds"][0].findings
 
 
 # ---------------------------------------------------------------------------
@@ -2371,23 +2314,11 @@ async def test_aggregate_cache_tokens_keep_read_and_write_distinct(
 
 @pytest.mark.asyncio
 async def test_total_cost_usd_is_decimal_sum_then_float_cast(deps: dict[str, Any]) -> None:
-    """`AnalyzeCompletedEvent.total_cost_usd == float(sum_of_per_call_Decimals)`.
+    """Accumulate per-call Decimal costs before the single final float cast.
 
-    Producer contract: each per-file cost comes back from
-    `compute_cost_usd` as `Decimal`; the main loop accumulates Decimals
-    across files and casts to `float` ONCE at AnalyzeCompletedEvent
-    construction. The prior shape (per-file `float(Decimal)` cast +
-    float-sum) drifted at FP noise (~5e-17 USD per 50 files), and
-    `LLMCallEvent.cost_usd` sum on replay didn't match the aggregate's
-    self-reported `total_cost_usd`.
-
-    Test design: three DEEP files with DIFFERENT token-count tuples per
-    call (so per-call cost Decimals are distinct non-trivial values).
-    Compute the expected aggregate via the same `compute_cost_usd` +
-    Decimal-sum + float-cast path; assert the event's `total_cost_usd`
-    matches exactly. A regression to float-sum-per-call would surface
-    as inequality at FP precision.
-    """
+    Three files with distinct token counts expose the rounding difference between
+    Decimal accumulation and summing per-call floats. The completed event must match
+    float(sum_of_per_call_Decimals) exactly."""
     paths = ("src/a.py", "src/b.py", "src/c.py")
     token_specs: list[dict[str, int]] = [
         {
@@ -2679,3 +2610,969 @@ async def test_analyze_completed_event_carries_host_identity_triad(deps: dict[st
     assert completed.profile_id == "baseten"
     assert completed.reasoning_enabled is False
     assert completed.profile_contract_digest == "a" * 64
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("called_helpers", [False, True])
+async def test_worker_receives_bounded_related_context_without_expanding_findings(
+    deps: dict[str, Any],
+    called_helpers: bool,
+) -> None:
+    source = (
+        "from app.auth import check\n"
+        "TIMEOUT = 10\n"
+        "UNUSED = 'not relevant'\n\n"
+        "def changed(request):\n"
+        "    return check(request, timeout=TIMEOUT)\n\n"
+        "def caller(request):\n"
+        "    return changed(request)\n"
+    )
+    changed = _build_changed_file(
+        path="app/handler.py",
+        content=source.encode(),
+        content_base=source.replace("check(request, timeout=TIMEOUT)", "check(request)"),
+        patch="@@ -5,2 +5,2 @@\n def changed(request):\n-    return check(request)\n"
+        "+    return check(request, timeout=TIMEOUT)\n",
+    )
+    test_file = _build_changed_file(
+        path="tests/test_handler.py",
+        content=b"def test_handler():\n    assert True  # ````` untrusted text\n",
+        patch="@@ -0,0 +1,2 @@\n+def test_handler():\n+    assert True  # ````` untrusted text\n",
+    )
+    helper_file = _build_changed_file(
+        path="app/auth.py",
+        content=b"def check(request, timeout):\n    return request.get('allowed', False)\n",
+        patch="",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(changed, test_file, helper_file)),
+        triage_result=_build_triage_result(file_tiers={changed.path: ReviewTier.STANDARD}),
+    )
+    proposal = json.loads(_build_finding_proposal_json(line_start=8, line_end=9))
+    proposal["findings"][0]["evidence"] = "def caller(request):\n    return changed(request)"
+    deps["provider"] = _StubLLMProvider(json.dumps(proposal))
+
+    options = {"called_function_context_enabled": True} if called_helpers else {}
+    result = await run_analyze_pass(state, {**deps, **options})
+
+    assert len(deps["provider"].calls) == 1
+    request = deps["provider"].calls[0]
+    assert "from app.auth import check" in request.user_prompt
+    assert "TIMEOUT = 10" in request.user_prompt
+    assert "UNUSED =" not in request.user_prompt
+    assert "def caller(request):" in request.user_prompt
+    assert "direct-name heuristic, not resolved proof" in request.user_prompt
+    assert "test_handler" in request.user_prompt
+    assert any(
+        entry.file_path == test_file.path and entry.scope_unit_name == "test_handler@1:2"
+        for entry in request.context_summary
+    )
+    assert any(
+        entry.scope_unit_name == "caller@8:9" and entry.inclusion_reason == "same_file_context"
+        for entry in request.context_summary
+    )
+    assert "unchanged repository files/tests were not searched" in request.user_prompt
+    assert "``````text\n" in request.user_prompt
+    outcome = result["analyze_worker_outcomes"][0]
+    assert outcome.estimated_tokens > 0
+    assert not result["analysis_rounds"][0].findings
+    assert deps["analyze_event_sink"].proposal_rejections
+    helper_entries = [
+        entry for entry in request.context_summary if entry.inclusion_reason == "captured_reference"
+    ]
+    assert bool(helper_entries) is called_helpers
+    assert ("return request.get('allowed', False)" in request.user_prompt) is called_helpers
+    if called_helpers:
+        assert len(helper_entries) == 1
+        assert helper_entries[0].file_path == helper_file.path
+        assert (helper_entries[0].line_start, helper_entries[0].line_end) == (1, 2)
+        assert "receiver not resolved" in request.user_prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("called_helpers", [False, True])
+async def test_deletion_only_review_keeps_owned_context_without_neighbor_or_location_leak(
+    deps: dict[str, Any], called_helpers: bool
+) -> None:
+    source = (
+        "from app.auth import check\n"
+        "TIMEOUT = 10\n"
+        "UNUSED = 'not relevant'\n\n"
+        "def changed(request):\n"
+        "    return check(request, timeout=TIMEOUT)\n\n"
+        "def caller(request):\n"
+        "    return changed(request)\n"
+    )
+    base = source.replace(
+        "def changed(request):\n",
+        "def changed(request):\n    if not request.get('active'):\n        return False\n",
+    )
+    test_source = "def test_handler():\n    assert True\n"
+    test_base = test_source.replace("    assert True", "    assert False\n    assert True")
+    neighbor = "def test_unchanged_neighbor():\n    assert 'UNCHANGED_NEIGHBOR'\n"
+    neighbor_base = "def test_removed_handler():\n    assert False\n\n" + neighbor
+
+    def deletion(path: str, before: str, after: str) -> ChangedFile:
+        return ChangedFile(
+            path=path,
+            status="modified",
+            additions=0,
+            deletions=len(before.splitlines()) - len(after.splitlines()),
+            content_base=before,
+            content_head=after,
+            patch="".join(
+                unified_diff(
+                    before.splitlines(keepends=True),
+                    after.splitlines(keepends=True),
+                    fromfile="a/" + path,
+                    tofile="b/" + path,
+                )
+            ),
+            language="python",
+        )
+
+    changed = deletion("app/handler.py", base, source)
+    test_file = deletion("tests/test_handler.py", test_base, test_source)
+    neighbor_file = deletion("tests/test_handler_extra.py", neighbor_base, neighbor)
+    helper = _build_changed_file(
+        path="app/auth.py",
+        content=b"def check(request, timeout):\n    return request.get('allowed', False)\n",
+        patch="",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(changed, test_file, neighbor_file, helper)),
+        triage_result=_build_triage_result(file_tiers={changed.path: ReviewTier.STANDARD}),
+    )
+    proposal = json.loads(_build_finding_proposal_json(line_start=8, line_end=9))
+    proposal["findings"][0]["evidence"] = "def caller(request):\n    return changed(request)"
+    deps["provider"] = _StubLLMProvider(json.dumps(proposal))
+
+    result = await run_analyze_pass(
+        state, {**deps, "called_function_context_enabled": called_helpers}
+    )
+
+    assert len(deps["provider"].calls) == 1
+    request = deps["provider"].calls[0]
+    assert "from app.auth import check" in request.user_prompt
+    assert "TIMEOUT = 10" in request.user_prompt
+    assert "UNUSED =" not in request.user_prompt
+    assert "def caller(request):" in request.user_prompt
+    assert "def test_handler():" in request.user_prompt
+    assert "UNCHANGED_NEIGHBOR" not in request.user_prompt
+    assert any(entry.file_path == test_file.path for entry in request.context_summary)
+    assert all(entry.file_path != neighbor_file.path for entry in request.context_summary)
+    assert ("return request.get('allowed', False)" in request.user_prompt) is called_helpers
+    assert len(request.user_prompt) < 12_000
+    assert not result["analysis_rounds"][0].findings
+    assert [
+        rejection.rejection_reason for rejection in deps["analyze_event_sink"].proposal_rejections
+    ] == ["span_outside_scope_unit"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("base_body", "head_body"),
+    [
+        (
+            "@keep\n@remove\ndef changed(value):\n    return check(value, LIMIT)\n",
+            "@keep\ndef changed(value):\n    return check(value, LIMIT)\n",
+        ),
+        (
+            "class Rules:\n    def removed(self):\n        return False\n"
+            "    def retained(self, value):\n        return check(value, LIMIT)\n",
+            "class Rules:\n    def retained(self, value):\n        return check(value, LIMIT)\n",
+        ),
+    ],
+)
+async def test_deletion_context_covers_retained_decorators_and_changed_class_bodies(
+    deps: dict[str, Any], base_body: str, head_body: str
+) -> None:
+    prefix = "from app.policy import check\nLIMIT = 3\n\n"
+    base, head = prefix + base_body, prefix + head_body
+    changed = ChangedFile(
+        path="app/handler.py",
+        status="modified",
+        additions=0,
+        deletions=len(base.splitlines()) - len(head.splitlines()),
+        content_base=base,
+        content_head=head,
+        patch="".join(
+            unified_diff(
+                base.splitlines(keepends=True),
+                head.splitlines(keepends=True),
+                fromfile="a/app/handler.py",
+                tofile="b/app/handler.py",
+            )
+        ),
+        language="python",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(changed,)),
+        triage_result=_build_triage_result(file_tiers={changed.path: ReviewTier.STANDARD}),
+    )
+    deps["provider"] = _StubLLMProvider(json.dumps({"findings": []}))
+
+    await run_analyze_pass(state, deps)
+
+    assert len(deps["provider"].calls) == 1
+    assert "from app.policy import check" in deps["provider"].calls[0].user_prompt
+    assert "LIMIT = 3" in deps["provider"].calls[0].user_prompt
+
+
+@pytest.mark.parametrize(
+    ("declaration", "used_name"),
+    [
+        ("output = create_stream()", "output"),
+        ("render = renderer.emit", "render"),
+        ("OutputStream: object = create_stream()", "OutputStream"),
+        ("output = fallback = create_stream()", "fallback"),
+        ("output, other = create_stream()", "output"),
+        ("first, *output = create_stream()", "output"),
+    ],
+)
+def test_same_file_context_preserves_used_module_bindings(declaration: str, used_name: str) -> None:
+    from outrider.ast_facts.review_context import python_review_context
+
+    source = f"{declaration}\nunused = 'omit this'\n\ndef changed():\n    return {used_name}\n"
+
+    excerpts = python_review_context(source, frozenset({5}), file_path="app/handler.py")
+
+    assert len(excerpts) == 1
+    assert excerpts[0].text == declaration + "\n"
+    assert (excerpts[0].line_start, excerpts[0].line_end) == (1, 1)
+
+
+@pytest.mark.parametrize(
+    ("declaration", "used_name"),
+    [
+        ("holder.output = create_stream()", "holder"),
+        ("holder[target] = create_stream()", "target"),
+        ("HOLDER.output = create_stream()", "HOLDER"),
+        ("holder[TARGET] = create_stream()", "TARGET"),
+    ],
+)
+def test_same_file_context_ignores_names_only_loaded_by_assignment_targets(
+    declaration: str, used_name: str
+) -> None:
+    from outrider.ast_facts.review_context import python_review_context
+
+    source = f"{declaration}\n\ndef changed():\n    return {used_name}\n"
+
+    assert python_review_context(source, frozenset({4}), file_path="app/handler.py") == ()
+
+
+def test_same_file_context_omits_complete_binding_when_declaration_exceeds_cap() -> None:
+    from outrider.ast_facts.review_context import python_review_context
+
+    declaration = "output = '" + "x" * 1600 + "'"
+    source = f"{declaration}\n\ndef changed():\n    return output\n"
+
+    assert python_review_context(source, frozenset({4}), file_path="app/handler.py") == ()
+
+
+def test_context_excerpts_skip_excluded_and_oversized_source_before_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from outrider.ast_facts.review_context import build_called_function_index, python_review_context
+
+    def unexpected_parse(*args: object, **kwargs: object) -> None:
+        pytest.fail("Supplemental context parsed excluded or oversized source")
+
+    monkeypatch.setattr("outrider.ast_facts.review_context.ast.parse", unexpected_parse)
+    for path, source in (
+        ("vendor/generated.py", "def work():\n    return 1\n"),
+        ("app/generated_pb2.py", "def work():\n    return 1\n"),
+        ("app/large.py", "#" * 131_073),
+        ("app/multibyte.py", "é" * 65_537),
+    ):
+        assert python_review_context(source, frozenset({1}), file_path=path) == ()
+    monkeypatch.setattr("outrider.ast_facts.review_context.parse_source", unexpected_parse)
+    index = build_called_function_index(
+        {
+            "vendor/generated.py": "def work():\n    return 1\n",
+            "app/generated_pb2.py": "def work():\n    return 1\n",
+            "app/large.py": "#" * 131_073,
+            "app/multibyte.py": "é" * 65_537,
+            "docs/readme.txt": "def work():\n    return 1\n",
+        },
+        import_path_resolver=MagicMock(),
+    )
+    assert not index.parsed
+
+
+@pytest.mark.parametrize("unusable", ["ambiguous", "test", "oversized", "unrelated"])
+def test_called_helpers_do_not_select_ambiguous_or_unsuitable_implementations(
+    unusable: str,
+) -> None:
+    from outrider.ast_facts.review_context import (
+        build_called_function_index,
+        called_function_context,
+    )
+
+    helper = "def inspect_value(value):\n    return value\n"
+    sources = {"app/handler.py": "def changed(value):\n    return inspect_value(value)\n"}
+    excluded = frozenset()
+    if unusable == "ambiguous":
+        sources.update({"app/one.py": helper, "tests/test_override.py": helper})
+        excluded = frozenset({"tests/test_override.py"})
+    elif unusable == "test":
+        sources["tests/test_mock.py"] = helper
+        excluded = frozenset({"tests/test_mock.py"})
+    elif unusable == "oversized":
+        sources["app/helper.py"] = helper + "    #" + "x" * 2001 + "\n"
+    else:
+        sources["app/helper.py"] = helper.replace("inspect_value", "another_helper")
+    index = build_called_function_index(
+        sources, import_path_resolver=MagicMock(), excluded_definition_paths=excluded
+    )
+    assert (
+        called_function_context(index, file_path="app/handler.py", changed_lines=frozenset({2}))
+        == ()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("context_kind", ["tests", "joined_tests", "callers"])
+async def test_worker_preserves_same_named_context_methods(
+    deps: dict[str, Any], context_kind: str
+) -> None:
+    test_context = context_kind in {"tests", "joined_tests"}
+    source = "def handle_request(value):\n    return value + 1\n"
+    if context_kind == "callers":
+        source += (
+            "\nclass First:\n"
+            "    def dispatch(self, value):\n"
+            "        return handle_request(value)\n"
+            "\nclass Second:\n"
+            "    def dispatch(self, value):\n"
+            "        return handle_request(value)\n"
+        )
+    changed = _build_changed_file(
+        path="app/request_handler.py" if context_kind == "joined_tests" else "app/handler.py",
+        content=source.encode(),
+        content_base=source.replace("value + 1", "value"),
+        patch="@@ -1,2 +1,2 @@\n def handle_request(value):\n-    return value\n"
+        "+    return value + 1\n",
+    )
+    files = (changed,)
+    if test_context:
+        tests_source = (
+            "class TestFirst:\n"
+            "    def test_handler(self):\n"
+            "        assert True\n"
+            "\nclass TestSecond:\n"
+            "    def test_handler(self):\n"
+            "        assert True\n"
+        )
+        test_path = (
+            "tests/test_requesthandler.py"
+            if context_kind == "joined_tests"
+            else "tests/test_handler.py"
+        )
+        test_file = ChangedFile(
+            path=test_path,
+            status="added",
+            additions=7,
+            deletions=0,
+            content_head=tests_source,
+            patch="@@ -0,0 +1,7 @@\n"
+            + "".join("+" + line + "\n" for line in tests_source.splitlines()),
+        )
+        if context_kind == "joined_tests":
+            files += (
+                ChangedFile(
+                    path="tests/test_requesthandler_extra.py",
+                    status="added",
+                    additions=2,
+                    deletions=0,
+                    content_head="def test_unrelated_joined_name():\n    assert True\n",
+                    patch="@@ -0,0 +1,2 @@\n+def test_unrelated_joined_name():\n+    assert True\n",
+                ),
+            )
+        files += (test_file,)
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=files),
+        triage_result=_build_triage_result(file_tiers={changed.path: ReviewTier.STANDARD}),
+    )
+    deps["provider"] = _StubLLMProvider('{"findings":[]}')
+
+    await run_analyze_pass(state, deps)
+
+    assert len(deps["provider"].calls) == 1
+    request = deps["provider"].calls[0]
+    expected_ranges = {(2, 3), (6, 7)} if test_context else {(5, 6), (9, 10)}
+    method_name = "test_handler" if test_context else "dispatch"
+    entries = [entry for entry in request.context_summary if method_name in entry.scope_unit_name]
+    assert len(entries) == 2
+    assert len({entry.scope_unit_name for entry in entries}) == 2
+    assert {(entry.line_start, entry.line_end) for entry in entries} == expected_ranges
+    assert all(len(entry.scope_unit_name) <= 1024 for entry in entries)
+    assert request.user_prompt.count(f"def {method_name}(") == 2
+    assert "test_unrelated_joined_name" not in request.user_prompt
+    assert all(
+        entry.file_path != "tests/test_requesthandler_extra.py" for entry in request.context_summary
+    )
+
+
+@pytest.mark.asyncio
+async def test_disabled_supplement_skips_selection_and_budgets_only_sent_context(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _build_review_state()
+    deps["provider"] = _StubLLMProvider('{"findings":[]}')
+    enabled = await run_analyze_pass(state, deps)
+    enabled_request = deps["provider"].calls[0]
+
+    def unexpected_selection(**kwargs: object) -> None:
+        pytest.fail("Disabled context selected or parsed supplementary source")
+
+    monkeypatch.setattr("outrider.agent.nodes.analyze.prepare_review_context", unexpected_selection)
+    deps["provider"] = _StubLLMProvider('{"findings":[]}')
+    disabled = await run_analyze_pass(state, {**deps, "supplemental_context_enabled": False})
+
+    assert len(deps["provider"].calls) == 1
+    disabled_request = deps["provider"].calls[0]
+    for name in ("system_prompt", "model", "max_tokens", "temperature", "response_schema_json"):
+        assert getattr(enabled_request, name) == getattr(disabled_request, name)
+    assert "## Additional bounded review context" in enabled_request.user_prompt
+    assert "## Additional bounded review context" not in disabled_request.user_prompt
+    assert disabled_request.context_summary == enabled_request.context_summary
+    assert (
+        disabled["analyze_worker_outcomes"][0].estimated_tokens
+        < enabled["analyze_worker_outcomes"][0].estimated_tokens
+    )
+
+
+@pytest.mark.asyncio
+async def test_module_context_off_is_exact_and_invalid_modes_reject_before_index_or_provider(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unexpected_index(*args: object, **kwargs: object) -> None:
+        pytest.fail("Inactive or rejected module mode built its index")
+
+    monkeypatch.setattr("outrider.agent.nodes.analyze.build_module_context_index", unexpected_index)
+    deps["provider"] = _StubLLMProvider('{"findings":[]}')
+    await run_analyze_pass(_build_review_state(), deps)
+    default = deps["provider"].calls[-1]
+    await run_analyze_pass(_build_review_state(), {**deps, "module_context_enabled": False})
+    assert default.model_dump() == deps["provider"].calls[-1].model_dump()
+    calls_before = len(deps["provider"].calls)
+    phases_before = len(deps["phase_event_sink"].events)
+    for state, options, message in (
+        (_build_review_state(is_eval=False), {}, "only for evaluation"),
+        (
+            _build_review_state(),
+            {"called_function_context_enabled": True},
+            "cannot be enabled together",
+        ),
+        (
+            _build_review_state(),
+            {"supplemental_context_enabled": False},
+            "requires the base context supplement",
+        ),
+    ):
+        with pytest.raises(ValueError, match=message):
+            await run_analyze_pass(state, {**deps, **options, "module_context_enabled": True})
+    assert len(deps["provider"].calls) == calls_before
+    assert len(deps["phase_event_sink"].events) == phases_before
+
+
+@pytest.mark.asyncio
+async def test_import_references_are_default_off_and_require_the_base_context_and_factory(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def unexpected_references(*args: object, **kwargs: object) -> None:
+        pytest.fail("Disabled or invalid import references attempted repository acquisition")
+
+    monkeypatch.setattr(
+        "outrider.agent.nodes.analyze.prepare_import_reference_contexts", unexpected_references
+    )
+    state = _build_review_state()
+    default = await analyze(state, **deps)
+    explicit_off = await analyze(state, **deps, import_reference_context_enabled=False)
+    assert default.goto == explicit_off.goto
+    for options in ({}, {"supplemental_context_enabled": False, "github_factory": MagicMock()}):
+        with pytest.raises(ValueError, match="require base context and a GitHub factory"):
+            await analyze(state, **{**deps, **options}, import_reference_context_enabled=True)
+
+
+@pytest.mark.asyncio
+async def test_import_context_uses_headroom_without_reducing_primary_allocations(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from outrider.agent.nodes.analyze_context import PreparedReviewContext
+
+    async def extra_context(
+        state: ReviewState, *, files: object, base_contexts: dict, **kwargs: object
+    ):
+        return {
+            path: PreparedReviewContext(
+                context.text + "\n\n" + "REFERENCE " * 900, context.manifest
+            )
+            for path, context in base_contexts.items()
+        }
+
+    monkeypatch.setattr(
+        "outrider.agent.nodes.analyze.prepare_import_reference_contexts", extra_context
+    )
+    state = _build_review_state()
+    baseline = await analyze(state, **deps)
+    baseline_payload = baseline.goto[0].arg
+    tight_budget = baseline_payload.allocation_tokens * 4
+    for budget, expanded in ((DEFAULT_REVIEW_BUDGET_TOKENS, True), (tight_budget, False)):
+        options = {**deps, "total_review_budget_tokens": budget}
+        base = (await analyze(state, **options)).goto[0].arg
+        candidate = (
+            (
+                await analyze(
+                    state,
+                    **options,
+                    import_reference_context_enabled=True,
+                    github_factory=MagicMock(),
+                )
+            )
+            .goto[0]
+            .arg
+        )
+        assert base.allocation_tokens > 0
+        assert candidate.allocation_tokens >= base.allocation_tokens
+        assert candidate.changed_file == base.changed_file
+        assert candidate.supplemental_context_manifest == base.supplemental_context_manifest
+        assert ("REFERENCE " in candidate.review_context) is expanded
+        if not expanded:
+            assert "Import references omitted (budget)" in candidate.review_context
+
+
+@pytest.mark.asyncio
+async def test_complete_module_preserves_long_caller_contract_and_primary_finding_bounds(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = (
+        "def changed(value):\n    return value + 1\n\n"
+        "def public_caller(value):\n"
+        '    """Public extension contract: arbitrary configured model keys. '
+        + "Extended contract detail. " * 60
+        + '"""\n    return changed(value)\n'
+    )
+    changed = _build_changed_file(
+        path="app/handler.py",
+        content=source.encode(),
+        content_base=source.replace("value + 1", "value"),
+        patch="@@ -1,2 +1,2 @@\n def changed(value):\n-    return value\n+    return value + 1\n",
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(changed,)),
+        triage_result=_build_triage_result(file_tiers={changed.path: ReviewTier.STANDARD}),
+    )
+    deps["provider"] = _StubLLMProvider('{"findings":[]}')
+    baseline = await run_analyze_pass(state, deps)
+    assert "Public extension contract" not in deps["provider"].calls[-1].user_prompt
+    proposal = json.loads(_build_finding_proposal_json(line_start=4, line_end=4))
+    proposal["findings"][0]["evidence"] = "def public_caller(value):"
+    deps["provider"] = _StubLLMProvider(json.dumps(proposal))
+    result = await run_analyze_pass(state, {**deps, "module_context_enabled": True})
+    request = deps["provider"].calls[-1]
+
+    assert "4 | def public_caller(value):" in request.user_prompt
+    assert "Public extension contract" in request.user_prompt
+    assert not result["analysis_rounds"][0].findings
+    assert deps["analyze_event_sink"].proposal_rejections
+    references = [e for e in request.context_summary if e.inclusion_reason == "captured_reference"]
+    assert [(e.file_path, e.line_start, e.line_end) for e in references] == [(changed.path, 1, 6)]
+    assert (
+        result["analyze_worker_outcomes"][0].estimated_tokens
+        > baseline["analyze_worker_outcomes"][0].estimated_tokens
+    )
+
+    def unexpected_index(*args: object, **kwargs: object) -> None:
+        pytest.fail("Trace pass rebuilt the pass-0 module index")
+
+    monkeypatch.setattr("outrider.agent.nodes.analyze.build_module_context_index", unexpected_index)
+    later_state = state.model_copy(update={"analysis_rounds": result["analysis_rounds"]})
+    await analyze(later_state, **{**deps, "module_context_enabled": True})
+
+
+@pytest.mark.asyncio
+async def test_optional_modules_preserve_primary_worker_coverage_at_the_same_budget(
+    deps: dict[str, Any],
+) -> None:
+    source = (
+        'def changed(value):\n    return value + 1\n\ndef contract():\n    """'
+        + "Public contract detail. " * 600
+        + '"""\n    return 1\n'
+    )
+    files = tuple(
+        _build_changed_file(
+            path=f"app/file{number}.py",
+            content=source.encode(),
+            content_base=source.replace("value + 1", "value"),
+            patch="@@ -1,2 +1,2 @@\n def changed(value):\n-    return value\n"
+            "+    return value + 1\n",
+        )
+        for number in range(6)
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=files),
+        triage_result=_build_triage_result(
+            file_tiers={file.path: ReviewTier.STANDARD for file in files}
+        ),
+    )
+    deps.update(total_review_budget_tokens=140_000, provider=_StubLLMProvider('{"findings":[]}'))
+    baseline = await run_analyze_pass(state, deps)
+    baseline_requests = {request.phase_key: request for request in deps["provider"].calls}
+    assert len(baseline_requests) == 5
+
+    deps["provider"] = _StubLLMProvider('{"findings":[]}')
+    expanded = await run_analyze_pass(state, {**deps, "module_context_enabled": True})
+    expanded_requests = {request.phase_key: request for request in deps["provider"].calls}
+    assert expanded_requests.keys() == baseline_requests.keys()
+    assert [o.skip_reason for o in expanded["analyze_worker_outcomes"]] == [
+        o.skip_reason for o in baseline["analyze_worker_outcomes"]
+    ]
+    for key, request in expanded_requests.items():
+        before = baseline_requests[key]
+        assert (
+            request.user_prompt.split("## Additional bounded review context")[0]
+            == (before.user_prompt.split("## Additional bounded review context")[0])
+        )
+        assert tuple(
+            e for e in request.context_summary if e.inclusion_reason == "changed_scope"
+        ) == (tuple(e for e in before.context_summary if e.inclusion_reason == "changed_scope"))
+    assert any(
+        "Complete captured head reference" in r.user_prompt for r in expanded_requests.values()
+    )
+    assert any(
+        "Complete module references omitted to preserve planned review coverage" in r.user_prompt
+        for r in expanded_requests.values()
+    )
+    assert sum(o.estimated_tokens for o in expanded["analyze_worker_outcomes"]) <= 140_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "base", "head", "warning_line", "removed_text"),
+    [
+        pytest.param(
+            "src/access.py",
+            "def allow(user):\n    require_admin(user)\n    return True\n",
+            "def allow(user):\n    return True\n",
+            2,
+            "require_admin(user)",
+            id="removed-auth-check",
+        ),
+        pytest.param(
+            "src/settings.py",
+            "REQUIRE_AUTH = True\n",
+            "REQUIRE_AUTH = False\n",
+            1,
+            "REQUIRE_AUTH = True",
+            id="module-setting",
+        ),
+        pytest.param(
+            "src/mixed.py",
+            "REQUIRE_AUTH = True\n\ndef version():\n    return 1\n",
+            "REQUIRE_AUTH = False\n\ndef version():\n    return 2\n",
+            1,
+            "REQUIRE_AUTH = True",
+            id="module-with-trivial-function",
+        ),
+        pytest.param(
+            "src/separated_settings.py",
+            "REQUIRE_AUTH = True\n\ndef version():\n    major = 1\n    minor = 0\n"
+            "    patch = 0\n    return major, minor, patch\n\nALLOW_ANONYMOUS = False\n",
+            "REQUIRE_AUTH = False\n\ndef version():\n    major = 1\n    minor = 0\n"
+            "    patch = 0\n    return major, minor, patch\n\nALLOW_ANONYMOUS = True\n",
+            1,
+            "REQUIRE_AUTH = True",
+            id="separated-module-settings",
+        ),
+        pytest.param(
+            "src/deleted.py",
+            "def check():\n    require_admin()\n\nSAFE = True\n",
+            "SAFE = True\n",
+            1,
+            "require_admin()",
+            id="removed-whole-function",
+        ),
+        pytest.param(
+            "config/auth.json",
+            '{"require_auth": true}\n',
+            '{"require_auth": false}\n',
+            1,
+            '"require_auth": true',
+            id="json-setting",
+        ),
+        pytest.param(
+            "config/auth.yaml",
+            "require_auth: true\n",
+            "require_auth: false\n",
+            1,
+            "require_auth: true",
+            id="yaml-setting",
+        ),
+        pytest.param(
+            ".env.example",
+            "REQUIRE_AUTH=true\n",
+            "REQUIRE_AUTH=false\n",
+            1,
+            "REQUIRE_AUTH=true",
+            id="example-environment",
+        ),
+    ],
+)
+async def test_removed_code_and_settings_reach_model_review(
+    deps: dict[str, Any], path: str, base: str, head: str, warning_line: int, removed_text: str
+) -> None:
+    """The worker serves removals/settings, admits their JUDGED location and records its scope."""
+    from difflib import unified_diff
+
+    patch = "".join(
+        unified_diff(
+            base.splitlines(True), head.splitlines(True), fromfile=f"a/{path}", tofile=f"b/{path}"
+        )
+    )
+    changed = _build_changed_file(path=path, content=head.encode(), content_base=base, patch=patch)
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(changed,)),
+        triage_result=_build_triage_result(file_tiers={path: ReviewTier.DEEP}),
+    )
+    proposal = json.loads(
+        _build_finding_proposal_json(
+            finding_type="auth_bypass", line_start=warning_line, line_end=warning_line
+        )
+    )
+    proposal["findings"][0]["evidence"] = head.splitlines()[warning_line - 1]
+    proposal["findings"][0]["trace_candidates"] = [
+        {"import_string_raw": "app.settings", "reason": "Check configuration consumer"}
+    ]
+    deps["provider"] = _StubLLMProvider(json.dumps(proposal))
+    result = await run_analyze_pass(state, {**deps, "trivial_scope_filter_enabled": True})
+
+    [request] = deps["provider"].calls
+    assert removed_text in request.user_prompt
+    assert any(
+        entry.line_start <= warning_line <= entry.line_end
+        and entry.inclusion_reason in {"changed_scope", "changed_region"}
+        for entry in request.context_summary
+    )
+    [finding] = result["analysis_rounds"][0].findings
+    assert finding.line_start == warning_line
+    assert finding.evidence_tier is EvidenceTier.JUDGED
+    [exam] = deps["file_examination_sink"].events
+    assert exam.skip_reason is None
+    if path.endswith((".json", ".yaml")) or path == ".env.example":
+        assert request.degraded_mode is True
+        assert request.degradation_reason == "text_only_context"
+        assert "No AST" in request.user_prompt
+        assert "parsed cleanly" not in request.user_prompt
+        assert not result["trace_candidates"]
+        assert exam.parse_status == "degraded"
+    else:
+        assert request.degraded_mode is False
+        assert exam.parse_status == "clean"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "head", "generated"),
+    [
+        ("types/public.pyi", "def fetch(timeout: int) -> str: ...\n", False),
+        ("types/public.d.ts", "export declare function fetch(timeout: number): string;\n", False),
+        ("types/public.d.mts", "export declare function fetch(timeout: number): string;\n", False),
+        ("types/public.d.cts", "export declare function fetch(timeout: number): string;\n", False),
+        ("src/client.py", "def fetch(timeout: int) -> str:\n    return str(timeout)\n", False),
+        (
+            "src/client.ts",
+            "export function fetch(timeout: number) { return String(timeout); }\n",
+            False,
+        ),
+        ("src/generated.py", "# DO NOT EDIT\ndef fetch(timeout: int) -> str: ...\n", True),
+        (
+            "src/generated.ts",
+            "// DO NOT EDIT\nexport declare function fetch(timeout: number): string;\n",
+            True,
+        ),
+    ],
+    ids=(
+        "python-stub",
+        "typescript-declaration",
+        "mts-declaration",
+        "cts-declaration",
+        "python-source",
+        "typescript-source",
+        "generated-python",
+        "generated-typescript",
+    ),
+)
+async def test_public_declarations_reach_native_analysis(
+    deps: dict[str, Any], path: str, head: str, generated: bool
+) -> None:
+    """Review handwritten contracts through planner, worker, admission and aggregate."""
+    base = head.replace("timeout", "wait")
+    patch = "".join(
+        unified_diff(
+            base.splitlines(True), head.splitlines(True), fromfile=f"a/{path}", tofile=f"b/{path}"
+        )
+    )
+    changed = _build_changed_file(path=path, content=head.encode(), content_base=base, patch=patch)
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(changed,)),
+        triage_result=_build_triage_result(file_tiers={path: ReviewTier.DEEP}),
+    )
+    line = next(number for number, text in enumerate(head.splitlines(), 1) if "fetch(" in text)
+    evidence = head.splitlines()[line - 1]
+    proposal = json.loads(
+        _build_finding_proposal_json(finding_type="correctness_bug", line_start=line, line_end=line)
+    )
+    proposal["findings"][0].update(
+        title="Public declaration review candidate",
+        description="Scripted candidate for review coverage and retention.",
+        evidence=evidence,
+    )
+    deps["provider"] = _StubLLMProvider(json.dumps(proposal))
+
+    result = await run_analyze_pass(state, deps)
+
+    [exam] = deps["file_examination_sink"].events
+    round_ = result["analysis_rounds"][0]
+    if generated:
+        assert not deps["provider"].calls
+        assert exam.parse_status == "skipped"
+        assert exam.skip_reason is SkipReason.GENERATED_BANNER
+        assert round_.files_skipped == (path,)
+        assert not round_.findings
+        return
+    assert exam.skip_reason is None
+    [request] = deps["provider"].calls
+    assert evidence in request.user_prompt and "wait" in request.user_prompt
+    assert any(entry.line_start <= line <= entry.line_end for entry in request.context_summary)
+    assert exam.parse_status == "clean"
+    [finding] = round_.findings
+    assert finding.file_path == path and finding.line_start == finding.line_end == line
+    assert finding.evidence == evidence and finding.evidence_tier is EvidenceTier.JUDGED
+    assert finding.query_match_id is None and finding.trace_path is None
+
+
+@pytest.mark.asyncio
+async def test_bounded_primary_regions_do_not_admit_omitted_source(deps: dict[str, Any]) -> None:
+    head = "".join(f"AUTH_{number} = False\n" for number in range(150))
+    patch = "--- /dev/null\n+++ b/src/many_settings.py\n@@ -0,0 +1,150 @@\n" + "".join(
+        f"+{line}" for line in head.splitlines(True)
+    )
+    changed = _build_changed_file(
+        path="src/many_settings.py", content=head.encode(), content_base="", patch=patch
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(changed,)),
+        triage_result=_build_triage_result(file_tiers={changed.path: ReviewTier.DEEP}),
+    )
+    visible = json.loads(
+        _build_finding_proposal_json(finding_type="auth_bypass", line_start=1, line_end=1)
+    )["findings"][0]
+    visible["evidence"] = "AUTH_0 = False"
+    omitted = {**visible, "line_start": 150, "line_end": 150, "evidence": "AUTH_149 = False"}
+    deps["provider"] = _StubLLMProvider(json.dumps({"findings": [visible, omitted]}))
+    result = await run_analyze_pass(state, deps)
+
+    [request] = deps["provider"].calls
+    primary = [
+        entry for entry in request.context_summary if entry.inclusion_reason == "changed_region"
+    ]
+    assert primary and sum(entry.line_end - entry.line_start + 1 for entry in primary) <= 100
+    assert all(entry.line_end < 150 for entry in primary)
+    assert "coverage is incomplete" in request.user_prompt
+    assert [finding.line_start for finding in result["analysis_rounds"][0].findings] == [1]
+    [rejected] = deps["analyze_event_sink"].proposal_rejections
+    assert rejected.rejection_reason == "span_outside_scope_unit"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("head", "hunk", "misaligned"),
+    [
+        pytest.param(
+            "value = 1\n", "@@ -1 +1,2 @@\n value = 1\n+ALLOW = True\n", True, id="phantom-eof"
+        ),
+        pytest.param(
+            "value = 1\nALLOW = True\n",
+            "@@ -1 +1,3 @@\n value = 1\n+ALLOW = True\n+EXTRA = True\n",
+            True,
+            id="valid-run-ending-at-phantom-eof",
+        ),
+        pytest.param("", "@@ -0,0 +1 @@\n+ALLOW = True\n", True, id="empty-head"),
+        pytest.param("\n", "@@ -0,0 +1 @@\n+\n", False, id="actual-blank-line"),
+        pytest.param(
+            "value = 1\n\n", "@@ -1 +1,2 @@\n value = 1\n+\n", False, id="actual-blank-line-at-eof"
+        ),
+    ],
+)
+async def test_added_lines_must_exist_in_physical_head(
+    deps: dict[str, Any], head: str, hunk: str, misaligned: bool
+) -> None:
+    changed = _build_changed_file(
+        path="src/bounds.py",
+        content=head.encode(),
+        content_base="value = 1\n",
+        patch="--- a/src/bounds.py\n+++ b/src/bounds.py\n" + hunk,
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(changed,)),
+        triage_result=_build_triage_result(file_tiers={changed.path: ReviewTier.DEEP}),
+    )
+    deps["provider"] = _StubLLMProvider('{"findings": []}')
+    await run_analyze_pass(state, deps)
+    [exam] = deps["file_examination_sink"].events
+    if misaligned:
+        assert exam.skip_reason is SkipReason.PATCH_HEAD_MISALIGNED
+        assert not deps["provider"].calls
+    else:
+        assert exam.skip_reason is None
+        assert len(deps["provider"].calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_removed_auth_check_blocks_enforced_observed_skip(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Covering an addition in another function cannot cover a zero-context guard removal."""
+    from difflib import unified_diff
+    from types import MappingProxyType
+
+    import outrider.queries.registry as registry
+    from outrider.queries.observed import QueryClass
+
+    base = (
+        "import requests\n\ndef read_secret(user):\n    require_admin(user)\n"
+        "    return 'secret'\n\ndef run_it(cmd):\n    return cmd\n"
+    )
+    head = (
+        "import requests\n\ndef read_secret(user):\n    return 'secret'\n\n"
+        "def run_it(cmd):\n    requests.get(cmd, verify=False)\n    return cmd\n"
+    )
+    path = "src/access.py"
+    patch = "".join(
+        unified_diff(
+            base.splitlines(True),
+            head.splitlines(True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            n=0,
+        )
+    )
+    changed = _build_changed_file(path=path, content=head.encode(), content_base=base, patch=patch)
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(changed,)),
+        triage_result=_build_triage_result(file_tiers={path: ReviewTier.DEEP}),
+    )
+    promoted = dict(registry.OBSERVED_QUERIES)
+    key = "python.tls_verify_disabled"
+    promoted[key] = promoted[key].model_copy(update={"query_class": QueryClass.SKIP_SAFE})
+    monkeypatch.setattr(registry, "OBSERVED_QUERIES", MappingProxyType(promoted))
+    deps["provider"] = _StubLLMProvider('{"findings": []}')
+    await run_analyze_pass(state, {**deps, "analyze_observed_skip_enforced": True})
+
+    [request] = deps["provider"].calls
+    assert "require_admin(user)" in request.user_prompt
+    [shadow] = deps["analyze_event_sink"].observed_skip_shadows
+    assert shadow.outcome == "not_eligible"
+    assert any(blocker.side == "base" and blocker.line_start == 4 for blocker in shadow.blockers)

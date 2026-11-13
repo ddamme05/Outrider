@@ -1,9 +1,7 @@
-# Tests for the github/auth.py vendor wrapper.
-"""Confirm `make_installation_client_factory` produces per-installation
-client factories and is the only call site of
-`githubkit.AppInstallationAuthStrategy` in the codebase (per
-`vendor-sdks-only-in-wrappers`).
-"""
+"""Check per-installation GitHub clients and the SDK authentication boundary.
+
+Only the wrapper may construct AppInstallationAuthStrategy
+(``vendor-sdks-only-in-wrappers``)."""
 
 from __future__ import annotations
 

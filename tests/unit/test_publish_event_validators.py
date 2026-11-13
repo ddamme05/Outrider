@@ -1,21 +1,7 @@
-"""Validator coverage for `PublishRoutingEvent` + `PublishEligibilityEvent`.
+"""Check publish routing and eligibility event validation.
 
-Backs the schema-layer defenses introduced for the V1 publish-node spec:
-
-- `_enforce_coordinate_error_kind_membership` — field-level membership check
-  against `CoordinateErrorKind` so JSON-replay events carrying invented
-  kind values can't admit.
-- `_enforce_coordinate_error_kind_required_iff_coordinate_error` — total
-  cover over the (reason × kind) product, not just the two ends.
-- `_verify_finding_content_hash` — recompute via `compute_finding_content_hash`,
-  honest hash binding rather than pattern-only field-level check.
-- `_enforce_severity_matches_policy` (eligibility-side) — mirror of
-  FindingEvent's validator so the eligibility audit shadow is at least
-  as strict as the source.
-- `_enforce_v1_no_overrides` — schema-layer rejection of `original_severity`
-  on an eligibility event before HITL ships; defends the audit row against
-  replay-injected pre-approved downgrades.
-"""
+Cover typed coordinate errors, matching error reasons, content hashes, policy
+severity, and override rejection before invalid audit data can be stored."""
 
 from typing import Any
 from uuid import uuid4

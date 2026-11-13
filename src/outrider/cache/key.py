@@ -1,15 +1,10 @@
-# Per specs/2026-06-11-file-hash-analyze-cache.md — the analyze-cache key.
-# Per DECISIONS.md#056: the host-identity triad (profile_id, reasoning_enabled,
-# profile_contract_digest) joins the key, splitting the analyze cache by host.
-"""Compose analyze-cache identity from the prompt, scope, rules, and admission facts.
+"""Build the stable key for reusing a file-analysis result.
 
-Use the same canonical prompt hash as LLMCallEvent.prompt_hash. Explicit inputs
-pin rule versions and admission context absent from prompt bytes; installation
-and repository IDs partition the key by tenant and repository.
+The key covers the prompt, analysis rules, model settings and tenant scope.
+Prompt bytes alone are insufficient because evidence checks also depend on
+inputs outside the prompt. Callers supply versioned rule identifiers.
 
-Callers supply version values so this module need not import tree-sitter-backed
-version providers. Each component uses its UTF-8 byte length as a prefix, so
-attacker-influenced strings cannot shift bytes across component boundaries.
+See DECISIONS.md#056 and specs/2026-06-11-file-hash-analyze-cache.md.
 """
 
 from __future__ import annotations
@@ -19,17 +14,11 @@ from typing import Final
 
 from outrider.llm.base import _canonical_prompt_hash
 
-# Recipe version: bump on ANY recipe change, including component additions,
-# removals, reordering, or changes to length-prefix framing (DECISIONS.md#056).
-# This explicit marker is separate from parser/producer admission versions.
-# Keep it first in the recipe so a bump re-keys the cache.
-#
-# Earlier recipes added host identity (v2, #056), from-import correction inputs
-# (v3, #024), and import-binding facts (v4). v5 added lexical visibility spans
-# and widened the import digest to include the value-import marker.
-# v6 adds module admission (#062): head-side added ranges, the bytes they cover,
-# and every parsed scope span. These inputs can live outside rendered scopes;
-# identical prompts alone cannot authorize reuse of their admitted findings.
+# Bump on component, ordering or framing changes (DECISIONS.md#056); keep this
+# marker first so a bump re-keys the cache independently of admission versions.
+# Host identity (#056), corrected imports (#024), import bindings and lexical
+# visibility all affect reuse. Module admission (#062) also keys added ranges,
+# their bytes and every scope span, which can lie outside the rendered prompt.
 ANALYZE_CACHE_KEY_VERSION: Final = "analyze-cache-key-v6"
 
 

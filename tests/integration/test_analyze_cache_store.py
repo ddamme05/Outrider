@@ -1,11 +1,7 @@
-# Per specs/2026-06-11-file-hash-analyze-cache.md — store + retention contracts.
-"""AnalyzeCacheStore against real Postgres: write/lookup round-trip,
-conflict semantics (live row wins; an EXPIRED row is refreshed in
-place), the three no-resurrection layers (lookup-time expiry on the DB
-clock, review-purge CASCADE, retention bound at write), the self-hit
-exclusion (a review never reads its own writes as hits), and the
-reviews-row scope resolution the key's tenant components come from.
-"""
+"""Check analyze-cache reads and writes against PostgreSQL.
+
+Cover live-row reuse, expired-row refresh, review-scoped lookups, and protection
+against self-hits or recreating content after retention has removed it."""
 
 from __future__ import annotations
 

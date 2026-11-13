@@ -1,17 +1,10 @@
-# See DECISIONS.md#070 — setup/onboarding config surface (database-mode).
-"""Config for App-Manifest onboarding (`DECISIONS.md#070`).
+"""Validate the public URL and signing secret used for GitHub App setup.
 
-Two new settings, both **required in `database` mode** (ignored in `env` mode):
+Database credential mode requires both values at startup. Manifest URLs use
+OUTRIDER_PUBLIC_BASE_URL, never the request Host header. state_token.py validates
+OUTRIDER_SETUP_STATE_SECRET before signing or accepting callbacks.
 
-- `OUTRIDER_PUBLIC_BASE_URL` — the canonical externally-reachable base (e.g. `https://ci.acme.com`).
-  Every manifest URL (setup, redirect, webhook, callback) is built from THIS, never the request
-  `Host` header (an attacker-controlled header must not steer where GitHub sends the code/creds).
-- `OUTRIDER_SETUP_STATE_SECRET` — the HMAC secret for the signed `state`; validated in
-  `state_token.validate_setup_state_secret` (present + non-placeholder + ≥32 chars + distinct from
-  sibling secret roots).
-
-`validate_setup_config()` is the eager boot check the composition root calls in `database` mode so a
-missing/malformed value fails loud at startup, not at the first `POST /setup`.
+See DECISIONS.md#070.
 """
 
 from __future__ import annotations

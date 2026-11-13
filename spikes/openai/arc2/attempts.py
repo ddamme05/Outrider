@@ -1,31 +1,12 @@
-"""The ordered attempt ledger — REFERENCES only. The fixture bytes are the evidence.
+"""Record each probe attempt by its fixture path and digest.
 
-Three disjoint attempt kinds, discriminated on `kind`, each persisted whole as its
-own fixture file:
+Keep completed responses, transport failures and unreadable response envelopes
+as separate attempt types. Completed content remains evidence even when it fails
+schema validation. The ledger stores order and references; the verifier reads
+response facts from the hash-checked fixture files.
 
-- `CompletedCapture` — a response was normalized successfully. This includes a
-  response whose CONTENT later fails strict validation: the content is retained,
-  because wrong-tier proof must still be detectable from it. Strict validation is
-  a verifier-derived judgment ABOUT this evidence, never a reason to discard it.
-- `TransportFailure` — no completed response at all (HTTP error or timeout).
-- `CaptureShapeFailure` — the wrapper could not project the response into a
-  `RawCapture` (`RawCaptureShapeError`). A projection failure and an off-schema
-  body are materially different; collapsing them would throw away a body that
-  still carries evidence. It retains `sdk_response_json` for exactly that reason.
-
-**One evidence authority.** The ledger holds ordinal + row + fixture digest and
-NOTHING ELSE. An earlier version stored the response content, refusal, model, and
-status on the ledger *beside* a fixture digest — so the verifier hashed one copy
-and graded another, and an untouched fixture could accompany forged ledger
-content. A `GO` was derivable from bytes that contained no refusal. There is now
-exactly one place a response fact can come from: the hash-verified fixture,
-decoded through the strict union.
-
-**Structure only.** This module enforces what can be checked without reading a
-body: order, prefix, contiguous ordinals, no retries, the five-call ceiling. The
-SEMANTIC automaton — which attempts are reachable given what earlier responses
-actually said — lives in the verifier, because it requires strict validation and
-parsing that only the decoded evidence supports.
+This module checks sequence structure and call limits. verifier.py decides what
+the recorded responses mean for the experiment.
 """
 
 from __future__ import annotations

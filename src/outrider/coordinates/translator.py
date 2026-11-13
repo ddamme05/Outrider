@@ -1,11 +1,11 @@
-"""tree_sitter_to_github translator + GitHubCommentLocation + CoordinateError.
+"""Convert source ranges into valid GitHub diff-comment locations.
 
-Per docs/spec.md §5.6 (the §5.6 translation functions and the failure-mode contract)
-and docs/spec.md §7.2 (the GitHubCommentLocation canonical shape).
+Helpers reject missing patch lines, invalid ranges and locations outside the
+changed side with typed coordinate errors. Raw syntax-node inputs belong to
+ast_facts/; this module works with source ranges and patch data.
 
-See DECISIONS.md#006-two-month-0-spikes-not-five for the off-by-one test
-discipline this translator honors — coordinate math correctness is enforced
-by exhaustive boundary tests on this file's surface, not by spike work.
+See DECISIONS.md#006 and docs/trust-boundaries.md §5
+(coordinates-module-is-sole-translator).
 """
 
 from __future__ import annotations

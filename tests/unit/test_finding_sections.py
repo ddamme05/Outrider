@@ -1,7 +1,7 @@
-"""Unit tests for the shared finding-presentation layer (PR A, see
-specs/2026-07-06-finding-presentation.md). Covers: totality of every humanization map, that the
-builder HUMANIZES labels, and that it returns RAW (un-escaped) model prose for each channel to
-escape itself."""
+"""Check shared finding labels and presentation sections.
+
+Every enum needs a human-readable label. Model prose remains unescaped here;
+each output channel escapes it. See specs/2026-07-06-finding-presentation.md."""
 
 from __future__ import annotations
 

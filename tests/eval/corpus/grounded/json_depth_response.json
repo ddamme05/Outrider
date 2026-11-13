@@ -1,0 +1,25 @@
+{
+  "installation_id": 9000,
+  "owner": "examples",
+  "repo": "account-service",
+  "pr_number": 10,
+  "base_sha": "0000000000000000000000000000000000000000",
+  "head_sha": "1111111111111111111111111111111111111111",
+  "pr_title": "JSON request endpoint",
+  "pr_body": "Decode supported HTTP body types and return an HTTP status with the parsed JSON payload.",
+  "author": "developer",
+  "total_additions": 12,
+  "total_deletions": 0,
+  "files": [
+    {
+      "path": "app/request_depth.py",
+      "status": "added",
+      "additions": 12,
+      "deletions": 0,
+      "patch": "@@ -0,0 +1,12 @@\n+def handle_request(request: dict[str, object]):\n+    \"\"\"Decode a request body into an HTTP status and JSON payload.\"\"\"\n+    import json\n+\n+    body = request.get(\"body\")\n+    if not isinstance(body, (str, bytes, bytearray)):\n+        return 400, None\n+    try:\n+        payload = json.loads(body)\n+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):\n+        return 400, None\n+    return 200, payload\n",
+      "content_base": null,
+      "content_head": "def handle_request(request: dict[str, object]):\n    \"\"\"Decode a request body into an HTTP status and JSON payload.\"\"\"\n    import json\n\n    body = request.get(\"body\")\n    if not isinstance(body, (str, bytes, bytearray)):\n        return 400, None\n    try:\n        payload = json.loads(body)\n    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):\n        return 400, None\n    return 200, payload\n"
+    }
+  ],
+  "llm_responses": {}
+}

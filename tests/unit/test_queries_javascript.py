@@ -1,18 +1,8 @@
-"""Per-variant structural pins for the JS/TS OBSERVED query catalog
-(specs/2026-07-03-js-ts-observed-query-catalog.md).
+"""Check each supported JS/TS structural query form and rejected near-match.
 
-Every admitted syntactic form is pinned INDIVIDUALLY (the adapters-arc
-lesson: a union positive over an alternation hides single-variant
-regressions — revert-the-fold must fail per variant), and every
-precision-guard negative is pinned individually too: a negative that
-starts firing is a proof-boundary regression, not a recall improvement.
-Each case runs under ALL THREE grammars of the javascript catalog
-(javascript / typescript / tsx) — the catalog is one query set compiled
-per dialect, and the pins prove behavior parity across them.
-
-All fixture sources are deliberately-insecure PARSER INPUTS for the
-security queries under test — nothing here executes them.
-"""
+Run every case under JavaScript, TypeScript, and TSX grammars. Unsafe fixture
+source is parsed, never executed.
+See specs/2026-07-03-js-ts-observed-query-catalog.md."""
 
 from __future__ import annotations
 

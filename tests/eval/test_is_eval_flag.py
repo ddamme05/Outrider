@@ -1,17 +1,6 @@
-"""Integration-tier test for the eval-harness is_eval=True propagation contract.
+"""Check that factory evaluation flags reach real review and audit database rows.
 
-Verifies that values constructed by the eval-harness factories propagate
-end-to-end to actual `reviews` and `audit_events` rows in Postgres. Crosses
-the DB/audit boundary; lives under tests/eval/ alongside the harness
-infrastructure it tests so cross-tier imports aren't needed (the
-production/test boundary stays at `pythonpath = ["src"]` per
-`docs/conventions.md`).
-
-The eval_db fixture's teardown integrity gate ALSO runs after this test;
-both checks fire — the explicit assertions in this test and the gate's
-UNION-over-6-tables (analyze_file_cache joined per
-specs/2026-06-11-file-hash-analyze-cache.md). Belt + suspenders.
-"""
+The eval_db teardown also checks every table that carries the flag."""
 
 from typing import Any
 

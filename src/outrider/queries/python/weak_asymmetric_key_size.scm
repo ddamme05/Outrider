@@ -1,30 +1,13 @@
-; See DECISIONS.md#057 (OBSERVED value-predicate mechanism).
+; Match RSA/DSA-named key generation with a literal integer key size.
 ;
-; Weak RSA/DSA asymmetric key size (< 2048 bits). The .scm matches the
-; key-generation call shape and captures the integer-LITERAL key size as
-; @_keysize; the registry value-predicate (queries/value_predicates.py) then
-; confirms the literal is below the secure threshold. A non-literal size
-; (a variable / expression) never matches — the pattern requires an (integer)
-; node — so the OBSERVED proof stays deterministic and never over-claims on a
-; size it cannot evaluate.
+; The registry predicate checks whether @_keysize is below 2048 bits
+; (DECISIONS.md#057). A variable or expression cannot establish that value.
 ;
-; Every pattern pins the call's LIBRARY object to RSA/DSA so the finding's claim
-; ("an RSA or DSA key < 2048 bits") is structurally proven — `generate` /
-; `generate_private_key` / `bits=` / `key_size=` are NOT RSA/DSA-exclusive names
-; on their own (a benign `token.generate(bits=128)` must not over-claim). The
-; object alternation `[(identifier) (attribute attribute: (identifier))]` matches
-; both the bare (`RSA`) and qualified (`Crypto.PublicKey.RSA`) object forms in one
-; pattern, so the library list lives in a single #any-of? per call shape.
-;
-; Known recall gap (precision-first; the JUDGED path covers it): the cryptography
-; library's POSITIONAL key_size — `rsa.generate_private_key(65537, 1024)` — is not
-; matched; only the keyword `key_size=` form is. Closing it needs a second-positional
-; anchor (key_size is the 2nd arg, after public_exponent) and is deferred per FUP-193.
-
-; PyCryptodome: RSA.generate(1024) / DSA.generate(1024), capitalized object.
-; The key size is the first positional arg (signature: generate(bits, ...)), so the
-; `.` anchor pins @_keysize to the first argument — the `e=` exponent (also an
-; integer) can never be the size.
+; Support PyCryptodome's first positional size or bits keyword, and
+; cryptography's key_size keyword, with bare or qualified receiver names.
+; The first-argument anchor keeps an integer exponent from being read as a size.
+; cryptography's positional key_size is not covered and needs model review
+; (FUP-193).
 (call
   function: (attribute
     object: [(identifier) @_lib (attribute attribute: (identifier) @_lib)]
