@@ -81,8 +81,8 @@ def test_contract_token_change_moves_registry_digest() -> None:
     drifted = {
         **registry.VALUE_PREDICATES,
         "python.weak_asymmetric_key_size": ValuePredicate(
-            evaluate=orig.evaluate,
-            contract_token="weak_asymmetric_key_size:min_secure_bits=3072:v1",  # noqa: S106 (digest token, not a secret)
+            filter_matches=orig.filter_matches,
+            contract_token=f"weak_asymmetric_key_size:min_secure_bits=3072:{VALUE_PREDICATE_CONTRACT_VERSION}",
         ),
     }
     moved = registry._registry_digest(registry._QUERY_BODIES, registry._OBSERVED_QUERIES, drifted)

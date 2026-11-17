@@ -1,4 +1,4 @@
-"""Apply numeric checks to structural-query matches.
+"""Apply source checks to structural-query matches.
 
 These checks use source facts, never model judgment. Their parameters enter
 the registry digest; changing predicate behavior also requires a version bump.
@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
+from outrider.queries.python_datetime import datetime_now_without_offset_check
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
@@ -21,7 +23,7 @@ if TYPE_CHECKING:
 # parameters below (e.g. the bit threshold) ARE in the token, so a threshold
 # change moves the digest without a version bump; this version covers logic
 # shape changes (e.g. switching the parse base, or the comparison operator).
-VALUE_PREDICATE_CONTRACT_VERSION: Final = "v1"
+VALUE_PREDICATE_CONTRACT_VERSION: Final = "v2"
 
 # RSA/DSA keys below this many bits are weak (factorable by well-resourced
 # attackers; below current NIST/industry guidance). Strict `<`: 2048 is the
@@ -38,14 +40,14 @@ _KEY_SIZE_CAPTURE: Final = "_keysize"
 class ValuePredicate:
     """A named deterministic filter applied to a query's matches post-structure.
 
-    `evaluate(match, source) -> bool` returns True to KEEP the match (the
-    finding fires) and False to DROP it. `contract_token` is the stable string
+    `filter_matches(matches, source)` keeps only the proven matches.
+    `contract_token` is the stable string
     folded into `QUERY_REGISTRY_DIGEST`: it encodes the predicate identity AND
     every parameter that changes its verdict, so a parameter edit invalidates
     cached analyze rows produced under the old verdict.
     """
 
-    evaluate: Callable[[QueryMatchSpan, bytes], bool]
+    filter_matches: Callable[[list[QueryMatchSpan], bytes], list[QueryMatchSpan]]
     contract_token: str
 
 
@@ -93,8 +95,14 @@ def _evaluate_weak_asymmetric_key_size(match: QueryMatchSpan, source: bytes) -> 
 # import-pinned QUERY_REGISTRY_DIGEST (FUP-193 review).
 VALUE_PREDICATES: Final[Mapping[str, ValuePredicate]] = MappingProxyType(
     {
+        "python.datetime_now_without_offset_check": ValuePredicate(
+            filter_matches=datetime_now_without_offset_check,
+            contract_token=f"datetime_now_without_offset_check:{VALUE_PREDICATE_CONTRACT_VERSION}",
+        ),
         "python.weak_asymmetric_key_size": ValuePredicate(
-            evaluate=_evaluate_weak_asymmetric_key_size,
+            filter_matches=lambda matches, source: [
+                match for match in matches if _evaluate_weak_asymmetric_key_size(match, source)
+            ],
             contract_token=(
                 f"weak_asymmetric_key_size:min_secure_bits={_RSA_DSA_MIN_SECURE_BITS}"
                 f":{VALUE_PREDICATE_CONTRACT_VERSION}"

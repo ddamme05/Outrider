@@ -120,13 +120,12 @@ class ObservedQuery(BaseModel):
     (an admission-affecting rule — a binding edit changes which matches are
     admitted, so it must invalidate cached outcomes).
 
-    `binding=None` means the match is admitted on structure alone — correct
+    `binding=None` skips the producer-side import join. This fits
     for globals (`eval`, `Function`) and for queries whose pattern already
     text-constrains its receiver (`process.env` chain — no import needed;
     pair the entry with `shadow_guard` so a shadowing local binding of the
-    guarded global is denied at the match site). Every python-catalog
-    entry is `None`: the binding step is a JS/TS admission rule; Python
-    OBSERVED behavior is byte-stable (its sibling gap is FUP-184 scope).
+    guarded global is denied at the match site). Python checks may also
+    supply a source predicate for proofs unavailable to the import join.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -161,6 +160,8 @@ class ObservedQuery(BaseModel):
     # admission would weaken an import-join proof). Digest auto-folds it
     # (FUP-181), so flipping eligibility invalidates cached analyze rows.
     module_scope_eligible: bool = False
+    # Require the matched evidence to lie on an added HEAD range, even inside a selected scope.
+    requires_added_lines: bool = False
 
     @field_validator("shadow_guard")
     @classmethod
