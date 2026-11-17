@@ -616,17 +616,13 @@ def match(
             )
         )
 
-    # Value predicates apply numeric gates unavailable in tree-sitter queries,
+    # Value predicates check source facts the structural query alone cannot establish,
     # using domain spans and source bytes (DECISIONS.md#057; trust-boundaries §1).
     # Parameters enter QUERY_REGISTRY_DIGEST through contract_token; logic changes
     # need a VALUE_PREDICATE_CONTRACT_VERSION bump because source code is not hashed.
     predicate = VALUE_PREDICATES.get(query_match_id)
-    if predicate is not None:
-        filtered_matches: list[QueryMatchSpan] = []
-        for query_match in raw_matches:
-            if predicate.evaluate(query_match, source):
-                filtered_matches.append(query_match)
-        raw_matches = filtered_matches
+    if predicate is not None and raw_matches:
+        raw_matches = predicate.filter_matches(raw_matches, source)
 
     # Sort matches by (byte_start, byte_end) with captures-projection tiebreaker
     # per Internal contracts (Pydantic models lack a default `__lt__`).

@@ -10,7 +10,20 @@ import pytest
 from outrider.queries import registry
 
 # (query_id, positive_src, negative_src): positive must match >=1, negative 0.
+_DATETIME_QUERY = "python.datetime_now_without_offset_check"
+_DATETIME_GUARD = (
+    "def format_date(value):\n"
+    "    import datetime as dt\n"
+    "    if isinstance(value, dt.datetime) and value.tzinfo is not None:\n"
+    "        today = dt.datetime.now(value.tzinfo).date()\n"
+)
+_DATETIME_OFFSET_CHECK = _DATETIME_GUARD.replace(
+    "value.tzinfo is not None", "value.utcoffset() is not None"
+)
+
+
 _CASES: tuple[tuple[str, str, str], ...] = (
+    (_DATETIME_QUERY, _DATETIME_GUARD, _DATETIME_OFFSET_CHECK),
     (
         "python.command_injection_subprocess_shell",
         "import subprocess\n"
@@ -345,6 +358,81 @@ def test_weak_asymmetric_key_size_value_predicate(src: str, should_match: bool) 
         assert len(matches) >= 1, f"{src!r} should fire (weak literal key size)"
     else:
         assert len(matches) == 0, f"{src!r} must NOT fire (secure / non-literal / wrong shape)"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(_DATETIME_OFFSET_CHECK, id="offset-checked"),
+        pytest.param(
+            _DATETIME_GUARD.replace("now(value.tzinfo)", "now(dt.timezone.utc)"),
+            id="known-fixed-offset",
+        ),
+        pytest.param(
+            _DATETIME_GUARD.replace("import datetime", "import custom_dates"),
+            id="unrelated-module",
+        ),
+        pytest.param(
+            "isinstance = is_aware\n" + _DATETIME_GUARD,
+            id="shadowed-global",
+        ),
+        pytest.param(
+            _DATETIME_GUARD + "    isinstance = is_aware\n",
+            id="shadowed-local",
+        ),
+        pytest.param(
+            "def configure():\n"
+            "    global isinstance\n"
+            "    isinstance = is_aware\n"
+            "configure()\n" + _DATETIME_GUARD,
+            id="global-rebinding-in-sibling",
+        ),
+        pytest.param(
+            _DATETIME_GUARD.replace("value):", "value: AwareDatetime):"),
+            id="aware-only-type-contract",
+        ),
+        pytest.param(
+            _DATETIME_GUARD.replace("    if ", "    assert value.utcoffset() is not None\n    if "),
+            id="prior-offset-check",
+        ),
+        pytest.param(
+            _DATETIME_GUARD.replace("now(value.tzinfo)", "now(other.tzinfo)"),
+            id="different-object",
+        ),
+        pytest.param(
+            _DATETIME_GUARD.replace("value", "dt"),
+            id="import-overwrites-parameter",
+        ),
+        pytest.param(
+            "def format_date(value):\n"
+            "    import datetime as dt\n"
+            "    try:\n"
+            "        if isinstance(value, dt.datetime) and value.tzinfo is not None:\n"
+            "            today = dt.datetime.now(value.tzinfo).date()\n"
+            "        else:\n"
+            "            today = dt.date.today()\n"
+            "    except ValueError:\n"
+            "        today = dt.date.today()\n"
+            "    return today\n",
+            id="exception-restores-naive-fallback",
+        ),
+        pytest.param(
+            _DATETIME_GUARD.replace(
+                "    if ",
+                "    dt = custom_dates\n    if ",
+            ),
+            id="rebound-datetime-alias",
+        ),
+    ],
+)
+def test_datetime_offset_check_rejects_unproved_candidates(source: str) -> None:
+    assert registry.match(_DATETIME_QUERY, source.encode()) == ()
+
+
+def test_datetime_offset_check_accepts_an_unaliased_local_import() -> None:
+    source = _DATETIME_GUARD.replace("datetime as dt", "datetime").replace("dt.", "datetime.")
+    matches = registry.match(_DATETIME_QUERY, source.encode())
+    assert len(matches) == 1
 
 
 def test_every_observed_query_has_a_precision_case() -> None:

@@ -293,16 +293,26 @@ def lexical_bindings_digest(lexical_bindings: tuple[LexicalBinding, ...]) -> str
     return hasher.hexdigest()
 
 
+def _span_on_added_lines(
+    span: QueryMatchSpan, added_line_ranges: tuple[tuple[int, int], ...]
+) -> bool:
+    return any(
+        start <= span.byte_start and span.byte_end <= end for start, end in added_line_ranges
+    )
+
+
 def module_admission_digest(
     added_line_ranges: tuple[tuple[int, int], ...],
     all_scope_units: tuple[ScopeUnit, ...],
     content_bytes: bytes,
+    *,
+    file_path: str = "",
 ) -> str:
-    """Pin changed ranges, every parsed scope span, and changed module bytes.
+    """Pin changed ranges, scope spans, and structural proof on added lines.
 
-    Ranges retain patch order; scope spans are sorted and deduplicated.
-    Content matters because identical ranges over different bytes produce
-    different query matches (DECISIONS.md#062).
+    Ranges retain patch order and scope spans are sorted and deduplicated.
+    An added-line rule can depend on source outside the rendered scope.
+    Hash its actual matches so that source can invalidate a cached finding.
     """
     hasher = hashlib.sha256()
     hasher.update(f"{len(added_line_ranges)}:".encode())
@@ -314,6 +324,16 @@ def module_admission_digest(
     hasher.update(f"{len(spans)}:".encode())
     for span_start, span_end in spans:
         hasher.update(f"{span_start}:{span_end}:".encode())
+
+    grammar = query_registry.grammar_for_path(file_path)
+    language = query_registry.query_language_for_path(file_path)
+    if added_line_ranges and grammar is not None and language is not None:
+        for query_id, query in sorted(query_registry.observed_queries_for(language).items()):
+            if not query.requires_added_lines:
+                continue
+            for match in query_registry.match(query_id, content_bytes, grammar=grammar):
+                if _span_on_added_lines(match, added_line_ranges):
+                    hasher.update(f"|{query_id}:{match.byte_start}:{match.byte_end}".encode())
     return hasher.hexdigest()
 
 
@@ -430,6 +450,8 @@ def run_observed_matches(
             continue
         for span in query_registry.match(query_id, content_bytes, grammar=grammar):
             if span.byte_end <= span.byte_start:
+                continue
+            if observed.requires_added_lines and not _span_on_added_lines(span, added_line_ranges):
                 continue
             # Proof needs an included scope or a disjoint, diff-anchored span.
             contained = any(

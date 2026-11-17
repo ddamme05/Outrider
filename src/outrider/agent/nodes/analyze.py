@@ -2950,9 +2950,12 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             import_bindings_digest=import_bindings_digest(trace_import_refs),
             # Shadowing may come from enclosing scopes outside the prompt.
             lexical_bindings_digest=lexical_bindings_digest(parse_result.lexical_bindings),
-            # Module admission uses added bytes and all scope spans, beyond prompt context.
+            # Structural proof can depend on source outside the rendered scopes.
             module_admission_digest=module_admission_digest(
-                module_added_ranges, module_all_scope_units, content_bytes
+                module_added_ranges,
+                module_all_scope_units,
+                content_bytes,
+                file_path=changed_file.path,
             ),
             profile_id=profile_id,
             reasoning_enabled=reasoning_enabled,
