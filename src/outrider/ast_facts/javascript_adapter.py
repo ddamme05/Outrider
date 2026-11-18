@@ -24,6 +24,7 @@ from outrider.ast_facts.models import (
     ParseResult,
     ScopeUnit,
     SkipReason,
+    collect_scope_errors,
     compute_unit_id,
 )
 from outrider.ast_facts.parser_outcome import should_skip
@@ -888,7 +889,7 @@ class JavaScriptAdapter:
         file_path: str,
         scope_units: tuple[ScopeUnit, ...],
     ) -> tuple[ComputedParserOutcome, dict[str, bool]]:
-        """Return `("clean", has_error)`, with errors keyed by scope unit_id.
+        """Return per-symbol error flags and occurrence flags for repeated definitions.
 
         V1 treats tree-sitter ERROR/MISSING nodes as per-scope degradation,
         including Flow-typed .js. The failed outcome is a defensive future shape.
@@ -908,14 +909,15 @@ class JavaScriptAdapter:
         # Enclosing ERROR regions and boundary MISSING points conservatively
         # degrade affected scopes under `parse-errors-degrade-to-judged`.
         error_spans = error_byte_spans_from_tree(tree)
-        has_error: dict[str, bool] = {}
-        for scope in scope_units:
-            has_error[scope.unit_id] = any(
+
+        def has_parse_error(scope: ScopeUnit) -> bool:
+            return any(
                 (start < scope.byte_end and end > scope.byte_start)
                 or (start == end and scope.byte_start <= start <= scope.byte_end)
                 for start, end in error_spans
             )
-        return "clean", has_error
+
+        return "clean", collect_scope_errors(scope_units, has_parse_error)
 
 
 # Shared parse pipeline and canonical entry point

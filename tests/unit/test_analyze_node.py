@@ -1802,6 +1802,32 @@ async def test_observed_proposal_with_unregistered_query_id_rejects(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first_body", "second_body", "expected_degraded"),
+    [("x = *", "x = 1", True), ("x = 2", "x = *", False)],
+)
+async def test_same_name_definitions_keep_their_own_parse_status(
+    deps: dict[str, Any], first_body: str, second_body: str, expected_degraded: bool
+) -> None:
+    head = (
+        f"def pick():\n    {first_body}\n    return 3\n\n"
+        f"def pick():\n    {second_body}\n    return 3\n"
+    )
+    changed = _build_changed_file(
+        content_head=head,
+        content_base=head.replace(first_body, "x = 1", 1),
+        patch=f"@@ -2 +2 @@\n-    x = 1\n+    {first_body}\n",
+    )
+    state = _build_review_state(pr_context=_build_pr_context(changed_files=(changed,)))
+    await run_analyze_pass(state, deps)
+
+    (request,) = deps["provider"].calls
+    (examination,) = deps["file_examination_sink"].events
+    assert request.degraded_mode is expected_degraded
+    assert examination.parse_status == ("degraded" if expected_degraded else "clean")
+
+
+@pytest.mark.asyncio
 async def test_degraded_path_when_has_error_in_changed_scope_unit(
     deps: dict[str, Any],
 ) -> None:
@@ -2929,6 +2955,59 @@ def test_called_helpers_do_not_select_ambiguous_or_unsuitable_implementations(
         called_function_context(index, file_path="app/handler.py", changed_lines=frozenset({2}))
         == ()
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "source", "method", "expected_lines"),
+    [
+        (
+            "src/editor.py",
+            "from typing import overload\n"
+            "class Editor:\n"
+            "    @overload\n    def edit(self, value: str) -> str: ...\n"
+            "    @overload\n    def edit(self, value: bytes) -> bytes: ...\n"
+            "    def edit(self, value):\n        return value\n",
+            "Editor.edit",
+            [(3, 4), (5, 6), (7, 8)],
+        ),
+        (
+            "src/editor.ts",
+            "class Editor { get value() { return 1; } set value(v: number) {} }\n",
+            "Editor.value",
+            [(1, 1), (1, 1)],
+        ),
+    ],
+    ids=["python-overloads", "typescript-accessors-on-one-line"],
+)
+async def test_worker_records_each_definition_of_a_shared_name(
+    deps: dict[str, Any], path: str, source: str, method: str, expected_lines: list[tuple[int, int]]
+) -> None:
+    lines = source.splitlines(keepends=True)
+    changed = ChangedFile(
+        path=path,
+        status="added",
+        additions=len(lines),
+        deletions=0,
+        content_head=source,
+        patch="".join(unified_diff([], lines, fromfile="/dev/null", tofile="b/" + path)),
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(changed,)),
+        triage_result=_build_triage_result(file_tiers={path: ReviewTier.STANDARD}),
+    )
+    deps["provider"] = _StubLLMProvider('{"findings":[]}')
+    await run_analyze_pass(state, deps)
+
+    (request,) = deps["provider"].calls
+    scopes = [
+        entry for entry in request.context_summary if entry.inclusion_reason == "changed_scope"
+    ]
+    assert scopes[0].scope_unit_name == "Editor"
+    definitions = scopes[1:]
+    assert all(entry.scope_unit_name.startswith(method) for entry in definitions)
+    assert len({entry.scope_unit_name for entry in definitions}) == len(expected_lines)
+    assert [(entry.line_start, entry.line_end) for entry in definitions] == expected_lines
 
 
 @pytest.mark.asyncio

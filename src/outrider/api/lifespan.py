@@ -57,12 +57,17 @@ from outrider.policy.versions import (
 )
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from fastapi import FastAPI
 
 __all__ = ["StartupError", "build_lifespan", "lifespan"]
 
 
 _LOGGER = logging.getLogger("outrider.api.lifespan")
+
+_FAILURE_WRITE_TIMEOUT_SECONDS = 5.0
+_FAILURE_WRITE_DRAIN_SECONDS = 5.0
 
 
 # Any present OAuth env var, even empty, signals intended Slack configuration.
@@ -195,6 +200,43 @@ async def _cancel_task(task: asyncio.Task[None] | None) -> None:
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+
+async def _wait_for_failure_write(write: asyncio.Task[None], timeout: float) -> bool:
+    """Wait up to a fixed deadline even if the worker receives more cancellations."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not write.done():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
+        try:
+            # Unlike awaiting the task directly, wait leaves its transaction alive.
+            await asyncio.wait({write}, timeout=remaining)
+        except asyncio.CancelledError:
+            continue
+    return True
+
+
+def _consume_failure_write_result(write: asyncio.Task[None]) -> None:
+    if not write.cancelled():
+        write.exception()
+
+
+async def _record_worker_failure(persister: AuditPersister, review_id: UUID) -> None:
+    """Try to save the failure without blocking the worker indefinitely."""
+    write = asyncio.create_task(persister.record_execution_failure(review_id))
+    if not await _wait_for_failure_write(write, _FAILURE_WRITE_TIMEOUT_SECONDS):
+        write.cancel()
+        # Driver cancellation and rollback can also stall. Retrieve any late
+        # exception when cleanup finishes without making the worker wait for it.
+        write.add_done_callback(_consume_failure_write_result)
+        await _wait_for_failure_write(write, _FAILURE_WRITE_DRAIN_SECONDS)
+    elif not write.cancelled() and write.exception() is None:
+        return
+
+    # Preserve the graph error and keep exception content out of logs.
+    _LOGGER.error("Could not persist graph execution failure", extra={"review_id": str(review_id)})
 
 
 def _resolve_checkpoint_database_url() -> str:
@@ -575,7 +617,7 @@ def build_lifespan(
 
             # Dispatch: request-scoped dispatchers invoke this lifespan-bound graph.
             # Use the review UUID as thread_id so HITL resume recovers the same state.
-            async def run_graph(state: Any) -> Any:
+            async def invoke_graph(state: Any) -> Any:
                 from langchain_core.runnables import (  # noqa: PLC0415, TC002
                     RunnableConfig,
                 )
@@ -586,7 +628,14 @@ def build_lifespan(
             # Bound graph executions across requests to protect the provider pool
             # (FUP-164 / DECISIONS.md#045). A request-scoped dispatcher semaphore
             # cannot enforce this shared limit; excess reviews wait for a slot.
-            bounded_run_graph = concurrency_limited(run_graph, review_semaphore)
+            bounded_run_graph = concurrency_limited(invoke_graph, review_semaphore)
+
+            async def run_graph(state: Any) -> Any:
+                try:
+                    return await bounded_run_graph(state)
+                except (Exception, asyncio.CancelledError):
+                    await _record_worker_failure(persister, state.review_id)
+                    raise
 
             # Reapply the filter after uvicorn registers handlers (idempotent, FUP-006).
             register_filter_on_all_handlers()
@@ -607,7 +656,7 @@ def build_lifespan(
             app.state.github_factory = github_factory
             app.state.compiled_graph = compiled_graph
             # Expose the bounded wrapper so every webhook review shares the limit.
-            app.state.run_graph = bounded_run_graph
+            app.state.run_graph = run_graph
             # Sweeps inspect checkpoints for awaiting_approval rows without a pending
             # interrupt (HITL crash window (c)); /decide reaches them through the graph.
             app.state.checkpointer = checkpointer

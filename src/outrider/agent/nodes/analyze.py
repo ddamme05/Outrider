@@ -28,6 +28,7 @@ import asyncio
 import logging
 import threading
 import time
+from collections import Counter
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -2007,18 +2008,26 @@ def _build_context_manifest(
 ) -> tuple[ContextManifestEntry, ...]:
     """Build the shared clean, trace and cache-serve context manifest (FUP-178).
 
-    Primary text regions are recorded separately from structural scope entries.
+    Overloads and accessors can share a qualified name, even on the same line.
+    Their starting byte distinguishes the definitions in the selected source.
     """
-    return tuple(
-        ContextManifestEntry(
-            file_path=file_path,
-            scope_unit_name=su.qualified_name or su.name,
-            line_start=su.line_start,
-            line_end=su.line_end,
-            inclusion_reason=inclusion_reason,
+    named_scopes = [(scope, scope.qualified_name or scope.name) for scope in scope_units]
+    counts = Counter(name for _, name in named_scopes)
+    entries = []
+    for scope, name in named_scopes:
+        if counts[name] > 1 or len(name) > 1024:
+            suffix = f" (byte {scope.byte_start})"
+            name = name[: 1024 - len(suffix)] + suffix
+        entries.append(
+            ContextManifestEntry(
+                file_path=file_path,
+                scope_unit_name=name,
+                line_start=scope.line_start,
+                line_end=scope.line_end,
+                inclusion_reason=inclusion_reason,
+            )
         )
-        for su in scope_units
-    )
+    return tuple(entries)
 
 
 async def _emit_examination(
@@ -3400,7 +3409,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     # INFERRED admission checks trace paths against included scope names.
     # Exclude error-bearing scopes so they cannot authorize structural proof.
     included_scope_units = tuple(
-        su for su in parse_result.scope_units if not parse_result.has_error.get(su.unit_id, False)
+        su for su in parse_result.scope_units if not parse_result.scope_has_error(su)
     )
     if not included_scope_units:
         return await _emit_skip(

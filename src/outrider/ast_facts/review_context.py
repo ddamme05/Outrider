@@ -398,7 +398,7 @@ def build_called_function_index(
             continue
         parsed[path] = facts
         for scope in facts.scope_units:
-            if scope.kind != "class" and not facts.has_error.get(scope.unit_id, False):
+            if scope.kind != "class" and not facts.scope_has_error(scope):
                 definitions.setdefault(scope.name, []).append(scope)
     return CalledFunctionIndex(
         indexed_sources,

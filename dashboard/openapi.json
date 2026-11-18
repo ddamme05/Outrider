@@ -5293,6 +5293,9 @@
                   "$ref": "#/components/schemas/AgentTransitionEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/ReviewExecutionFailedEvent"
+                },
+                {
                   "$ref": "#/components/schemas/ReviewPhaseEvent"
                 },
                 {
@@ -5388,6 +5391,7 @@
                   "publish_eligibility": "#/components/schemas/PublishEligibilityEvent",
                   "publish_routing": "#/components/schemas/PublishRoutingEvent",
                   "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
+                  "review_execution_failed": "#/components/schemas/ReviewExecutionFailedEvent",
                   "review_phase": "#/components/schemas/ReviewPhaseEvent",
                   "scope_exclusion": "#/components/schemas/ScopeExclusionEvent",
                   "slack_notification": "#/components/schemas/SlackNotificationEvent",
@@ -5584,6 +5588,9 @@
                   "$ref": "#/components/schemas/AgentTransitionEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/ReviewExecutionFailedEvent"
+                },
+                {
                   "$ref": "#/components/schemas/ReviewPhaseEvent"
                 },
                 {
@@ -5679,6 +5686,7 @@
                   "publish_eligibility": "#/components/schemas/PublishEligibilityEvent",
                   "publish_routing": "#/components/schemas/PublishRoutingEvent",
                   "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
+                  "review_execution_failed": "#/components/schemas/ReviewExecutionFailedEvent",
                   "review_phase": "#/components/schemas/ReviewPhaseEvent",
                   "scope_exclusion": "#/components/schemas/ScopeExclusionEvent",
                   "slack_notification": "#/components/schemas/SlackNotificationEvent",
@@ -5711,6 +5719,9 @@
                   "$ref": "#/components/schemas/AgentTransitionEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/ReviewExecutionFailedEvent"
+                },
+                {
                   "$ref": "#/components/schemas/ReviewPhaseEvent"
                 },
                 {
@@ -5806,6 +5817,7 @@
                   "publish_eligibility": "#/components/schemas/PublishEligibilityEvent",
                   "publish_routing": "#/components/schemas/PublishRoutingEvent",
                   "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
+                  "review_execution_failed": "#/components/schemas/ReviewExecutionFailedEvent",
                   "review_phase": "#/components/schemas/ReviewPhaseEvent",
                   "scope_exclusion": "#/components/schemas/ScopeExclusionEvent",
                   "slack_notification": "#/components/schemas/SlackNotificationEvent",
@@ -6136,6 +6148,9 @@
                   "$ref": "#/components/schemas/AgentTransitionEvent"
                 },
                 {
+                  "$ref": "#/components/schemas/ReviewExecutionFailedEvent"
+                },
+                {
                   "$ref": "#/components/schemas/ReviewPhaseEvent"
                 },
                 {
@@ -6231,6 +6246,7 @@
                   "publish_eligibility": "#/components/schemas/PublishEligibilityEvent",
                   "publish_routing": "#/components/schemas/PublishRoutingEvent",
                   "replay_verdict": "#/components/schemas/ReplayVerdictEvent",
+                  "review_execution_failed": "#/components/schemas/ReviewExecutionFailedEvent",
                   "review_phase": "#/components/schemas/ReviewPhaseEvent",
                   "scope_exclusion": "#/components/schemas/ScopeExclusionEvent",
                   "slack_notification": "#/components/schemas/SlackNotificationEvent",
@@ -6256,6 +6272,54 @@
         ],
         "title": "ReviewEventsResponse",
         "description": "A review's full audit-event stream \u2014 the typed `AuditEvent` union per\nDECISIONS-stable schema, ordered by `sequence_number` (FUP-133).\n\n`events` exposes the metadata-only audit record as-is (no content joins, no\nredaction \u2014 `audit_events` is metadata-only by `DECISIONS.md#014`). Each event\nis reconstructed through `reconstruct_event_from_row` \u2014 the shared replay path \u2014\nso historical rows tolerate post-#025 field additions and every row's mirrored\nbase columns are verified against its payload. `total == len(events)` (a single\nreview's stream is bounded; no pagination \u2014 see the spec non-goals)."
+      },
+      "ReviewExecutionFailedEvent": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "review_execution_failed",
+            "title": "Event Type",
+            "default": "review_execution_failed"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence Number"
+          },
+          "is_eval": {
+            "type": "boolean",
+            "title": "Is Eval",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_id"
+        ],
+        "title": "ReviewExecutionFailedEvent",
+        "description": "The background worker exited before approval or publication began."
       },
       "ReviewListItem": {
         "properties": {

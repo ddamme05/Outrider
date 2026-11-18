@@ -208,9 +208,7 @@ def decide_degradation(
         return DegradationDecision(
             mode="skip", parse_status="clean", skip_reason=SkipReason.NO_CHANGED_SCOPE_UNITS
         )
-    if any(
-        parse_result.has_error.get(scope_unit.unit_id, False) for scope_unit in included_scope_units
-    ):
+    if any(parse_result.scope_has_error(scope_unit) for scope_unit in included_scope_units):
         return DegradationDecision(
             mode="degraded",
             parse_status="degraded",
