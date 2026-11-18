@@ -68,5 +68,4 @@ jobs:
         with:
           node-version: "24.22.3"
       - name: Audit the lockfile without installing packages
-        working-directory: dashboard
-        run: npm audit --package-lock-only --ignore-scripts
+        run: node scripts/check_dashboard_audit.mjs
