@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -126,3 +127,87 @@ async def test_lifespan_installs_concurrency_bound_on_run_graph(
         release.set()
         await asyncio.wait_for(asyncio.gather(t1, t2), timeout=1.0)
         assert peak == 1  # the second waited; the ceiling was never crossed
+
+
+@pytest.mark.parametrize("slow_cleanup", [False, True], ids=["drains", "cleanup-stalls"])
+async def test_worker_stops_waiting_for_stalled_failure_write(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    make_stub_llm_provider: type,
+    noop_severity_policy_fingerprint_check: object,
+    in_memory_checkpointer_factory: object,
+    slow_cleanup: bool,
+) -> None:
+    """A second cancellation cannot extend the write or its cleanup deadline."""
+    monkeypatch.setenv("OUTRIDER_SWEEP_DISABLED", "1")
+    # Earlier integration tests can run Alembic, which disables existing loggers.
+    monkeypatch.setattr(logging.getLogger("outrider.api.lifespan"), "disabled", False)
+    monkeypatch.setattr(lifespan_module, "_FAILURE_WRITE_TIMEOUT_SECONDS", 0.05, raising=False)
+    monkeypatch.setattr(lifespan_module, "_FAILURE_WRITE_DRAIN_SECONDS", 0.05, raising=False)
+
+    engine = MagicMock()
+    engine.dispose = AsyncMock(return_value=None)
+    engine.url.drivername = "postgresql+psycopg"
+    engine.sync_engine.hide_parameters = True
+    graph_error = RuntimeError("synthetic graph error")
+
+    async def fail_graph(_state: Any, *, config: Any) -> None:  # noqa: ARG001
+        raise graph_error
+
+    monkeypatch.setattr(
+        lifespan_module, "build_graph", lambda **_kwargs: SimpleNamespace(ainvoke=fail_graph)
+    )
+    lifespan = build_lifespan(
+        engine_factory=lambda: engine,
+        provider_factory=lambda *_args: make_stub_llm_provider(),
+        severity_policy_fingerprint_check=noop_severity_policy_fingerprint_check,  # type: ignore[arg-type]
+        checkpointer_factory=in_memory_checkpointer_factory,
+    )
+
+    writing = asyncio.Event()
+    write_cancelled = asyncio.Event()
+    write_finished = asyncio.Event()
+    release_write = asyncio.Event()
+    review_id = UUID(int=1)
+
+    async def stall_write(received_id: UUID) -> None:
+        assert received_id == review_id
+        writing.set()
+        try:
+            await release_write.wait()
+        except asyncio.CancelledError:
+            write_cancelled.set()
+            if slow_cleanup:
+                await release_write.wait()
+            raise
+        finally:
+            write_finished.set()
+
+    app = FastAPI()
+    async with lifespan(app):
+        monkeypatch.setattr(app.state.persister, "record_execution_failure", stall_write)
+        worker = asyncio.create_task(app.state.run_graph(SimpleNamespace(review_id=review_id)))
+        try:
+            await asyncio.wait_for(writing.wait(), timeout=1)
+            worker.cancel()
+            await asyncio.sleep(0)
+            worker.cancel()
+
+            done, _ = await asyncio.wait({worker}, timeout=1)
+            assert worker in done, "worker kept waiting for the stalled failure write"
+            assert write_cancelled.is_set()
+            assert write_finished.is_set() is not slow_cleanup
+            with pytest.raises(RuntimeError) as caught:
+                await worker
+            assert caught.value is graph_error
+            messages = [
+                record
+                for record in caplog.records
+                if record.getMessage() == "Could not persist graph execution failure"
+            ]
+            assert len(messages) == 1
+            assert messages[0].review_id == str(review_id)
+        finally:
+            release_write.set()
+            await asyncio.wait_for(write_finished.wait(), timeout=1)
+            await asyncio.gather(worker, return_exceptions=True)

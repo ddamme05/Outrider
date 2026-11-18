@@ -66,6 +66,9 @@ __all__ = ["StartupError", "build_lifespan", "lifespan"]
 
 _LOGGER = logging.getLogger("outrider.api.lifespan")
 
+_FAILURE_WRITE_TIMEOUT_SECONDS = 5.0
+_FAILURE_WRITE_DRAIN_SECONDS = 5.0
+
 
 # Any present OAuth env var, even empty, signals intended Slack configuration.
 _SLACK_OAUTH_VARS = (
@@ -199,22 +202,41 @@ async def _cancel_task(task: asyncio.Task[None] | None) -> None:
         await task
 
 
-async def _record_worker_failure(persister: AuditPersister, review_id: UUID) -> None:
-    """Finish the failure transaction even if shutdown cancels the worker again."""
-    write = asyncio.create_task(persister.record_execution_failure(review_id))
+async def _wait_for_failure_write(write: asyncio.Task[None], timeout: float) -> bool:
+    """Wait up to a fixed deadline even if the worker receives more cancellations."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
     while not write.done():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
         try:
-            # Waiting on the task leaves its transaction alive if our caller is cancelled.
-            await asyncio.wait({write})
+            # Unlike awaiting the task directly, wait leaves its transaction alive.
+            await asyncio.wait({write}, timeout=remaining)
         except asyncio.CancelledError:
             continue
-    try:
-        write.result()
-    except (Exception, asyncio.CancelledError):
-        # Preserve the graph error and keep exception content out of logs.
-        _LOGGER.error(
-            "Could not persist graph execution failure", extra={"review_id": str(review_id)}
-        )
+    return True
+
+
+def _consume_failure_write_result(write: asyncio.Task[None]) -> None:
+    if not write.cancelled():
+        write.exception()
+
+
+async def _record_worker_failure(persister: AuditPersister, review_id: UUID) -> None:
+    """Try to save the failure without blocking the worker indefinitely."""
+    write = asyncio.create_task(persister.record_execution_failure(review_id))
+    if not await _wait_for_failure_write(write, _FAILURE_WRITE_TIMEOUT_SECONDS):
+        write.cancel()
+        # Driver cancellation and rollback can also stall. Retrieve any late
+        # exception when cleanup finishes without making the worker wait for it.
+        write.add_done_callback(_consume_failure_write_result)
+        await _wait_for_failure_write(write, _FAILURE_WRITE_DRAIN_SECONDS)
+    elif not write.cancelled() and write.exception() is None:
+        return
+
+    # Preserve the graph error and keep exception content out of logs.
+    _LOGGER.error("Could not persist graph execution failure", extra={"review_id": str(review_id)})
 
 
 def _resolve_checkpoint_database_url() -> str:
