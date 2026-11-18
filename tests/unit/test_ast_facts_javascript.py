@@ -490,6 +490,15 @@ def test_flow_types_in_js_degrade_per_scope() -> None:
     assert 1 in result.error_lines
 
 
+def test_same_line_accessors_report_the_error_on_the_individual_definition() -> None:
+    result = _parse(b"class E { get value() { const x = ; } set value(x) { this.x = x; } }")
+    getter, setter = (scope for scope in result.scope_units if scope.qualified_name == "E.value")
+    assert getter.unit_id == setter.unit_id
+    assert result.has_error[getter.unit_id] is True
+    assert result.scope_has_error(getter) is True
+    assert result.scope_has_error(setter) is False
+
+
 def test_missing_closing_token_at_scope_end_reaches_has_error() -> None:
     """A missing closing token is a zero-width MISSING node inserted at
     exactly the recovered scope's byte_end — the point check must be

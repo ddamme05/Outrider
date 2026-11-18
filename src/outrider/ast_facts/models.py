@@ -8,6 +8,8 @@ See docs/spec.md §5.4 and specs/2026-04-30-ast-facts-module.md.
 """
 
 import hashlib
+from collections import Counter
+from collections.abc import Callable
 from enum import StrEnum
 from typing import Literal, Self
 
@@ -233,6 +235,11 @@ class ScopeUnit(BaseModel):
     decorators: tuple[str, ...] = ()
     parent_scope_id: str | None = None
 
+    @property
+    def occurrence_key(self) -> str:
+        """Identify this definition within the parsed revision."""
+        return f"{self.unit_id}:{self.byte_start}:{self.byte_end}"
+
     def to_span(self) -> "Span":
         """Return this scope's byte range in the shared Span shape.
 
@@ -240,6 +247,20 @@ class ScopeUnit(BaseModel):
         than separate byte_start/byte_end integers.
         """
         return Span(byte_start=self.byte_start, byte_end=self.byte_end)
+
+
+def collect_scope_errors(
+    scope_units: tuple[ScopeUnit, ...], has_parse_error: Callable[[ScopeUnit], bool]
+) -> dict[str, bool]:
+    """Keep the per-symbol summary and distinguish definitions that share it."""
+    counts = Counter(scope.unit_id for scope in scope_units)
+    flags: dict[str, bool] = {}
+    for scope in scope_units:
+        broken = has_parse_error(scope)
+        flags[scope.unit_id] = flags.get(scope.unit_id, False) or broken
+        if counts[scope.unit_id] > 1:
+            flags[scope.occurrence_key] = broken
+    return flags
 
 
 class LexicalBinding(BaseModel):
@@ -491,6 +512,8 @@ class ParseResult(BaseModel):
     # OBSERVED shadowing guard's per-file input (JS/TS adapters extract;
     # Python returns empty per the shadowing-guard spec's non-goal).
     lexical_bindings: tuple[LexicalBinding, ...] = ()
+    # Each unit_id records whether any definition of that symbol has a parse error.
+    # Repeated symbols also carry per-definition flags for scope_has_error().
     has_error: dict[str, bool] = Field(default_factory=dict)
     # 1-indexed source lines covered by tree-sitter ERROR/MISSING nodes,
     # scope-INDEPENDENT (unlike `has_error`, keyed by recovered scope unit_id). A
@@ -498,6 +521,10 @@ class ParseResult(BaseModel):
     # invisible to `has_error` but present here — the signal degrade-don't-skip uses
     # for the no-scope case. See DECISIONS.md#033.
     error_lines: frozenset[int] = frozenset()
+
+    def scope_has_error(self, scope: ScopeUnit) -> bool:
+        """Read occurrence flags when available, including a clean same-name sibling."""
+        return self.has_error.get(scope.occurrence_key, self.has_error.get(scope.unit_id, False))
 
     @model_validator(mode="after")
     def _enforce_skip_reason_outcome(self) -> Self:

@@ -1802,6 +1802,32 @@ async def test_observed_proposal_with_unregistered_query_id_rejects(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first_body", "second_body", "expected_degraded"),
+    [("x = *", "x = 1", True), ("x = 2", "x = *", False)],
+)
+async def test_same_name_definitions_keep_their_own_parse_status(
+    deps: dict[str, Any], first_body: str, second_body: str, expected_degraded: bool
+) -> None:
+    head = (
+        f"def pick():\n    {first_body}\n    return 3\n\n"
+        f"def pick():\n    {second_body}\n    return 3\n"
+    )
+    changed = _build_changed_file(
+        content_head=head,
+        content_base=head.replace(first_body, "x = 1", 1),
+        patch=f"@@ -2 +2 @@\n-    x = 1\n+    {first_body}\n",
+    )
+    state = _build_review_state(pr_context=_build_pr_context(changed_files=(changed,)))
+    await run_analyze_pass(state, deps)
+
+    (request,) = deps["provider"].calls
+    (examination,) = deps["file_examination_sink"].events
+    assert request.degraded_mode is expected_degraded
+    assert examination.parse_status == ("degraded" if expected_degraded else "clean")
+
+
+@pytest.mark.asyncio
 async def test_degraded_path_when_has_error_in_changed_scope_unit(
     deps: dict[str, Any],
 ) -> None:

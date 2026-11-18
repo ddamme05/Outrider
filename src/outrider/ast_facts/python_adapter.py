@@ -25,6 +25,7 @@ from outrider.ast_facts.models import (
     ParseResult,
     ScopeUnit,
     SkipReason,
+    collect_scope_errors,
     compute_unit_id,
 )
 from outrider.ast_facts.parser_outcome import should_skip
@@ -499,7 +500,7 @@ class PythonAdapter:
         file_path: str,
         scope_units: tuple[ScopeUnit, ...],
     ) -> tuple[ComputedParserOutcome, dict[str, bool]]:
-        """Per-scope `has_error` map keyed by `unit_id`.
+        """Return per-symbol error flags and occurrence flags for repeated definitions.
 
         **V1 policy: always returns `("clean", has_error)`.** Tree-sitter
         degrades to ERROR/MISSING nodes per Month 0 spike rather than
@@ -532,11 +533,11 @@ class PythonAdapter:
         # `decorated_definition` is in target_types so a decorator-region
         # syntax error propagates to the wrapping scope's `has_error`.
         # Syntax errors remain per-scope flags; the file verdict stays clean.
-        has_error: dict[str, bool] = {}
-        for scope in scope_units:
+        def has_parse_error(scope: ScopeUnit) -> bool:
             node = _find_node_by_span(tree.root_node, scope.byte_start, scope.byte_end)
-            has_error[scope.unit_id] = bool(node and node.has_error)
-        return "clean", has_error
+            return bool(node and node.has_error)
+
+        return "clean", collect_scope_errors(scope_units, has_parse_error)
 
     # ------------------------------------------------------------------
     # Generic tree walker

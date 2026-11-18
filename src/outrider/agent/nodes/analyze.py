@@ -3409,7 +3409,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     # INFERRED admission checks trace paths against included scope names.
     # Exclude error-bearing scopes so they cannot authorize structural proof.
     included_scope_units = tuple(
-        su for su in parse_result.scope_units if not parse_result.has_error.get(su.unit_id, False)
+        su for su in parse_result.scope_units if not parse_result.scope_has_error(su)
     )
     if not included_scope_units:
         return await _emit_skip(

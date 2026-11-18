@@ -237,7 +237,7 @@ def _retrieve(
             scope
             for scope in primary_facts.scope_units
             if scope.line_start <= proposal.line_start <= proposal.line_end <= scope.line_end
-            and not primary_facts.has_error.get(scope.unit_id, False)
+            and not primary_facts.scope_has_error(scope)
         ]
         if enclosing:
             scope = min(enclosing, key=lambda item: item.line_end - item.line_start)
@@ -252,7 +252,7 @@ def _retrieve(
     used_chars = len(json.dumps([excerpt.render() for excerpt in excerpts], ensure_ascii=False))
     for file_path, facts in parsed.items():
         for scope in facts.scope_units:
-            if facts.has_error.get(scope.unit_id, False):
+            if facts.scope_has_error(scope):
                 continue
             calls = [call for call in facts.call_sites if call.enclosing_scope_id == scope.unit_id]
             callers = [
