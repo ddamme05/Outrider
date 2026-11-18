@@ -57,6 +57,8 @@ from outrider.policy.versions import (
 )
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from fastapi import FastAPI
 
 __all__ = ["StartupError", "build_lifespan", "lifespan"]
@@ -195,6 +197,24 @@ async def _cancel_task(task: asyncio.Task[None] | None) -> None:
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+
+async def _record_worker_failure(persister: AuditPersister, review_id: UUID) -> None:
+    """Finish the failure transaction even if shutdown cancels the worker again."""
+    write = asyncio.create_task(persister.record_execution_failure(review_id))
+    while not write.done():
+        try:
+            # Waiting on the task leaves its transaction alive if our caller is cancelled.
+            await asyncio.wait({write})
+        except asyncio.CancelledError:
+            continue
+    try:
+        write.result()
+    except (Exception, asyncio.CancelledError):
+        # Preserve the graph error and keep exception content out of logs.
+        _LOGGER.error(
+            "Could not persist graph execution failure", extra={"review_id": str(review_id)}
+        )
 
 
 def _resolve_checkpoint_database_url() -> str:
@@ -575,7 +595,7 @@ def build_lifespan(
 
             # Dispatch: request-scoped dispatchers invoke this lifespan-bound graph.
             # Use the review UUID as thread_id so HITL resume recovers the same state.
-            async def run_graph(state: Any) -> Any:
+            async def invoke_graph(state: Any) -> Any:
                 from langchain_core.runnables import (  # noqa: PLC0415, TC002
                     RunnableConfig,
                 )
@@ -586,7 +606,14 @@ def build_lifespan(
             # Bound graph executions across requests to protect the provider pool
             # (FUP-164 / DECISIONS.md#045). A request-scoped dispatcher semaphore
             # cannot enforce this shared limit; excess reviews wait for a slot.
-            bounded_run_graph = concurrency_limited(run_graph, review_semaphore)
+            bounded_run_graph = concurrency_limited(invoke_graph, review_semaphore)
+
+            async def run_graph(state: Any) -> Any:
+                try:
+                    return await bounded_run_graph(state)
+                except (Exception, asyncio.CancelledError):
+                    await _record_worker_failure(persister, state.review_id)
+                    raise
 
             # Reapply the filter after uvicorn registers handlers (idempotent, FUP-006).
             register_filter_on_all_handlers()
@@ -607,7 +634,7 @@ def build_lifespan(
             app.state.github_factory = github_factory
             app.state.compiled_graph = compiled_graph
             # Expose the bounded wrapper so every webhook review shares the limit.
-            app.state.run_graph = bounded_run_graph
+            app.state.run_graph = run_graph
             # Sweeps inspect checkpoints for awaiting_approval rows without a pending
             # interrupt (HITL crash window (c)); /decide reaches them through the graph.
             app.state.checkpointer = checkpointer

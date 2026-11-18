@@ -247,6 +247,12 @@ class AgentTransitionEvent(AuditEventBase):
     latency_ms: int = Field(ge=0)
 
 
+class ReviewExecutionFailedEvent(AuditEventBase):
+    """The background worker exited before approval or publication began."""
+
+    event_type: Literal["review_execution_failed"] = "review_execution_failed"
+
+
 class ReviewPhaseEvent(AuditEventBase):
     """Phase boundary marker; start/end pairs scope per-node work.
 
@@ -3093,6 +3099,7 @@ class SlackNotificationEvent(AuditEventBase):
 # selects the right concrete subtype using the event_type field.
 AuditEvent = Annotated[
     AgentTransitionEvent
+    | ReviewExecutionFailedEvent
     | ReviewPhaseEvent
     | LLMCallEvent
     | FileExaminationEvent
@@ -3126,6 +3133,7 @@ AuditEvent = Annotated[
 AuditEventAdapter: Final[
     TypeAdapter[
         AgentTransitionEvent
+        | ReviewExecutionFailedEvent
         | ReviewPhaseEvent
         | LLMCallEvent
         | FileExaminationEvent
@@ -3186,6 +3194,7 @@ __all__ = [
     "PublishRoutingEvent",
     "PublishRoutingReason",
     "ReplayVerdictEvent",
+    "ReviewExecutionFailedEvent",
     "ReviewPhaseEvent",
     "ScopeExclusionEntry",
     "ScopeExclusionEvent",

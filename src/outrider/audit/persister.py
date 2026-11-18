@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple
 from uuid import UUID  # noqa: TC003 — runtime annotation needed for typed exception constructors
 
 from sqlalchemy import func as sa_func
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
@@ -86,6 +86,7 @@ from outrider.audit.events import (
     HITLRequestEvent,  # noqa: E402  (model_validate at runtime)
     PublishEvent,  # noqa: E402  (intentional post-TYPE_CHECKING runtime import)
     ReplayVerdictEvent,  # noqa: E402  (model_validate at runtime in query_replay_verdict_event)
+    ReviewExecutionFailedEvent,
     SlackNotificationEvent,  # noqa: E402  (model_validate at runtime in query_slack_notification)
     TraceDecisionEvent,  # noqa: E402  (model_validate at runtime)
 )
@@ -1700,6 +1701,7 @@ def _serialize_event_payload(
         | ReviewPhaseEvent
         | FileExaminationEvent
         | AgentTransitionEvent
+        | ReviewExecutionFailedEvent
         | FindingEvent
         | FindingProposalRejectedEvent
         | AnalyzeResponseRejectedEvent
@@ -2281,6 +2283,47 @@ class AuditPersister:
             )
 
     # -- PhaseEventSink surface ----------------------------------------------
+
+    async def record_execution_failure(self, review_id: UUID) -> None:
+        """Fail a running pre-approval review and append its audit event atomically."""
+        # HITL and publish persist their phase starts before any external effects.
+        # An ungated publish still has a running row and no approval fields.
+        reached_approval_or_publish = (
+            select(AuditEventRow.event_id)
+            .where(
+                AuditEventRow.review_id == review_id,
+                AuditEventRow.event_type == "review_phase",
+                AuditEventRow.payload["node_id"].astext.in_(("hitl", "publish")),
+                AuditEventRow.payload["marker"].astext == "start",
+            )
+            .exists()
+        )
+        async with self._session_factory() as session, session.begin():
+            is_eval = await session.scalar(
+                update(Review)
+                .where(
+                    Review.id == review_id,
+                    Review.status == "running",
+                    Review.hitl_request.is_(None),
+                    Review.hitl_decision.is_(None),
+                    ~reached_approval_or_publish,
+                )
+                .values(status="failed")
+                .returning(Review.is_eval)
+            )
+            if is_eval is None:
+                return
+            event = ReviewExecutionFailedEvent(review_id=review_id, is_eval=is_eval)
+            session.add(
+                AuditEventRow(
+                    event_id=event.event_id,
+                    review_id=review_id,
+                    event_type=event.event_type,
+                    timestamp=event.timestamp,
+                    is_eval=is_eval,
+                    payload=_serialize_event_payload(event),
+                )
+            )
 
     async def emit_phase(self, event: ReviewPhaseEvent) -> None:
         """Persist a ReviewPhaseEvent row to audit_events.

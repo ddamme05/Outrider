@@ -9,12 +9,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import importlib
 import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import pytest
@@ -257,6 +258,89 @@ async def _post_signed_webhook(client: AsyncClient, body: bytes, delivery: str) 
         json.dumps({"delivery": delivery, "status": response.status_code, "body": response.text}),
     )
     return response
+
+
+@pytest.mark.parametrize(
+    ("phase", "initial_status", "expected"),
+    [
+        ("triage", "running", "failed"),
+        ("hitl", "awaiting_approval", "awaiting_approval"),
+        ("hitl", "running", "running"),
+        ("publish", "running", "running"),
+        ("publish", "completed", "completed"),
+    ],
+)
+async def test_background_failure_status_on_redelivery(
+    migrated_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+    github_app_env: None,
+    stub_llm_provider: Any,
+    in_memory_checkpointer_factory: Any,
+    phase: Literal["triage", "hitl", "publish"],
+    initial_status: str,
+    expected: str,
+) -> None:
+    """A failed worker may finalize only a review still doing pre-approval work."""
+    from outrider.audit.events import ReviewPhaseEvent
+
+    monkeypatch.setenv("OUTRIDER_GITHUB_WEBHOOK_SECRET", _SECRET)
+    monkeypatch.setenv("OUTRIDER_SWEEP_DISABLED", "1")
+    monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "webhook-test-marker-secret-at-least-32")
+    boot = importlib.import_module("outrider.api.lifespan")
+    engine = create_async_engine(migrated_db, hide_parameters=True)
+    app = FastAPI()
+    app.include_router(router)
+    calls = []
+
+    async def fail_in_phase(state: Any, *, config: Any) -> None:
+        calls.append(state.review_id)
+        await app.state.persister.emit_phase(
+            ReviewPhaseEvent(
+                review_id=state.review_id,
+                phase_id="test-phase",
+                node_id=phase,
+                marker="start",
+            )
+        )
+        if initial_status != "running":
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text("UPDATE reviews SET status=:status WHERE id=:id"),
+                    {"status": initial_status, "id": state.review_id},
+                )
+        raise RuntimeError("synthetic worker failure")
+
+    monkeypatch.setattr(
+        boot, "build_graph", lambda **kwargs: SimpleNamespace(ainvoke=fail_in_phase)
+    )
+    lifespan = boot.build_lifespan(
+        engine_factory=lambda: engine,
+        provider_factory=lambda *args: stub_llm_provider,
+        checkpointer_factory=in_memory_checkpointer_factory,
+    )
+    async with lifespan(app):
+        await _seed_installation_and_membership(engine)
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        body = json.dumps(_valid_payload()).encode()
+        delivery = str(uuid4())
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            first = await _post_signed_webhook(client, body, delivery)
+            duplicate = await _post_signed_webhook(client, body, delivery)
+
+        assert first.status_code == 202 and duplicate.status_code == 200
+        assert duplicate.json() == {"status": expected, "review_id": first.json()["review_id"]}
+        assert len(calls) == 1
+        async with engine.connect() as conn:
+            events = await conn.scalars(
+                text(
+                    "SELECT event_type FROM audit_events WHERE review_id=:id "
+                    "ORDER BY sequence_number"
+                ),
+                {"id": calls[0]},
+            )
+        assert events.all() == ["agent_transition", "review_phase"] + (
+            ["review_execution_failed"] if expected == "failed" else []
+        )
 
 
 # ---------------------------------------------------------------------------

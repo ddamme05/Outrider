@@ -39,6 +39,7 @@ from outrider.audit.events import (
     PublishEvent,
     PublishRoutingEvent,
     ReplayVerdictEvent,
+    ReviewExecutionFailedEvent,
     ReviewPhaseEvent,
     SlackNotificationEvent,
     SynthesizeCompletedEvent,
@@ -514,6 +515,7 @@ _NODE_LESS_EVENT_OWNER: Final[Mapping[type[AuditEventBase], str]] = MappingProxy
 _PHASE_UNBOUNDED_EVENTS: Final[tuple[type[AuditEventBase], ...]] = (
     AgentTransitionEvent,
     ReplayVerdictEvent,
+    ReviewExecutionFailedEvent,  # Written by the runner after the graph exits.
     SlackNotificationEvent,
 )
 

@@ -26,6 +26,7 @@ from outrider.audit.events import (
     PublishEvent,
     PublishRoutingEvent,
     PublishRoutingReason,
+    ReviewExecutionFailedEvent,
     ReviewPhaseEvent,
     TraceDecisionEvent,
     compute_finding_content_hash,
@@ -254,6 +255,7 @@ def _publish_attempt_kwargs() -> dict[str, Any]:
 
 SUBTYPES: tuple[tuple[type[AuditEventBase], str, dict[str, Any]], ...] = (
     (AgentTransitionEvent, "agent_transition", _agent_transition_kwargs()),
+    (ReviewExecutionFailedEvent, "review_execution_failed", {}),
     (ReviewPhaseEvent, "review_phase", _review_phase_kwargs()),
     (LLMCallEvent, "llm_call", _llm_call_kwargs()),
     (FileExaminationEvent, "file_examination", _file_examination_kwargs()),

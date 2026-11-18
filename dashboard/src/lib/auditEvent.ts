@@ -16,6 +16,8 @@ export function summarizeEvent(event: AuditEvent): string {
       return `${event.finding_type} · ${event.severity} · ${event.file_path}`;
     case "review_phase":
       return event.marker;
+    case "review_execution_failed":
+      return "Worker stopped before approval or publication";
     case "file_examination":
       return event.file_path;
     case "trace_decision":

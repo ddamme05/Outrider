@@ -99,6 +99,29 @@ async def test_lifespan_installs_concurrency_bound_on_run_graph(
         assert peak == 1
         assert not (t1.done() or t2.done())
 
+        # A third accepted review can be cancelled without ever acquiring the slot.
+        writing = asyncio.Event()
+        finish_write = asyncio.Event()
+        recorded = []
+
+        async def record_failure(review_id: UUID) -> None:
+            writing.set()
+            await finish_write.wait()
+            recorded.append(review_id)
+
+        monkeypatch.setattr(app.state.persister, "record_execution_failure", record_failure)
+        third_id = UUID(int=3)
+        third = asyncio.create_task(run_graph(SimpleNamespace(review_id=third_id)))
+        await asyncio.sleep(0)
+        third.cancel()
+        await asyncio.wait_for(writing.wait(), timeout=1.0)
+        third.cancel()
+        await asyncio.sleep(0)
+        finish_write.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(third, timeout=1.0)
+        assert recorded == [third_id]
+
         # Release: the first exits, freeing the slot; the second enters and runs.
         release.set()
         await asyncio.wait_for(asyncio.gather(t1, t2), timeout=1.0)
