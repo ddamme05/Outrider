@@ -30,6 +30,7 @@ from outrider.agent.nodes.analyze import (
 from outrider.agent.nodes.finding_cap import FindingCapOverflowError
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.models import SkipReason
+from outrider.audit.persister import _lift_finding_event
 from outrider.llm.anthropic_provider import _ANTHROPIC_CONTRACT_DIGEST, _ANTHROPIC_PROFILE_ID
 from outrider.llm.base import LLMRequest, LLMResponse
 from outrider.policy.findings import EvidenceTier
@@ -102,37 +103,6 @@ class _RecordingPhaseEventSink:
 
     async def emit_phase(self, event: ReviewPhaseEvent) -> None:
         self.events.append(event)
-
-
-def _lift_finding_event(
-    finding: ReviewFinding, *, is_eval: bool, phase_key: str | None = None
-) -> FindingEvent:
-    """Lift an admitted ``ReviewFinding`` to its metadata-only ``FindingEvent``,
-    mirroring ``AuditPersister._lift_finding_event`` so the recorder captures the
-    same event the production sink would emit (keeps FindingEvent-field assertions
-    such as ``finding_content_hash`` / ``is_eval`` valid under the new sink
-    signature)."""
-    from outrider.audit.events import FindingEvent
-
-    return FindingEvent(
-        review_id=finding.review_id,
-        is_eval=is_eval,
-        finding_id=finding.finding_id,
-        finding_type=finding.finding_type,
-        severity=finding.severity,
-        file_path=finding.file_path,
-        source_side=finding.source_side,
-        line_start=finding.line_start,
-        line_end=finding.line_end,
-        dimension=finding.dimension,
-        finding_content_hash=finding.content_hash,
-        evidence_tier=finding.evidence_tier,
-        query_match_id=finding.query_match_id,
-        trace_path=finding.trace_path,
-        policy_version=finding.policy_version,
-        proposal_hash=finding.proposal_hash,
-        phase_key=phase_key,
-    )
 
 
 class _RecordingAnalyzeEventSink:

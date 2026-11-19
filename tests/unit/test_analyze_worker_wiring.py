@@ -260,11 +260,7 @@ _MIXED_VULN_PATCH = (
 
 
 def _mixed_vuln_response() -> str:
-    """Four scripted proposals engineered to make every previously-zero
-    transcription channel non-zero through the REAL node: a #054
-    supersession, a #055 subsumption, a same-content-hash duplicate
-    (FUP-180 collapse → n_proposals_dropped), and a malformed trace
-    candidate (path separator → dropped_malformed)."""
+    """Exercise supersession, subsumption, co-located claims and a malformed trace candidate."""
 
     def proposal(
         finding_type: str,
@@ -307,9 +303,7 @@ def _mixed_vuln_response() -> str:
                     "Password-specific weak crypto.",
                     [{"import_string_raw": "bad/../import", "reason": "r"}],
                 ),
-                # Two same-content-hash variants (same span + type, different
-                # prose → different proposal_hash) → FUP-180 collapse drops
-                # one → n_proposals_dropped = 1.
+                # Both prose fields differ, so admission retains both variants.
                 proposal("sql_injection", 4, 5, "SQLi one", "First phrasing.", []),
                 proposal("sql_injection", 4, 5, "SQLi two", "Second phrasing.", []),
             ]
@@ -318,17 +312,19 @@ def _mixed_vuln_response() -> str:
 
 
 @pytest.mark.asyncio
-async def test_parity_with_every_transcription_channel_non_zero(
+@pytest.mark.parametrize("repeat_proposal", [False, True])
+async def test_parity_with_every_transcription_channel(
     deps: dict[str, Any],
+    repeat_proposal: bool,
 ) -> None:
-    """ANTI-VACUITY parity: the base parity scenario leaves supersession,
-    drops, malformed candidates, cache tokens, and #055 records all at
-    zero, so a live transcription bug in any of them would still pass.
-    This scenario drives every one of those channels NON-ZERO through the
-    real node, asserts each is non-zero (so the scenario can't silently
-    decay), then requires full fold-vs-event parity."""
+    """Check each counter with co-located claims, then with an exact duplicate."""
+    response_text = _mixed_vuln_response()
+    if repeat_proposal:
+        reply = json.loads(response_text)
+        reply["findings"].append(reply["findings"][-1])
+        response_text = json.dumps(reply)
     deps["provider"] = _ConfigurableTokensStubProvider(
-        response_text=_mixed_vuln_response(),
+        response_text=response_text,
         tokens_per_call={
             "input_tokens": 120,
             "output_tokens": 60,
@@ -358,9 +354,9 @@ async def test_parity_with_every_transcription_channel_non_zero(
     assert len(outcome.subsumed_matches) == 1
 
     fold = _assert_fold_parity(result, deps)
-    # Fold-level non-vacuity: the previously-zero channels are live here.
+    # The optional fifth proposal is the only duplicate.
     assert fold.n_proposals_superseded_by_observed == 1
-    assert fold.n_proposals_dropped == 1
+    assert fold.n_proposals_dropped == int(repeat_proposal)
     assert fold.n_trace_candidates_dropped_malformed == 1
     assert fold.total_cache_read_tokens == 32
     assert fold.total_cache_write_tokens == 16

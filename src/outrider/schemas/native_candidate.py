@@ -121,6 +121,11 @@ class NativeCandidateRef(BaseModel):
     proposal_hash: str | None = Field(default=None, pattern=SHA256_HEX_PATTERN)
     finding_id: UUID | None = None
     content_hash: str | None = Field(default=None, pattern=SHA256_HEX_PATTERN)
+    # A keyed claim carries its original location for approval checks after capping.
+    # For historical and unkeyed claims, content_hash already identifies the location.
+    location_hash: str | None = Field(
+        default=None, pattern=SHA256_HEX_PATTERN, exclude_if=lambda value: value is None
+    )
     finding_type: FindingType | None = None
     severity: FindingSeverity | None = None
     evidence_tier: EvidenceTier | None = None
@@ -144,6 +149,12 @@ class NativeCandidateRef(BaseModel):
         )
         if self.candidate_id != expected:
             raise ValueError("candidate identity differs from its source occurrence")
+        if self.location_hash is not None and (
+            self.initial_disposition != "admitted"
+            or self.evidence_tier != "judged"
+            or self.location_hash == self.content_hash
+        ):
+            raise ValueError("a separate location hash requires an admitted keyed judged claim")
         finding_fields = (
             self.finding_id,
             self.content_hash,

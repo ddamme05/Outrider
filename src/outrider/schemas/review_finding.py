@@ -156,10 +156,13 @@ class ReviewFinding(BaseModel):
     # in `FindingEvent` joins via this field, so the shape MUST match the
     # corresponding event's `finding_content_hash` (also patterned).
     content_hash: Annotated[str, Field(pattern=SHA256_HEX_PATTERN)]
+    # Admission assigns a key when it distinguishes judged claims at one location.
+    claim_key: str | None = Field(
+        default=None, pattern=SHA256_HEX_PATTERN, exclude_if=lambda value: value is None
+    )
     # compute_proposal_hash identifies the raw proposal so trace candidates can
     # join to admitted finding IDs (DECISIONS.md#025). It records provenance and
-    # stays outside content identity (#025): content_hash covers location/type,
-    # while proposal_hash also changes with model phrasing (#022).
+    # stays outside content identity (#025).
     # Admission supplies this required value; FindingEvent mirrors it.
     proposal_hash: Annotated[str, Field(pattern=SHA256_HEX_PATTERN)]
 
@@ -226,6 +229,8 @@ class ReviewFinding(BaseModel):
     @model_validator(mode="after")
     def _enforce_proof_boundary(self) -> Self:
         """Wire policy/findings.enforce_proof_boundary into Pydantic validation."""
+        if self.claim_key is not None and self.evidence_tier != EvidenceTier.JUDGED:
+            raise ValueError("finding claim_key requires judged evidence")
         enforce_proof_boundary(
             evidence_tier=self.evidence_tier,
             query_match_id=self.query_match_id,
@@ -368,26 +373,24 @@ class ReviewFinding(BaseModel):
             )
         return self
 
+    @property
+    def location_hash(self) -> str:
+        """Return the source anchor shared by claims with the same side, span and type."""
+        if self.claim_key is None:
+            return self.content_hash
+        from outrider.audit.events import compute_finding_content_hash  # noqa: PLC0415
+
+        return compute_finding_content_hash(
+            self.file_path,
+            line_start=self.line_start,
+            line_end=self.line_end,
+            finding_type=self.finding_type,
+            source_side=self.source_side,
+        )
+
     @model_validator(mode="after")
     def _verify_content_hash(self) -> Self:
-        """`content_hash` must equal the canonical
-        `compute_finding_content_hash` over (`file_path`, `line_start`,
-        `line_end`, `finding_type`).
-
-        Mirror of `FindingEvent._verify_content_hash` at the in-memory
-        layer. Format gating alone (the Field pattern) accepts any
-        64-hex string for any input tuple, so an emitter bug producing
-        a mis-computed hash would land on the finding AND survive into
-        `AnalysisRound.round_id` (which folds `f.content_hash` into the
-        round id at `analysis_round.py::compute_round_id`). The reducer
-        would dedup under the bad key on replay.
-
-        Pinning the hash recipe at the in-memory layer makes
-        `ReviewFinding`'s dedup contract identical to `FindingEvent`'s
-        append-only contract — fixture code using
-        `compute_identity_hash({...})` is on the wrong recipe and
-        fails here loud.
-        """
+        """Verify the same identity that round assembly, publication and replay use."""
         # Local import: `audit.events` imports from schemas for
         # PerFindingDecision / PublishDestination / ReviewDimension,
         # so a top-level import would cycle.
@@ -401,6 +404,7 @@ class ReviewFinding(BaseModel):
             line_end=self.line_end,
             finding_type=self.finding_type,
             source_side=self.source_side,
+            claim_key=self.claim_key,
         )
         if self.content_hash != expected:
             raise ValueError(

@@ -2811,6 +2811,18 @@
           "dimension": {
             "$ref": "#/components/schemas/ReviewDimension"
           },
+          "claim_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Key"
+          },
           "finding_content_hash": {
             "type": "string",
             "pattern": "^[a-f0-9]{64}$",
@@ -4099,6 +4111,18 @@
             ],
             "title": "Content Hash"
           },
+          "location_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Hash"
+          },
           "finding_type": {
             "anyOf": [
               {
@@ -4272,6 +4296,18 @@
               }
             ],
             "title": "Content Hash"
+          },
+          "location_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Hash"
           },
           "finding_type": {
             "anyOf": [
@@ -4544,6 +4580,18 @@
             "type": "string",
             "pattern": "^[a-f0-9]{64}$",
             "title": "Subsumer Content Hash"
+          },
+          "subsumer_claim_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subsumer Claim Key"
           }
         },
         "additionalProperties": false,
@@ -4940,6 +4988,18 @@
             "maxLength": 1024,
             "title": "File Path"
           },
+          "claim_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Key"
+          },
           "source_side": {
             "type": "string",
             "enum": [
@@ -5182,6 +5242,18 @@
             "type": "string",
             "maxLength": 1024,
             "title": "File Path"
+          },
+          "claim_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Key"
           },
           "source_side": {
             "type": "string",

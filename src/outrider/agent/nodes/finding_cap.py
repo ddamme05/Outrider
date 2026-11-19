@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
+from outrider.policy.findings import EvidenceTier
 from outrider.policy.publish_eligibility import is_hitl_gated_severity
 from outrider.policy.severity import FindingSeverity
 
@@ -97,6 +98,20 @@ def admit_with_pair_dedup(
         admitted.append(finding)
 
 
+def proof_backed_claim_hashes(findings: Sequence[ReviewFinding]) -> dict[str, str]:
+    """Map a split claim to its location when stronger evidence covers that location."""
+    proof_locations = {
+        finding.content_hash for finding in findings if finding.evidence_tier != EvidenceTier.JUDGED
+    }
+    aliases: dict[str, str] = {}
+    for finding in findings:
+        if finding.claim_key is not None:
+            location = finding.location_hash
+            if location in proof_locations:
+                aliases[finding.content_hash] = location
+    return aliases
+
+
 def _collapse_by_content_hash(findings: Sequence[ReviewFinding]) -> list[ReviewFinding]:
     """Keep the strongest admitted evidence per hash, with stable ties and group order.
 
@@ -105,18 +120,20 @@ def _collapse_by_content_hash(findings: Sequence[ReviewFinding]) -> list[ReviewF
     Every member must agree on severity and policy before it can be represented.
     The original chosen object and its provenance remain intact.
     """
+    proof_hashes = proof_backed_claim_hashes(findings)
     by_hash: dict[str, ReviewFinding] = {}
     for finding in findings:
-        incumbent = by_hash.get(finding.content_hash)
+        group_hash = proof_hashes.get(finding.content_hash, finding.content_hash)
+        incumbent = by_hash.get(group_hash)
         if incumbent is not None:
             if (
                 incumbent.severity != finding.severity
                 or incumbent.policy_version != finding.policy_version
             ):
                 raise FindingEvidenceConflictError(
-                    f"conflicting severity or policy for content_hash={finding.content_hash}"
+                    f"conflicting severity or policy for content_hash={group_hash}"
                 )
             if finding.confidence <= incumbent.confidence:
                 continue
-        by_hash[finding.content_hash] = finding
+        by_hash[group_hash] = finding
     return list(by_hash.values())

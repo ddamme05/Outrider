@@ -24,6 +24,7 @@ from outrider.llm.base import LLMRequest, LLMResponse
 from outrider.policy import EvidenceTier
 from outrider.policy.severity import ACTIVE_POLICY_VERSION, FindingSeverity, FindingType
 from outrider.schemas import ChangedFile, PRContext, ReviewState
+from outrider.schemas.observed_subsumption import ObservedSubsumedMatch
 from outrider.schemas.triage_result import ReviewDimension, ReviewTier, RiskLevel, TriageResult
 
 _REVIEW_ID = UUID("0fedcba9-8765-4321-0fed-cba987654321")
@@ -235,6 +236,45 @@ async def test_judged_subsumer_drops_observed_weak_crypto() -> None:
     assert completed.n_findings_observed == 0
     assert completed.n_findings_emitted == 1
     assert completed.n_proposals_superseded_by_observed == 0
+    _assert_equation_balances(completed)
+
+
+@pytest.mark.asyncio
+async def test_two_judged_claims_at_producer_anchor_keep_structural_proof() -> None:
+    other = {
+        **_wc_judged_finding(),
+        "title": "Second reported cipher issue",
+        "description": "A different claimed consequence for the same broken cipher.",
+    }
+    sink = await _run(_ScriptedProvider([_wc_judged_finding(), other]))
+
+    [finding] = sink.findings
+    assert finding.evidence_tier is EvidenceTier.OBSERVED
+    assert finding.query_match_id == _WEAK_CRYPTO_QMID
+    assert finding.claim_key is None
+    [completed] = sink.completed
+    assert completed.n_proposals_seen == 2
+    assert completed.n_findings_observed == 1
+
+
+@pytest.mark.asyncio
+async def test_subsumption_receipt_round_trips_with_keyed_judged_subsumer() -> None:
+    other = {
+        **_wph_finding(),
+        "title": "Second reported password hash issue",
+        "description": "A different claimed consequence for password verification.",
+    }
+    sink = await _run(_ScriptedProvider([_wph_finding(), other]))
+
+    assert len(sink.findings) == 2
+    assert all(finding.claim_key for finding in sink.findings)
+    [completed] = sink.completed
+    [receipt] = completed.subsumed_matches
+    assert receipt.query_match_id == _WEAK_CRYPTO_QMID
+    assert (receipt.subsumer_content_hash, receipt.subsumer_claim_key) in {
+        (finding.content_hash, finding.claim_key) for finding in sink.findings
+    }
+    assert ObservedSubsumedMatch.model_validate_json(receipt.model_dump_json()) == receipt
     _assert_equation_balances(completed)
 
 

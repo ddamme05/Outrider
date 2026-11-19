@@ -743,6 +743,7 @@ async def _route_and_gate_one_finding(
         line_end=finding.line_end,
         finding_type=finding.finding_type,
         source_side=finding.source_side,
+        claim_key=finding.claim_key,
     )
     decision_content_hash = compute_publish_routing_decision_hash(
         destination=destination,
@@ -762,6 +763,7 @@ async def _route_and_gate_one_finding(
         finding_type=finding.finding_type,
         finding_content_hash=finding_content_hash,
         source_side=finding.source_side,
+        claim_key=finding.claim_key,
         decision_content_hash=decision_content_hash,
     )
     # Sink I/O only — recovery path falls through to the eligibility
@@ -819,6 +821,7 @@ async def _route_and_gate_one_finding(
             line_end=finding.line_end,
             finding_type=finding.finding_type,
             source_side=finding.source_side,
+            claim_key=finding.claim_key,
             severity=effective_severity,
             original_severity=original_severity_for_audit,
             finding_content_hash=finding_content_hash,

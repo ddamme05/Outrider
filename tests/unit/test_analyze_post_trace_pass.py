@@ -15,6 +15,7 @@ import pytest  # noqa: TC002 — used at runtime as parameter type
 from test_analyze_node import run_analyze_pass_kw
 
 from outrider.audit.events import compute_finding_content_hash
+from outrider.audit.persister import _lift_finding_event
 from outrider.llm.base import LLMResponse
 from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.canonical import compute_round_id
@@ -105,31 +106,6 @@ class _StubAnomalySink:
 
     async def emit_anomaly(self, **_kwargs: object) -> None:
         return None
-
-
-def _lift_finding_event(finding: ReviewFinding, *, is_eval: bool) -> FindingEvent:
-    """Lift an admitted ``ReviewFinding`` to its metadata-only ``FindingEvent``,
-    mirroring ``AuditPersister._lift_finding_event`` so the recorder captures the
-    same event the production sink would emit under the new sink signature."""
-    from outrider.audit.events import FindingEvent
-
-    return FindingEvent(
-        review_id=finding.review_id,
-        is_eval=is_eval,
-        finding_id=finding.finding_id,
-        finding_type=finding.finding_type,
-        severity=finding.severity,
-        file_path=finding.file_path,
-        line_start=finding.line_start,
-        line_end=finding.line_end,
-        dimension=finding.dimension,
-        finding_content_hash=finding.content_hash,
-        evidence_tier=finding.evidence_tier,
-        query_match_id=finding.query_match_id,
-        trace_path=finding.trace_path,
-        policy_version=finding.policy_version,
-        proposal_hash=finding.proposal_hash,
-    )
 
 
 class _RecordingAnalyzeEventSink:

@@ -114,6 +114,7 @@ def collect_native_candidates(
                 proposal_hash=proposal_hash,
                 finding_id=finding.finding_id,
                 content_hash=finding.content_hash,
+                location_hash=finding.location_hash if finding.claim_key is not None else None,
                 finding_type=finding.finding_type,
                 severity=finding.severity,
                 evidence_tier=finding.evidence_tier,

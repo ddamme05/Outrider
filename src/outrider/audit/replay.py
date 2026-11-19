@@ -786,6 +786,7 @@ def _verify_proof_boundary(events: tuple[AuditEvent, ...]) -> None:
             line_end=event.line_end,
             finding_type=event.finding_type,
             source_side=event.source_side,
+            claim_key=event.claim_key,
         )
         if recomputed != event.finding_content_hash:
             raise ReplayEquivalenceError(

@@ -16,7 +16,11 @@ import logging
 import time
 from typing import TYPE_CHECKING, Literal
 
-from outrider.agent.nodes.finding_cap import _collapse_by_content_hash, cap_findings_by_severity
+from outrider.agent.nodes.finding_cap import (
+    _collapse_by_content_hash,
+    cap_findings_by_severity,
+    proof_backed_claim_hashes,
+)
 from outrider.agent.nodes.patch_generation import generate_patches
 from outrider.anomaly import AnomalyRuleName, AnomalySeverity
 from outrider.audit.events import ReviewPhaseEvent, SynthesizeCompletedEvent
@@ -151,10 +155,16 @@ async def _detect_and_report_divergence(
     strongest admitted evidence as representative, with round index and finding
     ID resolving equal-strength ties. Original findings are never rewritten.
     """
+    all_entries = [
+        (round_index, finding)
+        for round_index, analysis_round in enumerate(state.analysis_rounds)
+        for finding in analysis_round.findings
+    ]
+    proof_hashes = proof_backed_claim_hashes([finding for _, finding in all_entries])
     by_hash: dict[str, list[tuple[int, ReviewFinding]]] = {}
-    for round_index, analysis_round in enumerate(state.analysis_rounds):
-        for finding in analysis_round.findings:
-            by_hash.setdefault(finding.content_hash, []).append((round_index, finding))
+    for round_index, finding in all_entries:
+        group_hash = proof_hashes.get(finding.content_hash, finding.content_hash)
+        by_hash.setdefault(group_hash, []).append((round_index, finding))
 
     kept: dict[str, ReviewFinding] = {}
     for content_hash, entries in by_hash.items():

@@ -1030,7 +1030,13 @@ async def _run_trace_pass(
 
     pass_one_work = _trace_review_pairs(state, pass_index)
 
+    previous_findings = [
+        finding for analysis_round in state.analysis_rounds for finding in analysis_round.findings
+    ]
     for fetched_file, source_finding in pass_one_work:
+        same_file_findings = tuple(
+            f for f in (*previous_findings, *admitted_findings) if f.file_path == fetched_file.path
+        )
         supplemental_context = (
             prepare_review_context(
                 file_path=fetched_file.path,
@@ -1047,6 +1053,7 @@ async def _run_trace_pass(
             review_context=supplemental_context.text,
             supplemental_context_manifest=supplemental_context.manifest,
             source_finding=source_finding,
+            prior_findings=same_file_findings,
             review_id=state.review_id,
             installation_id=state.pr_context.installation_id,
             is_eval=state.is_eval,
@@ -2136,6 +2143,7 @@ def _merge_producer_findings(
                         line_end=af.line_end,
                         dropped_content_hash=af.content_hash,
                         subsumer_content_hash=subsumer.content_hash,
+                        subsumer_claim_key=subsumer.claim_key,
                     )
                 )
         n_subsumed = len(admitted) - len(surviving)
@@ -3177,8 +3185,17 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     collect_trace_candidates = (
         source_side == "head" and degradation_reason is not DegradationReason.TEXT_ONLY_CONTEXT
     )
+    # Reuse the same producer findings for admission and the subsequent proof merge.
+    producer_originals = produce_observed_findings(
+        observed_matches,
+        file_path=changed_file.path,
+        review_id=review_id,
+        installation_id=installation_id,
+        active_policy_version=active_policy_version,
+    )
     parser_result = parse_analyze_response(
         response.text,
+        prior_findings=producer_originals,
         review_id=review_id,
         installation_id=installation_id,
         file_path=changed_file.path,
@@ -3226,36 +3243,19 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             changed_file.path,
         )
 
-    # Merge deterministic findings before emission and caching (DECISIONS.md#054,
-    # #055). Only head content proves a current finding; the base fallback must
-    # not produce OBSERVED findings for deleted code. Parse-error routes exclude
-    # the producer; the clean-parse module route permits it.
     subsumed_matches: list[ObservedSubsumedMatch] = []
-    producer_originals: tuple[ReviewFinding, ...] = ()
-    if changed_file.content_head is not None and decision.runs_observed_producer:
-        # Reuse pre-call matches so coverage decisions and emitted findings agree.
-        observed_findings = produce_observed_findings(
-            observed_matches,
-            file_path=changed_file.path,
-            review_id=review_id,
-            installation_id=installation_id,
-            active_policy_version=active_policy_version,
+    if producer_originals:
+        parser_result, subsumed_matches = _merge_producer_findings(
+            parser_result, producer_originals
         )
-        producer_originals = tuple(observed_findings)
-        if observed_findings:
-            parser_result, new_subsumed = _merge_producer_findings(parser_result, observed_findings)
-            subsumed_matches.extend(new_subsumed)
 
-        # Emit shadow coverage only after a successful model call, preserving failure
-        # semantics and audit order. The enforced branch already emitted and returned
-        # (DECISIONS.md#049).
-        if observed_skip_event is not None:
-            await analyze_event_sink.emit_observed_skip_shadow(
-                # Revalidate when adding the worker's phase key to the coverage event.
-                ObservedSkipShadowEvent.model_validate(
-                    {**observed_skip_event.model_dump(), "phase_key": phase_key}
-                )
+    # Record shadow coverage after a successful call. Enforced skips return earlier.
+    if observed_skip_event is not None:
+        await analyze_event_sink.emit_observed_skip_shadow(
+            ObservedSkipShadowEvent.model_validate(
+                {**observed_skip_event.model_dump(), "phase_key": phase_key}
             )
+        )
 
     await _emit_parser_rejections(
         parser_result=parser_result,
@@ -3335,6 +3335,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
     *,
     fetched_file: TraceFetchedFile,
     review_context: str = "",
+    prior_findings: tuple[ReviewFinding, ...] = (),
     supplemental_context_manifest: tuple[ContextManifestEntry, ...] = (),
     source_finding: ReviewFinding,
     review_id: UUID,
@@ -3527,6 +3528,7 @@ async def _process_one_trace_fetched_file(  # noqa: PLR0913 — orchestration pa
         # Correction is a no-op here (candidate collection is pass-0-only)
         # but threading the imports keeps both call sites uniform.
         import_refs=parse_result.imports,
+        prior_findings=prior_findings,
     )
 
     native_candidates = await _preserve_native_candidates(

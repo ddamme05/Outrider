@@ -1416,6 +1416,8 @@ export interface components {
             /** Line End */
             line_end: number;
             dimension: components["schemas"]["ReviewDimension"];
+            /** Claim Key */
+            claim_key?: string | null;
             /** Finding Content Hash */
             finding_content_hash: string;
             evidence_tier: components["schemas"]["EvidenceTier"];
@@ -2008,6 +2010,8 @@ export interface components {
             finding_id?: string | null;
             /** Content Hash */
             content_hash?: string | null;
+            /** Location Hash */
+            location_hash?: string | null;
             finding_type?: components["schemas"]["FindingType"] | null;
             severity?: components["schemas"]["FindingSeverity"] | null;
             evidence_tier?: components["schemas"]["EvidenceTier"] | null;
@@ -2058,6 +2062,8 @@ export interface components {
             finding_id?: string | null;
             /** Content Hash */
             content_hash?: string | null;
+            /** Location Hash */
+            location_hash?: string | null;
             finding_type?: components["schemas"]["FindingType"] | null;
             severity?: components["schemas"]["FindingSeverity"] | null;
             evidence_tier?: components["schemas"]["EvidenceTier"] | null;
@@ -2235,6 +2241,8 @@ export interface components {
             dropped_content_hash: string;
             /** Subsumer Content Hash */
             subsumer_content_hash: string;
+            /** Subsumer Claim Key */
+            subsumer_claim_key?: string | null;
         };
         /**
          * PerFindingDecision
@@ -2474,6 +2482,8 @@ export interface components {
             finding_id: string;
             /** File Path */
             file_path: string;
+            /** Claim Key */
+            claim_key?: string | null;
             /**
              * Source Side
              * @default head
@@ -2624,6 +2634,8 @@ export interface components {
             coordinate_error_kind?: string | null;
             /** File Path */
             file_path: string;
+            /** Claim Key */
+            claim_key?: string | null;
             /**
              * Source Side
              * @default head
