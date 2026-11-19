@@ -1777,6 +1777,7 @@ def _lift_finding_event(
         severity=finding.severity,
         file_path=finding.file_path,
         source_side=finding.source_side,
+        claim_key=finding.claim_key,
         line_start=finding.line_start,
         line_end=finding.line_end,
         dimension=finding.dimension,

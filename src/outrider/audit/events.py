@@ -13,6 +13,7 @@ See docs/spec.md §7.2.1 and DECISIONS.md#056.
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Final, Literal, Self
@@ -132,6 +133,7 @@ def compute_finding_content_hash(
     line_end: int,
     finding_type: FindingType,
     source_side: Literal["head", "base"] = "head",
+    claim_key: str | None = None,
 ) -> str:
     """Canonical SHA-256 hash of a finding's identity tuple per spec §8.5.
 
@@ -139,8 +141,8 @@ def compute_finding_content_hash(
     aliases share one digest (spec.md §1). Encode the canonical path, line_start,
     line_end and finding_type.value as a compact JSON array, then hash its UTF-8
     bytes. JSON preserves special characters without ambiguous concatenation.
-    HEAD keeps the historical array unchanged. BASE prefixes `base-source-v1`
-    so identical coordinates from different source sides cannot share a hash.
+    Without a claim key, HEAD and BASE retain their historical recipes.
+    A judged claim with a key includes the source side and key in a versioned array.
 
     Keyword-only line and type arguments prevent positional swaps from silently
     changing the dedup key. FindingEvent emission and its _verify_content_hash
@@ -150,7 +152,11 @@ def compute_finding_content_hash(
     if source_side not in {"head", "base"}:
         raise ValueError("finding source_side must be head or base")
     identity = [canonical_file_path, line_start, line_end, finding_type.value]
-    if source_side == "base":
+    if claim_key is not None:
+        if re.fullmatch(_SHA256_HEX_PATTERN, claim_key) is None:
+            raise ValueError("finding claim_key must be a lowercase SHA-256 digest")
+        identity = ["judged-claim-v1", source_side, *identity, claim_key]
+    elif source_side == "base":
         identity.insert(0, "base-source-v1")
     payload = json.dumps(identity, separators=(",", ":"))
     return hashlib.sha256(payload.encode()).hexdigest()
@@ -986,7 +992,9 @@ class FindingEvent(AuditEventBase):
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
     dimension: ReviewDimension
-    # Identity is source-side aware; HEAD retains the historical §8.5 recipe.
+    claim_key: str | None = Field(
+        default=None, pattern=_SHA256_HEX_PATTERN, exclude_if=lambda value: value is None
+    )
     finding_content_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     evidence_tier: EvidenceTier
     # `max_length=200` mirrors `ReviewFinding.query_match_id`; the audit
@@ -1008,9 +1016,8 @@ class FindingEvent(AuditEventBase):
     # `DECISIONS.md#025` (Accepted 2026-05-24). Provenance link from
     # admitted findings to `TraceCandidate.source_proposal_hash` so
     # trace's join contract holds at replay time without consulting
-    # the in-memory ReviewFinding. NOT part of `finding_content_hash`
-    # recipe (#025 point 3): content hash stays stable across LLM
-    # phrasing variation; proposal_hash carries provenance.
+    # the in-memory ReviewFinding. The raw proposal hash stays outside
+    # finding_content_hash (#025 point 3).
     proposal_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
 
     @model_validator(mode="after")
@@ -1044,6 +1051,8 @@ class FindingEvent(AuditEventBase):
     @model_validator(mode="after")
     def _enforce_proof_boundary(self) -> Self:
         """Wire policy/findings.enforce_proof_boundary into Pydantic validation."""
+        if self.claim_key is not None and self.evidence_tier != EvidenceTier.JUDGED:
+            raise ValueError("finding claim_key requires judged evidence")
         enforce_proof_boundary(
             evidence_tier=self.evidence_tier,
             query_match_id=self.query_match_id,
@@ -1144,12 +1153,13 @@ class FindingEvent(AuditEventBase):
             line_end=self.line_end,
             finding_type=self.finding_type,
             source_side=self.source_side,
+            claim_key=self.claim_key,
         )
         if self.finding_content_hash != expected:
             raise ValueError(
                 f"finding_content_hash mismatch: spec §8.5 requires "
                 f"SHA-256 of canonical input tuple "
-                f"(file_path, line_start, line_end, finding_type); got "
+                f"(file_path, line_start, line_end, finding_type, source_side, claim_key); got "
                 f"{self.finding_content_hash!r}, expected {expected!r}. "
                 "Use audit.events.compute_finding_content_hash() to compute "
                 "the value at the call site."
@@ -1869,6 +1879,9 @@ class PublishRoutingEvent(AuditEventBase):
     # this field.
     coordinate_error_kind: str | None = None
     file_path: DiffPathStr
+    claim_key: str | None = Field(
+        default=None, pattern=_SHA256_HEX_PATTERN, exclude_if=lambda value: value is None
+    )
     source_side: Literal["head", "base"] = Field(
         default="head", exclude_if=lambda value: value == "head"
     )
@@ -2026,21 +2039,14 @@ class PublishRoutingEvent(AuditEventBase):
 
     @model_validator(mode="after")
     def _verify_finding_content_hash(self) -> Self:
-        """`finding_content_hash` must equal `compute_finding_content_hash(
-        file_path, line_start, line_end, finding_type)`.
-
-        Same recipe + same canonical helper as `FindingEvent._verify_content_hash`
-        and `PublishEligibilityEvent._verify_content_hash_binding`, so the
-        three event types ride on identical identity hashes for the same
-        finding — joins between routing/eligibility/finding rows compare by
-        this hash directly without recomputation drift.
-        """
+        """Bind the routing decision to the same finding identity used at admission."""
         expected = compute_finding_content_hash(
             self.file_path,
             line_start=self.line_start,
             line_end=self.line_end,
             finding_type=self.finding_type,
             source_side=self.source_side,
+            claim_key=self.claim_key,
         )
         if self.finding_content_hash != expected:
             raise ValueError(
@@ -2102,6 +2108,9 @@ class PublishEligibilityEvent(AuditEventBase):
     event_type: Literal["publish_eligibility"] = "publish_eligibility"
     finding_id: UUID
     file_path: DiffPathStr
+    claim_key: str | None = Field(
+        default=None, pattern=_SHA256_HEX_PATTERN, exclude_if=lambda value: value is None
+    )
     source_side: Literal["head", "base"] = Field(
         default="head", exclude_if=lambda value: value == "head"
     )
@@ -2287,6 +2296,7 @@ class PublishEligibilityEvent(AuditEventBase):
             line_end=self.line_end,
             finding_type=self.finding_type,
             source_side=self.source_side,
+            claim_key=self.claim_key,
         )
         if self.finding_content_hash != expected:
             raise ValueError(

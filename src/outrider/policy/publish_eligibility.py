@@ -141,8 +141,8 @@ def verification_hold_finding_ids(
 ) -> tuple[UUID, ...]:
     """Require human review of disputed claims and removed-source findings.
 
-    Any incomplete, disputed or stale attempt keeps the hold. Another model
-    assertion cannot clear counterevidence; the existing human decision can.
+    A dispute holds claims of the same type at the same source location, even if
+    the original was capped. A reworded proposal cannot clear counterevidence.
     """
     by_candidate: dict[str, list[CandidateAssessmentRef]] = {}
     for assessment in assessments:
@@ -163,6 +163,10 @@ def verification_hold_finding_ids(
                 )
             ):
                 disputed.add((candidate.content_hash, candidate.finding_type, candidate.severity))
+                if candidate.location_hash is not None:
+                    disputed.add(
+                        (candidate.location_hash, candidate.finding_type, candidate.severity)
+                    )
     return tuple(
         sorted(
             finding.finding_id
@@ -170,7 +174,10 @@ def verification_hold_finding_ids(
             if finding.source_side == "base"
             or (
                 disputed
-                and (finding.content_hash, finding.finding_type, finding.severity) in disputed
+                and (
+                    (finding.content_hash, finding.finding_type, finding.severity) in disputed
+                    or (finding.location_hash, finding.finding_type, finding.severity) in disputed
+                )
             )
         )
     )

@@ -196,6 +196,29 @@ def test_selected_variant_keeps_its_actual_producer_origin() -> None:
     assert fold.n_proposals_dropped == 0
 
 
+@pytest.mark.parametrize("proof_first", [False, True])
+def test_fold_keeps_original_proof_over_split_judged_claims(proof_first: bool) -> None:
+    from outrider.agent.nodes.finding_identity import distinguish_judged_claims
+
+    path = "src/a.py"
+    first = _finding(path)
+    second = ReviewFinding.model_validate(
+        {
+            **_finding(path, proposal_hash="b" * 64).model_dump(),
+            "title": "Different trigger",
+            "description": "Different consequence",
+        }
+    )
+    split = distinguish_judged_claims([first, second], ())
+    assert len({f.content_hash for f in split}) == 2
+    proof = _finding(path, tier=EvidenceTier.OBSERVED, proposal_hash="c" * 64)
+    admitted = (proof, *split) if proof_first else (*split, proof)
+    fold = _fold((_parser_outcome(path, n_proposals_seen=3, admitted_findings=admitted),))
+
+    assert [f.finding_id for f in fold.round.findings] == [proof.finding_id]
+    assert fold.n_proposals_dropped == 2
+
+
 def test_post_cap_recompute_by_origin_identity_feeds_a_valid_event() -> None:
     """The strongest pin: fold output constructs a REAL AnalyzeCompletedEvent
     and its proposal-accounting validator passes. Origin classification is

@@ -620,6 +620,7 @@ async def _insert_finding_event(
     severity: str,
     content_hash: str,
     is_eval: bool = False,
+    finding_id: UUID | None = None,
 ) -> None:
     """Insert a permanent `FindingEvent` (audit_events, `event_type='finding'`)
     — the source the severity tally reads. NOT the purgeable `findings` content
@@ -637,7 +638,7 @@ async def _insert_finding_event(
             "ie": is_eval,
             "payload": json.dumps(
                 {
-                    "finding_id": str(uuid4()),
+                    "finding_id": str(finding_id or uuid4()),
                     "severity": severity,
                     "finding_content_hash": content_hash,
                 }
@@ -903,6 +904,54 @@ async def test_severity_counts_are_report_equivalent_deduped(
     sc = next(r for r in body["reviews"] if r["id"] == str(rid))["severity_counts"]
     # high=1 (deduped from 2 events), critical=1.
     assert sc == {"critical": 1, "high": 1, "medium": 0, "low": 0, "info": 0}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keep_proof", [True, False])
+async def test_severity_counts_follow_latest_selected_ids_after_retention(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine], keep_proof: bool
+) -> None:
+    client, _, engine = dashboard_client
+    first, second, proof = uuid4(), uuid4(), uuid4()
+    async with engine.begin() as conn:
+        rid = await _seed_review(
+            conn,
+            status="completed",
+            is_eval=False,
+            repo_id=721,
+            llm_events=[],
+            synth={**_SYNTH, "selected_finding_ids": [str(first), str(second)]},
+        )
+        # Only the permanent audit rows remain. Two earlier claims and the
+        # later proof have distinct content hashes at the same source location.
+        for fid, digest in [(first, _HASH_A), (second, _HASH_B), (proof, "c" * 64)]:
+            await _insert_finding_event(
+                conn, review_id=rid, severity="high", content_hash=digest, finding_id=fid
+            )
+        await conn.execute(
+            text(
+                "INSERT INTO audit_events "
+                "(event_id, review_id, event_type, timestamp, is_eval, payload) "
+                "VALUES (:eid, :rid, 'synthesize_completed', NOW(), false, CAST(:payload AS jsonb))"
+            ),
+            {
+                "eid": uuid4(),
+                "rid": rid,
+                "payload": json.dumps(
+                    {**_SYNTH, "selected_finding_ids": [str(proof)] if keep_proof else []}
+                ),
+            },
+        )
+    response = client.get("/api/reviews", headers=_AUTH)
+    assert response.status_code == 200
+    item = next(r for r in response.json()["reviews"] if r["id"] == str(rid))
+    assert item["severity_counts"] == {
+        "critical": 0,
+        "high": int(keep_proof),
+        "medium": 0,
+        "low": 0,
+        "info": 0,
+    }
 
 
 @pytest.mark.asyncio

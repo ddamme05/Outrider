@@ -322,6 +322,7 @@ def test_parse_analyze_response_signature() -> None:
         "primary_line_ranges",
         "degraded_evidence_byte_ranges",
         "source_side",
+        "prior_findings",
     }
     kwonly = {name for name, p in params.items() if p.kind == inspect.Parameter.KEYWORD_ONLY}
     assert kwonly == expected_kwonly, (

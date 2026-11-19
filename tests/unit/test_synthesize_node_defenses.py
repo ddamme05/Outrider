@@ -14,7 +14,7 @@ from outrider.agent.nodes.synthesize import (
     FindingForgeryDetectedError,
     _enforce_synthesize_input_invariants,
 )
-from outrider.policy import FindingSeverity, FindingType
+from outrider.policy import EvidenceTier, FindingSeverity, FindingType
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
 from outrider.prompts.synthesize import render
 from outrider.schemas.triage_result import RiskLevel
@@ -68,6 +68,8 @@ def _make_finding_stub(
                 else FindingSeverity.LOW  # would-be downgrade smuggle
             )
             self.content_hash = "a" * 64
+            self.claim_key = None
+            self.evidence_tier = EvidenceTier.JUDGED
             self.finding_id = "stub-id"
             self.finding_type = finding_type or FindingType.SQL_INJECTION
 

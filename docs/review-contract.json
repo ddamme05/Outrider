@@ -1536,6 +1536,19 @@
             "default": null,
             "title": "Content Hash"
           },
+          "location_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Location Hash"
+          },
           "finding_type": {
             "anyOf": [
               {
@@ -2269,6 +2282,19 @@
             "title": "Content Hash",
             "type": "string"
           },
+          "claim_key": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claim Key"
+          },
           "proposal_hash": {
             "pattern": "^[a-f0-9]{64}$",
             "title": "Proposal Hash",
@@ -2644,6 +2670,19 @@
                 "pattern": "^[a-f0-9]{64}$",
                 "title": "Content Hash",
                 "type": "string"
+              },
+              "claim_key": {
+                "anyOf": [
+                  {
+                    "pattern": "^[a-f0-9]{64}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Claim Key"
               },
               "proposal_hash": {
                 "pattern": "^[a-f0-9]{64}$",

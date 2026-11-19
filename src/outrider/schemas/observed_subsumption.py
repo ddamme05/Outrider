@@ -41,6 +41,9 @@ class ObservedSubsumedMatch(BaseModel):
     line_end: Annotated[int, Field(ge=1)]
     dropped_content_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
     subsumer_content_hash: Annotated[str, Field(pattern=_SHA256_HEX_PATTERN)]
+    subsumer_claim_key: str | None = Field(
+        default=None, pattern=_SHA256_HEX_PATTERN, exclude_if=lambda value: value is None
+    )
 
     @field_validator("file_path")
     @classmethod
@@ -88,6 +91,7 @@ class ObservedSubsumedMatch(BaseModel):
             line_start=self.line_start,
             line_end=self.line_end,
             finding_type=self.subsumed_by_finding_type,
+            claim_key=self.subsumer_claim_key,
         )
         if self.subsumer_content_hash != expected_subsumer:
             raise ValueError(

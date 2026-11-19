@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_core import from_json
 
 from outrider.agent.nodes.finding_evidence import quote_rejection_detail
+from outrider.agent.nodes.finding_identity import distinguish_judged_claims
 from outrider.audit.events import compute_finding_content_hash
 from outrider.coordinates import (
     is_python_relative_import_form,
@@ -53,7 +54,7 @@ from outrider.schemas import ReviewFinding, TraceCandidate
 from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw, TraceCandidateProposalRaw
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
     from uuid import UUID
 
     from outrider.ast_facts.models import ImportRef, ScopeUnit
@@ -69,7 +70,7 @@ if TYPE_CHECKING:
 # SUBSUMES_DIGEST and from_import_map_digest separately key the subsumption
 # relation and import map; this version covers the rules that use them.
 # Keep this version beside the parser, never injected through configuration.
-ANALYZE_PARSER_VERSION: Final = "analyze-parser-v12"
+ANALYZE_PARSER_VERSION: Final = "analyze-parser-v14"
 
 # Keep these values aligned with `FindingProposalRejectedEvent.rejection_reason`
 # in `audit/events.py`; the node lifts parser rejections into that event.
@@ -219,6 +220,7 @@ def parse_analyze_response(
     primary_line_ranges: tuple[tuple[int, int], ...] = (),
     degraded_evidence_byte_ranges: tuple[tuple[int, int], ...] = (),
     source_side: Literal["head", "base"] = "head",
+    prior_findings: Sequence[ReviewFinding] = (),
 ) -> ParserResult:
     """Validate the response envelope, then admit proposals in their original order.
 
@@ -648,7 +650,7 @@ def parse_analyze_response(
         trace_candidates.extend(proposal_trace_candidates)
 
     return ParserResult(
-        admitted_findings=tuple(admitted_findings),
+        admitted_findings=distinguish_judged_claims(admitted_findings, prior_findings),
         trace_candidates=tuple(trace_candidates),
         proposal_rejections=tuple(proposal_rejections),
         response_rejection=None,

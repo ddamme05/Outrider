@@ -1416,6 +1416,8 @@ export interface components {
             /** Line End */
             line_end: number;
             dimension: components["schemas"]["ReviewDimension"];
+            /** Claim Key */
+            claim_key?: string | null;
             /** Finding Content Hash */
             finding_content_hash: string;
             evidence_tier: components["schemas"]["EvidenceTier"];
@@ -2008,6 +2010,8 @@ export interface components {
             finding_id?: string | null;
             /** Content Hash */
             content_hash?: string | null;
+            /** Location Hash */
+            location_hash?: string | null;
             finding_type?: components["schemas"]["FindingType"] | null;
             severity?: components["schemas"]["FindingSeverity"] | null;
             evidence_tier?: components["schemas"]["EvidenceTier"] | null;
@@ -2058,6 +2062,8 @@ export interface components {
             finding_id?: string | null;
             /** Content Hash */
             content_hash?: string | null;
+            /** Location Hash */
+            location_hash?: string | null;
             finding_type?: components["schemas"]["FindingType"] | null;
             severity?: components["schemas"]["FindingSeverity"] | null;
             evidence_tier?: components["schemas"]["EvidenceTier"] | null;
@@ -2235,6 +2241,8 @@ export interface components {
             dropped_content_hash: string;
             /** Subsumer Content Hash */
             subsumer_content_hash: string;
+            /** Subsumer Claim Key */
+            subsumer_claim_key?: string | null;
         };
         /**
          * PerFindingDecision
@@ -2474,6 +2482,8 @@ export interface components {
             finding_id: string;
             /** File Path */
             file_path: string;
+            /** Claim Key */
+            claim_key?: string | null;
             /**
              * Source Side
              * @default head
@@ -2624,6 +2634,8 @@ export interface components {
             coordinate_error_kind?: string | null;
             /** File Path */
             file_path: string;
+            /** Claim Key */
+            claim_key?: string | null;
             /**
              * Source Side
              * @default head
@@ -3207,13 +3219,10 @@ export interface components {
         };
         /**
          * SeverityCounts
-         * @description Per-severity counts of a review's REPORT-EQUIVALENT findings — the
-         *     synthesize-deduplicated set (`COUNT(DISTINCT content_hash)` per tier),
-         *     NOT raw admitted `findings` rows. Closed key set (the five
-         *     `FindingSeverity` tiers). On `ReviewListItem` this is `None` until a
-         *     `SynthesizeCompletedEvent` exists, because before synthesize there is no
-         *     deduplicated report set to count. Severity is policy-set baseline; a HITL
-         *     override is a review-detail concern, not the list tally.
+         * @description Baseline severity counts for the findings selected by synthesis.
+         *
+         *     Historical completions that omit selected IDs use distinct finding hashes.
+         *     The list returns None until synthesis completes.
          */
         SeverityCounts: {
             /**

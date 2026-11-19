@@ -39,6 +39,7 @@ from outrider.agent.native_candidates import (
 from outrider.agent.nodes.analyze import AnalyzeWorkerPayload, analyze_file
 from outrider.agent.nodes.analyze_aggregate import analyze_aggregate
 from outrider.agent.nodes.analyze_parser import parse_analyze_response
+from outrider.agent.nodes.finding_cap import cap_findings_by_severity
 from outrider.agent.nodes.trace import trace
 from outrider.audit.events import (
     CandidateAssessmentEvent,
@@ -52,7 +53,10 @@ from outrider.db.models.llm_call_content import LLMCallContent
 from outrider.llm.base import LLMResponse
 from outrider.policy import FindingType
 from outrider.policy.canonical import compute_round_id
-from outrider.policy.publish_eligibility import verification_hold_finding_ids
+from outrider.policy.publish_eligibility import (
+    is_eligible_for_v1_publish,
+    verification_hold_finding_ids,
+)
 from outrider.policy.severity import ACTIVE_POLICY_VERSION, SEVERITY_POLICY
 from outrider.schemas.analysis_round import AnalysisRound
 from outrider.schemas.native_candidate import CandidateAssessmentRef
@@ -288,6 +292,63 @@ def test_native_inventory_retains_each_unknown_and_malformed_occurrence_without_
     assert "Missing null guard" not in encoded
     assert "return checked_name" not in encoded
     assert _prepare(state, response, refs[0]).request.candidate_attempt_id is not None
+
+
+@pytest.mark.parametrize("original_capped", [False, True])
+def test_disputed_paraphrase_requires_approval_after_receipt_reload(original_capped):
+    original = _proposal(finding_type="correctness_bug")
+    paraphrase = dict(original, title="Null input raises", description="No user makes load fail.")
+    other_line = dict(original, line_start=1, line_end=1, evidence="def load(user):")
+    other_type = dict(original, finding_type="missing_error_handling")
+    state, response, refs = _case([original, paraphrase, other_line, other_type])
+    prepared = _prepare(state, response, refs[0])
+    assessment = assess_candidate_response(
+        prepared, _answer(prepared.request), policy_version=ACTIVE_POLICY_VERSION
+    )
+    assert assessment.status == "refutes"
+    event = NativeCandidateEvent(review_id=state.review_id, candidate=refs[0])
+    disputed = NativeCandidateEvent.model_validate_json(event.model_dump_json()).candidate
+    findings = state.analysis_rounds[0].findings
+    kept, dropped = cap_findings_by_severity(
+        findings, soft_cap=2 if original_capped else len(findings), hard_cap=10
+    )
+    assert (disputed.finding_id in {f.finding_id for f in dropped}) == original_capped
+    holds = verification_hold_finding_ids(
+        kept, [disputed], [assessment], policy_version=ACTIVE_POLICY_VERSION
+    )
+    expected = (
+        {refs[1].finding_id} if original_capped else {disputed.finding_id, refs[1].finding_id}
+    )
+    assert set(holds) == expected
+    sibling = next(f for f in kept if f.finding_id == refs[1].finding_id)
+    eligibility, _ = is_eligible_for_v1_publish(
+        sibling,
+        hitl_request=None,
+        hitl_decision=None,
+        verification_hold=sibling.finding_id in holds,
+    )
+    assert eligibility.value == "withheld"
+
+
+def test_historical_unkeyed_receipt_still_holds_keyed_siblings():
+    original = _proposal(finding_type="correctness_bug")
+    sibling = dict(original, title="Null input raises", description="No user makes load fail.")
+    state, response, refs = _case([original, sibling])
+    prepared = _prepare(state, response, refs[0])
+    assessment = assess_candidate_response(
+        prepared, _answer(prepared.request), policy_version=ACTIVE_POLICY_VERSION
+    )
+    event = NativeCandidateEvent(review_id=state.review_id, candidate=refs[0]).model_dump()
+    # Before claims were keyed, the candidate's content hash was the location hash.
+    event["candidate"]["content_hash"] = event["candidate"].pop("location_hash")
+    historical = NativeCandidateEvent.model_validate(event)
+    assert historical.model_dump() == event
+    [survivor] = [
+        f for f in state.analysis_rounds[0].findings if f.finding_id == refs[1].finding_id
+    ]
+    assert verification_hold_finding_ids(
+        [survivor], [historical.candidate], [assessment], policy_version=ACTIVE_POLICY_VERSION
+    ) == (survivor.finding_id,)
 
 
 def test_assessment_accepts_exact_served_lines_but_not_foreign_quotes_or_labels():

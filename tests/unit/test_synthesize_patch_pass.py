@@ -510,6 +510,63 @@ async def test_later_stronger_evidence_retains_its_original_finding_id() -> None
 
 
 @pytest.mark.asyncio
+async def test_later_trace_proof_wins_over_split_judged_claims() -> None:
+    from outrider.agent.nodes.finding_identity import distinguish_judged_claims
+
+    first = _make_high_finding()
+    second = ReviewFinding.model_validate(
+        {
+            **first.model_dump(),
+            "finding_id": uuid4(),
+            "proposal_hash": "b" * 64,
+            "title": "Different trigger",
+            "description": "Different consequence",
+        }
+    )
+    split = distinguish_judged_claims([first, second], ())
+    assert len({f.content_hash for f in split}) == 2
+    state = _make_multi_state(split)
+    proof = ReviewFinding.model_validate(
+        {
+            **first.model_dump(),
+            "finding_id": uuid4(),
+            "proposal_hash": "c" * 64,
+            "evidence_tier": EvidenceTier.INFERRED,
+            "trace_path": ("foo",),
+        }
+    )
+    first_round = state.analysis_rounds[0]
+    state.analysis_rounds.append(
+        AnalysisRound(
+            round_id=compute_round_id(
+                pass_index=1,
+                files_examined=first_round.files_examined,
+                files_skipped=(),
+                finding_content_hashes=(proof.content_hash,),
+            ),
+            pass_index=1,
+            findings=(proof,),
+            files_examined=first_round.files_examined,
+            files_skipped=(),
+            started_at=first_round.started_at,
+            ended_at=first_round.ended_at,
+        )
+    )
+    result = await synthesize(
+        state,
+        provider=_DispatchingProvider("{}"),
+        synthesize_model="m",
+        patch_model="m",
+        patches_enabled=False,
+        max_suggestions=0,
+        phase_event_sink=_StubPhaseSink(),
+        synthesize_event_sink=_StubSynthesizeEventSink(),
+        anomaly_sink=_StubAnomalySink(),
+    )
+    assert [f.finding_id for f in result["review_report"].findings] == [proof.finding_id]
+
+
+@pytest.mark.asyncio
 async def test_synthesize_report_cap_keeps_gated_drops_non_gated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
