@@ -10,7 +10,11 @@ from outrider.coordinates.errors import CoordinateError
     ("base", "patch"),
     [
         ("require_auth(user)\n", "@@ -1 +0,0 @@\n-require_auth(user)\n"),
+        ("require_auth(user)\n", "@@ -1 +0,0 @@\n-require_auth(user)"),
+        ("line with spaces  \r\n", "@@ -1 +0,0 @@\n-line with spaces  \r"),
+        ("\n", "@@ -1 +0,0 @@\n-"),
         ("é = 1", "@@ -1 +0,0 @@\n-é = 1\n\\ No newline at end of file\n"),
+        ("é = 1", "@@ -1 +0,0 @@\n-é = 1\n\\ No newline at end of file"),
     ],
 )
 def test_complete_removal_maps_only_to_review_body(base, patch):
@@ -37,6 +41,10 @@ def test_complete_removal_maps_only_to_review_body(base, patch):
         {"base_content": None},
         {"base_content": "require_auth(other)\n"},
         {"base_content": "require_auth(user)\nrun()\n"},
+        {"patch": "@@ -1 +0,0 @@\n-require_auth(use"},
+        {"patch": "@@ -1,2 +0,0 @@\n-require_auth(user)"},
+        {"patch": "@@ -1 +0,0 @@\n-require_auth(user)\n\\ No newline at end of file"},
+        {"base_content": "require_auth(user)", "patch": "@@ -1 +0,0 @@\n-require_auth(user)"},
         {"patch": None},
         {"patch": "@@ -1 +1 @@\n-require_auth(user)\n+run()\n"},
         {"patch": "--- a/other.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-require_auth(user)\n"},
