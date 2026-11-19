@@ -3219,13 +3219,10 @@ export interface components {
         };
         /**
          * SeverityCounts
-         * @description Per-severity counts of a review's REPORT-EQUIVALENT findings — the
-         *     synthesize-deduplicated set (`COUNT(DISTINCT content_hash)` per tier),
-         *     NOT raw admitted `findings` rows. Closed key set (the five
-         *     `FindingSeverity` tiers). On `ReviewListItem` this is `None` until a
-         *     `SynthesizeCompletedEvent` exists, because before synthesize there is no
-         *     deduplicated report set to count. Severity is policy-set baseline; a HITL
-         *     override is a review-detail concern, not the list tally.
+         * @description Baseline severity counts for the findings selected by synthesis.
+         *
+         *     Historical completions that omit selected IDs use distinct finding hashes.
+         *     The list returns None until synthesis completes.
          */
         SeverityCounts: {
             /**

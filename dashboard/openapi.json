@@ -6934,7 +6934,7 @@
         "additionalProperties": false,
         "type": "object",
         "title": "SeverityCounts",
-        "description": "Per-severity counts of a review's REPORT-EQUIVALENT findings \u2014 the\nsynthesize-deduplicated set (`COUNT(DISTINCT content_hash)` per tier),\nNOT raw admitted `findings` rows. Closed key set (the five\n`FindingSeverity` tiers). On `ReviewListItem` this is `None` until a\n`SynthesizeCompletedEvent` exists, because before synthesize there is no\ndeduplicated report set to count. Severity is policy-set baseline; a HITL\noverride is a review-detail concern, not the list tally."
+        "description": "Baseline severity counts for the findings selected by synthesis.\n\nHistorical completions that omit selected IDs use distinct finding hashes.\nThe list returns None until synthesis completes."
       },
       "SkipReason": {
         "type": "string",

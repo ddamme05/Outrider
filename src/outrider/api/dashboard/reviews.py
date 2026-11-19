@@ -92,13 +92,10 @@ class ReviewMetricsView(BaseModel):
 
 
 class SeverityCounts(BaseModel):
-    """Per-severity counts of a review's REPORT-EQUIVALENT findings — the
-    synthesize-deduplicated set (`COUNT(DISTINCT content_hash)` per tier),
-    NOT raw admitted `findings` rows. Closed key set (the five
-    `FindingSeverity` tiers). On `ReviewListItem` this is `None` until a
-    `SynthesizeCompletedEvent` exists, because before synthesize there is no
-    deduplicated report set to count. Severity is policy-set baseline; a HITL
-    override is a review-detail concern, not the list tally.
+    """Baseline severity counts for the findings selected by synthesis.
+
+    Historical completions that omit selected IDs use distinct finding hashes.
+    The list returns None until synthesis completes.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -321,8 +318,8 @@ router.include_router(candidates_router)
 
 async def _aggregate_metrics(
     session: AsyncSession, review_id: UUID, review_is_eval: bool
-) -> tuple[ReviewMetricsView, bool]:
-    """Return audit metrics and whether a matching synthesis completion exists.
+) -> tuple[ReviewMetricsView, bool, list[str] | None]:
+    """Return audit metrics, completion presence, and the latest selected finding IDs.
 
     The caller supplies `reviews.is_eval` for the read-side isolation rule
     in the module docstring.
@@ -365,33 +362,28 @@ async def _aggregate_metrics(
         files_traced_beyond_diff=files_traced_beyond_diff,
         wall_clock_seconds=(None if wall_clock_seconds is None else float(wall_clock_seconds)),
     )
-    return metrics, has_synthesis_completion
+    selected_ids = synth_payload.get("selected_finding_ids") if synth_payload is not None else None
+    return metrics, has_synthesis_completion, selected_ids
 
 
 async def _aggregate_severity_counts(
-    session: AsyncSession, review_id: UUID, review_is_eval: bool
+    session: AsyncSession, review_id: UUID, review_is_eval: bool, selected_ids: list[str] | None
 ) -> SeverityCounts:
-    """Count distinct finding hashes per baseline severity after synthesis.
-
-    Use permanent FindingEvents so content purge cannot erase the tally
-    (DECISIONS.md#014). Severity is policy-set; HITL overrides belong to
-    review detail. The caller must establish that a matching synthesis exists.
-    """
+    """Count selected IDs from permanent FindingEvents, falling back to old hash tallies."""
     severity_key = AuditEvent.payload["severity"].astext
-    rows = (
-        await session.execute(
-            select(
-                severity_key,
-                func.count(func.distinct(AuditEvent.payload["finding_content_hash"].astext)),
-            )
-            .where(
-                AuditEvent.review_id == review_id,
-                AuditEvent.is_eval == review_is_eval,
-                AuditEvent.event_type == "finding",
-            )
-            .group_by(severity_key)
-        )
-    ).all()
+    identity = AuditEvent.payload["finding_content_hash"].astext
+    conditions = [
+        AuditEvent.review_id == review_id,
+        AuditEvent.is_eval == review_is_eval,
+        AuditEvent.event_type == "finding",
+    ]
+    if selected_ids is not None:
+        if not selected_ids:
+            return SeverityCounts()
+        identity = AuditEvent.payload["finding_id"].astext
+        conditions.append(identity.in_(selected_ids))
+    stmt = select(severity_key, func.count(func.distinct(identity))).where(*conditions)
+    rows = (await session.execute(stmt.group_by(severity_key))).all()
     valid = SeverityCounts.model_fields
     return SeverityCounts(**{severity: n for severity, n in rows if severity in valid})
 
@@ -458,7 +450,7 @@ async def list_reviews(
         # Aggregate each row sequentially; the page limit bounds these queries.
         items: list[ReviewListItem] = []
         for review, repo_full_name in rows:
-            metrics, has_synthesis_completion = await _aggregate_metrics(
+            metrics, has_synthesis_completion, selected_ids = await _aggregate_metrics(
                 session, review.id, review.is_eval
             )
             items.append(
@@ -477,7 +469,9 @@ async def list_reviews(
                     completed_at=review.completed_at,
                     metrics=metrics,
                     severity_counts=(
-                        await _aggregate_severity_counts(session, review.id, review.is_eval)
+                        await _aggregate_severity_counts(
+                            session, review.id, review.is_eval, selected_ids
+                        )
                         if has_synthesis_completion
                         else None
                     ),
@@ -518,7 +512,7 @@ async def get_review(request: Request, review_id: UUID) -> ReviewDetail:
         if detail_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="review not found")
         review, repo_full_name = detail_row
-        metrics, _ = await _aggregate_metrics(session, review.id, review.is_eval)
+        metrics, _, _ = await _aggregate_metrics(session, review.id, review.is_eval)
         # The earliest event carrying the review's policy snapshot supplies its
         # version (DECISIONS.md#028); None before analysis. Policy-version events
         # can use unguarded emit paths, so filter by the review's eval flag.
