@@ -40,6 +40,9 @@ def validate_removed_file(
 
     if status != "removed" or head_content is not None or not base_content or not patch:
         raise invalid()
+    # GitHub can omit the final patch line's LF. Git marks a missing source LF explicitly.
+    if not patch.endswith("\n"):
+        patch += "\n"
     _, removed_file = _parse_and_match(patch, path)
     if removed_file is None:
         raise CoordinateError(
