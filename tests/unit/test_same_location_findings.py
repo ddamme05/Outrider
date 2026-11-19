@@ -2,6 +2,7 @@
 
 import json
 from datetime import UTC, datetime
+from itertools import permutations
 from uuid import uuid4
 
 import pytest
@@ -117,6 +118,34 @@ def test_two_consequences_on_the_same_quote_survive_reordering_and_repetition() 
 def test_duplicate_wording_does_not_create_another_finding(variant: tuple[str, str]) -> None:
     result = _review_round(_MISSING_SESSION, variant)
     assert len(result.findings) == 1
+
+
+@pytest.mark.parametrize("siblings", [(), (_DEFAULT_PUBLISH,)], ids=["alone", "with-second-issue"])
+def test_title_and_description_rewrites_in_one_reply(siblings: tuple[tuple[str, str], ...]) -> None:
+    title, description = _MISSING_SESSION
+    variants = (
+        _MISSING_SESSION,
+        ("A tag build cannot run the release session", description),
+        (title, "The tag job asks Nox for release, which is registered as docs-live."),
+    )
+    expected = _review_round(_MISSING_SESSION, *siblings)
+    for order in permutations(variants):
+        result = _review_round(*order, *siblings)
+        assert len(result.findings) == len(expected.findings)
+        assert result.round_id == expected.round_id
+
+
+def test_shared_title_cannot_merge_two_independently_repeated_descriptions() -> None:
+    shared_title = "The publishing session is misconfigured"
+    expected = _review_round(_MISSING_SESSION, _DEFAULT_PUBLISH)
+    result = _review_round(
+        (shared_title, _MISSING_SESSION[1]),
+        (shared_title, _DEFAULT_PUBLISH[1]),
+        _MISSING_SESSION,
+        _DEFAULT_PUBLISH,
+    )
+    assert len(result.findings) == 2
+    assert result.round_id == expected.round_id
 
 
 def test_single_proposal_preserves_its_recorded_hash() -> None:

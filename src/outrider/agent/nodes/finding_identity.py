@@ -29,19 +29,30 @@ def _claim_groups(findings: list[ReviewFinding]) -> dict[tuple[str, str], list[R
         titles_by_description[description].add(title)
         descriptions_by_title[title].add(description)
 
+    shared_descriptions = {
+        description
+        for description, titles in titles_by_description.items()
+        if description and len(titles) > 1
+    }
+    rewrite_labels: dict[str, tuple[str, str]] = {}
+    for title, descriptions in descriptions_by_title.items():
+        if len(descriptions) == 1 and "" not in descriptions:
+            continue
+        shared = descriptions & shared_descriptions
+        if len(shared) == 1:
+            # The original connects a title rewrite and a description rewrite.
+            (original_description,) = shared
+            rewrite_labels[title] = ("description", original_description)
+        else:
+            rewrite_labels[title] = ("title", title)
+
     groups: dict[tuple[str, str], list[ReviewFinding]] = defaultdict(list)
     for finding in findings:
         title, description = finding.title.strip(), finding.description.strip()
-        if title and (
-            not description
-            or (
-                len(descriptions_by_title[title]) > 1
-                and len(titles_by_description[description]) == 1
-            )
-        ):
-            groups["title", title].append(finding)
-        else:
-            groups["description", description].append(finding)
+        label = ("description", description)
+        if title and description not in shared_descriptions:
+            label = rewrite_labels.get(title, label)
+        groups[label].append(finding)
     return groups
 
 
