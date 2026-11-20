@@ -75,6 +75,9 @@ class Finding(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    implementation_citation: Mapped[dict[str, str] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     suggested_fix: Mapped[str | None] = mapped_column(Text, nullable=True)
     query_match_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     trace_path: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)

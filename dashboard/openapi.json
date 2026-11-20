@@ -3162,6 +3162,16 @@
             ],
             "title": "Evidence"
           },
+          "implementation_citation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImplementationCitation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "suggested_fix": {
             "anyOf": [
               {
@@ -3576,6 +3586,30 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "ImplementationCitation": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Path"
+          },
+          "quote": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Quote"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "path",
+          "quote"
+        ],
+        "title": "ImplementationCitation",
+        "description": "The supplied implementation path and exact quote checked during README review."
       },
       "LLMCallEvent": {
         "properties": {
@@ -7359,6 +7393,16 @@
               }
             ],
             "title": "Evidence"
+          },
+          "implementation_citation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImplementationCitation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "suggested_fix": {
             "anyOf": [

@@ -1583,6 +1583,7 @@ export interface components {
             description: string | null;
             /** Evidence */
             evidence: string | null;
+            implementation_citation?: components["schemas"]["ImplementationCitation"] | null;
             /** Suggested Fix */
             suggested_fix: string | null;
             /** Query Match Id */
@@ -1788,6 +1789,16 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * ImplementationCitation
+         * @description The supplied implementation path and exact quote checked during README review.
+         */
+        ImplementationCitation: {
+            /** Path */
+            path: string;
+            /** Quote */
+            quote: string;
         };
         /**
          * LLMCallEvent
@@ -3527,6 +3538,7 @@ export interface components {
             description: string | null;
             /** Evidence */
             evidence: string | null;
+            implementation_citation?: components["schemas"]["ImplementationCitation"] | null;
             /** Suggested Fix */
             suggested_fix: string | null;
             hitl_decision: components["schemas"]["HITLDecisionView"] | null;

@@ -226,6 +226,7 @@ The complete `ReviewFinding` serialization is in the catalog. Its fields are:
 | `file_path`, `line_start`, `line_end` | Validated repository path and source range. |
 | `source_side` | Code-assigned `head` or `base`. Ordinary findings use HEAD; whole-file removal findings use BASE. Default HEAD is omitted from legacy-compatible serialization. |
 | `title`, `description`, `evidence` | Model claim or structural producer description, with a source quote; bounded to 120, 1,000 and 2,000 characters respectively. |
+| `implementation_citation` | For a checked README claim, the matching implementation path and exact quote. Inline comments show it beside the README evidence. It expires with the finding content. |
 | `suggested_fix` | Optional later patch suggestion; not part of analysis discovery. |
 | `confidence` | Computed evidence-tier score in serialized output. |
 | `original_severity`, `override_reason`, `overrider_id` | Optional human severity-override provenance. |

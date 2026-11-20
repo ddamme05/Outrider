@@ -56,6 +56,7 @@ from outrider.schemas.llm.analyze import (
     ReadmeSupport,
     TraceCandidateProposalRaw,
 )
+from outrider.schemas.review_finding import ImplementationCitation
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -74,7 +75,7 @@ if TYPE_CHECKING:
 # SUBSUMES_DIGEST and from_import_map_digest separately key the subsumption
 # relation and import map; this version covers the rules that use them.
 # Keep this version beside the parser, never injected through configuration.
-ANALYZE_PARSER_VERSION: Final = "analyze-parser-v14"
+ANALYZE_PARSER_VERSION: Final = "analyze-parser-v15"
 
 # Keep these values aligned with `FindingProposalRejectedEvent.rejection_reason`
 # in `audit/events.py`; the node lifts parser rejections into that event.
@@ -628,6 +629,7 @@ def parse_analyze_response(
             )
             continue
 
+        implementation_citation = None
         if readme_sources is not None:
             readme_rejection: str | None
             try:
@@ -636,6 +638,10 @@ def parse_analyze_response(
                 readme_rejection = "malformed_support"
             else:
                 readme_rejection = assessment.rejection_detail(readme_sources)
+                if readme_rejection is None:
+                    implementation_citation = ImplementationCitation(
+                        path=assessment.implementation_path, quote=assessment.implementation_quote
+                    )
             if readme_rejection:
                 reject_proposal(
                     proposal=raw_proposal,
@@ -666,6 +672,7 @@ def parse_analyze_response(
                 title=raw_proposal.title,
                 description=raw_proposal.description,
                 evidence=raw_proposal.evidence,
+                implementation_citation=implementation_citation,
                 query_match_id=raw_proposal.query_match_id,
                 trace_path=raw_proposal.trace_path,
                 # Preserve the same proposal identity as its trace candidates (#025).

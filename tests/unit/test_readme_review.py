@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import test_analyze_node as analyze_tests
 
+from outrider.agent.nodes.publish_render import _build_finding_comment_body
 from outrider.agent.nodes.readme_review import implementation_sources
 from outrider.prompts.analyze import README_VERSION
 from outrider.schemas.triage_result import ReviewTier
@@ -86,6 +87,13 @@ async def test_changed_readme_needs_captured_support(
     assert "See details below." in request.user_prompt
     assert set(e.file_path for e in request.context_summary) == {doc.path, source.path}
     assert bool(result["analysis_rounds"][0].findings) == expected
+    if expected:
+        [finding] = result["analysis_rounds"][0].findings
+        body = _build_finding_comment_body(finding, effective_severity=finding.severity)
+        assert quote not in finding.description
+        assert quote in body and path in body
+        assert finding.evidence == answer["findings"][0]["evidence"]
+        assert finding.model_dump()["implementation_citation"] == {"path": path, "quote": quote}
     if verdict == "missing":
         [rejection] = deps["analyze_event_sink"].response_rejections
         assert rejection.rejection_detail == "support x1"

@@ -1,6 +1,6 @@
 import type { components } from "../api/schema";
 import { DecisionControls } from "./DecisionControls";
-import { CodeBlock } from "./CodeBlock";
+import { CodeBlock, ImplementationEvidence } from "./CodeBlock";
 import type { DecisionDraft } from "../lib/hitl";
 import {
   destLabel,
@@ -174,6 +174,9 @@ function FindingBody({ finding, evidenceTier }: { finding: FindingView; evidence
 
       {!finding.content_redacted && finding.evidence ? (
         <CodeBlock code={finding.evidence} filePath={finding.file_path} />
+      ) : null}
+      {!finding.content_redacted && finding.implementation_citation ? (
+        <ImplementationEvidence citation={finding.implementation_citation} />
       ) : null}
 
       {!finding.content_redacted && finding.source_side !== "base" && finding.suggested_fix ? (

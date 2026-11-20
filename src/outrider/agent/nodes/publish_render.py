@@ -11,7 +11,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import UUID  # noqa: TC003 — runtime annotation lookup
 
-from outrider.presentation.finding_sections import FindingSections, build_finding_sections
+from outrider.presentation.finding_sections import (
+    FindingSections,
+    build_finding_sections,
+    language_for_path,
+)
 from outrider.schemas.hitl import PerFindingOutcome
 
 if TYPE_CHECKING:
@@ -245,12 +249,26 @@ def _build_finding_comment_body(
         if finding.evidence.strip()
         else ""
     )
+    implementation_block = ""
+    if citation := finding.implementation_citation:
+        path = sanitize_display_string(citation.path)
+        quote = render_fenced_block(citation.quote, language=language_for_path(citation.path))
+        implementation_block = f"**Implementation:** {path}\n{quote}"
     # `suggestion` is the already-safe ```suggestion block (or "") from `_render_suggestion_block`
     # (the canonical `suggested_fix`, never parsed from description); label it when present.
     fix_block = f"**Suggested fix:**\n{suggestion}" if suggestion else ""
 
     tail_blocks = tuple(
-        block for block in (proof_line, evidence_block, fix_block, agent_prompt, markers) if block
+        block
+        for block in (
+            proof_line,
+            evidence_block,
+            implementation_block,
+            fix_block,
+            agent_prompt,
+            markers,
+        )
+        if block
     )
     suffix = "\n\n" + "\n\n".join(tail_blocks)
     capped_prose = apply_size_cap(prose, reserve_bytes=len(suffix.encode("utf-8")))

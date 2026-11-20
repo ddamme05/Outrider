@@ -28,13 +28,15 @@ from outrider.audit.replay import AuditReplayer, _verify_full_finding
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import FindingSeverity, FindingType
 from outrider.schemas import ReviewDimension
-from outrider.schemas.review_finding import ReviewFinding
+from outrider.schemas.review_finding import ImplementationCitation, ReviewFinding
 
 if TYPE_CHECKING:
     from typing import Literal
     from uuid import UUID
 
     from tests.integration.conftest import PersisterTestSetup
+
+    from outrider.api.dashboard.findings import FindingView
 
 _FILE_PATH = "src/app/models.py"
 _LINE_START = 10
@@ -46,6 +48,7 @@ def _make_finding(
     installation_id: int,
     *,
     title: str = "SQL injection in query builder",
+    file_path: str = _FILE_PATH,
     source_side: Literal["head", "base"] = "head",
 ) -> ReviewFinding:
     """Build an admitted `ReviewFinding` matching the seeded review/installation.
@@ -61,7 +64,7 @@ def _make_finding(
         dimension=ReviewDimension.SECURITY,
         severity=FindingSeverity.CRITICAL,
         evidence_tier=EvidenceTier.JUDGED,
-        file_path=_FILE_PATH,
+        file_path=file_path,
         source_side=source_side,
         line_start=_LINE_START,
         line_end=_LINE_END,
@@ -69,7 +72,7 @@ def _make_finding(
         description="User input flows into a raw SQL string.",
         evidence="cursor.execute(f'SELECT * FROM t WHERE id={user_id}')",
         content_hash=compute_finding_content_hash(
-            _FILE_PATH,
+            file_path,
             line_start=_LINE_START,
             line_end=_LINE_END,
             finding_type=FindingType.SQL_INJECTION,
@@ -133,6 +136,51 @@ async def test_source_side_survives_content_audit_replay_api_and_retention(
         )
     stub = next(view for view in views if view.finding_id == base.finding_id)
     assert stub.content_redacted and stub.source_side == "base"
+
+
+async def test_implementation_citation_survives_retry_and_expires_with_content(
+    persister_setup: PersisterTestSetup,
+) -> None:
+    setup = persister_setup
+    finding = _make_finding(setup.review_id, setup.installation_id, file_path="README.md")
+    citation = ImplementationCitation(path="src/storage.py", quote="return False")
+    finding.implementation_citation = citation
+    await setup.persister.emit_finding(finding, is_eval=False)
+    await setup.persister.emit_finding(finding, is_eval=False)
+    sessions = async_sessionmaker(setup.engine, expire_on_commit=False)
+    replayer = AuditReplayer(session_factory=sessions)
+    replay = await replayer.reconstruct(setup.review_id)
+    assert replay.findings
+    for saved in replay.findings:
+        assert saved.content is not None and saved.content.implementation_citation == citation
+        assert citation.quote not in saved.event.model_dump_json()
+
+    async def dashboard_view() -> FindingView:
+        async with sessions() as session:
+            [view] = await assemble_finding_views(
+                session,
+                review_id=setup.review_id,
+                installation_id=setup.installation_id,
+                review_is_eval=False,
+            )
+        return view
+
+    assert (await dashboard_view()).implementation_citation == citation
+    finding.implementation_citation = ImplementationCitation(
+        path=citation.path, quote="return True"
+    )
+    with pytest.raises(AuditPersisterIdempotencyConflict) as conflict:
+        await setup.persister.emit_finding(finding, is_eval=False)
+    assert conflict.value.mismatched_fields == ("implementation_citation",)
+    async with setup.engine.begin() as conn:
+        await conn.execute(
+            text("DELETE FROM findings WHERE finding_id = :fid"), {"fid": finding.finding_id}
+        )
+    assert all(
+        record.content is None for record in (await replayer.reconstruct(setup.review_id)).findings
+    )
+    stub = await dashboard_view()
+    assert stub.content_redacted and stub.implementation_citation is None
 
 
 async def _count_finding_events(setup: PersisterTestSetup, finding_id: UUID) -> int:

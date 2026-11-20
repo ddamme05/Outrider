@@ -64,6 +64,7 @@ from outrider.policy.versions import (
     load_policy_for_version,
 )
 from outrider.schemas.hitl import PerFindingDecision, PerFindingOutcome
+from outrider.schemas.review_finding import ImplementationCitation
 
 # ---------------------------------------------------------------------------
 # Typed errors (functions-raise-typed-exceptions)
@@ -162,6 +163,7 @@ class FindingContent(BaseModel):
     title: str
     description: str
     evidence: str
+    implementation_citation: ImplementationCitation | None = None
     suggested_fix: str | None
     query_match_id: str | None
     trace_path: tuple[str, ...] | None
@@ -1419,6 +1421,11 @@ def _finding_content(row: Finding | None) -> FindingContent | None:
         title=row.title,
         description=row.description,
         evidence=row.evidence,
+        implementation_citation=(
+            ImplementationCitation.model_validate(row.implementation_citation)
+            if row.implementation_citation is not None
+            else None
+        ),
         suggested_fix=row.suggested_fix,
         query_match_id=row.query_match_id,
         trace_path=tuple(row.trace_path) if row.trace_path is not None else None,
