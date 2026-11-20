@@ -27,6 +27,7 @@ from outrider.agent.eval_driver import (
     _validate_eval_db_url,
 )
 from outrider.llm.base import LLMRequest
+from outrider.prompts import triage
 from outrider.schemas.hitl import HITLRequest, PerFindingOutcome
 
 # asyncio_mode = "auto" (pyproject) auto-detects async tests; no marker needed.
@@ -125,7 +126,10 @@ async def test_scripted_provider_returns_response_by_node_and_call_index() -> No
     assert persist.events[0].cost_usd > 0
 
 
-async def test_scripted_triage_serializes_fixture_paths_in_explicit_slot_order() -> None:
+@pytest.mark.parametrize("version", ["triage-v3", triage.VERSION])
+async def test_scripted_triage_serializes_fixture_paths_in_explicit_slot_order(
+    version: str,
+) -> None:
     payload = {
         "file_tiers": {"src/b.py": "deep", "src/a.py": "standard"},
         "overall_risk": "medium",
@@ -139,7 +143,7 @@ async def test_scripted_triage_serializes_fixture_paths_in_explicit_slot_order()
         responses, persister=persist, triage_paths=("src/a.py", "src/b.py")
     )
     request = _triage_request().model_copy(
-        update={"prompt_template_version": "triage-v3", "response_schema_json": '{"type":"object"}'}
+        update={"prompt_template_version": version, "response_schema_json": '{"type":"object"}'}
     )
 
     response = await provider.complete(request)
