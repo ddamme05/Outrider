@@ -18,7 +18,7 @@ import { formatDurationMs, spanMs } from "../lib/format";
 import { hitlOutcomeLabel, severityLabel, typeLabel } from "../lib/findingSections";
 import { prettyModel } from "../lib/modelLabel";
 import { AuditFeed } from "./AuditFeed";
-import { CodeBlock } from "./CodeBlock";
+import { CodeBlock, ImplementationEvidence } from "./CodeBlock";
 
 type TimelineData = components["schemas"]["ReplayTimelineResponse"];
 type Phase = NonNullable<TimelineData["phases"]>[number];
@@ -139,6 +139,9 @@ function FindingContentPanel({ content, proof }: { content: FindingContent; proo
           {content.title ? <div className="tl-c-title">{content.title}</div> : null}
           {content.description ? <div className="tl-c-body">{content.description}</div> : null}
           {content.evidence ? <CodeBlock code={content.evidence} /> : null}
+          {content.implementation_citation ? (
+            <ImplementationEvidence citation={content.implementation_citation} />
+          ) : null}
           {content.suggested_fix ? (
             <div className="tl-c-fix">Fix: {content.suggested_fix}</div>
           ) : null}

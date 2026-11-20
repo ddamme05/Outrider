@@ -801,13 +801,13 @@
         "title": "TriageResult",
         "type": "object"
       },
-      "version": "triage-v3",
+      "version": "triage-v4",
       "notes": "Live responses use numbered file IDs, decoded to the supplied paths before constructing this state record. Policy rejects SKIP, missing/unknown paths and inactive policy versions; reasoning is clamped. Historical records keep path keys."
     },
     "TriageResponseWire": {
       "source": "src/outrider/prompts/triage_schema.py:response_schema_json",
       "kind": "constrained-decoding-schema",
-      "version": "triage-v3",
+      "version": "triage-v4",
       "example_file_count": 2,
       "schema": {
         "type": "object",
@@ -1486,7 +1486,8 @@
                   "sql_injection_on_parameterized_call",
                   "schema_construction_failed",
                   "evidence_quote_invalid",
-                  "model_observed_not_supported"
+                  "model_observed_not_supported",
+                  "readme_claim_unverified"
                 ],
                 "type": "string"
               },
@@ -2090,6 +2091,30 @@
             "title": "FindingType",
             "type": "string"
           },
+          "ImplementationCitation": {
+            "additionalProperties": false,
+            "description": "The supplied implementation path and exact quote checked during README review.",
+            "properties": {
+              "path": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "title": "Path",
+                "type": "string"
+              },
+              "quote": {
+                "maxLength": 2000,
+                "minLength": 1,
+                "title": "Quote",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "quote"
+            ],
+            "title": "ImplementationCitation",
+            "type": "object"
+          },
           "PublishDestination": {
             "description": "Publish destination selected from coordinate translation, per spec §4.1.7.\n\nPublish assigns the field after coordinates resolves the location;\nanalyze leaves it None. Backs publish-routes-through-coordinates.",
             "enum": [
@@ -2184,6 +2209,17 @@
             "maxLength": 2000,
             "title": "Evidence",
             "type": "string"
+          },
+          "implementation_citation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ImplementationCitation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "suggested_fix": {
             "anyOf": [
@@ -2479,6 +2515,30 @@
             "title": "FindingType",
             "type": "string"
           },
+          "ImplementationCitation": {
+            "additionalProperties": false,
+            "description": "The supplied implementation path and exact quote checked during README review.",
+            "properties": {
+              "path": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "title": "Path",
+                "type": "string"
+              },
+              "quote": {
+                "maxLength": 2000,
+                "minLength": 1,
+                "title": "Quote",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "quote"
+            ],
+            "title": "ImplementationCitation",
+            "type": "object"
+          },
           "PublishDestination": {
             "description": "Publish destination selected from coordinate translation, per spec §4.1.7.\n\nPublish assigns the field after coordinates resolves the location;\nanalyze leaves it None. Backs publish-routes-through-coordinates.",
             "enum": [
@@ -2573,6 +2633,17 @@
                 "maxLength": 2000,
                 "title": "Evidence",
                 "type": "string"
+              },
+              "implementation_citation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ImplementationCitation"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "suggested_fix": {
                 "anyOf": [

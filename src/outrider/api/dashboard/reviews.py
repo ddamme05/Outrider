@@ -44,6 +44,7 @@ from outrider.audit.replay import (
 from outrider.db.models.audit_events import AuditEvent
 from outrider.db.models.installations import InstallationRepository, active_repo_membership
 from outrider.db.models.reviews import Review
+from outrider.schemas.review_finding import ImplementationCitation  # noqa: TC001
 
 if TYPE_CHECKING:
     from sqlalchemy import ColumnElement
@@ -217,6 +218,7 @@ class TimelineFindingContentView(BaseModel):
     title: str | None
     description: str | None
     evidence: str | None
+    implementation_citation: ImplementationCitation | None = None
     suggested_fix: str | None
     hitl_decision: HITLDecisionView | None
     # Findings-retention-SWEEP date for a redacted stub (latest `target_table='findings'`
@@ -625,6 +627,9 @@ async def _timeline_content(
             title=finding.content.title if finding.content is not None else None,
             description=finding.content.description if finding.content is not None else None,
             evidence=finding.content.evidence if finding.content is not None else None,
+            implementation_citation=finding.content.implementation_citation
+            if finding.content
+            else None,
             suggested_fix=finding.content.suggested_fix if finding.content is not None else None,
             hitl_decision=decisions_by_finding.get(str(finding.event.finding_id)),
             redaction_sweep_at=findings_sweep_at if finding.content is None else None,

@@ -101,6 +101,45 @@ def _proposal(**changes):
     }
 
 
+def test_identical_readme_proposals_keep_their_own_support_decisions():
+    review_id = uuid4()
+    source = "Calling load always succeeds.\n"
+    proposal = _proposal(
+        finding_type="correctness_bug", evidence=source.strip(), line_start=1, line_end=1
+    )
+    support = {"implementation_path": "app.py", "implementation_quote": "raise ValueError"}
+    response = _response(
+        json.dumps(
+            {
+                "findings": [proposal, proposal],
+                "support": [{**support, "verdict": "withhold"}, {**support, "verdict": "send"}],
+            }
+        )
+    )
+    parsed = parse_analyze_response(
+        response.text,
+        review_id=review_id,
+        installation_id=7,
+        file_path="README.md",
+        file_content=source,
+        file_byte_length=len(source.encode()),
+        included_scope_units=(),
+        query_match_id_set=frozenset(),
+        degraded_mode=True,
+        active_policy_version=ACTIVE_POLICY_VERSION,
+        degraded_context_byte_ranges=((0, len(source.encode())),),
+        degraded_evidence_byte_ranges=((0, len(source.encode())),),
+        readme_sources={"app.py": "def load():\n    raise ValueError\n"},
+    )
+    refs = collect_native_candidates(
+        response, parsed, review_id=review_id, file_path="README.md", pass_index=0
+    )
+    assert [(ref.proposal_index, ref.initial_disposition) for ref in refs] == [
+        (0, "rejected"),
+        (1, "admitted"),
+    ]
+
+
 def _case(items=None):
     review_id = uuid4()
     response = _response(json.dumps({"findings": items or [_proposal()]}))

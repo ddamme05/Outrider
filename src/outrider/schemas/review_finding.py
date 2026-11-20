@@ -64,6 +64,20 @@ _CONFIDENCE_BY_TIER: Final[Mapping[EvidenceTier, float]] = MappingProxyType(
 )
 
 
+class ImplementationCitation(BaseModel):
+    """The supplied implementation path and exact quote checked during README review."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(min_length=1, max_length=1024)
+    quote: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, path: str) -> str:
+        return validate_diff_path(path)
+
+
 class ReviewFinding(BaseModel):
     """One finding produced by the agent's review of a PR.
 
@@ -121,6 +135,9 @@ class ReviewFinding(BaseModel):
     # bounded enough that a runaway response can't fill an audit row with
     # MB of fabricated evidence.
     evidence: Annotated[str, Field(max_length=2000)]
+    implementation_citation: ImplementationCitation | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     # Model-output cap. Suggested fixes can include a code snippet so the
     # cap matches `evidence`. Populated by the synthesize patch pass (the EXACT
     # replacement text GitHub applies, not prose, not ```suggestion markdown);

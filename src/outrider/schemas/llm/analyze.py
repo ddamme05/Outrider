@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Annotated, Any, Final
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -22,6 +22,10 @@ from outrider.policy import (  # noqa: TC001 — Pydantic field types
     EvidenceTier,
     FindingType,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 
 # ---------------------------------------------------------------------------
 # Raw layer — what the LLM provider returns. Bounded but non-canonical.
@@ -284,3 +288,47 @@ ANALYZE_RESPONSE_SCHEMA_JSON: Final[str] = json.dumps(
 ANALYZE_RESPONSE_FORMAT_DIGEST: Final[str] = hashlib.sha256(
     ANALYZE_RESPONSE_SCHEMA_JSON.encode("utf-8")
 ).hexdigest()
+
+
+class ReadmeSupport(BaseModel):
+    """The model's decision about a documentation claim and its source citation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    verdict: Literal["send", "withhold", "uncertain"]
+    implementation_path: str = Field(max_length=1024)
+    implementation_quote: str = Field(max_length=2000)
+
+    def rejection_detail(self, sources: Mapping[str, str]) -> str | None:
+        if self.verdict != "send":
+            return self.verdict
+        if not self.implementation_quote.strip():
+            return "empty_implementation_quote"
+        if self.implementation_quote not in sources.get(self.implementation_path, ""):
+            return "implementation_quote_not_in_supplied_file"
+        return None
+
+
+# The ordinary findings array keeps its wire shape and proposal identities.
+README_RESPONSE_SCHEMA_JSON: Final[str] = json.dumps(
+    {
+        **ANALYZE_RESPONSE_SCHEMA,
+        "properties": {
+            **ANALYZE_RESPONSE_SCHEMA["properties"],
+            "support": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "verdict": {"type": "string", "enum": ["send", "withhold", "uncertain"]},
+                        "implementation_path": {"type": "string"},
+                        "implementation_quote": {"type": "string"},
+                    },
+                    "required": ["verdict", "implementation_path", "implementation_quote"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["findings", "support"],
+    },
+    separators=(",", ":"),
+)

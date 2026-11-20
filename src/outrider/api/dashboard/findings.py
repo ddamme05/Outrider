@@ -19,6 +19,7 @@ from sqlalchemy import select
 from outrider.db.models.audit_events import AuditEvent
 from outrider.db.models.findings import Finding
 from outrider.db.models.purge_audit import PurgeAudit
+from outrider.schemas.review_finding import ImplementationCitation  # noqa: TC001
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -104,6 +105,7 @@ class FindingView(BaseModel):
     title: str | None
     description: str | None
     evidence: str | None
+    implementation_citation: ImplementationCitation | None = None
     suggested_fix: str | None
     query_match_id: str | None
     trace_path: list[str] | None
@@ -204,6 +206,11 @@ async def assemble_finding_views(
                 title=content_finding.title,
                 description=content_finding.description,
                 evidence=content_finding.evidence,
+                implementation_citation=(
+                    ImplementationCitation.model_validate(content_finding.implementation_citation)
+                    if content_finding.implementation_citation is not None
+                    else None
+                ),
                 suggested_fix=content_finding.suggested_fix,
                 query_match_id=content_finding.query_match_id,
                 trace_path=content_finding.trace_path,

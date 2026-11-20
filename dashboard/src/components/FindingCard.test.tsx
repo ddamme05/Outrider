@@ -94,6 +94,7 @@ test("a redacted finding shows the retention stub and hides content", () => {
         title: null,
         description: null,
         evidence: null,
+        implementation_citation: { path: "src/store.py", quote: "return False" },
         suggested_fix: null,
         redaction_sweep_at: "2026-05-20T00:00:00Z",
       })}
@@ -103,4 +104,17 @@ test("a redacted finding shows the retention stub and hides content", () => {
   expect(document.querySelector(".codeblock")).toBeNull(); // no evidence block
   // Metadata (humanized) still renders — it's permanent.
   expect(document.querySelector(".sev-pill")).toHaveTextContent("Critical");
+});
+
+test("a README warning shows the checked implementation path and quote", () => {
+  render(
+    <FindingCard finding={finding({
+      file_path: "README.md",
+      evidence: "store returns true",
+      implementation_citation: { path: "src/store.py", quote: "return False" },
+    })} />,
+  );
+  expect(screen.getByText("src/store.py")).toBeInTheDocument();
+  expect(screen.getByText("return False").tagName).toBe("CODE");
+  expect(screen.getByText("store returns true")).toBeInTheDocument();
 });

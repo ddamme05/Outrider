@@ -1505,7 +1505,7 @@ export interface components {
              * Rejection Reason
              * @enum {string}
              */
-            rejection_reason: "raw_proposal_invalid" | "evidence_quote_invalid" | "model_observed_not_supported" | "query_match_id_not_in_registry" | "trace_path_not_admissible" | "finding_type_not_in_enum" | "evidence_tier_not_in_enum" | "span_outside_scope_unit" | "span_outside_file" | "span_outside_degraded_context" | "sql_injection_on_parameterized_call" | "schema_construction_failed";
+            rejection_reason: "raw_proposal_invalid" | "evidence_quote_invalid" | "model_observed_not_supported" | "readme_claim_unverified" | "query_match_id_not_in_registry" | "trace_path_not_admissible" | "finding_type_not_in_enum" | "evidence_tier_not_in_enum" | "span_outside_scope_unit" | "span_outside_file" | "span_outside_degraded_context" | "sql_injection_on_parameterized_call" | "schema_construction_failed";
             /** Rejection Detail */
             rejection_detail: string;
         };
@@ -1583,6 +1583,7 @@ export interface components {
             description: string | null;
             /** Evidence */
             evidence: string | null;
+            implementation_citation?: components["schemas"]["ImplementationCitation"] | null;
             /** Suggested Fix */
             suggested_fix: string | null;
             /** Query Match Id */
@@ -1788,6 +1789,16 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * ImplementationCitation
+         * @description The supplied implementation path and exact quote checked during README review.
+         */
+        ImplementationCitation: {
+            /** Path */
+            path: string;
+            /** Quote */
+            quote: string;
         };
         /**
          * LLMCallEvent
@@ -2003,7 +2014,7 @@ export interface components {
              */
             initial_disposition: "admitted" | "rejected" | "malformed";
             /** Rejection Reason */
-            rejection_reason?: ("raw_proposal_invalid" | "query_match_id_not_in_registry" | "trace_path_not_admissible" | "finding_type_not_in_enum" | "evidence_tier_not_in_enum" | "span_outside_scope_unit" | "span_outside_file" | "span_outside_degraded_context" | "sql_injection_on_parameterized_call" | "schema_construction_failed" | "evidence_quote_invalid" | "model_observed_not_supported") | null;
+            rejection_reason?: ("raw_proposal_invalid" | "query_match_id_not_in_registry" | "trace_path_not_admissible" | "finding_type_not_in_enum" | "evidence_tier_not_in_enum" | "span_outside_scope_unit" | "span_outside_file" | "span_outside_degraded_context" | "sql_injection_on_parameterized_call" | "schema_construction_failed" | "evidence_quote_invalid" | "model_observed_not_supported" | "readme_claim_unverified") | null;
             /** Proposal Hash */
             proposal_hash?: string | null;
             /** Finding Id */
@@ -2055,7 +2066,7 @@ export interface components {
              */
             initial_disposition: "admitted" | "rejected" | "malformed";
             /** Rejection Reason */
-            rejection_reason?: ("raw_proposal_invalid" | "query_match_id_not_in_registry" | "trace_path_not_admissible" | "finding_type_not_in_enum" | "evidence_tier_not_in_enum" | "span_outside_scope_unit" | "span_outside_file" | "span_outside_degraded_context" | "sql_injection_on_parameterized_call" | "schema_construction_failed" | "evidence_quote_invalid" | "model_observed_not_supported") | null;
+            rejection_reason?: ("raw_proposal_invalid" | "query_match_id_not_in_registry" | "trace_path_not_admissible" | "finding_type_not_in_enum" | "evidence_tier_not_in_enum" | "span_outside_scope_unit" | "span_outside_file" | "span_outside_degraded_context" | "sql_injection_on_parameterized_call" | "schema_construction_failed" | "evidence_quote_invalid" | "model_observed_not_supported" | "readme_claim_unverified") | null;
             /** Proposal Hash */
             proposal_hash?: string | null;
             /** Finding Id */
@@ -3527,6 +3538,7 @@ export interface components {
             description: string | null;
             /** Evidence */
             evidence: string | null;
+            implementation_citation?: components["schemas"]["ImplementationCitation"] | null;
             /** Suggested Fix */
             suggested_fix: string | null;
             hitl_decision: components["schemas"]["HITLDecisionView"] | null;

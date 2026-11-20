@@ -12,7 +12,9 @@ comments and suggested fixes for Python, JavaScript, TypeScript and TSX.
 When code parses without errors, the model usually sees complete functions or
 classes affected by additions or deletions, plus the matching diff. Changes
 outside those sections receive bounded current-source regions. Supported
-configuration files receive text review.
+configuration files receive text review. When a changed README makes a claim about
+matching code in the PR, Outrider can review both together after allocating the
+code review budget.
 
 Whole-file removals receive a bounded review of the removed BASE source and any
 available captured importer references. Removal findings require human approval
@@ -628,7 +630,7 @@ what Outrider sends and stores. Its terms are recorded in
 [#016](DECISIONS.md#016-llm-exchanges-stored-locally-under-retention-logs-stay-metadata-only), and
 [#073](DECISIONS.md#073-summary-prompts-contain-findings-and-risk).
 
-<!-- Privacy wording follows #015/#016, with synthesis egress narrowed by #073.
+<!-- Privacy wording follows #015/#016, #073 and #074.
      Further changes require a superseding decision. -->
 
 <details>
@@ -636,7 +638,7 @@ what Outrider sends and stores. Its terms are recorded in
 
 > Outrider sends data to the configured LLM provider only through its review-stage model calls. Depending on the stage, this includes: the PR title, changed-file paths and metadata, diff patches, complete bodies of scopes containing added lines (or bounded diff hunks on degraded paths), structural query identifiers, trace candidate identifiers, import strings, and reasons, scope bodies from uniquely resolved related files, finding identifiers, metadata, titles, descriptions, and evidence, target source lines used for suggested fixes, and the risk classification used to generate the final summary. Outrider does not currently send the PR body, author login, commit messages, or branch names; adding any of these requires a new privacy-contract amendment.
 >
-> Complete eligible file content is fetched and checkpointed locally. Outrider does not send the separately fetched base and head file blobs as whole-file payloads during normal analysis, but GitHub diff patches may contain most or all of an added or heavily rewritten file.
+> Complete eligible file content is fetched and checkpointed locally. README review can send the complete current README (up to 16 KiB) and complete matching implementation files from the same PR (up to 12 KiB combined) to the configured model. GitHub diff patches may contain most or all of an added or heavily rewritten file.
 >
 > Under Anthropic's default terms, API inputs and outputs are deleted within 30 days, though retention can extend under contractual arrangements, Usage Policy enforcement, or legal requirements; content flagged for policy violations is retained up to 2 years, classification scores up to 7 years; no data is used for training without permission.
 >
@@ -716,9 +718,8 @@ penetration tested.
 - **Prompts are tuned against Claude models only.** Prompt calibration was performed against
   Sonnet and Haiku. GLM runs the same prefix and holds its own baseline column above, but no
   GLM-specific calibration experiment has been run.
-- **Structural analysis covers Python and JS/TS/TSX.** Files in other languages are skipped
-  during analyze with an audited `UNSUPPORTED_LANGUAGE` event and do not receive model review
-  today.
+- **Structural analysis covers Python and JS/TS/TSX.** Selected READMEs and supported
+  configuration files receive text review. Other unsupported formats skip analysis.
 - **Replay verifies structure and hashes.** Re-executing tree-sitter queries against stored
   evidence spans is future scope.
 

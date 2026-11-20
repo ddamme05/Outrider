@@ -27,6 +27,7 @@ _MODEL_TYPES: tuple[tuple[str, str], ...] = (
     ("outrider.schemas.pr_context", "ChangedFile"),
     ("outrider.schemas.pr_context", "PRContext"),
     ("outrider.schemas.publish", "PublishResult"),
+    ("outrider.schemas.review_finding", "ImplementationCitation"),
     ("outrider.schemas.review_finding", "ReviewFinding"),
     ("outrider.schemas.review_report", "ReviewMetrics"),
     ("outrider.schemas.review_report", "ReviewReport"),

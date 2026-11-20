@@ -1940,3 +1940,23 @@ that future model-written summaries avoid unsupported coverage claims.
 `specs/2026-05-28-synthesize-node.md`,
 `specs/2026-06-03-review-metrics-llm-aggregates.md`, `README.md`,
 `src/outrider/api/privacy.py`, `tests/unit/test_privacy_content.py`.
+
+## 074. README review can send bounded complete files from the PR
+
+**Status.** Proposed for local evaluation, 2026-11-19.
+
+**Context.** A neighboring paragraph can qualify a README claim. A second branch
+in the implementation can also change whether a warning is accurate.
+
+**Decision.** For a selected, changed `README.md`, the analyze call may send the
+complete current README up to 16 KiB and matching complete implementation files
+from the same PR up to 12 KiB combined. Both come from already captured HEAD
+source. The planner funds code and its references first. An unsupported claim
+needs a citation on a changed README line and a quote from a supplied implementation
+to reach the reviewer.
+
+This supersedes the whole-file exclusion in the July amendments to #013 and #015
+for this analysis call. The user-facing disclosure names the files and limits.
+
+**Referenced from.** `src/outrider/agent/nodes/readme_review.py`, `README.md`,
+`src/outrider/api/privacy.py`, `tests/unit/test_privacy_content.py`, `REVIEW_CONTRACT.md`.

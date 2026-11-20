@@ -3006,6 +3006,7 @@
               "raw_proposal_invalid",
               "evidence_quote_invalid",
               "model_observed_not_supported",
+              "readme_claim_unverified",
               "query_match_id_not_in_registry",
               "trace_path_not_admissible",
               "finding_type_not_in_enum",
@@ -3160,6 +3161,16 @@
               }
             ],
             "title": "Evidence"
+          },
+          "implementation_citation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImplementationCitation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "suggested_fix": {
             "anyOf": [
@@ -3575,6 +3586,30 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "ImplementationCitation": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Path"
+          },
+          "quote": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Quote"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "path",
+          "quote"
+        ],
+        "title": "ImplementationCitation",
+        "description": "The supplied implementation path and exact quote checked during README review."
       },
       "LLMCallEvent": {
         "properties": {
@@ -4066,7 +4101,8 @@
                   "sql_injection_on_parameterized_call",
                   "schema_construction_failed",
                   "evidence_quote_invalid",
-                  "model_observed_not_supported"
+                  "model_observed_not_supported",
+                  "readme_claim_unverified"
                 ]
               },
               {
@@ -4252,7 +4288,8 @@
                   "sql_injection_on_parameterized_call",
                   "schema_construction_failed",
                   "evidence_quote_invalid",
-                  "model_observed_not_supported"
+                  "model_observed_not_supported",
+                  "readme_claim_unverified"
                 ]
               },
               {
@@ -7356,6 +7393,16 @@
               }
             ],
             "title": "Evidence"
+          },
+          "implementation_citation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImplementationCitation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "suggested_fix": {
             "anyOf": [

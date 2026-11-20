@@ -16,7 +16,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator
 from pydantic_core import from_json
 
 from outrider.agent.nodes.finding_evidence import quote_rejection_detail
@@ -51,7 +51,12 @@ from outrider.policy.dimensions import FINDING_TYPE_TO_DIMENSION
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import SEVERITY_POLICY, FindingType
 from outrider.schemas import ReviewFinding, TraceCandidate
-from outrider.schemas.llm.analyze import AnalyzeFindingProposalRaw, TraceCandidateProposalRaw
+from outrider.schemas.llm.analyze import (
+    AnalyzeFindingProposalRaw,
+    ReadmeSupport,
+    TraceCandidateProposalRaw,
+)
+from outrider.schemas.review_finding import ImplementationCitation
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -70,7 +75,7 @@ if TYPE_CHECKING:
 # SUBSUMES_DIGEST and from_import_map_digest separately key the subsumption
 # relation and import map; this version covers the rules that use them.
 # Keep this version beside the parser, never injected through configuration.
-ANALYZE_PARSER_VERSION: Final = "analyze-parser-v14"
+ANALYZE_PARSER_VERSION: Final = "analyze-parser-v15"
 
 # Keep these values aligned with `FindingProposalRejectedEvent.rejection_reason`
 # in `audit/events.py`; the node lifts parser rejections into that event.
@@ -78,6 +83,7 @@ _ProposalRejectionReason = Literal[
     "raw_proposal_invalid",
     "evidence_quote_invalid",
     "model_observed_not_supported",
+    "readme_claim_unverified",
     "query_match_id_not_in_registry",
     "trace_path_not_admissible",
     "finding_type_not_in_enum",
@@ -98,6 +104,17 @@ class _AnalyzeResponseEnvelope(BaseModel):
     findings: tuple[object, ...] = Field(max_length=50)
 
 
+class _ReadmeResponseEnvelope(_AnalyzeResponseEnvelope):
+    support: tuple[object, ...] = Field(max_length=50)
+
+    @field_validator("support")
+    @classmethod
+    def match_findings(cls, value: tuple[object, ...], info: ValidationInfo) -> tuple[object, ...]:
+        if "findings" in info.data and len(value) != len(info.data["findings"]):
+            raise ValueError("one source assessment is required for each README proposal")
+        return value
+
+
 @dataclass(frozen=True, slots=True)
 class ProposalRejection:
     """A bounded rejection record; the node adds its audit identity.
@@ -114,6 +131,7 @@ class ProposalRejection:
     rejection_reason: _ProposalRejectionReason
     rejection_detail: str
     source_side: Literal["head", "base"] = "head"
+    proposal_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +239,7 @@ def parse_analyze_response(
     degraded_evidence_byte_ranges: tuple[tuple[int, int], ...] = (),
     source_side: Literal["head", "base"] = "head",
     prior_findings: Sequence[ReviewFinding] = (),
+    readme_sources: Mapping[str, str] | None = None,
 ) -> ParserResult:
     """Validate the response envelope, then admit proposals in their original order.
 
@@ -274,11 +293,16 @@ def parse_analyze_response(
 
     try:
         # Normalize only an outer fence; malformed envelopes remain response rejections.
-        raw_response = _AnalyzeResponseEnvelope.model_validate(
-            from_json(
-                strip_outer_json_fence(response_text), allow_inf_nan=False, allow_partial=False
-            )
+        envelope = from_json(
+            strip_outer_json_fence(response_text), allow_inf_nan=False, allow_partial=False
         )
+        support: tuple[object, ...] = ()
+        if readme_sources is None:
+            raw_response = _AnalyzeResponseEnvelope.model_validate(envelope)
+        else:
+            readme_response = _ReadmeResponseEnvelope.model_validate(envelope)
+            raw_response = readme_response
+            support = readme_response.support
     except ValueError as error:
         # Name token truncation directly; otherwise record bounded schema-error metadata.
         if finish_reason == "max_tokens":
@@ -332,6 +356,7 @@ def parse_analyze_response(
         rejection_reason: _ProposalRejectionReason,
         rejection_detail: str,
         claimed_evidence_tier: EvidenceTier | None,
+        proposal_index: int | None = None,
     ) -> None:
         """Record a proposal's rejection and keep its trace candidates.
 
@@ -349,6 +374,7 @@ def parse_analyze_response(
                 rejection_detail=rejection_detail,
                 claimed_evidence_tier=claimed_evidence_tier,
                 source_side=source_side,
+                proposal_index=proposal_index,
             )
         )
         trace_candidates.extend(candidates)
@@ -603,6 +629,31 @@ def parse_analyze_response(
             )
             continue
 
+        implementation_citation = None
+        if readme_sources is not None:
+            readme_rejection: str | None
+            try:
+                assessment = ReadmeSupport.model_validate(support[index])
+            except ValidationError:
+                readme_rejection = "malformed_support"
+            else:
+                readme_rejection = assessment.rejection_detail(readme_sources)
+                if readme_rejection is None:
+                    implementation_citation = ImplementationCitation(
+                        path=assessment.implementation_path, quote=assessment.implementation_quote
+                    )
+            if readme_rejection:
+                reject_proposal(
+                    proposal=raw_proposal,
+                    proposal_hash=proposal_hash,
+                    candidates=proposal_trace_candidates,
+                    rejection_reason="readme_claim_unverified",
+                    rejection_detail=readme_rejection,
+                    claimed_evidence_tier=evidence_tier,
+                    proposal_index=index,
+                )
+                continue
+
         # Steps 6-9: preserve raw lines; derive severity and dimension from policy.
         # Mapping totality is guarded at import time, so missing keys must propagate.
         try:
@@ -621,6 +672,7 @@ def parse_analyze_response(
                 title=raw_proposal.title,
                 description=raw_proposal.description,
                 evidence=raw_proposal.evidence,
+                implementation_citation=implementation_citation,
                 query_match_id=raw_proposal.query_match_id,
                 trace_path=raw_proposal.trace_path,
                 # Preserve the same proposal identity as its trace candidates (#025).
@@ -680,7 +732,11 @@ _CLAIMED_FINDING_TYPE_HASH_WIDTH: Final[int] = 16
 # safety class as a parser-side sanitization step.
 _QUERY_MATCH_ID_SAFE_CLASS: Final = re.compile(r"[^A-Za-z0-9_./:\-]")
 _VALIDATION_FIELD_NAMES: Final = frozenset(
-    {"findings", *AnalyzeFindingProposalRaw.model_fields, *TraceCandidateProposalRaw.model_fields}
+    {
+        *_ReadmeResponseEnvelope.model_fields,
+        *AnalyzeFindingProposalRaw.model_fields,
+        *TraceCandidateProposalRaw.model_fields,
+    }
 )
 
 
@@ -780,6 +836,7 @@ def _build_proposal_rejection(
     rejection_detail: str,
     claimed_evidence_tier: EvidenceTier | None,
     source_side: Literal["head", "base"] = "head",
+    proposal_index: int | None = None,
 ) -> ProposalRejection:
     """Construct a `ProposalRejection` from a raw proposal + admission outcome.
 
@@ -792,6 +849,7 @@ def _build_proposal_rejection(
     `claimed_finding_type_hash` / `_len` per `DECISIONS.md#014`.
     """
     return ProposalRejection(
+        proposal_index=proposal_index,
         source_side=source_side,
         proposal_hash=proposal_hash,
         file_path=file_path,

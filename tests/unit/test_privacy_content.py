@@ -95,6 +95,8 @@ _EGRESS_SENT_FACTS = (
     "finding identifiers, metadata, titles, descriptions, and evidence",
     "target source lines used for suggested fixes",
     "risk classification used to generate the final summary",
+    "complete current README (up to 16 KiB)",
+    "complete matching implementation files from the same PR (up to 12 KiB combined)",
 )
 # Slack + checkpoint-store disclosures, pinned verbatim in both the page and the
 # README (Slack setup section / opening retention paragraph).
@@ -118,7 +120,6 @@ _EGRESS_UNSENT_FACTS = (
     "does not currently send the PR body, author login, commit messages, or branch names",
     "requires a new privacy-contract amendment",
     "fetched and checkpointed locally",
-    "whole-file payloads during normal analysis",
     "may contain most or all of an added or heavily rewritten file",
     "does not include its own operator credentials",
     "does not secret-scan repository content before review",

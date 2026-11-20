@@ -11,7 +11,7 @@ from typing import Final
 from outrider.prompts.triage_schema import file_slot_ids
 from outrider.schemas.pr_context import PRContext
 
-VERSION: Final[str] = "triage-v3"
+VERSION: Final[str] = "triage-v4"
 MAX_TOKENS: Final[int] = 2048
 TEMPERATURE: Final[float] = 0.0
 
@@ -46,6 +46,10 @@ size-cap policy gate upstream of this node. Every file you receive needs
 a deep, standard, or skim classification. If you cannot determine an
 appropriate tier for a file with confidence, default to "standard"
 rather than omitting it.
+
+Use standard when a README change describes observable API behavior that can be checked against \
+implementation changed in the same PR. Skim editorial changes and README changes without \
+matching implementation.
 
 ## Overall risk
 

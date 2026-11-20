@@ -318,6 +318,7 @@ async def _verify_stored_finding_content(
                 Finding.title,
                 Finding.description,
                 Finding.evidence,
+                Finding.implementation_citation,
                 Finding.suggested_fix,
                 Finding.query_match_id,
                 Finding.trace_path,
@@ -1836,6 +1837,11 @@ def _finding_verify_values(
         "title": finding.title,
         "description": finding.description,
         "evidence": finding.evidence,
+        "implementation_citation": (
+            finding.implementation_citation.model_dump()
+            if finding.implementation_citation
+            else None
+        ),
         "suggested_fix": finding.suggested_fix,
         "query_match_id": finding.query_match_id,
         "policy_version": finding.policy_version,
@@ -2709,6 +2715,11 @@ class AuditPersister:
                     title=finding.title,
                     description=finding.description,
                     evidence=finding.evidence,
+                    implementation_citation=(
+                        finding.implementation_citation.model_dump()
+                        if finding.implementation_citation
+                        else None
+                    ),
                     suggested_fix=finding.suggested_fix,
                     query_match_id=finding.query_match_id,
                     trace_path=(

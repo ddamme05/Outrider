@@ -87,8 +87,8 @@ def _build_pr_context(
 # ---------------------------------------------------------------------------
 
 
-def test_version_identifies_numbered_file_response() -> None:
-    assert VERSION == "triage-v3"
+def test_version_identifies_readme_triage_guidance() -> None:
+    assert VERSION == "triage-v4"
 
 
 def test_max_tokens_bounded_within_llm_request_limit() -> None:
