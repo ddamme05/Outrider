@@ -58,12 +58,16 @@ def collect_native_candidates(
     )
     findings: defaultdict[str, deque[ReviewFinding]] = defaultdict(deque)
     rejections: defaultdict[str, deque[ProposalRejection]] = defaultdict(deque)
+    assessed_rejections: dict[tuple[str, int], ProposalRejection] = {}
     malformed: deque[ProposalRejection] = deque()
     for finding in parser_result.admitted_findings:
         findings[finding.proposal_hash].append(finding)
     for rejection in parser_result.proposal_rejections:
         if rejection.rejection_reason == "raw_proposal_invalid":
             malformed.append(rejection)
+        elif rejection.proposal_index is not None:
+            # Identical README proposals can have different source assessments.
+            assessed_rejections[rejection.proposal_hash, rejection.proposal_index] = rejection
         else:
             rejections[rejection.proposal_hash].append(rejection)
     response_hash = compute_response_hash(response.text)
@@ -106,7 +110,8 @@ def collect_native_candidates(
             source_side=source_side,
             **proposal.model_dump(exclude={"trace_candidates"}),
         )
-        if findings[proposal_hash]:
+        assessed = assessed_rejections.pop((proposal_hash, index), None)
+        if assessed is None and findings[proposal_hash]:
             finding = findings[proposal_hash].popleft()
             record = NativeCandidateRef(
                 **base,
@@ -120,8 +125,8 @@ def collect_native_candidates(
                 evidence_tier=finding.evidence_tier,
                 policy_version=finding.policy_version,
             )
-        elif rejections[proposal_hash]:
-            rejection = rejections[proposal_hash].popleft()
+        elif assessed is not None or rejections[proposal_hash]:
+            rejection = assessed if assessed is not None else rejections[proposal_hash].popleft()
             record = NativeCandidateRef(
                 **base,
                 initial_disposition="rejected",
@@ -131,7 +136,7 @@ def collect_native_candidates(
         else:
             raise ValueError("candidate inventory differs from its parser dispositions")
         records.append(record)
-    if malformed or any(findings.values()) or any(rejections.values()):
+    if malformed or assessed_rejections or any(findings.values()) or any(rejections.values()):
         raise ValueError("candidate inventory did not consume all parser dispositions")
     if len(records) != parser_result.counters.n_proposals_seen:
         raise ValueError("candidate inventory differs from parser proposal count")

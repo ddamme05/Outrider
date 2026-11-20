@@ -104,6 +104,7 @@ from outrider.agent.nodes.import_reference_context import (
     omit_import_references,
     prepare_import_reference_contexts,
 )
+from outrider.agent.nodes.readme_review import MAX_DOCUMENT_BYTES, implementation_sources, is_readme
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.analyze_bundle import extract_triviality_and_scan
 from outrider.ast_facts.models import ParseResult, SkipReason, TrivialityReason
@@ -182,6 +183,7 @@ from outrider.schemas.analysis_round import MAX_FINDINGS_HARD_CAP, MAX_FINDINGS_
 from outrider.schemas.llm.analyze import (
     ANALYZE_RESPONSE_FORMAT_DIGEST,
     ANALYZE_RESPONSE_SCHEMA_JSON,
+    README_RESPONSE_SCHEMA_JSON,
 )
 from outrider.schemas.pr_context import ChangedFile  # noqa: TC001 — payload model field
 from outrider.schemas.triage_result import ReviewTier
@@ -492,6 +494,7 @@ class AnalyzeWorkerPayload(BaseModel):
     changed_file: ChangedFile
     review_context: str = Field(default="", max_length=MAX_MODULE_CONTEXT_BYTES)
     supplemental_context_manifest: tuple[ContextManifestEntry, ...] = ()
+    readme_sources: dict[str, str] = Field(default_factory=dict)
     cache_scope: CacheScope | None = None
 
 
@@ -557,6 +560,7 @@ async def analyze_file(
         file_outcome = await _process_one_file(
             changed_file=payload.changed_file,
             review_context=payload.review_context,
+            readme_sources=payload.readme_sources,
             supplemental_context_manifest=payload.supplemental_context_manifest,
             review_id=payload.review_id,
             installation_id=payload.installation_id,
@@ -819,6 +823,26 @@ async def _plan_pass_zero(
             per_file_cap_tokens=per_file_cap_tokens,
             companion_context_enabled=companion_context_enabled,
         )
+    # Spend only the remaining budget on README claims after funding the code and its references.
+    documentation_sources: dict[str, dict[str, str]] = {}
+    documentation_estimates: dict[str, int] = {}
+    for file, _tier in pass_zero_worklist:
+        if not is_readme(file.path) or not supplemental_context_enabled:
+            continue
+        sources = implementation_sources(file, state.pr_context.changed_files)
+        if not sources:
+            continue
+        prepared = _select_file_review(
+            changed_file=file, import_path_resolver=import_path_resolver, readme_sources=sources
+        )
+        if isinstance(prepared, _PreparedFileReview):
+            documentation_sources[file.path] = sources
+            documentation_estimates[file.path] = _prepare_file_prompt(
+                prepared, file_path=file.path, pass_index=pass_index, review_context=""
+            ).estimated_tokens
+    plan = reserve_context_headroom(
+        plan, documentation_estimates, per_file_cap_tokens=per_file_cap_tokens
+    )
     allocation_by_path = {a.path: a for a in plan.allocations}
     sends: list[Send] = []
     for worker_file, worker_tier in pass_zero_worklist:
@@ -833,6 +857,7 @@ async def _plan_pass_zero(
                     review_tier=worker_tier,
                     allocation_tokens=allocation_by_path[worker_file.path].allocation_tokens,
                     changed_file=worker_file,
+                    readme_sources=documentation_sources.get(worker_file.path, {}),
                     review_context=review_context_by_path[worker_file.path].text,
                     supplemental_context_manifest=review_context_by_path[worker_file.path].manifest,
                     cache_scope=cache_scope,
@@ -2264,6 +2289,7 @@ class _PreparedFileReview:
     module_matches: tuple[ObservedMatch, ...]
     base_scope_units: tuple[ScopeUnit, ...] = ()
     primary_context: _PrimaryRegionContext = _PrimaryRegionContext()
+    readme_sources: dict[str, str] | None = None
     source_side: Literal["head", "base"] = "head"
 
 
@@ -2372,13 +2398,23 @@ def _select_structural_file_review(
 def _select_file_review(
     *,
     changed_file: ChangedFile,
+    readme_sources: dict[str, str] | None = None,
     import_path_resolver: ImportPathResolver,
 ) -> _PreparedFileReview | SkipReason:
     """Select source, coordinates and route without audit or model side effects."""
     # Triage can keep files without a registered language adapter; skip them
     # before parsing (DECISIONS.md#018).
-    text_only = _text_config_supported(changed_file.path) and not _language_supported(
-        changed_file.path
+    readme = is_readme(changed_file.path)
+    if readme and (
+        not readme_sources
+        or not changed_file.content_head
+        or len(changed_file.content_head.encode()) > MAX_DOCUMENT_BYTES
+    ):
+        return SkipReason.NO_REVIEWABLE_CONTEXT
+    text_only = (
+        readme
+        or _text_config_supported(changed_file.path)
+        and not _language_supported(changed_file.path)
     )
     if not _language_supported(changed_file.path) and not text_only:
         return SkipReason.UNSUPPORTED_LANGUAGE
@@ -2497,6 +2533,7 @@ def _select_file_review(
         if not primary.line_ranges:
             return SkipReason.NO_REVIEWABLE_CONTEXT
         return _PreparedFileReview(
+            readme_sources=readme_sources if readme else None,
             content=content,
             content_bytes=content_bytes,
             file_byte_length=file_byte_length,
@@ -2527,6 +2564,7 @@ def _select_file_review(
 
 async def _prepare_file_review(
     *,
+    readme_sources: dict[str, str] | None = None,
     changed_file: ChangedFile,
     review_id: UUID,
     is_eval: bool,
@@ -2536,7 +2574,9 @@ async def _prepare_file_review(
 ) -> _FileOutcome | _PreparedFileReview:
     """Select the same route as planning and emit skips inside the worker phase."""
     prepared = _select_file_review(
-        changed_file=changed_file, import_path_resolver=import_path_resolver
+        changed_file=changed_file,
+        import_path_resolver=import_path_resolver,
+        readme_sources=readme_sources,
     )
     if isinstance(prepared, SkipReason):
         if prepared is SkipReason.PATCH_HEAD_MISALIGNED:
@@ -2639,7 +2679,26 @@ def _prepare_file_prompt(
 
     # Build scoped context for clean files, bounded diff context for degraded ones.
     degraded_evidence_byte_ranges: tuple[tuple[int, int], ...] = ()
-    if degraded_mode:
+    if prepared.readme_sources is not None:
+        prompt_parts = analyze_prompt.render_readme(
+            path=file_path,
+            document=content,
+            changes=primary_context.source + "\n" + primary_context.diff_hunks,
+            sources=prepared.readme_sources,
+        )
+        if patched_file is None:
+            raise RuntimeError("README review requires a validated patch")
+        # A README citation must come from added text within a displayed change.
+        shown_spans = [
+            line_range_to_span(start, end, content) for start, end in primary_line_ranges
+        ]
+        degraded_evidence_byte_ranges = tuple(
+            (max(low, span.byte_start), min(high, span.byte_end))
+            for low, high in added_line_byte_ranges(patched_file, content)
+            for span in shown_spans
+            if low < span.byte_end and span.byte_start < high
+        )
+    elif degraded_mode:
         # The degradation decision guarantees both values; this check narrows them.
         if degradation_reason is None or patched_file is None:
             raise RuntimeError(
@@ -2696,7 +2755,11 @@ def _prepare_file_prompt(
     estimated_tokens = (
         _estimate_tokens(prompt_parts.system_prompt)
         + _estimate_tokens(prompt_parts.user_prompt)
-        + analyze_prompt.MAX_TOKENS
+        + (
+            analyze_prompt.README_MAX_TOKENS
+            if prepared.readme_sources
+            else analyze_prompt.MAX_TOKENS
+        )
     )
     return _PreparedFilePrompt(
         prompt_parts=prompt_parts,
@@ -2710,6 +2773,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     *,
     changed_file: ChangedFile,
     review_context: str = "",
+    readme_sources: dict[str, str] | None = None,
     supplemental_context_manifest: tuple[ContextManifestEntry, ...] = (),
     review_id: UUID,
     installation_id: int,
@@ -2743,6 +2807,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     """
 
     prepared = await _prepare_file_review(
+        readme_sources=readme_sources,
         changed_file=changed_file,
         review_id=review_id,
         is_eval=is_eval,
@@ -3145,23 +3210,40 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         )
         + supplemental_context_manifest
     )
+    if prepared.readme_sources is not None:
+        context_summary = tuple(
+            ContextManifestEntry(
+                file_path=path,
+                line_start=1,
+                line_end=source_line_count(source),
+                scope_unit_name="complete current source",
+                inclusion_reason="captured_reference",
+            )
+            for path, source in ((changed_file.path, content), *prepared.readme_sources.items())
+        ) + tuple(entry for entry in context_summary if entry.inclusion_reason == "changed_region")
     request = LLMRequest(
         model=analyze_model,
         system_prompt=prompt_parts.system_prompt,
         user_prompt=prompt_parts.user_prompt,
-        max_tokens=analyze_prompt.MAX_TOKENS,
+        max_tokens=analyze_prompt.README_MAX_TOKENS
+        if prepared.readme_sources
+        else analyze_prompt.MAX_TOKENS,
         temperature=analyze_prompt.TEMPERATURE,
         review_id=review_id,
         node_id="analyze",
         is_eval=is_eval,
-        prompt_template_version=analyze_prompt.VERSION,
+        prompt_template_version=analyze_prompt.README_VERSION
+        if prepared.readme_sources
+        else analyze_prompt.VERSION,
         degraded_mode=degraded_mode,
         degradation_reason=degradation_reason,
         # Providers mirror the worker's phase key onto LLMCallEvent.
         phase_key=phase_key,
         context_summary=context_summary,
         # Both passes use the pinned schema; refusal and truncation still need parser checks.
-        response_schema_json=ANALYZE_RESPONSE_SCHEMA_JSON,
+        response_schema_json=README_RESPONSE_SCHEMA_JSON
+        if prepared.readme_sources
+        else ANALYZE_RESPONSE_SCHEMA_JSON,
     )
     # Provider failures propagate; the open phase records the interruption.
     response: LLMResponse = await provider.complete(request)
@@ -3195,6 +3277,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     )
     parser_result = parse_analyze_response(
         response.text,
+        readme_sources=prepared.readme_sources,
         prior_findings=producer_originals,
         review_id=review_id,
         installation_id=installation_id,
@@ -3202,11 +3285,15 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
         file_content=content,
         file_byte_length=file_byte_length,
         included_scope_units=included_scope_units,
-        primary_line_ranges=primary_line_ranges,
+        primary_line_ranges=() if prepared.readme_sources else primary_line_ranges,
         query_match_id_set=query_match_id_set,
         degraded_mode=degraded_mode,
         active_policy_version=active_policy_version,
-        degraded_context_byte_ranges=degraded_context_byte_ranges,
+        degraded_context_byte_ranges=(
+            degraded_evidence_byte_ranges
+            if prepared.readme_sources
+            else degraded_context_byte_ranges
+        ),
         degraded_evidence_byte_ranges=degraded_evidence_byte_ranges,
         pass_index=pass_index,
         source_side=source_side,

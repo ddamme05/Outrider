@@ -455,6 +455,7 @@ a changed scope. Reference snippets do not expand allowed finding locations.
 | Nested scope rendering | Selected scope IDs, names, order, line ranges and finding bounds remain intact. A complete enclosing selected body is rendered once; contained scopes retain their headers and identify the selected body that includes them. Partial byte overlaps and different files retain separate bodies. Exact repeated clipped hunks render once in first-occurrence order; nonidentical clips keep their original ranges and separators. |
 | Whole-file removals | Supported nonempty textual files receive a dedicated BASE/change review after the complete removal patch matches captured BASE and HEAD is absent. Primary BASE source is bounded to 100 lines / 16,384 bytes; removal diff to 100 line objects / 8,192 characters. Omitted source stays explicit. |
 | Remaining deletion limits | Empty/metadata-only removals have no nonempty source quote and skip `NO_REVIEWABLE_CONTEXT`. Missing, partial or mismatched removal evidence skips `PATCH_BASE_MISALIGNED`. Existing language, intake, parser-exclusion, triage and budget limits still apply. |
+| README claims | A selected `README.md` with changed lines can receive one analysis call after code and its references have been funded. The model sees the full current README (up to 16 KiB) and complete matching implementation files captured in the PR (up to 12 KiB combined). Admission requires a quote from a displayed changed README line and a matching implementation quote. A missing match or an uncertain assessment keeps the warning out of review. README-only changes skip this check. |
 | Text configuration | `.json`, `.yaml`, `.yml`, `.toml`, `.ini`, `.cfg`, `.env.example`, `.env.sample`, `.env.template` receive bounded text review without AST proof. |
 | Base supplement | Enabled by default; up to 6,000 characters of imports, assignments, possible callers and related tests from captured changed files. It does not search unchanged tests. |
 | Related Python tests | Up to two changed test files matched by filename, each with up to two complete changed functions sharing 1,200 source characters. Decorators count in the range and source limit. Oversized definitions, or decorator wrappers whose opening line cannot be recovered, are omitted whole. Tests are reference data, not executed or verified coverage. |
@@ -489,7 +490,7 @@ Current Anthropic defaults use Sonnet 5.5 for deep analysis and Haiku 5.5 for
 standard analysis, triage, summaries, trace ranking and suggested patches.
 Evaluations that also use Sonnet 5.5 for standard analysis override these defaults.
 Prompt versions are
-`triage-v3`, `analyze-v19`, `trace-v2`, `synthesize-v5`, `patch-v1`, and optional
+`triage-v4`, `analyze-v19`, `analyze-readme-v1`, `trace-v2`, `synthesize-v5`, `patch-v1`, and optional
 `native-candidate-check-v5`. Settings can change; source and regenerated schemas
 remain the implementation reference.
 

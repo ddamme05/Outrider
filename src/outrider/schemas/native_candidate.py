@@ -29,6 +29,7 @@ CandidateRejectionReason = Literal[
     "schema_construction_failed",
     "evidence_quote_invalid",
     "model_observed_not_supported",
+    "readme_claim_unverified",
 ]
 
 HeadAssessment = Literal["supports", "refutes", "uncertain"]

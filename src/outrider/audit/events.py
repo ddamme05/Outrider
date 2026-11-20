@@ -2749,6 +2749,7 @@ class FindingProposalRejectedEvent(AuditEventBase):
         "raw_proposal_invalid",
         "evidence_quote_invalid",
         "model_observed_not_supported",
+        "readme_claim_unverified",
         "query_match_id_not_in_registry",
         "trace_path_not_admissible",
         "finding_type_not_in_enum",

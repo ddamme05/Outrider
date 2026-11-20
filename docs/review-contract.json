@@ -801,13 +801,13 @@
         "title": "TriageResult",
         "type": "object"
       },
-      "version": "triage-v3",
+      "version": "triage-v4",
       "notes": "Live responses use numbered file IDs, decoded to the supplied paths before constructing this state record. Policy rejects SKIP, missing/unknown paths and inactive policy versions; reasoning is clamped. Historical records keep path keys."
     },
     "TriageResponseWire": {
       "source": "src/outrider/prompts/triage_schema.py:response_schema_json",
       "kind": "constrained-decoding-schema",
-      "version": "triage-v3",
+      "version": "triage-v4",
       "example_file_count": 2,
       "schema": {
         "type": "object",
@@ -1486,7 +1486,8 @@
                   "sql_injection_on_parameterized_call",
                   "schema_construction_failed",
                   "evidence_quote_invalid",
-                  "model_observed_not_supported"
+                  "model_observed_not_supported",
+                  "readme_claim_unverified"
                 ],
                 "type": "string"
               },

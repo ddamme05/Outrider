@@ -151,12 +151,11 @@ def test_parser_result_is_frozen() -> None:
 
 
 def test_proposal_rejection_field_set() -> None:
-    """The parser-owned subset of FindingProposalRejectedEvent fields.
-    Audit-context fields are deliberately omitted — the node body
-    adds them at lift time."""
+    """The parser records rejection evidence and the position of a separate assessment."""
     fields = {f.name for f in dataclasses.fields(ProposalRejection)}
     expected = {
         "proposal_hash",
+        "proposal_index",
         "file_path",
         "source_side",
         "claimed_finding_type_hash",
@@ -323,6 +322,7 @@ def test_parse_analyze_response_signature() -> None:
         "degraded_evidence_byte_ranges",
         "source_side",
         "prior_findings",
+        "readme_sources",
     }
     kwonly = {name for name, p in params.items() if p.kind == inspect.Parameter.KEYWORD_ONLY}
     assert kwonly == expected_kwonly, (
