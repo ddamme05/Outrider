@@ -31,8 +31,7 @@ test("explicit GPT versions and tiers get short labels", () => {
   expect(prettyModel("gpt-5.6-sol")).toBe("GPT-5.6 Sol");
   expect(prettyModel("gpt-5.6-terra")).toBe("GPT-5.6 Terra");
   expect(prettyModel("gpt-5.6-luna")).toBe("GPT-5.6 Luna");
-  expect(prettyModel("gpt-6.1-sol")).toBe("GPT-6.1 Sol");
-  expect(prettyModel("gpt-6.1-terra")).toBe("GPT-6.1 Terra");
+  expect(prettyModel("gpt-6.2-sol")).toBe("GPT-6.2 Sol");
   expect(prettyModel("gpt-6-luna")).toBe("GPT-6 Luna");
 });
 

@@ -134,15 +134,17 @@ def test_production_baseline_is_json_object_and_probe_is_json_schema() -> None:
     assert strict_format["json_schema"]["schema"] == probe.derive_strict_analyze_schema()
 
 
-def test_probe_model_is_derived_from_host_config_not_hardcoded() -> None:
+def test_probe_model_is_derived_from_host_config_not_hardcoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """`model-strings-from-config-not-hardcoded`. A literal slug would keep probing
     the old model after the host's analyze default moved, so the capture would
     describe a model the production path no longer uses."""
     from outrider.llm.host_profiles import HOST_DEFAULT_MODELS
 
     assert HOST_DEFAULT_MODELS["openai"]["analyze_model"] == plan.MODEL
-    # And it is the DEEP-analyze role specifically, not some other node's model.
-    assert HOST_DEFAULT_MODELS["openai"]["triage_model"] != plan.MODEL
+    monkeypatch.setattr(plan, "HOST_DEFAULT_MODELS", {"openai": {"analyze_model": "gpt-6-luna"}})
+    assert plan._resolve_probe_model() == "gpt-6-luna"
 
 
 def test_probe_model_is_validated_against_the_host_profile() -> None:
@@ -237,9 +239,13 @@ def test_probe_preserves_cache_key_and_service_tier() -> None:
     kwargs = _pair()
     production = plan.production_kwargs(**kwargs)
     strict = plan.strict_kwargs(**kwargs)
-    for key in ("prompt_cache_key", "service_tier", "model", "temperature", "messages"):
+    for key in ("prompt_cache_key", "service_tier", "model", "reasoning_effort", "messages"):
         assert key in production, f"production wire no longer sends {key!r}"
         assert strict[key] == production[key]
+    assert strict["reasoning_effort"] == "low"
+    assert "temperature" not in strict
+    digest = plan.registered_locked_contract().profile_contract_digest
+    assert strict["prompt_cache_key"].split(":")[1] == digest[:16]
 
 
 def test_all_five_rows_build_offline_and_are_bounded() -> None:

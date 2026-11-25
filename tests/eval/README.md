@@ -166,6 +166,15 @@ session. The [case guide](corpus/review_comparison/README.md) records original
 dates, capture dates, licenses and executable checks. These are exposed
 development examples. A fixed counterpart establishes only its named repair.
 
+For a first-party OpenAI review, use `--target openai-sol`. Every model call
+in that comparison uses `gpt-6.2-sol`. This command prints the selected model
+and spending limits for one public PR before making any requests.
+
+```bash
+.venv/bin/python -m tests.eval.review_comparison \
+  --target openai-sol --case starlette-933 --reps 1 --dry-run
+```
+
 The plan reports **upper bounds**, not scheduled calls or expected spend. With
 the default 32-call cap per workflow review, four cases and one repetition allow
 up to 260 calls; actual routing may use fewer. Three repetitions allow up to 780.

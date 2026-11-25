@@ -323,7 +323,7 @@ class HostProfile(BaseModel):
                 # The host's model-specific off-switch map does not cover 5.3.
                 # Keep its default reasoning; do not inherit 5.2's `none` claim.
                 candidate = self.model_copy(update={"reasoning_mechanism": ReasoningMechanism.NONE})
-            elif self.host_id == "openai" and model == "gpt-6.1-sol":
+            elif self.host_id == "openai" and model == "gpt-6.2-sol":
                 # Sol has no `none` effort and rejects sampling with reasoning.
                 candidate = self.model_copy(
                     update={
@@ -425,7 +425,7 @@ OPENAI_PROFILE: Final[HostProfile] = HostProfile(
     host_id="openai",
     base_url="https://api.openai.com/v1",
     api_key_env="OPENAI_API_KEY",
-    model_slug_pattern=r"^gpt-(5\.6-(sol|terra|luna)|6\.1-(sol|terra)|6-luna)$",
+    model_slug_pattern=r"^gpt-(5\.6-(sol|terra|luna)|6\.2-sol|6-luna)$",
     json_mode=JsonMode.JSON_OBJECT,
     token_accounting=TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED,
     reasoning_mechanism=ReasoningMechanism.REASONING_EFFORT_NONE,
@@ -540,19 +540,9 @@ _BASETEN_DEFAULT_MODELS: Final[Mapping[str, str]] = MappingProxyType(
 _FIREWORKS_DEFAULT_MODELS: Final[Mapping[str, str]] = MappingProxyType(
     {field: "accounts/fireworks/models/glm-5p2" for field in _MODEL_FIELDS}
 )
-# GPT-5.6 tiering mirrors the anthropic shape (big model for DEEP analyze, small for the
-# five cheap nodes) rather than the GLM single-slug collapse. PROVISIONAL per the
-# openai-native-host spec: canonized per-field by the scorecard / node-specific
-# instruments; a miss swaps that field to gpt-5.6-terra and reruns.
+# First-party OpenAI research uses the same low-reasoning Sol contract for every role.
 _OPENAI_DEFAULT_MODELS: Final[Mapping[str, str]] = MappingProxyType(
-    {
-        "triage_model": "gpt-5.6-luna",
-        "analyze_model": "gpt-5.6-sol",
-        "standard_analyze_model": "gpt-5.6-luna",
-        "synthesize_model": "gpt-5.6-luna",
-        "trace_model": "gpt-5.6-luna",
-        "patch_model": "gpt-5.6-luna",
-    }
+    dict.fromkeys(_MODEL_FIELDS, "gpt-6.2-sol")
 )
 HOST_DEFAULT_MODELS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyType(
     {

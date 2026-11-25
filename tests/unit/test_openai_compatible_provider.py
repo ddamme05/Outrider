@@ -1199,7 +1199,7 @@ def test_reasoning_true_on_off_switch_host_fails_closed() -> None:
             FIREWORKS_PROFILE,
             ("accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/glm-5p3"),
         ),
-        (OPENAI_PROFILE, ("gpt-6.1-sol", "gpt-6-luna")),
+        (OPENAI_PROFILE, ("gpt-6.2-sol", "gpt-6-luna")),
     ],
 )
 def test_incompatible_model_contracts_fail_before_sdk_construction(
@@ -1219,7 +1219,7 @@ async def test_reasoning_only_sol_truncation_preserves_full_output_usage() -> No
     provider = OpenAICompatibleProvider(
         api_key=_api_key(),
         profile=OPENAI_PROFILE,
-        models=("gpt-6.1-sol",),
+        models=("gpt-6.2-sol",),
         persister=persister,
     )
     completion = _chat_completion(
@@ -1229,7 +1229,7 @@ async def test_reasoning_only_sol_truncation_preserves_full_output_usage() -> No
     ).model_copy(update={"service_tier": "default"})
     try:
         with _patched_create(return_value=completion):
-            response = await provider.complete(_request(model="gpt-6.1-sol"))
+            response = await provider.complete(_request(model="gpt-6.2-sol"))
     finally:
         await provider.aclose()
     assert response.text == ""

@@ -123,6 +123,14 @@ def test_min_cacheable_floors_match_anthropic_contract() -> None:
     assert min_cacheable_tokens("anthropic", "claude-haiku-5-5") == 512
 
 
+def test_openai_sol_62_standard_rates_and_cache_policy() -> None:
+    key = ("openai", "gpt-6.2-sol")
+    per_million = tuple(rate * 1_000_000 for rate in RATE_TABLE[key])
+    assert per_million == (Decimal("2"), Decimal("2.50"), Decimal("0.10"), Decimal("10"))
+    assert min_cacheable_tokens(*key) == 1024
+    assert LONG_CONTEXT_POLICY[key] == (272_000, 2, 2, 2, Decimal("1.5"))
+
+
 def test_min_cacheable_resolves_dated_pins() -> None:
     assert min_cacheable_tokens("anthropic", "claude-haiku-4-5-20251001") == 4096
 
@@ -298,6 +306,7 @@ EXPECTED_PRICING_DIGEST: dict[str, str] = {
     # until the SHAPER-v4 billing adjudication lands (FUP-247). Still unreleased (main=v6).
     "v7": "b0f7e1b3c1dfe405",
     "v8": "3fcfe8367893f85f",
+    "v9": "2883142c53ac6108",  # GPT-6.2 Sol
 }
 
 

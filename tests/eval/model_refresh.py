@@ -78,6 +78,7 @@ class Target:
         return ModelConfig.for_host(self.host).model_copy(update=roles)
 
 
+_OPENAI_SOL_62 = Target("openai", "gpt-6.2-sol", "research")
 TARGETS = {
     "anthropic-sonnet-5": Target("anthropic", "claude-sonnet-5", "baseline-deep"),
     "anthropic-haiku-4-5": Target("anthropic", "claude-haiku-4-5", "baseline-cheap"),
@@ -87,7 +88,8 @@ TARGETS = {
     "fireworks-glm-5-3-flash": Target(
         "fireworks", "accounts/fireworks/models/glm-5p3-flash", "candidate"
     ),
-    "openai-sol": Target("openai", "gpt-6.1-sol", "research"),
+    "openai-sol": _OPENAI_SOL_62,
+    "openai-sol-6-2": _OPENAI_SOL_62,
     "openai-luna": Target("openai", "gpt-6-luna", "research"),
 }
 
@@ -236,7 +238,10 @@ def context_limit(target: Target) -> int:
             return 1_000_000
     if target.host in {"fireworks", "baseten"} and "glm-5" in target.model.lower():
         return 1_048_576
-    if target.host == "openai" and target.model in {"gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"}:
+    if target.host == "openai" and target.model == "gpt-6.2-sol":
+        # The 1,050,000-token combined window accepts at most 922,000 input tokens.
+        return 922_000
+    if target.host == "openai" and target.model == "gpt-6-luna":
         return 1_050_000
     raise ValueError(f"no reviewed context bound for {target.host}:{target.model}")
 

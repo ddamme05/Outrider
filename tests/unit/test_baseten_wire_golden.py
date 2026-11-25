@@ -67,7 +67,7 @@ GOLDEN_EVENT_TOKENS: dict[str, int] = {"input_tokens": 70, "output_tokens": 50, 
 # rate change must update this literal explicitly.
 GOLDEN_COST_USD: float = 0.0003222
 # Pin the table generation independently of the live PRICING_VERSION constant.
-GOLDEN_PRICING_VERSION = "v8"
+GOLDEN_PRICING_VERSION = "v9"
 
 _FIXED_REVIEW_ID = UUID("00000000-0000-0000-0000-0000000000aa")
 

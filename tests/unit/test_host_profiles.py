@@ -404,8 +404,7 @@ def test_openai_slug_pattern_rejects_alias_and_foreign_slugs() -> None:
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
-        "gpt-6.1-sol",
-        "gpt-6.1-terra",
+        "gpt-6.2-sol",
         "gpt-6-luna",
     ):
         OPENAI_PROFILE.validate_model_slug(ok)
@@ -415,23 +414,20 @@ def test_openai_slug_pattern_rejects_alias_and_foreign_slugs() -> None:
         "gpt-5.6-sol\n",
         "claude-sonnet-5",
         "gpt-5.6-mini",
-        "gpt-6.1",
-        "gpt-6.1-luna",
+        "gpt-6.2",
+        "gpt-6.2-sol-latest",
         "gpt-6-sol",
     ):
         with pytest.raises(ValueError):
             OPENAI_PROFILE.validate_model_slug(bad)
 
 
-def test_openai_default_models_tiered_sol_deep_luna_cheap() -> None:
-    assert HOST_DEFAULT_MODELS["openai"] == {
-        "triage_model": "gpt-5.6-luna",
-        "analyze_model": "gpt-5.6-sol",
-        "standard_analyze_model": "gpt-5.6-luna",
-        "synthesize_model": "gpt-5.6-luna",
-        "trace_model": "gpt-5.6-luna",
-        "patch_model": "gpt-5.6-luna",
-    }
+def test_openai_default_roles_share_the_sol_62_request_contract() -> None:
+    models = HOST_DEFAULT_MODELS["openai"].values()
+    assert set(models) == {"gpt-6.2-sol"}
+    assert OPENAI_PROFILE.for_models(tuple(models)).reasoning_mechanism == (
+        ReasoningMechanism.REASONING_EFFORT_LOW
+    )
     assert HOST_DEFAULT_MODELS["openai"].keys() == HOST_DEFAULT_MODELS["anthropic"].keys()
 
 
@@ -474,7 +470,7 @@ def test_model_contract_separates_reasoning_cache_identity() -> None:
             "fireworks",
             ("accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/glm-5p3"),
         ),
-        ("openai", ("gpt-6.1-sol", "gpt-6-luna")),
+        ("openai", ("gpt-6.2-sol", "gpt-6-luna")),
     ],
 )
 def test_identity_rejects_role_mixtures_with_incompatible_contracts(
