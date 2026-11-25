@@ -162,6 +162,7 @@ from outrider.coordinates import (
     unscoped_changed_line_ranges,
 )
 from outrider.coordinates.errors import CoordinateErrorKind
+from outrider.coordinates.spans import ScopedDiffEvidence, scoped_diff_evidence
 from outrider.llm.base import LLMRequest, _canonical_prompt_hash
 from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
 from outrider.policy.canonical import (
@@ -3000,6 +3001,13 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 primary_context_omitted=primary_context.omitted,
             )
 
+    # Only the clean first-pass prompt includes these clipped scope hunks.
+    scoped_evidence = ScopedDiffEvidence()
+    if not degraded_mode and pass_index == 0 and prepared.readme_sources is None:
+        scoped_evidence = scoped_diff_evidence(
+            changed_file.path, _concat_clipped_hunks(included_clipped_hunks), content_bytes
+        )
+
     # Look up clean-pass cache entries after scope filtering. The key describes
     # the actual prompt and admission inputs; degraded files are not cacheable.
     cache_key: str | None = None
@@ -3021,6 +3029,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             query_registry_digest=QUERY_REGISTRY_DIGEST,
             active_policy_version=active_policy_version,
             analyze_parser_version=ANALYZE_PARSER_VERSION,
+            scoped_diff_mismatches=scoped_evidence.mismatches,
             response_format_digest=ANALYZE_RESPONSE_FORMAT_DIGEST,
             parameterized_call_scan_digest=scan_digest(parameterized_call_scan),
             observed_producer_version=OBSERVED_PRODUCER_VERSION,
@@ -3295,6 +3304,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
             else degraded_context_byte_ranges
         ),
         degraded_evidence_byte_ranges=degraded_evidence_byte_ranges,
+        scoped_diff_byte_ranges=scoped_evidence.head_byte_ranges,
         pass_index=pass_index,
         source_side=source_side,
         finish_reason=response.finish_reason,

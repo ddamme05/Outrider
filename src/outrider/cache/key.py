@@ -19,7 +19,7 @@ from outrider.llm.base import _canonical_prompt_hash
 # Host identity (#056), corrected imports (#024), import bindings and lexical
 # visibility all affect reuse. Module admission (#062) also keys added ranges,
 # their bytes and every scope span, which can lie outside the rendered prompt.
-ANALYZE_CACHE_KEY_VERSION: Final = "analyze-cache-key-v6"
+ANALYZE_CACHE_KEY_VERSION: Final = "analyze-cache-key-v7"
 
 
 def compute_analyze_cache_key(
@@ -36,6 +36,7 @@ def compute_analyze_cache_key(
     analyze_parser_version: str,
     response_format_digest: str,
     parameterized_call_scan_digest: str,
+    scoped_diff_mismatches: tuple[tuple[int, int], ...] = (),
     observed_producer_version: str,
     subsumes_digest: str,
     from_import_map_digest: str,
@@ -54,6 +55,8 @@ def compute_analyze_cache_key(
     including the policy version stamped on findings, rather than live constants.
 
     Admission inputs can change without changing the prompt:
+    - scoped_diff_mismatches pins how much of each mismatched hunk was verified;
+      the prompt already pins the hunk text, order and HEAD line numbers;
     - parameterized_call_scan_digest pins whole-file SQL-veto facts, including
       the empty scan produced by any syntax error;
     - from_import_map_digest pins corrected trace-candidate siblings;
@@ -105,6 +108,7 @@ def compute_analyze_cache_key(
         import_bindings_digest,
         lexical_bindings_digest,
         module_admission_digest,
+        ",".join(f"{index}:{length}" for index, length in scoped_diff_mismatches),
         profile_id if profile_id is not None else "",
         reasoning_component,
         profile_contract_digest if profile_contract_digest is not None else "",

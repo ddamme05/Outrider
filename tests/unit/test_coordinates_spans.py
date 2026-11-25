@@ -962,3 +962,83 @@ def test_bounded_diff_context_does_not_invent_a_missing_final_newline() -> None:
     patch = "--- /dev/null\n+++ b/x.py\n@@ -0,0 +1 @@\n+visible\n\\ No newline at end of file\n"
     context = bound_diff_context(_patched_from(patch), "visible", max_lines=100, max_chars=8192)
     assert context.head_byte_ranges == ((0, len("visible")),)
+
+
+def test_scoped_diff_evidence_uses_separate_verified_head_hunks() -> None:
+    from outrider.coordinates.spans import scoped_diff_evidence
+
+    head = "π\nfirst\nsecond\nunused\nlast".encode()
+    shown = (
+        "@@ -1,2 +2,1 @@\n"
+        "-deleted\n"
+        " first\n"
+        "@@ -3,0 +3,1 @@\n"
+        "+second\n"
+        "@@ -4,0 +5,1 @@\n"
+        "+last\n"
+        "\\ No newline at end of file\n"
+    )
+    result = scoped_diff_evidence("test.js", shown, head)
+    assert result.head_byte_ranges == ((3, 9), (9, 16), (23, 27))
+    assert [head[start:end] for start, end in result.head_byte_ranges] == [
+        b"first\n",
+        b"second\n",
+        b"last",
+    ]
+    assert not result.mismatches  # HEAD agrees with the patch’s explicit EOF marker
+    assert scoped_diff_evidence(
+        "test.js", shown.replace("+last\n", "+lost\n"), head
+    ).head_byte_ranges == ((3, 9), (9, 16))
+    assert not scoped_diff_evidence("test.js", "@@ -0,0 +8,1 @@\n+last\n", head).head_byte_ranges
+
+
+def test_scoped_diff_does_not_supply_unsent_newline_or_removed_source() -> None:
+    from outrider.coordinates.spans import scoped_diff_evidence
+
+    assert scoped_diff_evidence("a.js", "@@ -0,0 +1,1 @@\n+text", b"text\n").head_byte_ranges == (
+        (0, 4),
+    )
+    assert scoped_diff_evidence("a.js", "@@ -1,1 +0,0 @@\n-old\n", b"old\n").head_byte_ranges == ()
+    assert not scoped_diff_evidence("a.js", "@@ -1,1 +1,1 @@\n same\n", b"same\n").mismatches
+
+
+def test_cache_identity_tracks_shown_prefixes_independently_of_unseen_bytes() -> None:
+    from outrider.coordinates.spans import scoped_diff_evidence
+
+    patch = "@@ -1,0 +2,1 @@\n+answer\n@@ -3,0 +4,1 @@\n+tail\n"
+    verified = scoped_diff_evidence("a.js", patch, b"ignored\nanswer\nignored\ntail")
+    shifted = scoped_diff_evidence("a.js", patch, b"different length\nanswer\nignored\ntail")
+    assert verified.head_byte_ranges != shifted.head_byte_ranges
+    assert verified.mismatches == shifted.mismatches == ((1, 4),)
+    assert scoped_diff_evidence("a.js", patch, b"ignored\nabsent\nignored\ntail").mismatches == (
+        (0, 0),
+        (1, 4),
+    )
+    assert not scoped_diff_evidence("a.js", patch, b"ignored\nanswer\nignored\ntail\n").mismatches
+
+
+@pytest.mark.parametrize(
+    "hunk",
+    [
+        "@@ -0,0 +1,1 @@\n+const fn = () => 7;\n\\ No newline at end of file\n",
+        "@@ -1,1 +1,1 @@\n const fn = () => 7;\n\\ No newline at end of file\n",
+    ],
+)
+def test_explicit_head_eof_marker_never_supplies_a_trailing_lf(hunk: str) -> None:
+    from outrider.coordinates.spans import scoped_diff_evidence
+
+    code = b"const fn = () => 7;"
+    terminated = scoped_diff_evidence("a.js", hunk, code + b"\n")
+    unterminated = scoped_diff_evidence("a.js", hunk, code)
+    assert terminated.head_byte_ranges == unterminated.head_byte_ranges == ((0, len(code)),)
+    assert terminated.mismatches == unterminated.mismatches == ()
+
+
+def test_base_only_eof_marker_preserves_the_head_line_terminator() -> None:
+    from outrider.coordinates.spans import scoped_diff_evidence
+
+    hunk = "@@ -1,1 +1,1 @@\n-old\n\\ No newline at end of file\n+new\n"
+    terminated = scoped_diff_evidence("a.js", hunk, b"new\n")
+    unterminated = scoped_diff_evidence("a.js", hunk, b"new")
+    assert terminated.head_byte_ranges == ((0, 4),) and not terminated.mismatches
+    assert unterminated.head_byte_ranges == ((0, 3),) and unterminated.mismatches == ((0, 3),)

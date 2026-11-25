@@ -320,6 +320,7 @@ def test_parse_analyze_response_signature() -> None:
         "trace_candidate_form",
         "primary_line_ranges",
         "degraded_evidence_byte_ranges",
+        "scoped_diff_byte_ranges",
         "source_side",
         "prior_findings",
         "readme_sources",
@@ -2396,3 +2397,80 @@ def test_model_quote_must_be_exact_visible_and_overlap_location(quote: str, acce
             "not_in_source",
             "outside_primary_claim_span",
         }
+
+
+@pytest.mark.parametrize(
+    ("evidence", "expected_detail"),
+    [
+        ("declaration\nbody", None),
+        ("declaration", "outside_primary_claim_span"),
+        ("body\nnext hunk", "outside_primary_claim_span"),
+        ("body\nremoved", "not_in_source"),
+        ("unserved sibling", "outside_primary_claim_span"),
+    ],
+)
+def test_scoped_diff_citations_stay_in_one_hunk_at_an_eligible_location(
+    evidence: str,
+    expected_detail: str | None,
+) -> None:
+    source = "declaration\nbody\nnext hunk\nunserved sibling\n"
+    result = _call_parser(
+        _build_response_json(
+            _minimal_proposal(
+                finding_type="correctness_bug",
+                evidence=evidence,
+                line_start=2,
+                line_end=2,
+            )
+        ),
+        file_content=source,
+        file_byte_length=len(source),
+        included_scope_units=(),
+        primary_line_ranges=((2, 2),),
+        scoped_diff_byte_ranges=((0, 17), (17, 27)),
+    )
+    if expected_detail is None:
+        [finding] = result.admitted_findings
+        assert finding.evidence == evidence and finding.line_start == 2
+    else:
+        [rejection] = result.proposal_rejections
+        assert rejection.rejection_detail == expected_detail
+
+
+def test_scoped_diff_evidence_does_not_expand_eligible_locations() -> None:
+    source = "declaration\nbody\n"
+    outside = _call_parser(
+        _build_response_json(
+            _minimal_proposal(
+                finding_type="correctness_bug", evidence="declaration", line_start=1, line_end=1
+            )
+        ),
+        file_content=source,
+        file_byte_length=len(source),
+        primary_line_ranges=((2, 2),),
+        scoped_diff_byte_ranges=((0, 17),),
+    )
+    assert outside.proposal_rejections[0].rejection_reason == "span_outside_scope_unit"
+
+
+@pytest.mark.parametrize("pass_index,degraded", [(1, False), (0, True)])
+def test_other_analysis_modes_ignore_clean_scoped_diff(pass_index: int, degraded: bool) -> None:
+    source = "declaration\nbody\n"
+    result = _call_parser(
+        _build_response_json(
+            _minimal_proposal(
+                finding_type="correctness_bug",
+                evidence="declaration\nbody",
+                line_start=2,
+                line_end=2,
+            )
+        ),
+        file_content=source,
+        file_byte_length=len(source),
+        primary_line_ranges=((2, 2),),
+        degraded_context_byte_ranges=((12, 17),),
+        scoped_diff_byte_ranges=((0, 17),),
+        pass_index=pass_index,
+        degraded_mode=degraded,
+    )
+    assert result.proposal_rejections[0].rejection_detail == "outside_primary_claim_span"

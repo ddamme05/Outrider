@@ -327,6 +327,8 @@ async def test_miss_emits_event_calls_model_and_writes() -> None:
     expected_key = compute_analyze_cache_key(
         system_prompt=request.system_prompt,
         user_prompt=request.user_prompt,
+        # The retained patch says "return os.sep"; HEAD at that line says "return y".
+        scoped_diff_mismatches=((0, 0),),
         installation_id=_SCOPE.installation_id,
         repo_id=_SCOPE.repo_id,
         model="claude-sonnet-4-6",
