@@ -12,12 +12,15 @@ from typing import TYPE_CHECKING
 from uuid import UUID  # noqa: TC003  (runtime: function param type)
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Integer, Numeric, case, cast, func, select
+from sqlalchemy import Boolean, Integer, Numeric, Uuid, bindparam, case, cast, func, select
 
 from outrider.audit.events import LLMCallEvent
 from outrider.db.models.audit_events import AuditEvent
 
 if TYPE_CHECKING:
+    from decimal import Decimal
+
+    from sqlalchemy import Select
     from sqlalchemy.ext.asyncio import AsyncSession
 
 # Pulled from the schema declaration, not hardcoded, so a future rename of the
@@ -47,22 +50,14 @@ class ReviewLLMAggregates(BaseModel):
     cost_complete: bool = True
 
 
-async def aggregate_review_llm_metrics(
-    session: AsyncSession, *, review_id: UUID, is_eval: bool
-) -> ReviewLLMAggregates:
-    """Sum call count, tokens, and known cost for a review and its eval scope.
-
-    The caller supplies the review's `is_eval`; mismatched event rows are excluded.
-    This read-only query respects the append-only audit boundary. Empty reviews
-    return zeros; unpriced calls make the cost subtotal incomplete.
-    """
+def _build_llm_totals_query() -> Select[tuple[int, int, int | None, int, Decimal, int]]:
     input_tokens = cast(AuditEvent.payload["input_tokens"].astext, Integer)
     cached_tokens = cast(AuditEvent.payload["cached_tokens"].astext, Integer)
     cache_write_tokens = cast(AuditEvent.payload["cache_write_tokens"].astext, Integer)
     # Providers record disjoint buckets. Older calls can omit cache writes,
     # which makes the inclusive count unknown even when cost is complete.
     prompt_tokens = input_tokens + cached_tokens + cache_write_tokens
-    stmt = select(
+    return select(
         func.count().label("calls"),
         func.coalesce(func.sum(input_tokens), 0).label("input_tokens"),
         case(
@@ -81,11 +76,26 @@ async def aggregate_review_llm_metrics(
             func.sum(case((AuditEvent.payload["cost_usd"].astext.is_(None), 1), else_=0)), 0
         ).label("unpriced_calls"),
     ).where(
-        AuditEvent.review_id == review_id,
-        AuditEvent.is_eval == is_eval,
+        AuditEvent.review_id == bindparam("review_id", type_=Uuid),
+        AuditEvent.is_eval == bindparam("is_eval", type_=Boolean),
         AuditEvent.event_type == _LLM_CALL_EVENT_TYPE,
     )
-    row = (await session.execute(stmt)).one()
+
+
+_LLM_TOTALS_QUERY = _build_llm_totals_query()
+
+
+async def aggregate_review_llm_metrics(
+    session: AsyncSession, *, review_id: UUID, is_eval: bool
+) -> ReviewLLMAggregates:
+    """Sum call count, tokens, and known cost for a review and its eval scope.
+
+    The caller supplies the review's `is_eval`; mismatched event rows are excluded.
+    This read-only query respects the append-only audit boundary. Empty reviews
+    return zeros; unpriced calls make the cost subtotal incomplete.
+    """
+    result = await session.execute(_LLM_TOTALS_QUERY, {"review_id": review_id, "is_eval": is_eval})
+    row = result.one()
     return ReviewLLMAggregates(
         llm_calls_made=row.calls,
         total_input_tokens=row.input_tokens,
