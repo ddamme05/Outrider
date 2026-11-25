@@ -492,6 +492,21 @@ def test_compute_parser_outcome_clean_with_has_error_map() -> None:
     assert all(has_error[scope.unit_id] is False for scope in scopes)
 
 
+def test_clean_tree_skips_span_lookups_and_keeps_repeated_definition_flags() -> None:
+    source = b"@decorate\ndef run(): pass\n\ndef run(): pass\n"
+    with patch("outrider.ast_facts.python_adapter._find_node_by_span") as lookup:
+        result = parse_python(source, "f.py", MagicMock())
+
+    lookup.assert_not_called()
+    first, second = result.scope_units
+    assert first.unit_id == second.unit_id
+    assert result.has_error == {
+        first.unit_id: False,
+        first.occurrence_key: False,
+        second.occurrence_key: False,
+    }
+
+
 def test_decorator_region_parse_error_surfaces_in_has_error() -> None:
     """Regression: a syntax error inside a `@decorator(...)` line must
     propagate to the ScopeUnit's `has_error`, even when the inner
