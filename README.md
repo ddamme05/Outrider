@@ -338,6 +338,10 @@ so the workflow contains more steps than this stage-level diagram shows.
 3. **analyze** reviews each selected file. When code parses without errors,
    tree-sitter, a code parser, selects affected sections, including surviving
    sections whose guards or other statements were removed.
+   For JavaScript and TypeScript tests, Outrider can read the nearest
+   `package.json` at the PR's head commit. If the test imports the runner
+   invoked by the package, its review can include the test command and
+   simple boolean runner settings. The review trace records the source lines.
    Deep-tier files go to the stronger model and standard-tier files to the cheaper
    one. Outrider checks the token budget before each call.
    That split is the Anthropic default, and a GLM host serves both tiers with one model. A
