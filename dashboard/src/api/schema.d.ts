@@ -3020,8 +3020,9 @@ export interface components {
          * ReviewMetricsView
          * @description Audit-stream-computed metrics for one review (see module docstring).
          *
-         *     File/wall-clock fields are `None` when the review has no
-         *     `SynthesizeCompletedEvent` yet — render pending, never zero.
+         *     Synthesis records file counts and its own wall clock. Review time spans
+         *     the first intake start through the first synthesis end before approval.
+         *     Missing measurements are null.
          */
         ReviewMetricsView: {
             /** Llm Calls Made */
@@ -3048,6 +3049,8 @@ export interface components {
             files_traced_beyond_diff: number | null;
             /** Wall Clock Seconds */
             wall_clock_seconds: number | null;
+            /** Pre Approval Seconds */
+            pre_approval_seconds?: number | null;
         };
         /**
          * ReviewPhaseEvent

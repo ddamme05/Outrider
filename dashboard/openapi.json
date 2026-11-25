@@ -6635,6 +6635,17 @@
               }
             ],
             "title": "Wall Clock Seconds"
+          },
+          "pre_approval_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pre Approval Seconds"
           }
         },
         "additionalProperties": false,
@@ -6649,7 +6660,7 @@
           "wall_clock_seconds"
         ],
         "title": "ReviewMetricsView",
-        "description": "Audit-stream-computed metrics for one review (see module docstring).\n\nFile/wall-clock fields are `None` when the review has no\n`SynthesizeCompletedEvent` yet \u2014 render pending, never zero."
+        "description": "Audit-stream-computed metrics for one review (see module docstring).\n\nSynthesis records file counts and its own wall clock. Review time spans\nthe first intake start through the first synthesis end before approval.\nMissing measurements are null."
       },
       "ReviewPhaseEvent": {
         "properties": {
