@@ -495,6 +495,13 @@ def test_check_binds_shifted_base_evidence_to_its_side_and_preserves_original(pr
     base_snippet = next(item for item in prepared.check.snippets if item.source_side == "base")
     assert base_snippet.file_path == base_path
     assert (base_snippet.line_start, base_snippet.line_end) == (1, 3)
+    assert [
+        (entry.file_path, entry.source_side, entry.line_start, entry.line_end)
+        for entry in prepared.request.context_summary
+    ] == [
+        (item.file_path, item.source_side, item.line_start, item.line_end)
+        for item in prepared.check.snippets
+    ]
     answer = _answer(
         prepared.request,
         head_assessment="uncertain",

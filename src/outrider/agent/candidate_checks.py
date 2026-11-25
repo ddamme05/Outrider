@@ -554,6 +554,7 @@ def _build_check_attempt(
         context_summary=tuple(
             ContextManifestEntry(
                 file_path=item.file_path,
+                source_side=item.source_side,
                 scope_unit_name=(
                     f"candidate {item.source_side} source {item.line_start}-{item.line_end}"
                 ),
