@@ -72,18 +72,14 @@ GLM_MODEL_ID: Final[str] = "zai-org/GLM-5.2"
 # json_mode values whose request wire is the `response_format.json_schema` envelope this
 # provider builds. STRICT_JSON_SCHEMA and SOFT_FENCED differ in how the HOST enforces the
 # schema (constrained decoding vs soft/fenced), not in the request shape. JSON_OBJECT
-# (the openai host) sends `response_format={"type":"json_object"}` instead — OpenAI's
-# genuinely-enforcing strict compiler would 400 the raw partial-required analyze schema,
-# and required-completion is the #056(b)-rejected shape.
+# hosts can opt into strict schemas specifically for candidate checks.
 _JSON_SCHEMA_MODES: Final = frozenset({JsonMode.STRICT_JSON_SCHEMA, JsonMode.SOFT_FENCED})
 _BUILDABLE_JSON_MODES: Final = _JSON_SCHEMA_MODES | {JsonMode.JSON_OBJECT}
 
 # Pre-flight framing allowance for the flat-rate input ceiling (openai-native-host
 # spec). Soundness of the byte bound: byte-fallback BPE emits at most ~1 token per
-# input byte, so UTF-8 prompt bytes bound prompt tokens; JSON_OBJECT mode transmits
-# no schema, and `response_format`/`reasoning_effort`/`service_tier`/
-# `prompt_cache_key` add no billed input tokens — so message bytes + chat framing
-# are the whole billed input. Actual framing is ≈4–8 tokens per message × 2
+# input byte. Count the UTF-8 messages and any transmitted structured-output schema.
+# Actual framing is ≈4–8 tokens per message × 2
 # messages + ~3 reply-priming (~20 tokens); 1_024 is a ~50× margin. Boundary
 # tests pin at/under/over.
 OPENAI_FRAMING_TOKEN_ALLOWANCE: Final[int] = 1_024
@@ -143,8 +139,7 @@ class OpenAICompatibleProvider:
             )
 
         # Structured-output wire totality check: every JsonMode this provider can be
-        # handed must have a request shape in `_build_sdk_kwargs` (json_schema envelope
-        # for the schema modes; bare json_object for the openai host). A future enum
+        # handed must have a request shape in `_build_sdk_kwargs`. A future enum
         # member without a builder branch fails closed here rather than silently
         # sending the wrong wire on the first schema-bearing call (DECISIONS.md#056).
         if profile.json_mode not in _BUILDABLE_JSON_MODES:
@@ -293,12 +288,11 @@ class OpenAICompatibleProvider:
                 f"model in `models`."
             )
 
-        # Step 1c: flat-rate ceiling pre-flight (openai-native-host spec) — the
-        # LOAD-BEARING guard. >272K reprices the FULL request, which the flat
-        # RATE_TABLE rows cannot represent; reject BEFORE the paid call when the
-        # conservative byte bound (tokens ≤ prompt bytes + framing allowance —
-        # see OPENAI_FRAMING_TOKEN_ALLOWANCE) could cross the boundary. The
-        # post-call billed check below is defense-in-depth, persist-first.
+        sdk_kwargs = _build_sdk_kwargs(request, profile=self._profile)
+
+        # Step 2: Crossing the flat-rate ceiling reprices the entire request.
+        # Count the actual messages, schema and framing before dispatch. The
+        # post-call check also compares the reported usage against this ceiling.
         ceiling = self._profile.flat_rate_input_ceiling_tokens
         if ceiling is not None:
             byte_bound = (
@@ -306,17 +300,17 @@ class OpenAICompatibleProvider:
                 + len(request.user_prompt.encode("utf-8"))
                 + OPENAI_FRAMING_TOKEN_ALLOWANCE
             )
+            response_format = sdk_kwargs.get("response_format", {})
+            if response_format.get("type") == "json_schema":
+                byte_bound += len(json.dumps(response_format).encode("ascii"))
             if byte_bound > ceiling:
                 raise LLMInvalidRequestError(
-                    f"request's conservative input bound ({byte_bound} tokens ≤ prompt "
-                    f"bytes + framing) exceeds host {self._profile.host_id!r}'s flat-rate "
+                    f"request's conservative input bound ({byte_bound} including messages, "
+                    f"schema and framing) exceeds host {self._profile.host_id!r}'s flat-rate "
                     f"ceiling ({ceiling}); refusing the paid call — above the boundary "
                     f"the FULL request reprices and the flat rates would be wrong "
                     f"(specs/2026-07-18-openai-native-host.md)."
                 )
-
-        # Step 2: translate request → SDK kwargs.
-        sdk_kwargs = _build_sdk_kwargs(request, profile=self._profile)
 
         # Step 3: SDK call + exception translation. Catch the SDK exception
         # root `openai.OpenAIError` (broader than APIError, mirroring the
@@ -635,8 +629,8 @@ def _build_sdk_kwargs(request: LLMRequest, *, profile: HostProfile) -> dict[str,
 
     System/user text becomes two messages. The profile selects the token-limit
     parameter, reasoning directive, sampling support, tier, and prompt-cache key.
-    Schema modes send `response_format.json_schema`; JSON-object mode requests
-    syntactic JSON and leaves schema admission to the node parser. No explicit
+    Schema modes and opted-in candidate checks send the response schema. Other
+    JSON-object requests rely on the node parser for schema validation. No explicit
     cache-control breakpoint is sent; compatible hosts manage prefix caching.
     """
     profile = profile.for_models((request.model,))
@@ -663,12 +657,8 @@ def _build_sdk_kwargs(request: LLMRequest, *, profile: HostProfile) -> dict[str,
             f"outrider:{profile.profile_contract_digest[:16]}:{request.prompt_template_version}"
         )
     if request.response_schema_json is not None:
-        if profile.json_mode is JsonMode.JSON_OBJECT:
-            # OpenAI enforces strict all-required (+ additionalProperties:false) —
-            # the #056(b)-rejected required-completion shape — so the openai host
-            # gets the syntactic-JSON guarantee instead; the schema is expressed
-            # through the prompt (which names every field, the #059 conformance
-            # driver) and Pydantic remains the enforcement layer.
+        strict_check = profile.strict_candidate_checks and request.candidate_attempt_id is not None
+        if profile.json_mode is JsonMode.JSON_OBJECT and not strict_check:
             kwargs["response_format"] = {"type": "json_object"}
         else:
             kwargs["response_format"] = {

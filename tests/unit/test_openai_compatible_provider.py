@@ -5,6 +5,7 @@ host options drive behavior. Cover nullable usage, cache counts, model-based
 pricing, response-format envelopes, and vendor-error mapping. Recording HTTP
 transport checks cover terminal diagnostics without network requests."""
 
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -1045,10 +1046,7 @@ async def test_trains_on_inputs_profile_fails_closed() -> None:
 
 
 def test_json_object_profile_constructs_and_sends_json_object_wire() -> None:
-    """JSON_OBJECT became a buildable mode with the openai host
-    (specs/2026-07-18-openai-native-host.md): construction succeeds and a
-    schema-bearing request sends `response_format={"type":"json_object"}` — never
-    the json_schema envelope OpenAI's enforcing strict compiler would 400."""
+    """A host advertising JSON-object mode keeps that wire for candidate checks."""
     from outrider.llm.openai_compatible_provider import _build_sdk_kwargs
 
     json_object_host = _synthetic_profile().model_copy(update={"json_mode": JsonMode.JSON_OBJECT})
@@ -1059,10 +1057,13 @@ def test_json_object_profile_constructs_and_sends_json_object_wire() -> None:
         models=(GLM_MODEL_ID,),
     )
     assert provider._profile.json_mode is JsonMode.JSON_OBJECT  # noqa: SLF001
-    kwargs = _build_sdk_kwargs(
-        _request(response_schema_json='{"type":"object"}'), profile=json_object_host
+    regular = _request(response_schema_json='{"type":"object"}')
+    candidate = _request(
+        response_schema_json='{"type":"object"}', node_id="trace", candidate_attempt_id=uuid4()
     )
-    assert kwargs["response_format"] == {"type": "json_object"}
+    for request in (regular, candidate):
+        kwargs = _build_sdk_kwargs(request, profile=json_object_host)
+        assert kwargs["response_format"] == {"type": "json_object"}
 
 
 def test_glm_alias_binds_baseten_profile() -> None:
@@ -1284,14 +1285,18 @@ def test_none_mechanism_host_forces_reasoning_enabled_true() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _openai_provider(persister: _RecordingPersister | None = None) -> OpenAICompatibleProvider:
+def _openai_provider(
+    persister: _RecordingPersister | None = None,
+    *,
+    models: tuple[str, ...] = ("gpt-5.6-sol", "gpt-5.6-luna"),
+) -> OpenAICompatibleProvider:
     from outrider.llm.host_profiles import OPENAI_PROFILE
 
     return OpenAICompatibleProvider(
         api_key=_api_key(),
         profile=OPENAI_PROFILE,
         persister=persister if persister is not None else _RecordingPersister(),
-        models=("gpt-5.6-sol", "gpt-5.6-luna"),
+        models=models,
     )
 
 
@@ -1311,6 +1316,7 @@ def _openai_usage(*, prompt_tokens: int = 2000, cached: int = 0, write: int | No
 
 def _openai_completion(
     *,
+    model: str = "gpt-5.6-sol",
     service_tier: str | None = "default",
     usage: Any = None,
     refusal: str | None = None,
@@ -1320,7 +1326,7 @@ def _openai_completion(
     if refusal is not None:
         msg_kwargs = {"role": "assistant", "content": None, "refusal": refusal}
     completion = _chat_completion(
-        model="gpt-5.6-sol",
+        model=model,
         usage=usage if usage is not None else _openai_usage(),
         choices=[
             Choice(
@@ -1387,6 +1393,69 @@ async def test_preflight_ceiling_rejects_before_any_paid_call() -> None:
         await provider.complete(huge)
     mock.assert_not_called()
     assert persister.calls == []
+
+
+@pytest.mark.asyncio
+async def test_openai_checker_sends_the_closed_schema_only_for_candidate_attempts() -> None:
+    from outrider.agent.candidate_checks import VERSION, _response_schema
+
+    schema = json.loads(_response_schema())
+    for obj in (schema, schema["properties"]["citations"]["items"]):
+        assert obj["additionalProperties"] is False
+        assert set(obj["properties"]) == set(obj["required"])
+    regular = _request(
+        model="gpt-6.2-sol",
+        node_id="trace",
+        prompt_template_version=VERSION,
+        response_schema_json=_response_schema(),
+    )
+    candidate = regular.model_copy(update={"candidate_attempt_id": uuid4()})
+    persister = _RecordingPersister()
+    provider = _openai_provider(persister, models=(regular.model,))
+    with _patched_create(return_value=_openai_completion(model=regular.model)) as mock:
+        await provider.complete(regular)
+        await provider.complete(candidate)
+    regular_wire, candidate_wire = [call.kwargs for call in mock.call_args_list]
+    assert regular_wire["model"] == candidate_wire["model"] == regular.model
+    assert candidate_wire["reasoning_effort"] == "low"
+    assert regular_wire["response_format"] == {"type": "json_object"}
+    assert candidate_wire["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "outrider_trace", "strict": True, "schema": schema},
+    }
+    assert candidate_wire["messages"] == regular_wire["messages"]
+    assert persister.calls[-1][1] == candidate
+    await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_openai_checker_ceiling_counts_the_transmitted_schema() -> None:
+    from outrider.agent.candidate_checks import _response_schema
+    from outrider.llm.openai_compatible_provider import OPENAI_FRAMING_TOKEN_ALLOWANCE
+
+    request = _request(
+        model="gpt-6.2-sol",
+        node_id="trace",
+        candidate_attempt_id=uuid4(),
+        response_schema_json=_response_schema(),
+    )
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "outrider_trace",
+            "strict": True,
+            "schema": json.loads(_response_schema()),
+        },
+    }
+    limit = 272_000 - OPENAI_FRAMING_TOKEN_ALLOWANCE - len(request.system_prompt.encode())
+    limit -= len(json.dumps(response_format).encode("ascii"))
+    provider = _openai_provider(models=(request.model,))
+    with _patched_create(return_value=_openai_completion(model=request.model)) as mock:
+        await provider.complete(request.model_copy(update={"user_prompt": "a" * limit}))
+        with pytest.raises(LLMInvalidRequestError, match="flat-rate"):
+            await provider.complete(request.model_copy(update={"user_prompt": "a" * (limit + 1)}))
+    assert mock.call_count == 1
+    await provider.aclose()
 
 
 @pytest.mark.asyncio

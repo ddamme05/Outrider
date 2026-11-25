@@ -47,7 +47,7 @@ GOLDEN_KWARGS: dict[str, Any] = {
     "reasoning_effort": "none",
     "service_tier": "default",
     # The contract digest rotates when supported request behavior changes.
-    "prompt_cache_key": "outrider:f59cc87d1c5453de:analyze@1.0.0",
+    "prompt_cache_key": "outrider:24263f8ee98bfba6:analyze@1.0.0",
     "response_format": {"type": "json_object"},
 }
 # §8a writes-reported (SHAPER v4, capture-pinned): prompt(100) INCLUDES both
@@ -183,8 +183,8 @@ async def test_openai_wire_golden_request_accounting_and_event() -> None:
 @pytest.mark.parametrize(
     ("model", "effort", "cache_key", "reasoning"),
     [
-        ("gpt-6.2-sol", "low", "outrider:e0c3c521926f5014:analyze@1.0.0", True),
-        ("gpt-6-luna", "none", "outrider:f59cc87d1c5453de:analyze@1.0.0", False),
+        ("gpt-6.2-sol", "low", "outrider:1f1aa5fcbadf7c26:analyze@1.0.0", True),
+        ("gpt-6-luna", "none", "outrider:24263f8ee98bfba6:analyze@1.0.0", False),
     ],
 )
 @pytest.mark.asyncio
