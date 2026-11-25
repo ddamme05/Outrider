@@ -75,6 +75,7 @@ from outrider.agent.nodes.analyze import DEFAULT_REVIEW_BUDGET_TOKENS
 from outrider.agent.nodes.cache_config import CacheMode
 from outrider.agent.nodes.hitl_config import HITLConfig
 from outrider.agent.nodes.patch_config import PatchConfig
+from outrider.agent.nodes.summary_config import SummaryConfig
 from outrider.anomaly.persister import AnomalyPersister
 from outrider.audit.config import RetentionSettings
 from outrider.audit.persister import AuditPersister
@@ -952,6 +953,7 @@ def _build_eval_graph(
         # call, so enabling it would raise EvalDriverError. A patch-specific scenario
         # opts in by scripting the second synthesize response (DECISIONS.md#040).
         patch_config=PatchConfig(patches_enabled=False),
+        brief_summary=SummaryConfig().brief_summary,
         checkpointer=checkpointer,
         publisher=publisher,
         import_path_resolver=(

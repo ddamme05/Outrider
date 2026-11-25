@@ -350,6 +350,11 @@ so the workflow contains more steps than this stage-level diagram shows.
    allows it. The fetched content must be usable text, and trace depth is limited.
 5. **synthesize** combines findings from all rounds, removes duplicates, orders them
    by severity, and generates a limited number of fix suggestions for eligible findings.
+   By default, a model summarizes reviews that have findings. Set
+   `OUTRIDER_BRIEF_SUMMARY=true` to save the finding count and triage risk instead.
+   Upgrade every service that reads review history before enabling this setting.
+   Older versions cannot read reviews that already contain a brief summary,
+   even after you turn the setting off.
 6. **hitl** is the human gate. If any finding is critical or high severity, the graph
    pauses and saves its state. A human approves, rejects, overrides severity, or
    suppresses each finding from the dashboard. By default nothing critical or high reaches
@@ -614,6 +619,7 @@ most-used settings:
 | `OUTRIDER_HITL_TIMEOUT_ACTION` | no | `expire_only` | what happens when approval times out. The default never auto-posts |
 | `OUTRIDER_AUDIT_LLM_CONTENT_RETENTION_TTL` | no | `P90D` | How long to keep model-exchange content, as an ISO-8601 duration. Separate settings cover findings and reviews |
 | `OUTRIDER_PATCHES_ENABLED` | no | `true` | suggested-fix patches, bounded by `OUTRIDER_MAX_PATCH_SUGGESTIONS_PER_REVIEW` (default 5) |
+| `OUTRIDER_BRIEF_SUMMARY` | no | `false` | skip the final model summary and save the retained finding count and triage risk |
 | `OUTRIDER_ENABLE_DOCS` | no | off | opt-in `/docs` and `/openapi.json`, off in production by default |
 
 A few configuration details: `.env` values don't interpolate, so if you change

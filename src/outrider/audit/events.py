@@ -57,7 +57,10 @@ from outrider.schemas.native_candidate import (
 from outrider.schemas.observed_subsumption import ObservedSubsumedMatch
 from outrider.schemas.review_finding import PublishDestination, ReviewDimension
 from outrider.schemas.review_report import (
+    EMPTY_FINDINGS_SUMMARY_SOURCE,
+    SummarySource,
     render_empty_findings_summary,
+    render_retained_findings_summary,
 )
 from outrider.schemas.triage_result import RiskLevel
 
@@ -2846,10 +2849,8 @@ class SynthesizeCompletedEvent(AuditEventBase):
     display text can have outer fences removed. Historical rows omit
     summary_source and keep this model/raw-hash interpretation.
 
-    Empty reports use the immutable empty-findings-v1 renderer, make no summary
-    model call and bind the rendered bytes. Audit can validate that template
-    from metadata without reconstructing expired model content. Other exchanges
-    and checkpoints keep their existing independent retention rules.
+    Empty reports and brief nonempty reports bind their versioned template
+    bytes. Audit verifies them from the retained finding count and triage risk.
 
     Idempotency: event_id-PK (default per `DECISIONS.md#026`). Natural-
     key was rejected at pre-spec gate #1 because the natural-key
@@ -2875,7 +2876,7 @@ class SynthesizeCompletedEvent(AuditEventBase):
 
     event_type: Literal["synthesize_completed"] = "synthesize_completed"
     node_id: Literal["synthesize"] = "synthesize"
-    summary_source: Literal["model", "empty-findings-v1"] = Field(
+    summary_source: SummarySource = Field(
         default="model", exclude_if=lambda value: value == "model"
     )
     """Summary producer. Omitted on historical and current model-written rows."""
@@ -2964,12 +2965,19 @@ class SynthesizeCompletedEvent(AuditEventBase):
             if self.synthesize_model is None:
                 raise ValueError("model summary requires synthesize_model")
             return self
-        if self.n_findings != 0 or self.synthesize_model is not None:
-            raise ValueError("empty-findings-v1 requires zero findings and no summary model")
-        summary = render_empty_findings_summary(self.overall_risk)
+        if self.summary_source == EMPTY_FINDINGS_SUMMARY_SOURCE:
+            if self.n_findings != 0 or self.synthesize_model is not None:
+                raise ValueError("empty-findings-v1 requires zero findings and no summary model")
+            summary = render_empty_findings_summary(self.overall_risk)
+        else:
+            if self.synthesize_model is not None:
+                raise ValueError("retained-findings-v1 requires no summary model")
+            summary = render_retained_findings_summary(self.overall_risk, self.n_findings)
         expected_hash = hashlib.sha256(summary.encode("utf-8")).hexdigest()
         if self.summary_content_hash != expected_hash:
-            raise ValueError("empty-findings-v1 summary hash does not match its risk")
+            raise ValueError(
+                f"{self.summary_source} summary hash does not match its risk and count"
+            )
         return self
 
     @model_validator(mode="after")

@@ -2,9 +2,9 @@
 
 synthesize checks policy consistency, rejects conflicting duplicates and limits
 findings before requesting fixes or a summary. It records the finished report's
-measured totals, including any summary call. Empty findings use a fixed summary.
+measured totals, including any summary call. Empty and brief reports use fixed summaries.
 
-The summary's audit hash uses the raw response even when display text is cleaned.
+The audit hash covers the raw model response or the exact rendered template.
 See specs/2026-05-28-synthesize-node.md.
 """
 
@@ -14,7 +14,7 @@ import contextlib
 import hashlib
 import logging
 import time
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from outrider.agent.nodes.finding_cap import (
     _collapse_by_content_hash,
@@ -34,9 +34,11 @@ from outrider.schemas.analysis_round import MAX_FINDINGS_HARD_CAP
 from outrider.schemas.review_report import (
     EMPTY_FINDINGS_SUMMARY_SOURCE,
     MAX_FINDINGS_PER_REPORT,
+    RETAINED_FINDINGS_SUMMARY_SOURCE,
     ReviewMetrics,
     ReviewReport,
     render_empty_findings_summary,
+    render_retained_findings_summary,
 )
 
 if TYPE_CHECKING:
@@ -46,6 +48,7 @@ if TYPE_CHECKING:
     from outrider.llm.base import LLMProvider
     from outrider.policy.severity import FindingSeverity
     from outrider.schemas.review_finding import ReviewFinding
+    from outrider.schemas.review_report import SummarySource
     from outrider.schemas.review_state import ReviewState
 
 
@@ -279,6 +282,7 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
     provider: LLMProvider,
     synthesize_model: str,
     patch_model: str,
+    brief_summary: bool = False,
     profile_id: str | None = None,
     reasoning_enabled: bool | None = None,
     profile_contract_digest: str | None = None,
@@ -290,8 +294,8 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
 ) -> dict[str, ReviewReport]:
     """Validate and merge findings, add patches, summarize, and return a review report.
 
-    Cap findings before patch and summary calls. Empty reports use a fixed
-    summary without a model call. Query final metrics after all model work.
+    Cap findings before patch and summary calls. Brief and empty reports use
+    a versioned summary. Query final metrics after all model work.
     Anomaly reporting is best-effort; divergent findings always stop the review.
     """
     started_at = time.monotonic()
@@ -356,9 +360,9 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
 
     overall_risk = state.triage_result.overall_risk
 
-    summary_source: Literal["model", "empty-findings-v1"]
+    summary_source: SummarySource
     summary_model: str | None
-    if report_findings:
+    if report_findings and not brief_summary:
         summary_source = "model"
         summary_model = synthesize_model
         prompt_parts = synthesize_prompt.render(
@@ -386,9 +390,13 @@ async def synthesize(  # noqa: PLR0913 — closure-injected deps + node-body orc
         # Hash raw text so audit identity matches persisted content.
         summary_content_hash = _compute_summary_content_hash(response.text)
     else:
-        summary_source = EMPTY_FINDINGS_SUMMARY_SOURCE
         summary_model = None
-        summary_text = render_empty_findings_summary(overall_risk)
+        if report_findings:
+            summary_source = RETAINED_FINDINGS_SUMMARY_SOURCE
+            summary_text = render_retained_findings_summary(overall_risk, len(report_findings))
+        else:
+            summary_source = EMPTY_FINDINGS_SUMMARY_SOURCE
+            summary_text = render_empty_findings_summary(overall_risk)
         summary_content_hash = hashlib.sha256(summary_text.encode("utf-8")).hexdigest()
 
     # Include every actual completed call, with no invented template exchange.

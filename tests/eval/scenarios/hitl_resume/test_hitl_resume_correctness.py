@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
 from sqlalchemy import text
 
 from outrider.agent import run_review, run_review_with_resume
+from outrider.audit.events import SynthesizeCompletedEvent
 from outrider.audit.replay import AuditReplayer
 
 if TYPE_CHECKING:
@@ -26,9 +28,12 @@ EXPECTED_FINAL_STATE = {
 }
 
 
+@pytest.mark.parametrize("brief_summary", [False, True], ids=["model-summary", "brief-summary"])
 async def test_hitl_resume_idempotent_under_checkpoint_replay(
     eval_db: str,
     eval_db_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    brief_summary: bool,
 ) -> None:
     """Seven-step HITL-resume flow ends idempotent + replay-equivalent.
 
@@ -40,6 +45,10 @@ async def test_hitl_resume_idempotent_under_checkpoint_replay(
     """
     # 1-5. Process PR → interrupt at hitl → checkpoint to Postgres → fresh
     #      graph+saver on the same DB → resume via Command(resume=approve-all).
+    if brief_summary:
+        monkeypatch.setenv("OUTRIDER_BRIEF_SUMMARY", "true")
+    else:
+        monkeypatch.delenv("OUTRIDER_BRIEF_SUMMARY", raising=False)
     final = await run_review_with_resume(_FIXTURE, db_url=eval_db)
 
     # The interrupt fired (the CRITICAL finding gated), and resume drove to publish.
@@ -60,7 +69,26 @@ async def test_hitl_resume_idempotent_under_checkpoint_replay(
             text("SELECT count(*) FROM checkpoints WHERE thread_id = :tid"),
             {"tid": str(final.review_id)},
         )
+        summary_payload = (
+            await session.execute(
+                text(
+                    "SELECT payload FROM audit_events "
+                    "WHERE review_id = :rid AND event_type = 'synthesize_completed'"
+                ),
+                {"rid": final.review_id},
+            )
+        ).scalar_one()
+        summary_calls = await session.scalar(
+            text(
+                "SELECT count(*) FROM audit_events WHERE review_id = :rid "
+                "AND event_type = 'llm_call' AND payload->>'node_id' = 'synthesize'"
+            ),
+            {"rid": final.review_id},
+        )
     assert checkpoint_rows is not None and checkpoint_rows >= 1
+    summary = SynthesizeCompletedEvent.model_validate(summary_payload)
+    assert summary.summary_source == ("retained-findings-v1" if brief_summary else "model")
+    assert summary_calls == (0 if brief_summary else 1)
 
     # 7. Replay-equivalence over the full audit log (reconstruct from the SAME DB).
     #    `assert_replay_equivalent` raises on mismatch, returns None on success.

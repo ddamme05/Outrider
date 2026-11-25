@@ -34,7 +34,11 @@ from outrider.schemas.native_candidate import (
 )
 from outrider.schemas.pr_context import PRContext
 from outrider.schemas.review_finding import _CONFIDENCE_BY_TIER, ReviewDimension, ReviewFinding
-from outrider.schemas.review_report import EMPTY_FINDINGS_SUMMARY_SOURCE, ReviewReport
+from outrider.schemas.review_report import (
+    EMPTY_FINDINGS_SUMMARY_SOURCE,
+    RETAINED_FINDINGS_SUMMARY_SOURCE,
+    ReviewReport,
+)
 from outrider.schemas.trace_decision import TraceDecision
 from outrider.schemas.triage_result import TriageResult
 
@@ -157,11 +161,12 @@ def build_catalog() -> dict[str, Any]:
             "kind": "assembled-summary",
             "version": synthesize.VERSION,
             "empty_findings_source": EMPTY_FINDINGS_SUMMARY_SOURCE,
+            "brief_findings_source": RETAINED_FINDINGS_SUMMARY_SOURCE,
             "schema": ReviewReport.model_json_schema()["properties"]["summary"],
-            "notes": "Nonempty reports use plain model prose, not JSON, with no response schema. "
-            "Empty reports use the versioned fixed summary without a model call. The completion "
-            "event identifies the source and hashes raw model or exact template bytes. The final "
-            "report bounds text. Risk and metrics come from upstream state and code.",
+            "notes": "Nonempty reports use plain model prose by default. OUTRIDER_BRIEF_SUMMARY "
+            "uses the retained finding count and triage risk to write a fixed summary. Empty "
+            "reports always use the empty-findings template. The completion event identifies "
+            "the source and hashes raw model or exact template bytes.",
         },
         "PatchSuggestionBatch": _model_component(
             PatchSuggestionBatch,
