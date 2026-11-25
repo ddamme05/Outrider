@@ -79,10 +79,13 @@ class ReviewMetricsView(BaseModel):
     Missing measurements are null.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", use_attribute_docstrings=True)
 
     llm_calls_made: int
     total_input_tokens: int
+    """Input tokens excluding reported cache reads and writes."""
+    total_prompt_tokens: int | None = None
+    """Input tokens including cache reads and writes. Null when any call lacks complete counts."""
     total_output_tokens: int
     total_cost_usd: float
     # Completeness (openai-native-host arc): `total_cost_usd` is the KNOWN SUBTOTAL —
@@ -410,6 +413,7 @@ async def _aggregate_metrics(
     metrics = ReviewMetricsView(
         llm_calls_made=agg.llm_calls_made,
         total_input_tokens=agg.total_input_tokens,
+        total_prompt_tokens=agg.total_prompt_tokens,
         total_output_tokens=agg.total_output_tokens,
         total_cost_usd=agg.total_cost_usd,
         unpriced_call_count=agg.unpriced_call_count,

@@ -229,6 +229,7 @@ async def test_probe_cache_model_first_call_writes_then_reads() -> None:
         assert r.cache_read_tokens + r.cache_write_tokens + r.input_tokens == 5000 + len(_USER)
     assert persist.events[0].cache_hit is False
     assert persist.events[1].cache_hit is True
+    assert [event.cache_write_tokens for event in persist.events] == [5000, 0]
     assert persist.events[1].cached_tokens == 5000
     assert probe.calls[0]["cache_write_tokens"] == 5000
     assert probe.calls[1]["cache_read_tokens"] == 5000

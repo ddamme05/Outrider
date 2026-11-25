@@ -388,8 +388,12 @@ function ReviewMetrics({
       <div className="ms-card">
         <div className="lab">Tokens</div>
         <div className="ms-val">
-          {metrics.total_input_tokens.toLocaleString()}
-          <span style={{ color: "var(--faint)", fontSize: 12 }}> in</span>
+          {metrics.total_prompt_tokens == null ? "Input unavailable" : (
+            <>
+              {metrics.total_prompt_tokens.toLocaleString()}
+              <span style={{ color: "var(--faint)", fontSize: 12 }}> in</span>
+            </>
+          )}
         </div>
         <div className="ms-sub">
           <span className="mono">{metrics.total_output_tokens.toLocaleString()}</span> out ·{" "}

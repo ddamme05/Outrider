@@ -40,6 +40,7 @@ class ReviewLLMAggregates(BaseModel):
 
     llm_calls_made: int = Field(ge=0)
     total_input_tokens: int = Field(ge=0)
+    total_prompt_tokens: int | None = Field(default=None, ge=0)
     total_output_tokens: int = Field(ge=0)
     total_cost_usd: float = Field(ge=0)
     unpriced_call_count: int = Field(default=0, ge=0)
@@ -55,11 +56,18 @@ async def aggregate_review_llm_metrics(
     This read-only query respects the append-only audit boundary. Empty reviews
     return zeros; unpriced calls make the cost subtotal incomplete.
     """
+    input_tokens = cast(AuditEvent.payload["input_tokens"].astext, Integer)
+    cached_tokens = cast(AuditEvent.payload["cached_tokens"].astext, Integer)
+    cache_write_tokens = cast(AuditEvent.payload["cache_write_tokens"].astext, Integer)
+    # Providers record disjoint buckets. Older calls can omit cache writes,
+    # which makes the inclusive count unknown even when cost is complete.
+    prompt_tokens = input_tokens + cached_tokens + cache_write_tokens
     stmt = select(
         func.count().label("calls"),
-        func.coalesce(func.sum(cast(AuditEvent.payload["input_tokens"].astext, Integer)), 0).label(
-            "input_tokens"
-        ),
+        func.coalesce(func.sum(input_tokens), 0).label("input_tokens"),
+        case(
+            (func.count(prompt_tokens) == func.count(), func.coalesce(func.sum(prompt_tokens), 0)),
+        ).label("prompt_tokens"),
         func.coalesce(func.sum(cast(AuditEvent.payload["output_tokens"].astext, Integer)), 0).label(
             "output_tokens"
         ),
@@ -81,6 +89,7 @@ async def aggregate_review_llm_metrics(
     return ReviewLLMAggregates(
         llm_calls_made=row.calls,
         total_input_tokens=row.input_tokens,
+        total_prompt_tokens=row.prompt_tokens,
         total_output_tokens=row.output_tokens,
         total_cost_usd=float(row.cost_usd),
         unpriced_call_count=row.unpriced_calls,

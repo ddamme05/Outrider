@@ -11,6 +11,7 @@ import {
   type AuditEvent,
   eventFamily,
   eventNode,
+  formatCallTokens,
   isDiagnosticEvent,
   summarizeEvent,
 } from "../lib/auditEvent";
@@ -64,8 +65,7 @@ function flatEventBody(event: AuditEvent): ReactNode {
         <>
           <b>{prettyModel(event.model)}</b> ·{" "}
           {event.cost_usd == null ? "unpriced" : `$${event.cost_usd.toFixed(2)}`} ·{" "}
-          <span className="mono">{event.input_tokens}</span> in /{" "}
-          <span className="mono">{event.output_tokens}</span> out
+          <span className="mono">{formatCallTokens(event)}</span>
         </>
       );
     case "finding":

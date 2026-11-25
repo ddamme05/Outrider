@@ -6590,7 +6590,20 @@
           },
           "total_input_tokens": {
             "type": "integer",
-            "title": "Total Input Tokens"
+            "title": "Total Input Tokens",
+            "description": "Input tokens excluding reported cache reads and writes."
+          },
+          "total_prompt_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Prompt Tokens",
+            "description": "Input tokens including cache reads and writes. Null when any call lacks complete counts."
           },
           "total_output_tokens": {
             "type": "integer",

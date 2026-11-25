@@ -430,9 +430,9 @@ class LLMCallEvent(AuditEventBase):
     # pricing_version after the ephemeral LLMResponse is gone. `service_tier` is the
     # ACTUAL echoed tier (it selected the rate; bounded raw string, novel echoes preserved
     # verbatim — mirrors LLMResponse.service_tier_actual, max 64). `billed_prompt_tokens`
-    # is the raw wire count (short/long rate selection). `cache_write_tokens` is the
-    # per-call separately-billed write class (5.6+); the pass-level rollup cannot repair
-    # per-call recomputation. `cost_unpriced_reason` is pricing.py's closed enum, coupled
+    # is the raw wire count (short/long rate selection). Fresh calls record normalized
+    # cache writes, including zero. Older events can omit the count even when the
+    # provider wrote to the cache. `cost_unpriced_reason` is pricing.py's closed enum, coupled
     # to a null cost_usd by the validator below. Historical reads default all four to
     # None; fresh-write completeness is enforced by the persister's fresh-insert guard,
     # never by this validator (which cannot know fresh-from-historical).
@@ -2607,14 +2607,9 @@ class AnalyzeCompletedEvent(AuditEventBase):
     Matches `LLMCallEvent.cached_tokens` semantics (reads-only)."""
     total_cache_write_tokens: int = Field(ge=0)
     """Sum of `LLMResponse.cache_write_tokens` across this pass's LLM calls.
-    Cache writes bill at 1.25× the base input rate. Separate from reads
-    because the 12.5× cost differential is material — combining them
-    obscures the cost driver. Since the openai-native-host arc,
-    `LLMCallEvent.cache_write_tokens` also carries the PER-CALL write count
-    (additive optional; None on pre-field and no-write-class rows) while
-    `cached_tokens` stays reads-only — so a reader still must not expect
-    `sum(LLMCallEvent.cached_tokens) == total_cache_read_tokens +
-    total_cache_write_tokens`."""
+    Each new call records its own write count in `LLMCallEvent.cache_write_tokens`
+    and its read count in `LLMCallEvent.cached_tokens`. Older events may lack the
+    per-call write count even when this pass total is available."""
     total_output_tokens: int = Field(ge=0)
     # le=100.0 matches SynthesizeCompletedEvent.total_cost_usd + ReviewMetrics.total_cost_usd —
     # a float('inf') / JSONB-poisoning upper bound (real V1 reviews land well under $1).

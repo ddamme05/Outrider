@@ -149,6 +149,32 @@ test("equivalent verdict renders phase cards + the per-operation rows", () => {
   expect(screen.getByText("llm_call")).toBeInTheDocument();
 });
 
+test.each([false, true])("shows inclusive prompt tokens on each call (flat=%s)", (flat) => {
+  const call = llmEvent("e1", "analyze", 0.01);
+  const events = [
+    {
+      ...call,
+      model: "gpt-6.2-sol",
+      input_tokens: 3,
+      cached_tokens: 6770,
+      cache_write_tokens: 1073,
+      billed_prompt_tokens: 7846,
+      output_tokens: 11,
+    },
+    { ...call, event_id: "e2", input_tokens: 0, cached_tokens: 0, cache_write_tokens: 0 },
+    { ...call, event_id: "e3", cache_write_tokens: null },
+    { ...call, event_id: "e4", cached_tokens: 25, cache_write_tokens: 5 },
+  ];
+  const { container } = render(
+    <ReplayFeed data={data({ events, phases: [phaseWith(events)] })} flat={flat} />,
+  );
+  const rows = container.querySelectorAll(flat ? ".ae-body" : ".af-summary");
+  expect(rows[0]).toHaveTextContent(`${(7846).toLocaleString()} in / 11 out`);
+  expect(rows[1]).toHaveTextContent("0 in / 40 out");
+  expect(rows[2]).toHaveTextContent("input unavailable / 40 out");
+  expect(rows[3]).toHaveTextContent("130 in / 40 out");
+});
+
 test("flat-feed body prettifies the model slug (GLM-5.2, never the raw Fireworks slug)", () => {
   // Exercise flatEventBody inside .ae-body; grouped rows use summarizeEvent.
   // Both rendering paths must humanize provider model names.
