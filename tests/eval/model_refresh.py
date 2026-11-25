@@ -23,7 +23,12 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from outrider.llm.base import INCLUDE_TEXT_OPT_IN, LLMProviderError, LLMRefusalError
-from outrider.llm.host_profiles import resolve_host_identity, validate_available_models
+from outrider.llm.config import ModelConfig
+from outrider.llm.host_profiles import (
+    resolve_host_identity,
+    resolve_host_profile,
+    validate_available_models,
+)
 from outrider.llm.pricing import (
     COST_UNADJUDICATED_PROFILE_IDS,
     LONG_CONTEXT_POLICY,
@@ -62,6 +67,15 @@ class Target:
     @property
     def name(self) -> str:
         return f"{self.host}:{self.model}:{self.role}"
+
+    def workflow_models(self) -> ModelConfig:
+        """Use the explicit comparison target for every review step."""
+        roles = dict.fromkeys(ModelConfig.model_fields, self.model)
+        validate_available_models(self.host, (self.model,))
+        if self.host == "anthropic":
+            return ModelConfig.model_validate(roles)
+        resolve_host_profile(self.host).for_models((self.model,))
+        return ModelConfig.for_host(self.host).model_copy(update=roles)
 
 
 TARGETS = {
@@ -243,8 +257,6 @@ def maximum_rates(target: Target) -> tuple[Decimal, Decimal]:
     )
     tier = Decimal(1)
     if target.host == "openai":
-        from outrider.llm.host_profiles import resolve_host_profile
-
         requested = (
             resolve_host_profile(target.host).for_models((target.model,)).requested_service_tier
         )
@@ -614,23 +626,10 @@ def create_provider(target: Target, recorder: ExchangeRecorder) -> LLMProvider:
         raise ValueError(f"resolved {key_name} is required for the selected host")
     if target.host == "anthropic":
         from outrider.llm.anthropic_provider import AnthropicProvider
-        from outrider.llm.config import ModelConfig
 
-        config = ModelConfig(
-            **dict.fromkeys(
-                (
-                    "triage_model",
-                    "analyze_model",
-                    "standard_analyze_model",
-                    "synthesize_model",
-                    "trace_model",
-                    "patch_model",
-                ),
-                target.model,
-            )
+        return AnthropicProvider(
+            api_key=SecretStr(value), model_config=target.workflow_models(), persister=recorder
         )
-        return AnthropicProvider(api_key=SecretStr(value), model_config=config, persister=recorder)
-    from outrider.llm.host_profiles import resolve_host_profile
     from outrider.llm.openai_compatible_provider import OpenAICompatibleProvider
 
     return OpenAICompatibleProvider(
