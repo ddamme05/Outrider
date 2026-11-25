@@ -117,12 +117,12 @@ function llmContent(eventId: string, overrides: Record<string, unknown> = {}): R
   };
 }
 
-function phaseWith(events: Record<string, unknown>[]): Record<string, unknown> {
+function phaseWith(events: Record<string, unknown>[], node = "analyze"): Record<string, unknown> {
   return {
-    phase_id: "p-analyze",
-    node_id: "analyze",
-    start: phaseMarker("analyze", "start", "2026-06-01T00:00:00Z"),
-    end: phaseMarker("analyze", "end", "2026-06-01T00:00:01Z"),
+    phase_id: `p-${node}`,
+    node_id: node,
+    start: phaseMarker(node, "start", "2026-06-01T00:00:00Z"),
+    end: phaseMarker(node, "end", "2026-06-01T00:00:01Z"),
     events,
   };
 }
@@ -175,6 +175,39 @@ test.each([false, true])("shows inclusive prompt tokens on each call (flat=%s)",
   expect(rows[2]).toHaveTextContent("input unavailable / 40 out");
   expect(rows[3]).toHaveTextContent("130 in / 40 out");
 });
+
+test.each(["grouped", "flat", "ungrouped audit"])(
+  "%s distinguishes a fetched file from a skipped analysis on the same path",
+  (view) => {
+    const file = {
+      event_type: "file_examination",
+      file_path: "src/click/core.py",
+      event_id: "fetch",
+      node_id: "intake",
+      examination_type: "intake_fetch",
+      parse_status: "clean",
+      skip_reason: null,
+    };
+    const skipped = {
+      ...file,
+      event_id: "skip",
+      node_id: "analyze",
+      examination_type: "analyze",
+      parse_status: "skipped",
+      skip_reason: "COST_BUDGET_EXHAUSTED",
+    };
+    const timeline = data({
+      events: [file, skipped],
+      replay_equivalent: view !== "ungrouped audit",
+      phases: view === "ungrouped audit" ? null : [phaseWith([file], "intake"), phaseWith([skipped])],
+    });
+    render(<ReplayFeed data={timeline} flat={view === "flat"} />);
+    expect(screen.getByText("Fetched src/click/core.py")).toBeInTheDocument();
+    expect(screen.getByText(
+      "Skipped in analysis · cost budget exhausted · src/click/core.py",
+    )).toBeInTheDocument();
+  },
+);
 
 test("flat-feed body prettifies the model slug (GLM-5.2, never the raw Fireworks slug)", () => {
   // Exercise flatEventBody inside .ae-body; grouped rows use summarizeEvent.

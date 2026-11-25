@@ -93,12 +93,6 @@ function flatEventBody(event: AuditEvent): ReactNode {
           <b>{event.node_id}</b> · marker <b>{event.marker}</b>
         </>
       );
-    case "file_examination":
-      return (
-        <>
-          examined <span className="mono">{event.file_path}</span>
-        </>
-      );
     case "trace_decision":
       return (
         <>
