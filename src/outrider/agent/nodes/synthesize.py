@@ -251,7 +251,7 @@ def _compute_metrics(
         llm_calls_made=llm_aggregates.llm_calls_made,
         total_input_tokens=llm_aggregates.total_input_tokens,
         total_output_tokens=llm_aggregates.total_output_tokens,
-        total_cost_usd=llm_aggregates.total_cost_usd,
+        total_cost_usd=llm_aggregates.total_cost_usd if llm_aggregates.cost_complete else None,
         wall_clock_seconds=wall_clock_seconds,
     )
 

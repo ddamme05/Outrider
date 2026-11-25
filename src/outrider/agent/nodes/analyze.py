@@ -163,7 +163,13 @@ from outrider.coordinates import (
 )
 from outrider.coordinates.errors import CoordinateErrorKind
 from outrider.llm.base import LLMRequest, _canonical_prompt_hash
-from outrider.llm.pricing import PRICING_VERSION, compute_cost_usd
+from outrider.llm.pricing import (
+    PRICING_VERSION,
+    CostUnpricedReason,
+    Priced,
+    add_exact_cost,
+    compute_cost_outcome,
+)
 from outrider.policy.canonical import (
     compute_phase_id,
     compute_round_id,
@@ -1050,7 +1056,7 @@ async def _run_trace_pass(
     total_output_tokens = 0
     total_cache_read_tokens = 0
     total_cache_write_tokens = 0
-    total_cost_decimal = Decimal("0")
+    total_cost_decimal: Decimal | None = Decimal("0")
     remaining_budget_tokens = total_review_budget_tokens
 
     pass_one_work = _trace_review_pairs(state, pass_index)
@@ -1136,7 +1142,7 @@ async def _run_trace_pass(
         total_output_tokens += file_outcome.output_tokens
         total_cache_read_tokens += file_outcome.cache_read_tokens
         total_cache_write_tokens += file_outcome.cache_write_tokens
-        total_cost_decimal += file_outcome.cost_decimal
+        total_cost_decimal = add_exact_cost(total_cost_decimal, file_outcome.cost_decimal)
         pass_subsumed_matches.extend(file_outcome.subsumed_matches)
         remaining_budget_tokens -= file_outcome.estimated_tokens
 
@@ -1250,7 +1256,7 @@ async def _run_trace_pass(
         total_cache_write_tokens=total_cache_write_tokens,
         total_output_tokens=total_output_tokens,
         # Sum costs as Decimal; convert to float only at the event boundary.
-        total_cost_usd=float(total_cost_decimal),
+        total_cost_usd=float(total_cost_decimal) if total_cost_decimal is not None else None,
         pricing_version=PRICING_VERSION,
         policy_version=active_policy_version,
         analyze_model=analyze_model,
@@ -1592,7 +1598,7 @@ class _FileOutcome:
     output_tokens: int
     cache_read_tokens: int
     cache_write_tokens: int
-    cost_decimal: Decimal
+    cost_decimal: Decimal | None
     estimated_tokens: int
     # Cache serves have no parser_result or LLM call.
     served_result: _ServedResult | None = None
@@ -2186,9 +2192,9 @@ def _merge_producer_findings(
     return parser_result, subsumed_matches
 
 
-def _price_model_response(response: LLMResponse) -> Decimal:
-    """Price the returned token counts and actual billing tier, keeping Decimal precision."""
-    return compute_cost_usd(
+def _price_model_response(response: LLMResponse) -> Decimal | None:
+    """Keep completed billing-pending calls while rejecting unexpected pricing outcomes."""
+    outcome = compute_cost_outcome(
         response.profile_id,
         response.model,
         input_tokens=response.input_tokens,
@@ -2198,6 +2204,11 @@ def _price_model_response(response: LLMResponse) -> Decimal:
         billed_prompt_tokens=response.billed_prompt_tokens,
         service_tier=response.service_tier_actual,
     )
+    if isinstance(outcome, Priced):
+        return outcome.cost_usd
+    if outcome.reason == CostUnpricedReason.BILLING_PENDING:
+        return None
+    raise ValueError(f"unexpected pricing outcome for {response.model!r}: {outcome.reason.value}")
 
 
 async def _emit_parser_rejections(

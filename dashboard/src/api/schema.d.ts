@@ -704,7 +704,7 @@ export interface components {
             /** Total Output Tokens */
             total_output_tokens: number;
             /** Total Cost Usd */
-            total_cost_usd: number;
+            total_cost_usd: number | null;
             /** Pricing Version */
             pricing_version: string;
             /** Policy Version */

@@ -1413,9 +1413,16 @@
             "title": "Total Output Tokens"
           },
           "total_cost_usd": {
-            "type": "number",
-            "maximum": 100.0,
-            "minimum": 0.0,
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Total Cost Usd"
           },
           "pricing_version": {

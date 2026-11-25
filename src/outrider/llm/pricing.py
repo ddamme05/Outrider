@@ -26,6 +26,7 @@ __all__ = [
     "Priced",
     "PricingOutcome",
     "Unpriced",
+    "add_exact_cost",
     "compute_cost_outcome",
     "compute_cost_usd",
     "min_cacheable_tokens",
@@ -525,6 +526,13 @@ def compute_cost_outcome(
                 + rates.out_per_token * output_tokens
             )
         return Priced(cost * tier_mult)
+
+
+def add_exact_cost(total: Decimal | None, amount: Decimal | None) -> Decimal | None:
+    """A pass has an exact total only when all contributing calls are priced."""
+    if total is None or amount is None:
+        return None
+    return total + amount
 
 
 def compute_cost_usd(

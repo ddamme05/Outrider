@@ -2615,7 +2615,8 @@ class AnalyzeCompletedEvent(AuditEventBase):
     total_output_tokens: int = Field(ge=0)
     # le=100.0 matches SynthesizeCompletedEvent.total_cost_usd + ReviewMetrics.total_cost_usd —
     # a float('inf') / JSONB-poisoning upper bound (real V1 reviews land well under $1).
-    total_cost_usd: float = Field(ge=0, le=100.0)
+    total_cost_usd: float | None = Field(ge=0, le=100.0)
+    """Exact pass total, or None when a completed call awaits billing verification."""
     pricing_version: str = Field(pattern=PRICING_VERSION_PATTERN)
     policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
     analyze_model: str
@@ -2929,8 +2930,7 @@ class SynthesizeCompletedEvent(AuditEventBase):
     """Upper cap matches `ReviewMetrics.total_cost_usd` (le=100.0) —
     defense against `float('inf')` propagating into JSONB. Real V1
     reviews land well under $1; le=100 is "this would already be a
-    runaway." Optional+None per the same read-compat rationale above
-    (populated going forward; nullable for historical rows)."""
+    runaway." Older rows and reviews with unpriced calls have no exact total."""
     wall_clock_seconds: float = Field(ge=0, le=86400)
     """Upper cap matches `ReviewMetrics.wall_clock_seconds` (le=86400,
     24h). A multi-day review is a bug, not a workload."""
