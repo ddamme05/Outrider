@@ -2445,6 +2445,17 @@ table.policy tbody tr:hover {
   font-size: 12px;
   line-height: 1.5;
 }
+.tl-source-ranges {
+  overflow-wrap: anywhere;
+  margin-bottom: 6px;
+}
+.tl-source-ranges summary {
+  cursor: pointer;
+}
+.tl-source-ranges ul {
+  margin: 4px 0;
+  padding-left: 20px;
+}
 .tl-c-proof {
   font-size: 11px;
   color: var(--faint);

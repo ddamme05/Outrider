@@ -316,6 +316,24 @@ test("clicking an llm_call row expands the prompt + completion", async () => {
   expect(screen.getByText("the completion text")).toBeInTheDocument();
 });
 
+test.each([false, true])("the opened call shows its recorded source ranges in flat=%s replay", async (flat) => {
+  const user = userEvent.setup();
+  const call = { ...llmEvent("call", "analyze", 0.1), context_summary: [
+    { file_path: "old.ts", source_side: "base", line_start: 12, line_end: 12,
+      scope_unit_name: "oldValue", inclusion_reason: "changed_scope" },
+    { file_path: "new.ts", source_side: "head", line_start: 5, line_end: 7,
+      scope_unit_name: "", inclusion_reason: "changed_region" },
+  ] };
+  render(<ReplayFeed flat={flat} data={data({
+    events: [call], phases: [phaseWith([call])], llm_exchanges: [llmContent("call")],
+  })} />);
+  await user.click(screen.getByRole("button", { name: /llm_call/ }));
+  await user.click(screen.getByText("Recorded source ranges (2)"));
+  expect(screen.getByText("old.ts:12")).toBeVisible();
+  expect(screen.getByText("old.ts:12").closest("li")).toHaveTextContent("BASE · Changed scope · oldValue");
+  expect(screen.getByText("new.ts:5–7").closest("li")).toHaveTextContent("HEAD · Changed region");
+});
+
 test("llm content panel omits the prompt/completion labels when those fields are null", async () => {
   const user = userEvent.setup();
   const lev = llmEvent("e-llm", "analyze", 0.1);
@@ -333,6 +351,7 @@ test("llm content panel omits the prompt/completion labels when those fields are
   // fix's null guard; the <pre> height cap itself is CSS, not unit-observable in jsdom).
   expect(screen.queryByText("prompt")).toBeNull();
   expect(screen.queryByText("completion")).toBeNull();
+  expect(screen.queryByText(/Recorded source ranges/)).toBeNull();
 });
 
 test("a redacted finding shows the retention stub but keeps its proof line", async () => {
