@@ -339,9 +339,9 @@ so the workflow contains more steps than this stage-level diagram shows.
    tree-sitter, a code parser, selects affected sections, including surviving
    sections whose guards or other statements were removed.
    For JavaScript and TypeScript tests, Outrider can read the nearest
-   `package.json` at the PR's head commit. If the test imports the runner
-   invoked by the package, its review can include the test command and
-   simple boolean runner settings. The review trace records the source lines.
+   `package.json` at the PR's head commit. When a test import matches a
+   program in `scripts.test`, the reviewer can see the declared command and
+   that program's boolean settings. The review trace records the source lines.
    Deep-tier files go to the stronger model and standard-tier files to the cheaper
    one. Outrider checks the token budget before each call.
    That split is the Anthropic default, and a GLM host serves both tiers with one model. A
@@ -720,7 +720,8 @@ penetration tested.
   [coverage contract](REVIEW_CONTRACT.md#coverage-and-defaults).
 - **Related code can be missing.** Default references use bounded excerpts from
   captured changed files, including some declarations, callers, parent classes and
-  tests. They do not search every repository caller or unchanged test. Omitted
+  tests. A test's package settings can also come from an unchanged manifest.
+  Outrider does not search every repository caller or unchanged test. Omitted
   context remains unknown, and a quiet review does not establish that code is safe.
 - **Two cost optimizations only measure by default** (a filter for trivial code
   sections and an analyze cache keyed by file content). They record what they would
