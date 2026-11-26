@@ -440,6 +440,7 @@ def test_new_profile_fields_are_digest_folded() -> None:
         {"sends_prompt_cache_key": False},
         {"requested_service_tier": None},
         {"sends_temperature": False},
+        {"strict_candidate_checks": False},
     ):
         moved = OPENAI_PROFILE.model_copy(update=update)
         assert moved.profile_contract_digest != base, update

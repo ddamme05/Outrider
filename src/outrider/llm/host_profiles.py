@@ -260,6 +260,7 @@ class HostProfile(BaseModel):
     #     `max_tokens` outright; the default keeps every GLM host's verified wire.
     token_limit_param: TokenLimitParam = TokenLimitParam.MAX_TOKENS
     sends_temperature: bool = True
+    strict_candidate_checks: bool = False
 
     @property
     def profile_contract_digest(self) -> str:
@@ -281,6 +282,8 @@ class HostProfile(BaseModel):
                 SHAPER_CONTRACT_VERSION,
             )
         )
+        if self.strict_candidate_checks:
+            payload += "\nstrict_candidate_checks"
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def validate_model_slug(self, slug: str) -> None:
@@ -414,19 +417,17 @@ FIREWORKS_PROFILE: Final[HostProfile] = HostProfile(
 # PRODUCTION_UNADMITTED_HOSTS below) because the refusal-normalization gate is UNMET in
 # json_object mode. Reopening is gated on the FUP-246 triggers, not on this profile's
 # mere existence.
-# JSON_OBJECT, not strict: OpenAI's strict json_schema REQUIRES every property in
-# `required` + additionalProperties:false (structured-outputs guide, mirror 2026-07-18) —
-# the required-completion shape #056 amendment (b) rejected as harmful to the proof
-# boundary — and unlike the GLM hosts OpenAI genuinely ENFORCES strict, so the raw
-# partial-required analyze schema would 400. json_object gives a syntactic-JSON guarantee
-# with the soft-path backstops unchanged. Explicit model slugs only: the `gpt-5.6` alias
-# routes to Sol server-side and would desync the request-side pricing key.
+# OpenAI's strict schema requires every property in `required` and rejects extra
+# properties. Ordinary analysis permits incomplete proposals under #056(b), so
+# it requests JSON objects. The candidate checker supplies a closed, all-required schema.
+# Explicit model slugs keep the request-side pricing key aligned with the model.
 OPENAI_PROFILE: Final[HostProfile] = HostProfile(
     host_id="openai",
     base_url="https://api.openai.com/v1",
     api_key_env="OPENAI_API_KEY",
     model_slug_pattern=r"^gpt-(5\.6-(sol|terra|luna)|6\.2-sol|6-luna)$",
     json_mode=JsonMode.JSON_OBJECT,
+    strict_candidate_checks=True,
     token_accounting=TokenAccounting.PROMPT_INCLUDES_CACHED_WRITES_REPORTED,
     reasoning_mechanism=ReasoningMechanism.REASONING_EFFORT_NONE,
     flat_rate_input_ceiling_tokens=272_000,

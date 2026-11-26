@@ -59,6 +59,10 @@ def arc2_reviewed_analyzer(monkeypatch: pytest.MonkeyPatch) -> tuple[RowMeasurem
 
     fixtures = Path(__file__).resolve().parents[1] / "fixtures"
     system_prompt = (fixtures / "arc2-reviewed-v13-system.txt").read_bytes().decode("utf-8")
+    # The reviewed packets predate strict candidate checks. Their cache key
+    # includes that historical host contract and participates in each packet hash.
+    reviewed_profile = plan.OPENAI_PROFILE.model_copy(update={"strict_candidate_checks": False})
+    monkeypatch.setattr(plan, "OPENAI_PROFILE", reviewed_profile)
 
     monkeypatch.setattr(plan, "MODEL", "gpt-5.6-sol")
     build_request = plan.production_kwargs
