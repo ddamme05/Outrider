@@ -497,6 +497,8 @@ class ScopedDiffEvidence:
     head_byte_ranges: tuple[tuple[int, int], ...] = ()
     # For each mismatched hunk, record its index and verified prefix length for cache identity.
     mismatches: tuple[tuple[int, int], ...] = ()
+    # Quote evidence may cover just a prefix when the source and patch differ by a final LF.
+    fully_matches_head: bool = False
 
 
 def _rendered_head_bytes(hunk: Hunk) -> bytes:
@@ -534,18 +536,21 @@ def scoped_diff_evidence(file_path: str, rendered_diff: str, head: bytes) -> Sco
         starts.append(len(head))
     ranges: list[tuple[int, int]] = []
     mismatches: list[tuple[int, int]] = []
+    fully_matches_head = True
     for index, hunk in enumerate(patch):
         if not hunk.target_length:
             continue
         first = hunk.target_start - 1
         stop = first + hunk.target_length
         if first < 0 or stop >= len(starts):
+            fully_matches_head = False
             mismatches.append((index, 0))
             continue
         low, high = starts[first], starts[stop]
         shown = _rendered_head_bytes(hunk)
         source = head[low:high]
         if source != shown:
+            fully_matches_head = False
             # Either GitHub's patch or the file may omit the last LF. Count only
             # the bytes both supplied. A different line body cannot prove a quote.
             if source.removesuffix(b"\n") != shown.removesuffix(b"\n"):
@@ -555,7 +560,7 @@ def scoped_diff_evidence(file_path: str, rendered_diff: str, head: bytes) -> Sco
             if high - low < len(shown):
                 mismatches.append((index, high - low))
         ranges.append((low, high))
-    return ScopedDiffEvidence(tuple(ranges), tuple(mismatches))
+    return ScopedDiffEvidence(tuple(ranges), tuple(mismatches), bool(ranges) and fully_matches_head)
 
 
 def bound_diff_hunks_text(

@@ -109,6 +109,75 @@ async def test_native_repeated_hunks_render_once_across_distinct_scope_blocks() 
     assert diff.index(hunks[0][0]) < diff.index(hunks[0][1])
 
 
+async def _review_additions(*, path: str, source: str, patch: str, line: int, quote: str):
+    changed = recorders._build_changed_file(
+        path=path, content=source.encode(), content_base="", patch=patch
+    )
+    state = recorders._build_review_state(
+        pr_context=recorders._build_pr_context(changed_files=(changed,)),
+        triage_result=recorders._build_triage_result(
+            file_tiers={path: recorders.ReviewTier.STANDARD}
+        ),
+    )
+    deps = recorders.deps.__wrapped__()
+    deps["import_path_resolver"] = COORDINATES_IMPORT_PATH_RESOLVER
+    proposal = json.loads(
+        recorders._build_finding_proposal_json(
+            finding_type="correctness_bug", line_start=line, line_end=line
+        )
+    )
+    proposal["findings"][0]["evidence"] = quote
+    deps["provider"] = recorders._StubLLMProvider(json.dumps(proposal))
+
+    result = await recorders.run_analyze_pass(state, deps)
+
+    assert len(deps["provider"].calls) == 1
+    (request,) = deps["provider"].calls
+    (finding,) = result["analysis_rounds"][0].findings
+    assert (finding.line_start, finding.evidence) == (line, quote)
+    return request
+
+
+@pytest.mark.asyncio
+async def test_added_methods_fit_file_budget_without_dropping_their_evidence() -> None:
+    # Each edit belongs to both Packet and a method, as in pytest's large test class.
+    lines = ["class Packet:"]
+    for name in ("first", "second"):
+        lines.append(f"    def {name}(self):")
+        lines.extend(
+            f"        self.received_{index} = 'a separately recorded packet value {index}'"
+            for index in range(310)
+        )
+    request = await _review_additions(
+        path=_PATH,
+        source="\n".join(lines) + "\n",
+        patch=f"@@ -0,0 +1,{len(lines)} @@\n" + "".join(f"+{line}\n" for line in lines),
+        line=len(lines),
+        quote=lines[-1],
+    )
+    assert request.user_prompt.count("+" + lines[-1] + "\n") == 2  # One per method.
+    assert [
+        e.scope_unit_name for e in request.context_summary if e.inclusion_reason == "changed_scope"
+    ] == ["Packet", "Packet.first", "Packet.second"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("incomplete", ["parent_context", "final_lf"])
+async def test_keep_nested_hunks_when_a_quote_depends_on_their_framing(incomplete: str) -> None:
+    source = "function outer() {\n  function inner() {\n    return 37;\n  } }; tail();\n"
+    patch = "@@ -0,0 +1,4 @@\n" + "".join("+" + line for line in source.splitlines(True))
+    if incomplete == "parent_context":
+        patch = patch.replace("function outer()", "function other()")
+        quote = "tail();"
+    else:
+        patch = patch.removesuffix("\n")
+        quote = "tail();\n"
+    request = await _review_additions(
+        path="lib/review.js", source=source, patch=patch, line=4, quote=quote
+    )
+    assert request.user_prompt.count("+  } }; tail();") == 2
+
+
 def _scope(index, start, end, *, path=_PATH):
     return ScopeUnit(
         unit_id=f"{index:064x}",
