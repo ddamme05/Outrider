@@ -4,13 +4,21 @@ import { prettyModel } from "./modelLabel";
 // The audit table and replay timeline share the API's event union.
 export type AuditEvent = components["schemas"]["ReviewEventsResponse"]["events"][number];
 
+export function formatCallTokens(event: components["schemas"]["LLMCallEvent"]): string {
+  // Older events omit cache writes. Their ordinary input count is only part of the prompt.
+  const input = event.cache_write_tokens == null
+    ? "input unavailable"
+    : `${(event.input_tokens + event.cached_tokens + event.cache_write_tokens).toLocaleString()} in`;
+  return `${input} / ${event.output_tokens.toLocaleString()} out`;
+}
+
 // Display recorded values; callers handle the event type and optional node display.
 export function summarizeEvent(event: AuditEvent): string {
   switch (event.event_type) {
     case "llm_call": {
       // A missing price is unpriced; zero remains a recorded price.
       const costLabel = event.cost_usd == null ? "unpriced" : `$${event.cost_usd.toFixed(2)}`;
-      return `${prettyModel(event.model)} · ${costLabel} · ${event.input_tokens}+${event.output_tokens} tok`;
+      return `${prettyModel(event.model)} · ${costLabel} · ${formatCallTokens(event)}`;
     }
     case "finding":
       return `${event.finding_type} · ${event.severity} · ${event.file_path}`;

@@ -3027,8 +3027,16 @@ export interface components {
         ReviewMetricsView: {
             /** Llm Calls Made */
             llm_calls_made: number;
-            /** Total Input Tokens */
+            /**
+             * Total Input Tokens
+             * @description Input tokens excluding reported cache reads and writes.
+             */
             total_input_tokens: number;
+            /**
+             * Total Prompt Tokens
+             * @description Input tokens including cache reads and writes. Null when any call lacks complete counts.
+             */
+            total_prompt_tokens?: number | null;
             /** Total Output Tokens */
             total_output_tokens: number;
             /** Total Cost Usd */

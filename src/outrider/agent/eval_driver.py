@@ -657,6 +657,7 @@ class _FixtureScriptedProvider:
             input_tokens=response.input_tokens,
             output_tokens=response.output_tokens,
             cached_tokens=response.cache_read_tokens,
+            cache_write_tokens=response.cache_write_tokens,
             cost_usd=cost,
             cost_unpriced_reason=unpriced_reason,
             pricing_version=PRICING_VERSION,
@@ -681,16 +682,9 @@ class _FixtureScriptedProvider:
             profile_id=response.profile_id,
             reasoning_enabled=response.reasoning_enabled,
             profile_contract_digest=response.profile_contract_digest,
-            # Pricing context mirrored from response.* (openai-native-host spec),
-            # matching each modeled provider's REAL event shape: the anthropic
-            # native path stamps none of these (its provider is unchanged), the
-            # compat path mirrors them — the persister's fresh guard verifies the
-            # mirror on echo-expecting hosts and mirror-if-present elsewhere.
+            # Compatible hosts also report a raw prompt count and may echo the service tier.
             service_tier=response.service_tier_actual,
             billed_prompt_tokens=response.billed_prompt_tokens,
-            cache_write_tokens=(
-                None if self._profile_id == _ANTHROPIC_ID else response.cache_write_tokens
-            ),
         )
         await self._persister.persist(event, request, response)
         if pending_cache_entry is not None and self._probe is not None:

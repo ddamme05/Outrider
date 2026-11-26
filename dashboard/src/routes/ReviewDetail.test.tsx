@@ -170,6 +170,24 @@ test("metrics strip surfaces files_examined + files_traced_beyond_diff", async (
   expect(filesCard).toHaveTextContent("2 traced beyond diff");
 });
 
+test.each([
+  [18480, 512, `${(18480).toLocaleString()} in`],
+  [0, 0, "0 in"],
+  [null, 40, "Input unavailable"],
+  [undefined, 40, "Input unavailable"],
+] as const)("shows the recorded prompt total %s in review metrics", async (total, ordinary, label) => {
+  const review = detail();
+  mount({
+    detail: {
+      ...review,
+      metrics: { ...review.metrics, total_input_tokens: ordinary, total_prompt_tokens: total },
+    },
+  });
+  const card = (await screen.findByText("Tokens")).closest(".ms-card");
+  expect(card?.querySelector(".ms-val")?.textContent).toBe(label);
+  expect(card).toHaveTextContent("20 out");
+});
+
 test("files render '—', never a misleading 0, before synthesize completes", async () => {
   mount({
     detail: detail({

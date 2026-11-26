@@ -394,6 +394,61 @@ async def test_metric_contract_from_audit_stream_not_reviews_columns(
 
 
 @pytest.mark.asyncio
+async def test_prompt_total_counts_cache_usage_and_requires_complete_history(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    client, _, engine = dashboard_client
+    openai_call = {
+        "input_tokens": 3,
+        "cached_tokens": 0,
+        "cache_write_tokens": 1617,
+        "billed_prompt_tokens": 1620,
+        "output_tokens": 121,
+        "cost_usd": None,
+    }
+    fireworks_call = {
+        "input_tokens": 1,
+        "cached_tokens": 158,
+        "cache_write_tokens": 0,
+        "billed_prompt_tokens": 159,
+        "output_tokens": 410,
+        "cost_usd": 0.01,
+    }
+    historical_call = {"input_tokens": 10, "cached_tokens": 20, "output_tokens": 5, "cost_usd": 0}
+    async with engine.begin() as conn:
+        complete = await _seed_review(
+            conn,
+            status="running",
+            is_eval=False,
+            repo_id=600,
+            llm_events=[openai_call, fireworks_call],
+            synth=None,
+        )
+        partial = await _seed_review(
+            conn,
+            status="running",
+            is_eval=False,
+            repo_id=601,
+            llm_events=[fireworks_call, historical_call],
+            synth=None,
+        )
+
+    queue = client.get("/api/reviews", headers=_AUTH)
+    assert queue.status_code == 200
+    by_id = {row["id"]: row["metrics"] for row in queue.json()["reviews"]}
+    for review_id, prompt_tokens, input_tokens, priced in (
+        (complete, 1779, 4, False),
+        (partial, None, 11, True),
+    ):
+        detail = client.get(f"/api/reviews/{review_id}", headers=_AUTH)
+        assert detail.status_code == 200
+        for metrics in (by_id[str(review_id)], detail.json()["metrics"]):
+            assert metrics["total_prompt_tokens"] == prompt_tokens
+            assert metrics["total_input_tokens"] == input_tokens
+            assert metrics["cost_complete"] is priced
+
+
+@pytest.mark.asyncio
 async def test_metrics_exclude_divergent_is_eval_synthesize_event(
     dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
 ) -> None:
@@ -745,6 +800,7 @@ async def test_list_reuses_completion_read_with_unchanged_response(
         "a": {
             "llm_calls_made": 2,
             "total_input_tokens": 300,
+            "total_prompt_tokens": None,
             "total_output_tokens": 100,
             "total_cost_usd": 0.05,
             "unpriced_call_count": 0,
@@ -757,6 +813,7 @@ async def test_list_reuses_completion_read_with_unchanged_response(
         "b": {
             "llm_calls_made": 1,
             "total_input_tokens": 10,
+            "total_prompt_tokens": None,
             "total_output_tokens": 5,
             "total_cost_usd": 0.001,
             "unpriced_call_count": 0,
@@ -769,6 +826,7 @@ async def test_list_reuses_completion_read_with_unchanged_response(
         "c": {
             "llm_calls_made": 0,
             "total_input_tokens": 0,
+            "total_prompt_tokens": 0,
             "total_output_tokens": 0,
             "total_cost_usd": 0.0,
             "unpriced_call_count": 0,
@@ -834,6 +892,7 @@ async def test_json_null_completion_preserves_pending_metrics_and_severity(
     expected_metrics = {
         "llm_calls_made": 0,
         "total_input_tokens": 0,
+        "total_prompt_tokens": 0,
         "total_output_tokens": 0,
         "total_cost_usd": 0.0,
         "unpriced_call_count": 0,

@@ -521,6 +521,7 @@ async def _persist_exchange(
         input_tokens=response.input_tokens,
         output_tokens=response.output_tokens,
         cached_tokens=response.cache_read_tokens,
+        cache_write_tokens=response.cache_write_tokens,
         cost_usd=float(cost_decimal),
         pricing_version=PRICING_VERSION,
         # Triad mirrored from the response (single source) so the persister cross-check

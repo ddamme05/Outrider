@@ -1450,6 +1450,7 @@ async def test_persister_receives_complete_llm_call_event() -> None:
     assert getattr(returned, "exchange_event_id", None) is not None
     assert returned.exchange_event_id == event.event_id == response.exchange_event_id
     assert returned.exchange_recorded_at == event.timestamp
+    assert (event.input_tokens, event.cached_tokens, event.cache_write_tokens) == (1000, 200, 100)
     # AC#18: cost_usd populated on event already
     assert event.cost_usd > 0
     # AC#19: four-class computation
@@ -1737,6 +1738,7 @@ async def test_null_cache_tokens_coalesce_to_zero() -> None:
         response = await provider.complete(_request())
     assert response.cache_read_tokens == 0
     assert response.cache_write_tokens == 0
+    assert persister.calls[0][0].cache_write_tokens == 0
 
 
 @pytest.mark.asyncio
