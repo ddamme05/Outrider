@@ -10,6 +10,7 @@ docs/trust-boundaries.md#3-coordinate-translation.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -18,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from outrider.ast_facts.models import (
     Span,  # noqa: TC001 — constructed at runtime by line_range_to_span
 )
+from outrider.coordinates.diff_parser import lookup_patched_file
 from outrider.coordinates.errors import CoordinateError, CoordinateErrorKind
 
 if TYPE_CHECKING:
@@ -486,6 +488,74 @@ class BoundedDiffContext:
 
     text: str
     head_byte_ranges: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ScopedDiffEvidence:
+    """Verified HEAD ranges and the exceptions to the rendered hunk text."""
+
+    head_byte_ranges: tuple[tuple[int, int], ...] = ()
+    # For each mismatched hunk, record its index and verified prefix length for cache identity.
+    mismatches: tuple[tuple[int, int], ...] = ()
+
+
+def _rendered_head_bytes(hunk: Hunk) -> bytes:
+    """Read HEAD lines, dropping the patch framing LF when a marker names that side."""
+    lines: list[str] = []
+    previous_was_head = False
+    for line in hunk:
+        is_head = line.is_added or line.is_context
+        if is_head:
+            lines.append(line.value)
+        elif (
+            previous_was_head
+            and line.line_type == "\\"
+            and line.value.strip() == "No newline at end of file"
+        ):
+            lines[-1] = lines[-1].removesuffix("\n")
+        previous_was_head = is_head
+    return "".join(lines).encode()
+
+
+def scoped_diff_evidence(file_path: str, rendered_diff: str, head: bytes) -> ScopedDiffEvidence:
+    """Verify the HEAD projection of each sent hunk without joining neighboring hunks."""
+    if not rendered_diff:
+        return ScopedDiffEvidence()
+    try:
+        patch = lookup_patched_file(rendered_diff, file_path)
+    except CoordinateError:
+        return ScopedDiffEvidence()
+    if not patch:
+        return ScopedDiffEvidence()
+
+    # Physical LF-delimited lines, indexed once for all hunks. The last offset is EOF.
+    starts = [0, *(match.end() for match in re.finditer(b"\n", head))]
+    if starts[-1] != len(head):
+        starts.append(len(head))
+    ranges: list[tuple[int, int]] = []
+    mismatches: list[tuple[int, int]] = []
+    for index, hunk in enumerate(patch):
+        if not hunk.target_length:
+            continue
+        first = hunk.target_start - 1
+        stop = first + hunk.target_length
+        if first < 0 or stop >= len(starts):
+            mismatches.append((index, 0))
+            continue
+        low, high = starts[first], starts[stop]
+        shown = _rendered_head_bytes(hunk)
+        source = head[low:high]
+        if source != shown:
+            # Either GitHub's patch or the file may omit the last LF. Count only
+            # the bytes both supplied. A different line body cannot prove a quote.
+            if source.removesuffix(b"\n") != shown.removesuffix(b"\n"):
+                mismatches.append((index, 0))
+                continue
+            high = low + min(len(source), len(shown))
+            if high - low < len(shown):
+                mismatches.append((index, high - low))
+        ranges.append((low, high))
+    return ScopedDiffEvidence(tuple(ranges), tuple(mismatches))
 
 
 def bound_diff_hunks_text(

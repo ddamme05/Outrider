@@ -75,7 +75,7 @@ if TYPE_CHECKING:
 # SUBSUMES_DIGEST and from_import_map_digest separately key the subsumption
 # relation and import map; this version covers the rules that use them.
 # Keep this version beside the parser, never injected through configuration.
-ANALYZE_PARSER_VERSION: Final = "analyze-parser-v15"
+ANALYZE_PARSER_VERSION: Final = "analyze-parser-v16"
 
 # Keep these values aligned with `FindingProposalRejectedEvent.rejection_reason`
 # in `audit/events.py`; the node lifts parser rejections into that event.
@@ -237,6 +237,7 @@ def parse_analyze_response(
     trace_candidate_form: Literal["module", "specifier"] = "module",
     primary_line_ranges: tuple[tuple[int, int], ...] = (),
     degraded_evidence_byte_ranges: tuple[tuple[int, int], ...] = (),
+    scoped_diff_byte_ranges: tuple[tuple[int, int], ...] = (),
     source_side: Literal["head", "base"] = "head",
     prior_findings: Sequence[ReviewFinding] = (),
     readme_sources: Mapping[str, str] | None = None,
@@ -289,6 +290,8 @@ def parse_analyze_response(
             for scope in included_scope_units
         )
         evidence_byte_ranges = tuple((span.byte_start, span.byte_end) for span in scope_spans)
+        if pass_index == 0 and readme_sources is None:
+            evidence_byte_ranges += scoped_diff_byte_ranges
     evidence_byte_ranges += tuple(primary_byte_ranges)
 
     try:

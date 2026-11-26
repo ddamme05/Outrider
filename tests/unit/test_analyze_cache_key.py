@@ -42,6 +42,7 @@ _BASE_KWARGS = {
     "import_bindings_digest": "7" * 64,
     "lexical_bindings_digest": "5" * 64,
     "module_admission_digest": "3" * 64,
+    "scoped_diff_mismatches": ((0, 12), (2, 0)),
     # Host-identity triad (DECISIONS.md#056): the base case is QUALIFIED
     # (a Baseten-host, reasoning-off run) so the golden recipe exercises the
     # real fold; the unqualified all-None path has its own pin below.
@@ -99,6 +100,7 @@ def test_key_is_deterministic_64_hex() -> None:
         # module-scope arm admits without touching the rendered prompt —
         # "0"*64 is a probe.
         ("module_admission_digest", "0" * 64),
+        ("scoped_diff_mismatches", ((1, 12), (2, 0))),
         # Host-identity triad (DECISIONS.md#056): a different host, a flipped
         # reasoning state, or a different profile contract is a different output
         # population for identical prompt bytes, so each must change the key.
@@ -178,6 +180,7 @@ def test_golden_recipe_framed_fields() -> None:
         _BASE_KWARGS["import_bindings_digest"],
         _BASE_KWARGS["lexical_bindings_digest"],
         _BASE_KWARGS["module_admission_digest"],
+        "0:12,2:0",
         _BASE_KWARGS["profile_id"],
         "true" if _BASE_KWARGS["reasoning_enabled"] else "false",
         _BASE_KWARGS["profile_contract_digest"],
@@ -352,10 +355,11 @@ def test_analyze_cache_key_version_pinned() -> None:
     the prompt never shows; v6 folds `module_admission_digest` — the
     module-scope arm consumes added-line ranges, the module-level bytes
     they cover, and every parsed scope span, all outside prompt bytes.
+    v7 records which scoped hunks disagree with HEAD and how many bytes they prove.
     It folds FIRST in
     `compute_analyze_cache_key`, so a bump re-keys the whole cache — the
     explicit, replay-durable marker #056 mandates."""
-    assert ANALYZE_CACHE_KEY_VERSION == "analyze-cache-key-v6"
+    assert ANALYZE_CACHE_KEY_VERSION == "analyze-cache-key-v7"
 
 
 def test_observed_producer_version_pinned() -> None:

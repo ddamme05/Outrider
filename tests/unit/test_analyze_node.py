@@ -3625,3 +3625,34 @@ async def test_removed_auth_check_blocks_enforced_observed_skip(
     [shadow] = deps["analyze_event_sink"].observed_skip_shadows
     assert shadow.outcome == "not_eligible"
     assert any(blocker.side == "base" and blocker.line_start == 4 for blocker in shadow.blockers)
+
+
+@pytest.mark.asyncio
+async def test_full_declaration_quote_from_scoped_diff(deps: dict[str, Any]) -> None:
+    declaration = "const options = (input = {}) => ({\n  mode: 'default',\n  ...input,\n});"
+    source = declaration + "\n"
+    changed = _build_changed_file(
+        path="index.js",
+        content=source.encode(),
+        content_base="",
+        patch="@@ -0,0 +1,4 @@\n" + "".join("+" + line for line in source.splitlines(True)),
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(changed,)),
+        triage_result=_build_triage_result(file_tiers={changed.path: ReviewTier.STANDARD}),
+    )
+    proposal = json.loads(
+        _build_finding_proposal_json(finding_type="correctness_bug", line_start=3, line_end=3)
+    )
+    proposal["findings"][0]["evidence"] = declaration
+    deps["provider"] = _StubLLMProvider(json.dumps(proposal))
+
+    result = await run_analyze_pass(state, deps)
+
+    [request] = deps["provider"].calls
+    assert (
+        "+const options = (input = {}) => ({" in request.user_prompt
+        and "+});" in request.user_prompt
+    )
+    [finding] = result["analysis_rounds"][0].findings
+    assert (finding.evidence, finding.line_start, finding.line_end) == (declaration, 3, 3)
