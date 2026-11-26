@@ -1209,3 +1209,24 @@ def test_lexical_bindings_digest_is_canonical_over_guard_input() -> None:
     assert lexical_bindings_digest((_lex("x1", 2, 3),)) != lexical_bindings_digest(
         (_lex("x", 12, 3),)
     )
+
+
+def test_added_line_proof_digest_tracks_module_shadowing_outside_scope() -> None:
+    from outrider.agent.nodes.analyze_observed import module_admission_digest
+
+    source = (
+        "other_name = lambda *_: False\n\n"
+        "def format_date(value):\n"
+        "    import datetime as dt\n"
+        "    if isinstance(value, dt.datetime) and value.tzinfo is not None:\n"
+        "        today = dt.datetime.now(value.tzinfo).date()\n"
+    )
+    shadowed = source.replace("other_name", "isinstance")
+    start = source.encode().index(b"    if ")
+    ranges = ((start, len(source.encode())),)
+    scopes = _parsed(source).scope_units
+    assert scopes == _parsed(shadowed).scope_units
+    assert source[start:] == shadowed[start:]
+    assert module_admission_digest(
+        ranges, scopes, source.encode(), file_path="src/x.py"
+    ) != module_admission_digest(ranges, scopes, shadowed.encode(), file_path="src/x.py")

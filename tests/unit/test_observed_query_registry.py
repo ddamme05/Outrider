@@ -17,19 +17,13 @@ from outrider.queries.observed import BindingRule, ObservedQuery, QueryClass
 
 
 def test_observed_query_count() -> None:
-    """The OBSERVED library has nineteen queries: eleven Python (8 from the
-    v1 library + weak_crypto_broken_cipher + weak_crypto_ecb_mode, FUP-193
-    step 1; + weak_asymmetric_key_size, the value-predicate slice) + eight
-    JS/TS (the four-family catalog,
-    specs/2026-07-03-js-ts-observed-query-catalog.md, plus the process-env
-    TLS kill switch split into its own import-free query in the
-    import-binding fold)."""
-    assert len(registry.OBSERVED_QUERY_IDS) == 19
+    """Count active structural queries in the Python and JavaScript catalogs."""
+    assert len(registry.OBSERVED_QUERY_IDS) == 20
     assert set(registry.OBSERVED_QUERIES) == set(registry.OBSERVED_QUERY_IDS)
     by_language = {"python": 0, "javascript": 0}
     for oq in registry.OBSERVED_QUERIES.values():
         by_language[oq.language] += 1
-    assert by_language == {"python": 11, "javascript": 8}
+    assert by_language == {"python": 12, "javascript": 8}
 
 
 def test_observed_queries_default_deny_all_signal_only() -> None:
@@ -175,6 +169,7 @@ def test_digest_folds_every_non_excluded_field() -> None:
         # a cached row from before the flip must not serve after it.
         "module_scope_eligible": not orig.module_scope_eligible,
         "requires_context": not orig.requires_context,
+        "requires_added_lines": not orig.requires_added_lines,
     }
     assert folded_fields <= set(mutations), (
         f"new folded field(s) {folded_fields - set(mutations)} need a mutation case here"

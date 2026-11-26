@@ -197,6 +197,21 @@ _OBSERVED_QUERIES: Final[dict[str, ObservedQuery]] = {
             ),
         ),
         ObservedQuery(
+            query_match_id="python.datetime_now_without_offset_check",
+            filename="datetime_now_without_offset_check.scm",
+            finding_type=FindingType.CORRECTNESS_BUG,
+            language="python",
+            query_class=QueryClass.SIGNAL_ONLY,
+            requires_added_lines=True,
+            title="Checking tzinfo alone can misclassify a naive datetime",
+            description=(
+                "A datetime can have a tzinfo object and still be naive when utcoffset() "
+                "returns None. Passing that timezone to datetime.now() can raise ValueError. "
+                "Check the input datetime's utcoffset() before using its timezone, "
+                "and keep the naive-date fallback."
+            ),
+        ),
+        ObservedQuery(
             query_match_id="python.weak_crypto_broken_cipher",
             filename="weak_crypto_broken_cipher.scm",
             finding_type=FindingType.WEAK_CRYPTO,
