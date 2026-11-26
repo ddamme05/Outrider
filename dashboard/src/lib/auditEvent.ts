@@ -22,6 +22,8 @@ export function summarizeEvent(event: AuditEvent): string {
     }
     case "finding":
       return `${event.finding_type} · ${event.severity} · ${event.file_path}`;
+    case "analyze_response_rejected":
+      return `Rejected analysis reply · ${event.file_path}`;
     case "review_phase":
       return event.marker;
     case "review_execution_failed":

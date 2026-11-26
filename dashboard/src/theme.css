@@ -2476,16 +2476,19 @@ table.policy tbody tr:hover {
   line-height: 1.5;
 }
 .tl-source-ranges,
-.tl-triage-input {
+.tl-triage-input,
+.rejected-replies {
   overflow-wrap: anywhere;
   margin-bottom: 6px;
 }
 .tl-source-ranges summary,
-.tl-triage-input summary {
+.tl-triage-input summary,
+.rejected-replies summary {
   cursor: pointer;
 }
 .tl-source-ranges ul,
-.tl-triage-input ul {
+.tl-triage-input ul,
+.rejected-replies ul {
   margin: 4px 0;
   padding-left: 20px;
 }

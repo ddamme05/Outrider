@@ -163,6 +163,60 @@ test("clicking the replay verdict opens the explainer modal", async () => {
   ).toBeInTheDocument();
 });
 
+const rejectedReply = {
+  event_type: "analyze_response_rejected",
+  event_id: "reject-1",
+  review_id: "r1",
+  is_eval: false,
+  node_id: "analyze",
+  file_path: "src/api_request_handler.py",
+  timestamp: "2026-06-12T05:29:00.617994Z",
+  rejection_reason: "raw_response_unparseable",
+  rejection_detail: " x1",
+  response_hash: "f56257e1861561bc4f46544857f91173e9b91a2abaf37046e7a2dc1064fb1f00",
+};
+
+test("explains an unusable analysis reply beside empty findings and identifies the file in the audit", async () => {
+  const user = userEvent.setup();
+  mount({
+    detail: detail({ status: "completed" }),
+    findings: [],
+    timeline: timelineData({ events: [rejectedReply], inter_phase_events: [rejectedReply] }),
+  });
+  const empty = await screen.findByText("No findings recorded for this review.");
+  const panel = within(empty.parentElement!);
+  await user.click(await panel.findByText("Outrider could not use 1 analysis reply."));
+  expect(panel.getByText(rejectedReply.file_path)).toBeVisible();
+  expect(screen.getByText(`Rejected analysis reply · ${rejectedReply.file_path}`)).toBeVisible();
+});
+
+test("counts rejected replies, lists each affected file once, and keeps accepted findings visible", async () => {
+  const user = userEvent.setup();
+  const anotherPass = { ...rejectedReply, event_id: "reject-2", phase_key: null };
+  const anotherFile = { ...rejectedReply, event_id: "reject-3", file_path: "src/client.py" };
+  mount({
+    findings: [finding({ title: "Unexpected empty result" })],
+    timeline: timelineData({ mode: "metadata_only", events: [rejectedReply, anotherPass, anotherFile] }),
+  });
+  const toggle = await screen.findByText("Outrider could not use 3 analysis replies.");
+  await user.click(toggle);
+  const notice = within(toggle.closest("details")!);
+  expect(notice.getAllByText(rejectedReply.file_path)).toHaveLength(1);
+  expect(notice.getByText(anotherFile.file_path)).toBeVisible();
+  expect(await screen.findByText("Unexpected empty result")).toBeVisible();
+  expect(screen.queryByText("No findings recorded for this review.")).toBeNull();
+});
+
+test.each([
+  ["a valid zero-finding review", timelineData()],
+  ["events without a verified replay", timelineData({ replay_equivalent: false, phases: null, events: [rejectedReply] })],
+])("does not claim a rejected reply for %s", async (_name, timeline) => {
+  mount({ findings: [], timeline });
+  await screen.findByRole("button", { name: /what replay-equivalent means/i });
+  expect(await screen.findByText("No findings recorded for this review.")).toBeVisible();
+  expect(screen.queryByText(/Outrider could not use/)).toBeNull();
+});
+
 test("metrics strip surfaces files_examined + files_traced_beyond_diff", async () => {
   mount(); // detail() defaults: 5 examined, 2 traced beyond the diff
   const filesCard = (await screen.findByText("Files")).closest(".ms-card");

@@ -44,6 +44,9 @@ expires, only its metadata remains. Unknown categories have no assigned policy
 priority and cannot be approved from this panel. An accepted finding disputed by a
 follow-up check joins the ordinary approval queue even at low priority; these
 verification holds allow approve, reject or suppress, without a severity override.
+If Outrider could not use a model’s entire analysis reply, the Findings panel
+shows how many replies were rejected. Expand the notice to see the affected
+files. The count comes from the verified replay and includes repeat passes.
 Findings about whole-file removals also require approval. Their **Removed BASE**
 label identifies old source; approved findings appear in the review body and have
 no replacement suggestion on deleted lines.
