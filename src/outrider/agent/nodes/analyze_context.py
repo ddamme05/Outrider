@@ -66,6 +66,15 @@ _MAX_CONTEXT_PATCH_CHARS = 32_768
 _MAX_REFERENCE_SCOPE_BYTES = 128 * 1024
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedReferenceScopes:
+    """Clean HEAD and BASE scopes from structural planning for this changed file."""
+
+    changed_file: ChangedFile
+    head: tuple[ScopeUnit, ...]
+    base: tuple[ScopeUnit, ...]
+
+
 @dataclass(frozen=True)
 class PreparedReviewContext:
     """The exact supplemental text and source ranges included in it."""
@@ -580,6 +589,7 @@ def _reference_change_lines(
     content_base: str | None,
     patched_file: PatchedFile,
     import_path_resolver: ImportPathResolver,
+    prepared_scopes: PreparedReferenceScopes | None = None,
 ) -> frozenset[int]:
     """Include retained scopes with owned removals in reference selection.
 
@@ -597,21 +607,31 @@ def _reference_change_lines(
     head_bytes, base_bytes = content.encode("utf-8"), content_base.encode("utf-8")
     if max(len(head_bytes), len(base_bytes)) > _MAX_REFERENCE_SCOPE_BYTES:
         return changed_lines
-    head = parse_source(head_bytes, file_path, import_path_resolver)
-    base = parse_source(base_bytes, file_path, import_path_resolver)
-    if any(
-        facts.parser_outcome != "clean" or facts.error_lines or any(facts.has_error.values())
-        for facts in (head, base)
+    if (
+        prepared_scopes is not None
+        and prepared_scopes.changed_file.path == file_path
+        and prepared_scopes.changed_file.content_head == content
+        and prepared_scopes.changed_file.content_base == content_base
+        and prepared_scopes.base
     ):
-        return changed_lines
+        head_scopes, base_scopes = prepared_scopes.head, prepared_scopes.base
+    else:
+        head = parse_source(head_bytes, file_path, import_path_resolver)
+        base = parse_source(base_bytes, file_path, import_path_resolver)
+        if any(
+            facts.parser_outcome != "clean" or facts.error_lines or any(facts.has_error.values())
+            for facts in (head, base)
+        ):
+            return changed_lines
+        head_scopes, base_scopes = head.scope_units, base.scope_units
     changed_owners = tuple(
         scope
-        for scope in head.scope_units
-        if scope_unit_has_changed_lines(scope, patched_file, base_scope_units=base.scope_units)
+        for scope in head_scopes
+        if scope_unit_has_changed_lines(scope, patched_file, base_scope_units=base_scopes)
     )
     return changed_lines | frozenset(
         line
-        for scope in head.scope_units
+        for scope in head_scopes
         if any(
             line_range_within_scope_unit(scope.line_start, scope.line_end, owner)
             for owner in changed_owners
@@ -686,6 +706,7 @@ def prepare_review_context(
     called_function_index: CalledFunctionIndex | None = None,
     module_context_index: ModuleContextIndex | None = None,
     removed_module_index: ModuleContextIndex | None = None,
+    primary_scopes: PreparedReferenceScopes | None = None,
 ) -> PreparedReviewContext:
     """Select actual bounded text for planning and the corresponding worker.
 
@@ -761,6 +782,7 @@ def prepare_review_context(
                 content_base=primary.content_base if primary is not None else None,
                 patched_file=patched_file,
                 import_path_resolver=import_path_resolver,
+                prepared_scopes=primary_scopes,
             )
             excerpts = python_review_context(
                 content,
@@ -803,6 +825,7 @@ def prepare_review_context(
                     content_base=primary.content_base if primary is not None else None,
                     patched_file=patched_file,
                     import_path_resolver=import_path_resolver,
+                    prepared_scopes=primary_scopes,
                 )
             references = called_function_context(
                 called_function_index,
