@@ -34,8 +34,6 @@ export function summarizeEvent(event: AuditEvent): string {
       return `${event.from_node} → ${event.to_node}`;
     case "cache_lookup":
       return `${event.outcome} · ${event.file_path}`;
-    case "cache_serve":
-      return `served · ${event.served_finding_count} finding(s) · ${event.file_path}`;
     case "scope_exclusion":
       return `${event.applied ? "applied" : "shadow"} · ${event.entries.length} scope(s) · ${event.file_path}`;
     case "observed_skip_shadow":

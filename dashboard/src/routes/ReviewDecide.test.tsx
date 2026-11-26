@@ -255,3 +255,35 @@ test("a stuck resume re-enables submit but keeps controls read-only and resends 
 });
 
 afterEach(() => vi.useRealTimers());
+
+test("opening a reused file's source does not carry over the previous approval", async () => {
+  const user = userEvent.setup();
+  mount({ resumeTo: "completed" });
+  const source = "22222222-2222-4222-a222-222222222222";
+  const sourcePath = `http://localhost/api/reviews/${source}`;
+  const hit = {
+    event_type: "cache_serve", event_id: "serve-1", file_path: "a.py", phase_key: "file:a.py#0",
+    source_review_id: source, cache_key: "a".repeat(64), served_finding_count: 1,
+  };
+  server.use(
+    http.get(`${BASE}/events`, () => HttpResponse.json({ review_id: "r1", events: [hit], total: 1 })),
+    http.get(`${BASE}/candidates`, () => HttpResponse.json({ review_id: "r1", candidates: [], total: 0, limit: 20, offset: 0 })),
+    http.get(sourcePath, () => HttpResponse.json({ ...detail("awaiting_approval", ["source-finding"]), id: source, pr_number: 83 })),
+    http.get(`${sourcePath}/findings`, () => HttpResponse.json({
+      review_id: source, findings: [finding({ finding_id: "source-finding", title: "Source review finding" })],
+    })),
+    http.get(`${sourcePath}/events`, () => HttpResponse.json({ review_id: source, events: [], total: 0 })),
+    http.get(`${sourcePath}/replay-timeline`, () => HttpResponse.json({
+      review_id: source, replay_equivalent: true, mode: "full", reason: null, status: "awaiting_approval",
+      events: [], phases: [], inter_phase_events: [], findings: [], llm_exchanges: [],
+    })),
+  );
+  await user.click(await screen.findByRole("button", { name: "approve" }));
+  await user.click(screen.getByRole("button", { name: "Submit decision" }));
+  await screen.findByText(/Decision submitted — review is now completed/);
+  await user.click(screen.getByRole("button", { name: "Show saved warnings" }));
+  await user.click(await screen.findByRole("link", { name: "Original review for a.py" }));
+  await screen.findByText("Source review finding");
+  expect(screen.queryByText(/Decision submitted — resuming the review/)).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "approve" })).toBeEnabled();
+});

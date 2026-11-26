@@ -48,6 +48,10 @@ Findings about whole-file removals also require approval. Their **Removed BASE**
 label identifies old source; approved findings appear in the review body and have
 no replacement suggestion on deleted lines.
 
+When Outrider reuses a file review, open its **Original review** link in this
+panel or the audit feed. The source review shows the model exchange for that
+file, including the retention notice if its content has expired.
+
 ## Know where each responsibility lives
 
 - [api/client.ts](src/api/client.ts) loads data and submits changes using the API's
