@@ -50,6 +50,7 @@ from outrider.agent.nodes.analyze_budget import (
 )
 from outrider.agent.nodes.analyze_context import (
     MAX_MODULE_CONTEXT_BYTES,
+    PreparedReferenceScopes,
     PreparedReviewContext,
     add_companion_function_context,
     add_constructor_caller_context,
@@ -681,19 +682,7 @@ async def _plan_pass_zero(
         removed_module_index = build_module_context_index(
             state.pr_context.changed_files, import_path_resolver=import_path_resolver
         )
-    review_context_by_path = {
-        changed_file.path: prepare_review_context(
-            file_path=changed_file.path,
-            content=changed_file.content_head,
-            patch=changed_file.patch,
-            changed_files=state.pr_context.changed_files,
-            import_path_resolver=import_path_resolver,
-            removed_module_index=removed_module_index,
-        )
-        if supplemental_context_enabled
-        else PreparedReviewContext("", ())
-        for changed_file, _tier in pass_zero_worklist
-    }
+    review_context_by_path: dict[str, PreparedReviewContext] = {}
     # Price the same unfiltered request that each worker checks before filtering.
     # None defers a malformed/duplicate patch error to its keyed worker phase.
     prepared_by_path: dict[str, _PreparedFileReview | SkipReason | None] = {}
@@ -711,6 +700,19 @@ async def _plan_pass_zero(
                 raise
             prepared = None
         prepared_by_path[changed_file.path] = prepared
+        review_context_by_path[changed_file.path] = (
+            prepare_review_context(
+                file_path=changed_file.path,
+                content=changed_file.content_head,
+                patch=changed_file.patch,
+                changed_files=state.pr_context.changed_files,
+                import_path_resolver=import_path_resolver,
+                removed_module_index=removed_module_index,
+                primary_scopes=_clean_reference_scopes(changed_file, prepared),
+            )
+            if supplemental_context_enabled
+            else PreparedReviewContext("", ())
+        )
         baseline_estimates[changed_file.path] = (
             _prepare_file_prompt(
                 prepared,
@@ -760,6 +762,7 @@ async def _plan_pass_zero(
                 called_function_index=called_function_index,
                 module_context_index=module_context_index,
                 removed_module_index=removed_module_index,
+                primary_scopes=_clean_reference_scopes(changed_file, prepared),
             )
             if not any(e.inclusion_reason == "captured_reference" for e in context.manifest):
                 continue
@@ -2412,6 +2415,24 @@ class _PreparedFileReview:
     primary_context: _PrimaryRegionContext = _PrimaryRegionContext()
     readme_sources: dict[str, str] | None = None
     source_side: Literal["head", "base"] = "head"
+
+
+def _clean_reference_scopes(
+    changed_file: ChangedFile, prepared: _PreparedFileReview | SkipReason | None
+) -> PreparedReferenceScopes | None:
+    if (
+        not isinstance(prepared, _PreparedFileReview)
+        or prepared.decision.mode != "clean"
+        or prepared.source_side != "head"
+        or prepared.parse_result.parser_outcome != "clean"
+        or prepared.parse_result.error_lines
+        or any(prepared.parse_result.has_error.values())
+        or not prepared.base_scope_units
+    ):
+        return None
+    return PreparedReferenceScopes(
+        changed_file, prepared.parse_result.scope_units, prepared.base_scope_units
+    )
 
 
 def _select_structural_file_review(

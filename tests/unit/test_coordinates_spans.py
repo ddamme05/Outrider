@@ -628,6 +628,17 @@ def test_line_range_to_span_past_eof_raises() -> None:
         line_range_to_span(2, 4, _SRC)  # only 3 lines
 
 
+def test_line_range_to_span_only_splits_at_lf() -> None:
+    source = "é\r\nλ\r界\u2028x\nlast"
+    span = line_range_to_span(2, 2, source)
+    assert source.encode()[span.byte_start : span.byte_end] == "λ\r界\u2028x\n".encode()
+
+
+def test_line_range_to_span_reports_actual_line_count_for_large_end() -> None:
+    with pytest.raises(CoordinateError, match="exceeds source line count 2"):
+        line_range_to_span(1, 10**30, "text\n")
+
+
 def test_line_range_to_span_invalid_range_raises() -> None:
     with pytest.raises(CoordinateError):
         line_range_to_span(0, 1, _SRC)  # line_start < 1

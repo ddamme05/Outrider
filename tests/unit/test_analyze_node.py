@@ -2718,6 +2718,42 @@ async def test_worker_receives_bounded_related_context_without_expanding_finding
 
 
 @pytest.mark.asyncio
+async def test_planner_parses_each_side_once_and_keeps_the_caller_for_a_deletion(
+    deps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from outrider.ast_facts.registry import parse_source
+
+    head = (
+        "def total(values):\n    return sum(values)\n\n"
+        "def report(values):\n    return total(values)\n"
+    )
+    base = head.replace("    return sum(values)", "    print(values)\n    return sum(values)")
+    file = ChangedFile(
+        path="src/example.py",
+        status="modified",
+        additions=0,
+        deletions=1,
+        content_head=head,
+        content_base=base,
+        patch="@@ -1,3 +1,2 @@\n def total(values):\n-    print(values)\n     return sum(values)\n",
+    )
+    state = _build_review_state(pr_context=_build_pr_context(changed_files=(file,)))
+    parser = MagicMock(wraps=parse_source)
+    monkeypatch.setattr("outrider.agent.nodes.analyze.parse_source", parser)
+    monkeypatch.setattr("outrider.agent.nodes.analyze_context.parse_source", parser)
+
+    payload = (await analyze(state, **deps)).goto[0].arg
+
+    assert payload.changed_file == file and payload.allocation_tokens > 0
+    assert "def report(values):\n    return total(values)" in payload.review_context
+    assert [
+        (entry.file_path, entry.scope_unit_name, entry.line_start, entry.line_end)
+        for entry in payload.supplemental_context_manifest
+    ] == [(file.path, "report@4:5", 4, 5)]
+    assert [call.args[0] for call in parser.call_args_list] == [head.encode(), base.encode()]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("called_helpers", [False, True])
 async def test_deletion_only_review_keeps_owned_context_without_neighbor_or_location_leak(
     deps: dict[str, Any], called_helpers: bool
