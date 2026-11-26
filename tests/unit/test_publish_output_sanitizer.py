@@ -242,6 +242,26 @@ def test_escape_markdown_prose_does_not_wrap_with_backslashes() -> None:
     assert text == "path\\\\to\\\\file"
 
 
+def test_double_underscore_identifiers_remain_literal_in_review_prose() -> None:
+    text = "Symbol.__new__ calls __hash__. See __init__.py and `__code__`."
+    assert sanitize_display_string(text) == (
+        r"Symbol.\_\_new\_\_ calls \_\_hash\_\_. See \_\_init\_\_.py and \`\_\_code\_\_\`."
+    )
+
+
+def test_underscore_handling_preserves_other_review_text() -> None:
+    text = "my_variable, name__part, __dirname, __two words__, ___important___, **important**"
+    assert sanitize_display_string(text) == text
+    assert render_fenced_block("return self.__hash__()") == "\n```\nreturn self.__hash__()\n```\n"
+
+
+@pytest.mark.parametrize(
+    "name", ["__2fa__", "__cafe\u0301__", "__part__name__", "__a·_b_·c__", "__strong__"]
+)
+def test_single_identifier_between_double_underscores_stays_literal(name: str) -> None:
+    assert sanitize_display_string(name) == name.replace("_", r"\_")
+
+
 # ---------------------------------------------------------------------------
 # 4. Size cap in UTF-8 BYTES (incl. non-ASCII coverage)
 # ---------------------------------------------------------------------------
