@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { MemoryRouter, Route, Routes } from "react-router";
@@ -91,6 +91,7 @@ function mount(
     detailStatus?: number;
     events?: unknown[];
     policyEntries?: unknown[];
+    search?: string;
   } = {},
 ) {
   server.use(
@@ -117,7 +118,7 @@ function mount(
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/reviews/r1"]}>
+      <MemoryRouter initialEntries={[`/reviews/r1${responses.search ?? ""}`]}>
         <Routes>
           <Route path="/reviews/:reviewId" element={<ReviewDetail />} />
         </Routes>
@@ -526,6 +527,64 @@ test("awaiting review with no gate snapshot shows 'paused' without a fabricated 
   expect(screen.queryByText(/paused · 0 findings/)).toBeNull();
   expect(screen.queryByText(/0 critical\/high/)).toBeNull();
   expect(screen.getByText("paused")).toBeInTheDocument();
+});
+
+test("saved warnings link to each file's original review, including empty reused results", async () => {
+  const user = userEvent.setup();
+  const source = "302e176f-e13e-4e5b-a931-b19d0fe836eb";
+  const other = "f3073fb9-60bc-4bb6-9dbe-eaa94c43d4bb";
+  const cache = "a".repeat(64);
+  const otherCache = "b".repeat(64);
+  const served = { event_type: "cache_serve", source_review_id: source, cache_key: cache, served_finding_count: 2 };
+  mount({ events: [
+    { ...served, event_id: "e1", file_path: "src/bin.js" },
+    { ...served, event_id: "e2", file_path: "test/bin-test.js", served_finding_count: 0, source_review_id: other, cache_key: otherCache },
+    { event_type: "cache_lookup", outcome: "would_hit", file_path: "README.md" },
+  ] });
+  server.use(http.get(`${BASE}/candidates`, () => HttpResponse.json({
+    review_id: "r1", total: 0, limit: 20, offset: 0, candidates: [],
+  })));
+  await user.click(await screen.findByRole("button", { name: "Show saved warnings" }));
+  expect(await screen.findByRole("link", { name: "Original review for src/bin.js" }))
+    .toHaveAttribute("href", `/reviews/${source}?cache=${cache}`);
+  expect(screen.getByRole("link", { name: "Original review for test/bin-test.js" }))
+    .toHaveAttribute("href", `/reviews/${other}?cache=${otherCache}`);
+  expect(screen.queryByRole("link", { name: /Original review for README/ })).toBeNull();
+  expect(await screen.findByText("No new model warnings were saved in this review.")).toBeVisible();
+});
+
+test.each(["retained", "expired", "unverified"])("the original exchange honors %s content", async (mode) => {
+  const user = userEvent.setup();
+  const cache = "c".repeat(64);
+  const phase = "file:tests/bin.js#0";
+  const lookup = { event_type: "cache_lookup", node_id: "analyze", event_id: "lookup", phase_key: phase,
+    outcome: "miss", cache_key: cache, file_path: "tests/bin.js" };
+  const call = { event_type: "llm_call", node_id: "analyze", event_id: "wanted", phase_key: phase,
+    model: "gpt", input_tokens: 10, output_tokens: 2, cost_usd: 0 };
+  const sibling = { ...call, event_id: "sibling", phase_key: "file:tests/other.js#0" };
+  mount({ search: `?cache=${cache}`, timeline: timelineData({
+    replay_equivalent: mode !== "unverified", phases: mode === "unverified" ? null : [],
+    events: [lookup, sibling, call], llm_exchanges: [
+      { event_id: "sibling", prompt: "Sibling prompt", completion: "Sibling answer", content_redacted: false },
+      { event_id: "wanted", prompt: "Target prompt", completion: "Target answer", content_redacted: mode === "expired" },
+    ],
+  }) });
+  if (mode === "unverified") {
+    expect(await screen.findByText(/original file analysis could not be identified/i)).toBeVisible();
+    expect(screen.queryByText("Target answer")).toBeNull();
+    return;
+  }
+  const heading = await screen.findByRole("heading", { name: "Original analysis of tests/bin.js" });
+  const section = within(heading.closest("section")!);
+  await user.click(section.getByText("Model exchange for tests/bin.js"));
+  expect(section.queryByText("Sibling answer")).toBeNull();
+  if (mode === "expired") {
+    expect(section.getByText(/Content redacted/)).toBeVisible();
+    expect(section.queryByText("Target answer")).toBeNull();
+  } else {
+    expect(section.getByText("Target prompt")).toBeVisible();
+    expect(section.getByText("Target answer")).toBeVisible();
+  }
 });
 
 test.each([false, true])("saved warnings load on demand and honor expiry=%s", async (expired) => {

@@ -1,4 +1,5 @@
-import { type AuditEvent, eventFamily, eventNode, summarizeEvent } from "../lib/auditEvent";
+import { type AuditEvent, eventFamily, eventNode } from "../lib/auditEvent";
+import { AuditEventSummary } from "./AuditEventSummary";
 
 // Keep the supplied audit order (FUP-133). Number rows within this review;
 // preserve the global sequence number on hover for traceability.
@@ -17,7 +18,6 @@ export function AuditFeed({ events }: { events: AuditEvent[] }) {
       </div>
       {events.map((auditEvent, eventIndex) => {
         const node = eventNode(auditEvent);
-        const summary = summarizeEvent(auditEvent);
         return (
           <div
             className={`afrow ev-c-${eventFamily(auditEvent.event_type)}`}
@@ -31,7 +31,7 @@ export function AuditFeed({ events }: { events: AuditEvent[] }) {
             </span>
             <span className="af-type mono">{auditEvent.event_type}</span>
             <span className="af-node mono">{node ?? ""}</span>
-            <span className="af-summary">{summary}</span>
+            <span className="af-summary"><AuditEventSummary event={auditEvent} /></span>
             <span className="af-ts mono">
               {auditEvent.timestamp ? auditEvent.timestamp.slice(0, 19).replace("T", " ") : ""}
             </span>

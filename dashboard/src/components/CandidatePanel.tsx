@@ -3,6 +3,7 @@ import { Link } from "react-router";
 
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
+import { type CacheServeEvent, OriginalReviewLink } from "./AuditEventSummary";
 
 type CandidateView = components["schemas"]["CandidateView"];
 type Assessment = components["schemas"]["CandidateAssessmentRef"];
@@ -109,7 +110,7 @@ function SavedCandidate({ item, reviewId }: { item: CandidateView; reviewId: str
   );
 }
 
-export function CandidatePanel({ reviewId }: { reviewId: string }) {
+export function CandidatePanel({ reviewId, reusedFiles }: { reviewId: string; reusedFiles: CacheServeEvent[] }) {
   const [expanded, setExpanded] = useState(false);
   const [offset, setOffset] = useState(0);
   const limit = 20;
@@ -135,13 +136,26 @@ export function CandidatePanel({ reviewId }: { reviewId: string }) {
           </p>
           {query.isLoading ? <p>Loading saved warnings…</p> : null}
           {query.error ? <p className="error">Could not load saved warnings.</p> : null}
-          {data?.total === 0 ? <p>No saved individual warnings are available for this review.</p> : null}
+          {reusedFiles.length > 0 ? (
+            <>
+              <h3>Reused file reviews</h3>
+              <p>Open the original review to inspect its saved warnings and model response.</p>
+              <ul>
+                {reusedFiles.map((event) => (
+                  <li key={event.event_id ?? event.file_path}><OriginalReviewLink event={event} /></li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          {data?.total === 0 ? <p>No new model warnings were saved in this review.</p> : null}
           {data?.candidates.map((item) => (
             <SavedCandidate key={item.candidate.candidate_id} item={item} reviewId={reviewId} />
           ))}
           {data ? (
             <div>
-              <p>{data.total} saved warnings · page {Math.floor(offset / limit) + 1}</p>
+              {data.total > 0 ? (
+                <p>{data.total} saved in this review · page {Math.floor(offset / limit) + 1}</p>
+              ) : null}
               <button className="btn" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))}>
                 Previous
               </button>

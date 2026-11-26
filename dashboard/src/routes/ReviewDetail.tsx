@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
 import { CandidatePanel } from "../components/CandidatePanel";
 import { FindingCard } from "../components/FindingCard";
+import { OriginalFileAnalysis } from "../components/OriginalFileAnalysis";
 import { PipelineStrip } from "../components/PipelineStrip";
 import { PolicyModal } from "../components/PolicyModal";
 import { ReplayFeed } from "../components/ReplayFeed";
@@ -18,25 +19,25 @@ import { useReviewApproval } from "./useReviewApproval";
 
 export function ReviewDetail() {
   const { reviewId } = useParams<{ reviewId: string }>();
+  if (!reviewId) return <p className="error">No review id in the URL.</p>;
+  return <ReviewDetailView key={reviewId} reviewId={reviewId} />;
+}
 
-  const enabled = typeof reviewId === "string" && reviewId.length > 0;
-  const pathParams = { params: { path: { review_id: reviewId ?? "" } } };
+function ReviewDetailView({ reviewId }: { reviewId: string }) {
+  const [search] = useSearchParams();
+  const cacheKey = search.get("cache");
+  const pathParams = { params: { path: { review_id: reviewId } } };
 
   const detailQuery = $api.useQuery("get", "/api/reviews/{review_id}", pathParams, {
-    enabled,
     refetchInterval: 2000,
   });
-  const findingsQuery = $api.useQuery("get", "/api/reviews/{review_id}/findings", pathParams, {
-    enabled,
-  });
+  const findingsQuery = $api.useQuery("get", "/api/reviews/{review_id}/findings", pathParams);
   // The server verifies and groups the timeline used by the verdict, pipeline, and feed.
   const timelineQuery = $api.useQuery("get", "/api/reviews/{review_id}/replay-timeline", pathParams, {
-    enabled,
     refetchInterval: 2000,
   });
   // The raw count includes the projected verdict event omitted from the timeline.
   const eventsQuery = $api.useQuery("get", "/api/reviews/{review_id}/events", pathParams, {
-    enabled,
     refetchInterval: 2000,
   });
 
@@ -73,9 +74,6 @@ export function ReviewDetail() {
   );
   const approval = useReviewApproval({ actionable, gatedFindings, productionConfirmed });
 
-  if (!enabled) {
-    return <p className="error">No review id in the URL.</p>;
-  }
   // Background failures keep the last loaded state and show a banner.
   if (detailQuery.isLoading) {
     return <p>Loading…</p>;
@@ -220,6 +218,11 @@ export function ReviewDetail() {
 
       {showReplayInfo ? <ReplayInfoModal onClose={() => setShowReplayInfo(false)} /> : null}
 
+      {cacheKey ? (
+        timelineQuery.data ? <OriginalFileAnalysis data={timelineQuery.data} cacheKey={cacheKey} /> :
+          <p>{timelineQuery.error ? "Could not load the original file analysis." : "Loading the original file analysis…"}</p>
+      ) : null}
+
       <ReviewMetrics
         metrics={review.metrics}
         policyVersion={review.policy_version}
@@ -272,7 +275,12 @@ export function ReviewDetail() {
         </div>
       </div>
 
-      <CandidatePanel reviewId={review.id} />
+      <CandidatePanel
+        reviewId={review.id}
+        reusedFiles={(eventsQuery.data?.events ?? timelineQuery.data?.events ?? []).filter(
+          (event) => event.event_type === "cache_serve",
+        )}
+      />
 
       <div className="panel">
         <div className="panel-h">

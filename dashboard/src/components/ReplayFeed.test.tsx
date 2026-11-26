@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router";
 import { expect, test } from "vitest";
 
 import type { components } from "../api/schema";
@@ -235,6 +236,22 @@ test("diagnostic events are hidden by default; the toggle reveals them with a co
   // Toggling back hides it again.
   await user.click(screen.getByRole("button", { name: /Hide 1 diagnostic events/ }));
   expect(screen.queryByText("cache_lookup")).toBeNull();
+});
+
+test.each(["grouped", "flat", "divergent"])("a reused result links to its original review in the %s feed", (mode) => {
+  const source = "302e176f-e13e-4e5b-a931-b19d0fe836eb";
+  const hit = {
+    ...cacheLookupEvent("e-hit"), event_type: "cache_serve", file_path: "src/bin.js",
+    source_review_id: source, served_finding_count: 2, cache_key: "a".repeat(64),
+  };
+  const timeline = data({
+    events: [hit], phases: mode === "divergent" ? null : [phaseWith([hit])],
+    replay_equivalent: mode !== "divergent",
+  });
+  render(<MemoryRouter><ReplayFeed data={timeline} flat={mode === "flat"} /></MemoryRouter>);
+  expect(screen.getByRole("link", { name: "Original review for src/bin.js" }))
+    .toHaveAttribute("href", `/reviews/${source}?cache=${"a".repeat(64)}`);
+  expect(screen.getByText(/2 findings/)).toBeVisible();
 });
 
 test("a cache would_hit stays visible in phase-card and flat views", () => {

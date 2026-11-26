@@ -13,12 +13,12 @@ import {
   eventNode,
   formatCallTokens,
   isDiagnosticEvent,
-  summarizeEvent,
 } from "../lib/auditEvent";
 import { formatDurationMs, spanMs } from "../lib/format";
 import { hitlOutcomeLabel, severityLabel, typeLabel } from "../lib/findingSections";
 import { prettyModel } from "../lib/modelLabel";
 import { AuditFeed } from "./AuditFeed";
+import { AuditEventSummary } from "./AuditEventSummary";
 import { CodeBlock, ImplementationEvidence } from "./CodeBlock";
 
 type TimelineData = components["schemas"]["ReplayTimelineResponse"];
@@ -103,7 +103,7 @@ function flatEventBody(event: AuditEvent): ReactNode {
         </>
       );
     default:
-      return summarizeEvent(event);
+      return <AuditEventSummary event={event} />;
   }
 }
 
@@ -165,7 +165,7 @@ function FindingContentPanel({ content, proof }: { content: FindingContent; proo
   );
 }
 
-function LLMContentPanel({ content }: { content: LLMContent }) {
+export function LLMContentPanel({ content }: { content: LLMContent }) {
   return (
     <div className="tl-content">
       {content.content_redacted ? (
@@ -297,7 +297,7 @@ export function ReplayFeed({
             {event.event_type}
           </span>
           {withNode ? <span className="af-node mono">{eventNode(event) ?? ""}</span> : null}
-          <span className="af-summary">{summarizeEvent(event)}</span>
+          <span className="af-summary"><AuditEventSummary event={event} /></span>
         </div>
         {open && findingContent && proof ? <FindingContentPanel content={findingContent} proof={proof} /> : null}
         {open && llmContent ? <LLMContentPanel content={llmContent} /> : null}
