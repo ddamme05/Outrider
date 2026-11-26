@@ -220,6 +220,10 @@ access. Only `adjudication/review.json` is editable. Whole-workflow regeneration
 is not implemented: generated finding IDs enter later prompts. The actual stage
 exchanges are retained rather than relabeled as exact graph replay.
 
+To rebuild a retired model's SDK request or inspect its original rates, use
+the Outrider revision that produced the capture. Audit replay reads the model,
+pricing version and cost recorded on each call, including any pending cost.
+
 ### Compare standalone and workflow costs
 
 New workflow results include `cost_comparison`: API usage costs and call counts

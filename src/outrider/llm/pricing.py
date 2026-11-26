@@ -92,9 +92,9 @@ version-keyed cost aggregation.
 
 # Version the host-qualified rates (DECISIONS.md#056) together with long-context,
 # service-tier and unpriced-outcome policy (specs/2026-07-18-openai-native-host.md).
-# The digest-pinning test rejects unversioned changes. Retain older model rows
-# for replay and saved baselines. Current rates are verified against the official
-# pricing pages; saved events retain their recorded version and cost.
+# Verify current rates against the official pricing pages. The digest-pinning
+# test rejects unversioned changes. Saved events keep their pricing version and
+# cost. Use the capture's Outrider revision to look up its original rates.
 PRICING_VERSION: Final[str] = "v9"
 if not re.fullmatch(PRICING_VERSION_PATTERN, PRICING_VERSION):
     raise RuntimeError(

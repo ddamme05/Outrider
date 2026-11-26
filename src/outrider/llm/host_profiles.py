@@ -557,8 +557,8 @@ HOST_DEFAULT_MODELS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyType(
 def validate_available_models(host: str, models: tuple[str, ...]) -> None:
     """Reject known retired targets before live credentials or providers are needed.
 
-    Historical profile validation, request serialization and pricing remain
-    available for offline captures; they do not establish current availability.
+    For archived Fireworks captures, the retired serverless model still has a
+    request contract and a pricing row.
     """
     if host == "fireworks" and "accounts/fireworks/models/glm-5p2" in models:
         raise ValueError(
