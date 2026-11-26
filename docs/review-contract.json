@@ -1750,6 +1750,33 @@
       "schema_mode": "serialization",
       "schema": {
         "$defs": {
+          "CandidateCitationFailure": {
+            "additionalProperties": false,
+            "description": "Identify the first citation rejected by the source check, in reply order.",
+            "properties": {
+              "position": {
+                "maximum": 8,
+                "minimum": 1,
+                "title": "Position",
+                "type": "integer"
+              },
+              "reason": {
+                "enum": [
+                  "unknown_snippet",
+                  "outside_snippet",
+                  "quote_mismatch"
+                ],
+                "title": "Reason",
+                "type": "string"
+              }
+            },
+            "required": [
+              "position",
+              "reason"
+            ],
+            "title": "CandidateCitationFailure",
+            "type": "object"
+          },
           "CandidateCitationRef": {
             "additionalProperties": false,
             "properties": {
@@ -1993,6 +2020,17 @@
             "maxItems": 8,
             "title": "Citations",
             "type": "array"
+          },
+          "citation_failure": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CandidateCitationFailure"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "reason_hash": {
             "anyOf": [

@@ -694,6 +694,34 @@ test.each([false, true])("saved warnings load on demand and honor expiry=%s", as
   }
 });
 
+test.each([
+  { failure: { position: 3, reason: "quote_mismatch" }, message: "Citation 3 quotes text that differs from the supplied source lines." },
+  { failure: { position: 1, reason: "outside_snippet" }, message: "Citation 1 has an invalid line range for the supplied excerpt." },
+  { failure: { position: 2, reason: "unknown_snippet" }, message: "Citation 2 refers to an unrecognized source excerpt." },
+  { failure: undefined, message: null },
+  { failure: null, message: null },
+])("invalid saved checks report the first failed citation when available: $message", async ({ failure, message }) => {
+  const user = userEvent.setup();
+  server.use(http.get(`${BASE}/candidates`, () => HttpResponse.json({
+    review_id: "r1", total: 1, limit: 20, offset: 0,
+    candidates: [{
+      candidate: { candidate_id: "c1", file_path: "display.py" },
+      draft_disposition: "included_in_draft",
+      content_redacted: true,
+      assessment: { status: "uncertain", outcome: "invalid_response", citation_failure: failure },
+      assessment_reason: null, assessment_content_redacted: false,
+    }],
+  })));
+  mount();
+  await user.click(await screen.findByRole("button", { name: "Show saved warnings" }));
+  expect(await screen.findByText("Follow-up check: uncertain · invalid response")).toBeVisible();
+  if (message) {
+    expect(screen.getByText(message)).toBeVisible();
+  } else {
+    expect(screen.queryByText(/^Citation \d/)).toBeNull();
+  }
+});
+
 test("saved checks distinguish current uncertainty from PR relevance", async () => {
   const user = userEvent.setup();
   server.use(http.get(`${BASE}/candidates`, () => HttpResponse.json({

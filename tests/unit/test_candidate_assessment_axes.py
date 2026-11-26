@@ -62,6 +62,7 @@ def test_historical_metadata_roundtrips_without_new_fields():
     assert "head_assessment" not in payload and "change_assessment" not in payload
     assert "impact_assessment" not in payload
     assert "repair_assessment" not in payload
+    assert "citation_failure" not in payload
     assert CandidateAssessmentRef.model_validate(payload).model_dump(mode="json") == payload
     check = CandidateCheckStarted(
         candidate_id="a" * 64,
@@ -77,6 +78,27 @@ def test_historical_metadata_roundtrips_without_new_fields():
     assert CandidateCheckStarted.model_validate(historical).model_dump(mode="json") == historical
     tagged = check.model_copy(update={"response_contract": "head-and-change-v1"})
     assert tagged.model_dump(mode="json")["response_contract"] == "head-and-change-v1"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"outcome": "completed"},
+        {"assessment_exchange_event_id": None},
+        {"citation_failure": {"position": 0, "reason": "quote_mismatch"}},
+        {"citation_failure": {"position": 9, "reason": "quote_mismatch"}},
+        {"citation_failure": {"position": 1, "reason": "model-supplied text"}},
+    ],
+)
+def test_citation_diagnostics_require_an_invalid_exchange_and_bounded_fields(changes):
+    with pytest.raises(ValueError):
+        _assessment(
+            **{
+                "outcome": "invalid_response",
+                "citation_failure": {"position": 1, "reason": "quote_mismatch"},
+                **changes,
+            }
+        )
 
 
 def test_contract_dispatch_keeps_known_legacy_versions_and_rejects_unknown_versions():

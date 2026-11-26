@@ -558,6 +558,44 @@ def test_check_does_not_send_helpers_when_primary_claim_source_exceeds_cap():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("changed_fields", "reason"),
+    [
+        ({"quote": "private text supplied by the model"}, "quote_mismatch"),
+        ({"line_end": 999}, "outside_snippet"),
+        ({"snippet_id": "unknown model-supplied identifier"}, "unknown_snippet"),
+    ],
+)
+async def test_invalid_citation_records_only_its_position_and_reason(changed_fields, reason):
+    state, original, refs = _case([_proposal(finding_type="missing_error_handling")])
+    store = _MemoryStore(state, original, refs)
+    provider = _Provider()
+
+    async def invalid(request):
+        body = json.loads(_answer(request).text)
+        citation = body["citations"][0]
+        body["citations"].append({**citation, **changed_fields})
+        return _response(json.dumps(body))
+
+    provider.complete = invalid
+    (assessment,) = await investigate_native_candidates(
+        state,
+        provider=provider,
+        model=_MODEL,
+        store=store,
+        sink=store,
+        import_path_resolver=COORDINATES_IMPORT_PATH_RESOLVER,
+    )
+    saved = assessment.model_dump(mode="json")
+    assert saved.get("citation_failure") == {"position": 2, "reason": reason}
+    assert assessment.outcome == "invalid_response" and assessment.status == "uncertain"
+    assert not assessment.citations
+    assert verification_hold_finding_ids(
+        state.analysis_rounds[0].findings, refs, [assessment], policy_version=ACTIVE_POLICY_VERSION
+    ) == (refs[0].finding_id,)
+
+
+@pytest.mark.asyncio
 async def test_flat_refutation_cannot_bypass_current_contract_and_original_finding_is_held():
     state, original, refs = _case([_proposal(finding_type="missing_error_handling")])
     store = _MemoryStore(state, original, refs)
@@ -584,6 +622,7 @@ async def test_flat_refutation_cannot_bypass_current_contract_and_original_findi
     )
     assert len(provider.requests) == 1
     assert [(item.status, item.outcome) for item in assessed] == [("uncertain", "invalid_response")]
+    assert "citation_failure" not in assessed[0].model_dump()
     assert tuple(store.refs) == refs
     assert verification_hold_finding_ids(
         state.analysis_rounds[0].findings,
