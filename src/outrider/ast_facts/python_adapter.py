@@ -523,6 +523,10 @@ class PythonAdapter:
         tree: Tree,
         scope_units: tuple[ScopeUnit, ...],
     ) -> tuple[ComputedParserOutcome, dict[str, bool]]:
+        # Tree-sitter propagates descendant syntax errors to the root.
+        if not tree.root_node.has_error:
+            return "clean", collect_scope_errors(scope_units, lambda _: False)
+
         # Map each ScopeUnit to its tree-sitter node by byte range. A decorated
         # ScopeUnit's `byte_start` includes its `@decorator`s while the underlying
         # function/class node starts narrower, and the exact inner span is not
