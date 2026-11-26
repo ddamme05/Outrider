@@ -31,7 +31,8 @@ function detail(overrides: Record<string, unknown> = {}) {
       total_cost_usd: 0.41,
       files_examined: 5,
       files_traced_beyond_diff: 2,
-      wall_clock_seconds: 72,
+      wall_clock_seconds: 3,
+      pre_approval_seconds: 72,
     },
     policy_version: "v3",
     ...overrides,
@@ -133,13 +134,22 @@ test("renders header, aggregate metrics, and the replay verdict", async () => {
   mount();
   expect(await screen.findByText(/repo 100/)).toBeInTheDocument();
   expect(screen.getByText("#7")).toBeInTheDocument();
-  // Aggregate metric backed by the contract (72s → "1m12s").
-  expect(screen.getByText("1m12s")).toBeInTheDocument();
+  const reviewTime = screen.getByText("Review time");
+  expect(reviewTime).toHaveAccessibleDescription(/intake.*synthesis.*approval.*publication/i);
+  expect(reviewTime.closest(".ms-card")).toHaveTextContent("1m12s");
   // Replay verdict — the hero pill reads off the timeline DTO's replay_equivalent
   // and is a clickable button (opens the explainer).
   const verdict = await screen.findByRole("button", { name: /what replay-equivalent means/i });
   expect(verdict).toHaveTextContent("replay-equivalent");
   expect(verdict).not.toHaveTextContent("not replay-equivalent");
+});
+
+test.each([
+  [undefined, "—"], [null, "—"], [0, "0ms"],
+])("displays review time %s as %s", async (duration, expected) => {
+  mount({ detail: detail({ metrics: { ...detail().metrics, pre_approval_seconds: duration } }) });
+  const card = (await screen.findByText("Review time")).closest(".ms-card");
+  expect(card?.querySelector(".ms-val")?.textContent).toBe(expected);
 });
 
 test("clicking the replay verdict opens the explainer modal", async () => {

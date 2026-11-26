@@ -72,7 +72,7 @@ beforeEach(() => {
   useFilters.setState({ includeEval: false, status: null, search: "" });
 });
 
-test("renders the table with repo, title, status, severity tally, cost, latency", async () => {
+test("renders the table with repo, title, status, severity tally, cost, and review time", async () => {
   // Absolute URL matching the test base (VITE_API_BASE_URL=http://localhost).
   server.use(
     http.get("http://localhost/api/reviews", () =>
@@ -92,7 +92,8 @@ test("renders the table with repo, title, status, severity tally, cost, latency"
               total_cost_usd: 0.2,
               files_examined: 5,
               files_traced_beyond_diff: 2,
-              wall_clock_seconds: 72,
+              wall_clock_seconds: 3,
+              pre_approval_seconds: 72,
             },
             severity_counts: { critical: 1, high: 2, medium: 1, low: 1, info: 0 },
           }),
@@ -112,9 +113,11 @@ test("renders the table with repo, title, status, severity tally, cost, latency"
   expect(screen.getByText("acme/web")).toBeInTheDocument();
   expect(screen.getByText("#9")).toBeInTheDocument();
   expect(screen.getAllByText("Add session token storage").length).toBeGreaterThan(0);
-  // Cost + latency render real, formatted values.
   expect(screen.getByText("$0.05")).toBeInTheDocument();
   expect(screen.getByText("$0.20")).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Review time" })).toHaveAccessibleDescription(
+    /intake.*synthesis.*approval.*publication/i,
+  );
   expect(screen.getByText("1m12s")).toBeInTheDocument();
   // Status pills (not the same text in the filter chips).
   expect(screen.getAllByText("running").some(isPill)).toBe(true);
@@ -127,6 +130,18 @@ test("renders the table with repo, title, status, severity tally, cost, latency"
   // The ↻ replay control on the completed row routes to the surviving replay surface.
   const replay = screen.getByRole("link", { name: /replay reconstruction for review r2/i });
   expect(replay.getAttribute("href")).toBe("/reviews/r2/replay");
+});
+
+test.each([
+  [undefined, "—"], [null, "—"], [0, "0ms"],
+])("displays review time %s as %s", async (duration, expected) => {
+  const metrics = { ...review({}).metrics, wall_clock_seconds: 3, pre_approval_seconds: duration };
+  server.use(http.get("http://localhost/api/reviews", () => HttpResponse.json({
+    reviews: [review({ metrics })], total: 1, limit: 50, offset: 0,
+  })));
+  renderWithProviders(<Reviews />);
+  const row = await screen.findByRole("row", { name: /acme\/api/ });
+  expect(row.querySelector(".row-lat")?.textContent).toBe(expected);
 });
 
 test("repo name and title fall back gracefully when null", async () => {

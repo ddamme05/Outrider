@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router";
 import { $api } from "../api/client";
 import type { components } from "../api/schema";
 import { StatusPill } from "../components/StatusPill";
-import { formatReviewCost } from "../lib/format";
+import { formatReviewCost, formatReviewTime, REVIEW_TIME_DESCRIPTION } from "../lib/format";
 import { SEVERITY_ORDER } from "../lib/metrics";
 import { type ReviewStatus, useFilters } from "../state/filters";
 
@@ -27,19 +27,6 @@ const SEV_CLASS: Record<(typeof SEVERITY_ORDER)[number], string> = {
   low: "l",
   info: "i",
 };
-
-function formatLatency(seconds: number | null): string {
-  if (seconds == null) {
-    return "—";
-  }
-  const total = Math.round(seconds);
-  if (total < 60) {
-    return `${total}s`;
-  }
-  const minutes = Math.floor(total / 60);
-  const remainingSeconds = total % 60;
-  return `${minutes}m${remainingSeconds.toString().padStart(2, "0")}s`;
-}
 
 function SeverityTally({ counts }: { counts: SeverityCounts | null }) {
   // Null means synthesis has not recorded a tally; an empty tally also shows —.
@@ -154,7 +141,7 @@ export function Reviews() {
                 <th>Status</th>
                 <th>Severity</th>
                 <th>Cost</th>
-                <th>Latency</th>
+                <th title={REVIEW_TIME_DESCRIPTION}>Review time</th>
               </tr>
             </thead>
             <tbody>
@@ -211,7 +198,7 @@ function ReviewRow({ review, onOpen }: { review: ReviewListItem; onOpen: () => v
       <td className="row-cost">
         {formatReviewCost(review.metrics)}
       </td>
-      <td className="row-lat">{formatLatency(review.metrics.wall_clock_seconds)}</td>
+      <td className="row-lat">{formatReviewTime(review.metrics.pre_approval_seconds)}</td>
     </tr>
   );
 }

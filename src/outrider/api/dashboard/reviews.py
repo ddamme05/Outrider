@@ -12,12 +12,13 @@ DECISIONS.md#014, #037 and FUP-130, FUP-127, FUP-093.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Literal
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import UUID  # noqa: TC003  (runtime: Pydantic/route field type)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import AwareDatetime, BaseModel, ConfigDict
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, or_, select, tuple_
 
 from outrider.api.dashboard.auth import require_admin_api_key
 from outrider.api.dashboard.candidates import router as candidates_router
@@ -47,6 +48,8 @@ from outrider.db.models.reviews import Review
 from outrider.schemas.review_finding import ImplementationCitation  # noqa: TC001
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from sqlalchemy import ColumnElement
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,8 +74,9 @@ ReviewStatusFilter = Literal[
 class ReviewMetricsView(BaseModel):
     """Audit-stream-computed metrics for one review (see module docstring).
 
-    File/wall-clock fields are `None` when the review has no
-    `SynthesizeCompletedEvent` yet — render pending, never zero.
+    Synthesis records file counts and its own wall clock. Review time spans
+    the first intake start through the first synthesis end before approval.
+    Missing measurements are null.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -90,6 +94,7 @@ class ReviewMetricsView(BaseModel):
     files_examined: int | None
     files_traced_beyond_diff: int | None
     wall_clock_seconds: float | None
+    pre_approval_seconds: float | None = None
 
 
 class SeverityCounts(BaseModel):
@@ -318,8 +323,70 @@ router = APIRouter(
 router.include_router(candidates_router)
 
 
+@dataclass
+class _ReviewTiming:
+    has_completion: bool = False
+    synthesis_payload: dict[str, Any] | None = None
+    intake_started: datetime | None = None
+    synthesis_ended: datetime | None = None
+
+    @property
+    def pre_approval_seconds(self) -> float | None:
+        start, end = self.intake_started, self.synthesis_ended
+        if self.has_completion and start is not None and end is not None and end >= start:
+            return (end - start).total_seconds()
+        return None
+
+
+async def _load_review_timings(
+    session: AsyncSession, reviews: list[tuple[UUID, bool]]
+) -> dict[UUID, _ReviewTiming]:
+    """Load the latest synthesis snapshot, first intake start and first synthesis end per review."""
+    timings = {review_id: _ReviewTiming() for review_id, _ in reviews}
+    if not reviews:
+        return timings
+
+    completed = AuditEvent.event_type == "synthesize_completed"
+    node = AuditEvent.payload["node_id"].astext
+    marker = AuditEvent.payload["marker"].astext
+    kind = case((completed, AuditEvent.event_type), else_=node).label("kind")
+    # Recovery can repeat all three events. Keep the latest synthesis payload and
+    # the first occurrence of each phase marker, ordered by audit sequence.
+    latest_completion = case((completed, AuditEvent.sequence_number)).desc()
+    stmt = (
+        select(
+            AuditEvent.review_id, kind, AuditEvent.timestamp, case((completed, AuditEvent.payload))
+        )
+        .where(
+            tuple_(AuditEvent.review_id, AuditEvent.is_eval).in_(reviews),
+            or_(
+                completed,
+                and_(
+                    AuditEvent.event_type == "review_phase",
+                    tuple_(node, marker).in_([("intake", "start"), ("synthesize", "end")]),
+                ),
+            ),
+        )
+        .distinct(AuditEvent.review_id, kind)
+        .order_by(AuditEvent.review_id, kind, latest_completion, AuditEvent.sequence_number)
+    )
+    for review_id, event_kind, timestamp, payload in (await session.execute(stmt)).all():
+        timing = timings[review_id]
+        if event_kind == "synthesize_completed":
+            timing.has_completion = True
+            timing.synthesis_payload = payload
+        elif event_kind == "intake":
+            timing.intake_started = timestamp
+        else:
+            timing.synthesis_ended = timestamp
+    return timings
+
+
 async def _aggregate_metrics(
-    session: AsyncSession, review_id: UUID, review_is_eval: bool
+    session: AsyncSession,
+    review_id: UUID,
+    review_is_eval: bool,
+    timing: _ReviewTiming | None = None,
 ) -> tuple[ReviewMetricsView, bool, list[str] | None]:
     """Return audit metrics, completion presence, and the latest selected finding IDs.
 
@@ -329,22 +396,9 @@ async def _aggregate_metrics(
     # Share LLM aggregation with synthesis; deduplication belongs to that helper.
     agg = await aggregate_review_llm_metrics(session, review_id=review_id, is_eval=review_is_eval)
 
-    # Synthesis completion emits do not enforce review/eval coherence; filter here.
-    # Recovery can emit another completion row. Take the latest by sequence;
-    # no completion leaves file counts and duration pending.
-    synth_stmt = (
-        select(AuditEvent.payload)
-        .where(
-            AuditEvent.review_id == review_id,
-            AuditEvent.is_eval == review_is_eval,
-            AuditEvent.event_type == "synthesize_completed",
-        )
-        .order_by(AuditEvent.sequence_number.desc())
-        .limit(1)
-    )
-    synth_row = (await session.execute(synth_stmt)).first()
-    has_synthesis_completion = synth_row is not None
-    synth_payload = synth_row[0] if synth_row is not None else None
+    if timing is None:
+        timing = (await _load_review_timings(session, [(review_id, review_is_eval)]))[review_id]
+    synth_payload = timing.synthesis_payload
     if synth_payload is None:
         files_examined = files_traced_beyond_diff = None
         wall_clock_seconds = None
@@ -363,9 +417,10 @@ async def _aggregate_metrics(
         files_examined=files_examined,
         files_traced_beyond_diff=files_traced_beyond_diff,
         wall_clock_seconds=(None if wall_clock_seconds is None else float(wall_clock_seconds)),
+        pre_approval_seconds=timing.pre_approval_seconds,
     )
     selected_ids = synth_payload.get("selected_finding_ids") if synth_payload is not None else None
-    return metrics, has_synthesis_completion, selected_ids
+    return metrics, timing.has_completion, selected_ids
 
 
 async def _aggregate_severity_counts(
@@ -449,11 +504,13 @@ async def list_reviews(
             )
         ).all()
 
-        # Aggregate each row sequentially; the page limit bounds these queries.
+        timings = await _load_review_timings(
+            session, [(review.id, review.is_eval) for review, _ in rows]
+        )
         items: list[ReviewListItem] = []
         for review, repo_full_name in rows:
             metrics, has_synthesis_completion, selected_ids = await _aggregate_metrics(
-                session, review.id, review.is_eval
+                session, review.id, review.is_eval, timings[review.id]
             )
             items.append(
                 ReviewListItem(

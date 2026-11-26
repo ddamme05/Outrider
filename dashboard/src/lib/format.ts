@@ -15,6 +15,16 @@ export function formatDurationMs(ms: number): string {
   return seconds < 10 ? `${seconds.toFixed(1)}s` : `${Math.round(seconds)}s`;
 }
 
+export const REVIEW_TIME_DESCRIPTION =
+  "From the start of intake until synthesis first finishes. Excludes approval wait and publication.";
+
+export function formatReviewTime(seconds: number | null | undefined): string {
+  if (seconds == null) return "—";
+  const rounded = Math.round(seconds);
+  if (rounded < 60) return formatDurationMs(seconds * 1000);
+  return `${Math.floor(rounded / 60)}m${String(rounded % 60).padStart(2, "0")}s`;
+}
+
 // Reject missing/invalid endpoints and negative spans (including clock skew).
 export function spanMs(start: string | null | undefined, end: string | null | undefined): number | null {
   if (!start || !end) return null;

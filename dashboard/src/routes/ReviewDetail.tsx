@@ -11,17 +11,10 @@ import { ReplayFeed } from "../components/ReplayFeed";
 import { ReplayInfoModal } from "../components/ReplayInfoModal";
 import { StatusPill } from "../components/StatusPill";
 import { useDemoStatus } from "../lib/demo";
-import { expiresLabel, formatReviewCost } from "../lib/format";
+import { expiresLabel, formatReviewCost, formatReviewTime, REVIEW_TIME_DESCRIPTION } from "../lib/format";
 import { SEVERITY_ORDER } from "../lib/metrics";
 import { decideErrorMessage, isActionable, isDraftValid } from "../lib/hitl";
 import { useReviewApproval } from "./useReviewApproval";
-
-// Null means synthesis has not recorded a duration yet.
-function fmtDuration(seconds: number | null): string {
-  if (seconds === null) return "pending";
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  return `${Math.floor(seconds / 60)}m${Math.round(seconds % 60)}s`;
-}
 
 export function ReviewDetail() {
   const { reviewId } = useParams<{ reviewId: string }>();
@@ -404,8 +397,8 @@ function ReviewMetrics({
         </div>
       </div>
       <div className="ms-card">
-        <div className="lab">Duration · Events</div>
-        <div className="ms-val">{fmtDuration(metrics.wall_clock_seconds)}</div>
+        <div className="lab" title={REVIEW_TIME_DESCRIPTION}>Review time</div>
+        <div className="ms-val">{formatReviewTime(metrics.pre_approval_seconds)}</div>
         <div className="ms-sub">
           <span className="mono">{eventCountLabel}</span> audit events
         </div>

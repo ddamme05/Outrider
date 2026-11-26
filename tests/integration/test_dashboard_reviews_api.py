@@ -7,6 +7,7 @@ See specs/2026-05-31-dashboard-v1.md."""
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
@@ -320,6 +321,54 @@ async def test_list_include_eval_exposes_eval_rows(
     assert resp.status_code == 200
     returned = {r["id"] for r in resp.json()["reviews"]}
     assert str(ids["c"]) in returned
+
+
+@pytest.mark.asyncio
+async def test_review_time_spans_intake_through_synthesis(
+    dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
+) -> None:
+    client, ids, engine = dashboard_client
+    start = datetime(2026, 11, 25, tzinfo=UTC)
+    # The original Starlette review took 17.21s through synthesis. Approval and
+    # publication can come much later, and recovery can record more phase markers.
+    phases = [
+        ("intake", "start", -90, True),
+        ("intake", "start", 0, False),
+        # A later sequence can carry an earlier wall-clock timestamp.
+        ("intake", "start", -1, False),
+        ("synthesize", "end", 2, True),
+        ("synthesize", "start", 14.42, False),
+        ("synthesize", "end", 17.21, False),
+        ("synthesize", "end", 16, False),
+        ("hitl", "end", 86_400, False),
+        ("synthesize", "end", 86_401, False),
+        ("publish", "end", 86_402, False),
+    ]
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO audit_events "
+                "(event_id, review_id, event_type, timestamp, is_eval, payload) "
+                "VALUES (:eid, :rid, 'review_phase', :ts, :is_eval, CAST(:payload AS jsonb))"
+            ),
+            [
+                {
+                    "eid": uuid4(),
+                    "rid": ids["a"],
+                    "ts": start + timedelta(seconds=seconds),
+                    "is_eval": is_eval,
+                    "payload": json.dumps({"node_id": node, "marker": marker}),
+                }
+                for node, marker, seconds, is_eval in phases
+            ],
+        )
+    detail = client.get(f"/api/reviews/{ids['a']}", headers=_AUTH)
+    listing = client.get("/api/reviews", headers=_AUTH)
+    assert detail.status_code == listing.status_code == 200
+    row = next(item for item in listing.json()["reviews"] if item["id"] == str(ids["a"]))
+    for metrics in (detail.json()["metrics"], row["metrics"]):
+        assert metrics["pre_approval_seconds"] == pytest.approx(17.21)
+        assert metrics["wall_clock_seconds"] == pytest.approx(42.5)
 
 
 @pytest.mark.asyncio
@@ -651,7 +700,7 @@ async def _insert_finding_event(
 async def test_list_reuses_completion_read_with_unchanged_response(
     dashboard_client: tuple[TestClient, dict[str, UUID], AsyncEngine],
 ) -> None:
-    """A populated include-eval page needs one completion read per review."""
+    """A mixed evaluation/production page shares one scoped completion read."""
     client, ids, engine = dashboard_client
     async with engine.begin() as conn:
         await _insert_finding_event(conn, review_id=ids["a"], severity="high", content_hash=_HASH_A)
@@ -703,6 +752,7 @@ async def test_list_reuses_completion_read_with_unchanged_response(
             "files_examined": 5,
             "files_traced_beyond_diff": 2,
             "wall_clock_seconds": 42.5,
+            "pre_approval_seconds": None,
         },
         "b": {
             "llm_calls_made": 1,
@@ -714,6 +764,7 @@ async def test_list_reuses_completion_read_with_unchanged_response(
             "files_examined": None,
             "files_traced_beyond_diff": None,
             "wall_clock_seconds": None,
+            "pre_approval_seconds": None,
         },
         "c": {
             "llm_calls_made": 0,
@@ -725,6 +776,7 @@ async def test_list_reuses_completion_read_with_unchanged_response(
             "files_examined": None,
             "files_traced_beyond_diff": None,
             "wall_clock_seconds": None,
+            "pre_approval_seconds": None,
         },
     }
     for name, metrics in expected_metrics.items():
@@ -744,25 +796,17 @@ async def test_list_reuses_completion_read_with_unchanged_response(
         str(ids["c"]): True,
     }
 
-    # Count physical reads after response checks so baseline failure identifies
-    # the duplicate lookup while preserving the supported response contract.
     selects = [(sql, params) for sql, params in statements if sql.startswith(("select ", "with "))]
     assert len(selects) == len(statements), statements
-    assert len(selects) <= 10, f"Review list issued {len(selects)} SELECTs; budget is 10"
-    completion_reads = [
-        (sql, params)
+    assert len(selects) <= 8, f"Review list issued {len(selects)} SELECTs; budget is 8"
+    [completion_params] = [
+        params
         for sql, params in selects
         if "from audit_events" in sql and "synthesize_completed" in params.values()
     ]
-    for rid, item in items.items():
-        review_reads = [
-            sql
-            for sql, params in completion_reads
-            if rid in {str(value) for value in params.values()}
-        ]
-        assert len(review_reads) == 1, (rid, review_reads)
-        eval_value = "true" if item["is_eval"] else "false"
-        assert f"audit_events.is_eval = {eval_value}" in review_reads[0]
+    assert {str(value) for value in completion_params.values() if isinstance(value, UUID)} == set(
+        items
+    )
 
 
 @pytest.mark.asyncio
@@ -797,6 +841,7 @@ async def test_json_null_completion_preserves_pending_metrics_and_severity(
         "files_examined": None,
         "files_traced_beyond_diff": None,
         "wall_clock_seconds": None,
+        "pre_approval_seconds": None,
     }
     assert item["metrics"] == expected_metrics
     assert item["severity_counts"] == {
