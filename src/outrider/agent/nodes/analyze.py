@@ -2035,6 +2035,32 @@ def _concat_clipped_hunks(clipped_per_unit: tuple[tuple[str, ...], ...]) -> str:
     return "\n\n".join(blocks)
 
 
+def _render_scope_diff(
+    scopes: tuple[ScopeUnit, ...],
+    clips: tuple[tuple[str, ...], ...],
+    patched_file: PatchedFile | None,
+    head: bytes,
+) -> str:
+    """Show a nested edit once when its enclosing hunk verifies against HEAD."""
+    original = _concat_clipped_hunks(clips)
+    # A nested HEAD scope may own BASE removals outside its parent's clip.
+    if len(scopes) < 2 or patched_file is None or patched_file_has_removed_lines(patched_file):
+        return original
+    owners = scope_unit_body_owners(scopes)
+    outer_clips = tuple(hunks for index, hunks in enumerate(clips) if owners[index] == index)
+    if len(outer_clips) == len(clips):
+        return original
+    compact = _concat_clipped_hunks(outer_clips)
+    # A stale parent can hide a valid child quote. Moving the final hunk separator
+    # can also add or remove a provable newline. Keep both sides of that comparison exact.
+    if compact != original and all(
+        scoped_diff_evidence(scopes[0].file_path, diff, head).fully_matches_head
+        for diff in (compact, original)
+    ):
+        return compact
+    return original
+
+
 async def _emit_skip(
     *,
     file_examination_sink: FileExaminationSink,
@@ -2381,6 +2407,7 @@ class _PreparedFileReview:
     module_all_scope_units: tuple[ScopeUnit, ...]
     module_added_ranges: tuple[tuple[int, int], ...]
     module_matches: tuple[ObservedMatch, ...]
+    scope_diff: str = ""
     base_scope_units: tuple[ScopeUnit, ...] = ()
     primary_context: _PrimaryRegionContext = _PrimaryRegionContext()
     readme_sources: dict[str, str] | None = None
@@ -2484,6 +2511,16 @@ def _select_structural_file_review(
         module_all_scope_units=module_all_scope_units,
         module_added_ranges=module_added_ranges,
         module_matches=module_matches,
+        scope_diff=(
+            _render_scope_diff(
+                decision.included_scope_units,
+                decision.included_clipped_hunks,
+                patched_file,
+                content_bytes,
+            )
+            if decision.mode == "clean"
+            else ""
+        ),
         base_scope_units=base_scope_units,
         primary_context=primary,
     )
@@ -2754,7 +2791,6 @@ def _prepare_file_prompt(
     source_side = prepared.source_side
     degradation_reason = decision.degradation_reason
     included_scope_units = decision.included_scope_units
-    included_clipped_hunks = decision.included_clipped_hunks
     degraded_mode = decision.mode == "degraded"
 
     # Run structural queries under the registered language grammar. Degraded
@@ -2838,7 +2874,7 @@ def _prepare_file_prompt(
                 fence_lang=_fence_lang_for(file_path),
             ),
             query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
-            diff_hunks=_concat_clipped_hunks(included_clipped_hunks),
+            diff_hunks=prepared.scope_diff,
             pass_index=pass_index,
             review_context=review_context,
             primary_source_context=primary_context.source,
@@ -2921,6 +2957,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     module_added_ranges = prepared.module_added_ranges
     module_matches = prepared.module_matches
     primary_context = prepared.primary_context
+    scope_diff = prepared.scope_diff
     primary_line_ranges = primary_context.line_ranges
     source_side = prepared.source_side
 
@@ -3071,6 +3108,9 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                 )
             included_scope_units = tuple(su for su, _ in kept)
             included_clipped_hunks = tuple(hunks for _, hunks in kept)
+            scope_diff = _render_scope_diff(
+                included_scope_units, included_clipped_hunks, patched_file, content_bytes
+            )
             # Keep proof IDs within the retained scopes. Both prompt and parser use this
             # filtered set, so a finding cannot cite proof from excluded code.
             query_match_id_set = _filter_query_ids_to_scopes(
@@ -3086,7 +3126,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
                     fence_lang=_fence_lang_for(changed_file.path),
                 ),
                 query_match_id_list=_assemble_query_match_id_list(query_match_id_set),
-                diff_hunks=_concat_clipped_hunks(included_clipped_hunks),
+                diff_hunks=scope_diff,
                 pass_index=pass_index,
                 review_context=review_context,
                 primary_source_context=primary_context.source,
@@ -3097,9 +3137,7 @@ async def _process_one_file(  # noqa: PLR0913, PLR0911, PLR0912, PLR0915 — orc
     # Only the clean first-pass prompt includes these clipped scope hunks.
     scoped_evidence = ScopedDiffEvidence()
     if not degraded_mode and pass_index == 0 and prepared.readme_sources is None:
-        scoped_evidence = scoped_diff_evidence(
-            changed_file.path, _concat_clipped_hunks(included_clipped_hunks), content_bytes
-        )
+        scoped_evidence = scoped_diff_evidence(changed_file.path, scope_diff, content_bytes)
 
     # Look up clean-pass cache entries after scope filtering. The key describes
     # the actual prompt and admission inputs; degraded files are not cacheable.

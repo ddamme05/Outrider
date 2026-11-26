@@ -8,8 +8,10 @@ public python-trio/trio pull requests, captured on November 12, 2026.
 
 The graph states retain both complete changed HEAD files, BASE source, patches,
 triage and recorded workflow fields. The test clears completed analysis and
-report fields in memory. It first reproduces the original requests exactly,
-then enables the existing optional helper context. Raw files remain unchanged.
+report fields in memory and compares every field of each request before enabling
+the optional helper context. The expected request for the Trio #3394 test file
+omits the second copy of the nested function's diff. The historical capture
+contains both copies. [Repeated hunk](trio-3394/nested-task.diff)
 
 The saved native answers are empty. Reusing them is a scripted source-delivery
 check, with no fresh generation or review-quality result. The regression checks

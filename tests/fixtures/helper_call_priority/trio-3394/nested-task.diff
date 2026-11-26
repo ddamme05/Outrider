@@ -1,0 +1,6 @@
+@@ -2922,0 +2927,5 @@ async def start_raiser() -> None:
++    async def task(*, task_status: _core.TaskStatus[None]) -> None:
++        e = ValueError("foo")
++        e.__cause__ = SyntaxError("bar")
++        e.__context__ = TypeError("baz")
++        raise e
