@@ -636,6 +636,7 @@ class AuditPersisterEventRequestFieldMismatchError(ValueError, metaclass=_Frozen
             "is_eval",
             "node_id",
             "context_summary",
+            "triage_input",
             "prompt_template_version",
             "degraded_mode",
             # §0b: pair the bool with its typed reason on the cross-check
@@ -2186,6 +2187,9 @@ class AuditPersister:
         _assert_exchange_fields_match(event, request, response)
 
         payload = _serialize_event_payload(event)
+        # Older readers validate payload against their strict audit union. Keep
+        # the optional receipt on the same immutable row, outside that payload.
+        triage_input = payload.pop("triage_input", None)
         retention_expires_at: datetime = (
             event.timestamp + self._retention_settings.llm_content_retention_ttl
         )
@@ -2228,6 +2232,7 @@ class AuditPersister:
                     timestamp=event.timestamp,
                     is_eval=event.is_eval,
                     payload=payload,
+                    triage_input=triage_input,
                 )
                 .on_conflict_do_nothing(index_elements=["event_id"])
                 .returning(AuditEventRow.event_id)
@@ -2248,20 +2253,22 @@ class AuditPersister:
                 # present) for the idempotency-match check, and return.
                 # The content INSERT only happens from the freshly-inserted-
                 # audit-row branch below.
-                existing_payload = await session.scalar(
-                    select(AuditEventRow.payload).where(AuditEventRow.event_id == event.event_id)
-                )
-                # The audit row's payload column is NOT NULL (per the schema);
-                # ON CONFLICT firing guarantees the row exists. If existing_payload
-                # came back None, the schema invariant is broken — fail loud rather
-                # than silently substituting `{}` for diagnostics.
-                if existing_payload is None:
+                existing = (
+                    await session.execute(
+                        select(AuditEventRow.payload, AuditEventRow.triage_input).where(
+                            AuditEventRow.event_id == event.event_id
+                        )
+                    )
+                ).one_or_none()
+                if existing is None or existing.payload is None:
                     raise AuditPersisterSchemaInvariantError(
                         event_id=event.event_id,
                         invariant="audit_events.payload NOT NULL",
                     )
-                existing_cmp = _strip_absent_pricing_context(existing_payload)
+                existing_cmp = _strip_absent_pricing_context(existing.payload)
                 new_cmp = _strip_absent_pricing_context(payload)
+                existing_cmp["triage_input"] = existing.triage_input
+                new_cmp["triage_input"] = triage_input
                 if existing_cmp != new_cmp:
                     raise AuditPersisterIdempotencyConflict(
                         event_id=event.event_id,

@@ -193,6 +193,7 @@ async def triage(
         node_id="triage",
         is_eval=state.is_eval,
         prompt_template_version=triage_prompt.VERSION,
+        triage_input=prompt_parts.triage_input,
         degraded_mode=False,
         response_schema_json=response_schema_json(len(file_paths)),
     )

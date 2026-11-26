@@ -20,11 +20,22 @@ import { prettyModel } from "../lib/modelLabel";
 import { AuditFeed } from "./AuditFeed";
 import { AuditEventSummary } from "./AuditEventSummary";
 import { CodeBlock, ImplementationEvidence } from "./CodeBlock";
+import { TriageInput } from "./TriageInput";
 
 type TimelineData = components["schemas"]["ReplayTimelineResponse"];
 type Phase = NonNullable<TimelineData["phases"]>[number];
 type FindingContent = TimelineData["findings"][number];
 type LLMContent = TimelineData["llm_exchanges"][number];
+type LLMCall = components["schemas"]["LLMCallEvent"];
+type SourceRange = components["schemas"]["ContextManifestEntry"];
+
+const inclusionLabels: Record<SourceRange["inclusion_reason"], string> = {
+  changed_scope: "Changed scope",
+  changed_region: "Changed region",
+  same_file_context: "Same-file context",
+  trace_expansion: "Trace expansion",
+  captured_reference: "Captured reference",
+};
 
 // Proof comes from permanent finding events, independent of retained content.
 type ProofMeta = { tier: string; queryMatchId: string | null; tracePath: string[] | null };
@@ -82,12 +93,6 @@ function flatEventBody(event: AuditEvent): ReactNode {
       return (
         <>
           <b>{event.node_id}</b> · marker <b>{event.marker}</b>
-        </>
-      );
-    case "file_examination":
-      return (
-        <>
-          examined <span className="mono">{event.file_path}</span>
         </>
       );
     case "trace_decision":
@@ -165,9 +170,28 @@ function FindingContentPanel({ content, proof }: { content: FindingContent; proo
   );
 }
 
-export function LLMContentPanel({ content }: { content: LLMContent }) {
+export function LLMContentPanel({ content, call }: { content: LLMContent; call: LLMCall }) {
+  const ranges = call.context_summary ?? [];
   return (
     <div className="tl-content">
+      {call.node_id === "triage" && call.triage_input && <TriageInput coverage={call.triage_input} />}
+      {ranges.length > 0 ? (
+        <details className="tl-source-ranges">
+          <summary>Recorded source ranges ({ranges.length})</summary>
+          <ul>
+            {ranges.map((range) => (
+              <li key={JSON.stringify([range.file_path, range.scope_unit_name])}>
+                <code>
+                  {range.file_path}:{range.line_start}{range.line_end !== range.line_start ? `–${range.line_end}` : ""}
+                </code>
+                {" · "}{range.source_side ? `${range.source_side.toUpperCase()} · ` : ""}
+                {inclusionLabels[range.inclusion_reason]}
+                {range.scope_unit_name ? ` · ${range.scope_unit_name}` : ""}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
       {content.content_redacted ? (
         <RedactedNote kind="llm" sweepAt={content.redaction_sweep_at} />
       ) : (
@@ -300,7 +324,9 @@ export function ReplayFeed({
           <span className="af-summary"><AuditEventSummary event={event} /></span>
         </div>
         {open && findingContent && proof ? <FindingContentPanel content={findingContent} proof={proof} /> : null}
-        {open && llmContent ? <LLMContentPanel content={llmContent} /> : null}
+        {open && llmContent && event.event_type === "llm_call" ? (
+          <LLMContentPanel content={llmContent} call={event} />
+        ) : null}
       </div>
     );
   };
@@ -325,7 +351,9 @@ export function ReplayFeed({
           <span className="ae-time mono">{relativeTime(event)}</span>
         </div>
         {open && findingContent && proof ? <FindingContentPanel content={findingContent} proof={proof} /> : null}
-        {open && llmContent ? <LLMContentPanel content={llmContent} /> : null}
+        {open && llmContent && event.event_type === "llm_call" ? (
+          <LLMContentPanel content={llmContent} call={event} />
+        ) : null}
       </div>
     );
   };

@@ -44,6 +44,9 @@ expires, only its metadata remains. Unknown categories have no assigned policy
 priority and cannot be approved from this panel. An accepted finding disputed by a
 follow-up check joins the ordinary approval queue even at low priority; these
 verification holds allow approve, reject or suppress, without a severity override.
+If Outrider could not use a model’s entire analysis reply, the Findings panel
+shows how many replies were rejected. Expand the notice to see the affected
+files. The count comes from the verified replay and includes repeat passes.
 Findings about whole-file removals also require approval. Their **Removed BASE**
 label identifies old source; approved findings appear in the review body and have
 no replacement suggestion on deleted lines.
@@ -51,6 +54,21 @@ no replacement suggestion on deleted lines.
 When Outrider reuses a file review, open its **Original review** link in this
 panel or the audit feed. The source review shows the model exchange for that
 file, including the retention notice if its content has expired.
+
+To see which code a particular model call received, expand its `llm_call` row
+and open **Recorded source ranges**. The paths and inclusive line numbers remain
+available after the prompt expires. An exchange without a range list can still
+contain code in its saved prompt.
+
+For a triage call, **Triage input** lists the paths included in its request and
+the UTF-8 byte count of each supplied patch before prompt formatting. It
+distinguishes a file listed only by its metadata from a supplied empty patch.
+If the record omits path details, the panel shows how many. These counts and
+paths remain available after the prompt expires when the call recorded them.
+
+File events describe a different part of the review. **Fetched** means intake
+retrieved the file. **Skipped in analysis** gives the recorded reason its file
+review was skipped. Triage may already have received its diff in an earlier call.
 
 ## Know where each responsibility lives
 

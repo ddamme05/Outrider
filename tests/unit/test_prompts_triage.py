@@ -565,3 +565,64 @@ def test_tiers_describe_actual_analysis_work_and_context() -> None:
     assert "no analyze-stage review" in text
     assert "same context selection" in text
     assert "don't warrant the full deep-context pipeline" not in text
+
+
+def test_triage_input_records_bytes_for_supplied_patches_and_missing_patches() -> None:
+    partial = "@@ -1,4 +1,6 @@\n+partial 😀"
+    files = (
+        _build_changed_file(path="metadata.bin", patch=None),
+        _build_changed_file(path="empty.py", patch=""),
+        _build_changed_file(path="partial.py", patch=partial),
+    )
+    parts = render(_build_pr_context(changed_files=files))
+    assert "## metadata.bin\n[no textual diff available]" in parts.user_prompt
+    assert "## empty.py\n```diff\n\n```" in parts.user_prompt
+    assert partial in parts.user_prompt
+    assert parts.triage_input is not None
+    assert parts.triage_input.model_dump(mode="json") == {
+        "files": [
+            {"file_path": "metadata.bin", "patch_bytes": None},
+            {"file_path": "empty.py", "patch_bytes": 0},
+            {"file_path": "partial.py", "patch_bytes": len(partial.encode("utf-8"))},
+        ],
+        "omitted_files": 0,
+    }
+
+
+def test_triage_input_omissions_do_not_shorten_the_prompt() -> None:
+    files = tuple(_build_changed_file(path=f"src/{i}/{'é' * 950}.ts") for i in range(99))
+    short = _build_changed_file(path="last.ts")
+    parts = render(_build_pr_context(changed_files=(*files, short)))
+    assert all(f"## {file.path}\n" in parts.user_prompt for file in (*files, short))
+    assert parts.triage_input is not None
+    covered = parts.triage_input.files
+    assert covered[-1].file_path == short.path
+    assert parts.triage_input.omitted_files == len(files) + 1 - len(covered) > 0
+    assert len(parts.triage_input.model_dump_json().encode()) <= 16 * 1024
+
+
+def test_triage_input_distinguishes_empty_review_from_unrecorded_history() -> None:
+    parts = render(_build_pr_context(changed_files=()))
+    assert parts.triage_input is not None
+    assert parts.triage_input.files == ()
+    assert parts.triage_input.omitted_files == 0
+
+
+def test_triage_input_file_count_and_unrepresentable_paths_leave_the_prompt_intact() -> None:
+    paths = ["../outside", *[f"{i}.ts" for i in range(100)]]
+    files = tuple(_build_changed_file(path=path) for path in paths)
+    result = render(_build_pr_context(changed_files=files))
+    assert all(f"## {path}\n" in result.user_prompt for path in paths)
+    assert result.triage_input is not None
+    assert tuple(e.file_path for e in result.triage_input.files) == tuple(paths[1:100])
+    assert result.triage_input.omitted_files == 2
+
+
+def test_triage_input_rejects_oversized_audit_payload() -> None:
+    from pydantic import ValidationError
+
+    from outrider.audit.events import TriageInputCoverage, TriagePatchInput
+
+    long_path = TriagePatchInput(file_path="é" * 1000, patch_bytes=None)
+    with pytest.raises(ValidationError, match="byte limit"):
+        TriageInputCoverage(files=(long_path,) * 10, omitted_files=0)

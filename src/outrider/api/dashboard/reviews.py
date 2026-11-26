@@ -868,6 +868,7 @@ async def get_review_events(request: Request, review_id: UUID) -> ReviewEventsRe
                     AuditEvent.is_eval,
                     AuditEvent.phase_key,
                     AuditEvent.payload,
+                    AuditEvent.triage_input,
                     AuditEvent.sequence_number,
                 )
                 .where(
@@ -888,6 +889,7 @@ async def get_review_events(request: Request, review_id: UUID) -> ReviewEventsRe
             events.append(
                 reconstruct_event_from_row(
                     payload=event_row.payload,
+                    triage_input=event_row.triage_input,
                     sequence_number=event_row.sequence_number,
                     event_id=event_row.event_id,
                     review_id=event_row.review_id,

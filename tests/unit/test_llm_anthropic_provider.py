@@ -2220,3 +2220,28 @@ async def test_current_native_models_complete_with_sdk_wire_and_versioned_cost(m
     ) == (40_000, 30_000, 30_001, 100)
     assert persister.calls[0][0].cost_usd == float(expected)
     assert persister.calls[0][0].pricing_version == PRICING_VERSION
+
+
+@pytest.mark.asyncio
+async def test_triage_input_survives_anthropic_exchange_without_changing_sdk_arguments() -> None:
+    from outrider.audit.events import TriageInputCoverage, TriagePatchInput
+    from outrider.llm.anthropic_provider import _build_sdk_kwargs
+
+    coverage = TriageInputCoverage(
+        files=(TriagePatchInput(file_path="a.py", patch_bytes=12),), omitted_files=0
+    )
+    plain = _request(node_id="triage", context_summary=(), prompt_template_version="triage-v4")
+    request = plain.model_copy(update={"triage_input": coverage})
+    persister = _RecordingPersister()
+    provider = AnthropicProvider(
+        api_key=_api_key(), model_config=_model_config(), persister=persister
+    )
+    try:
+        with _patched_create() as mock:
+            await provider.complete(request)
+    finally:
+        await provider.aclose()
+    assert mock.call_args.kwargs == _build_sdk_kwargs(plain)
+    event, saved_request, _ = persister.calls[0]
+    assert event.triage_input == saved_request.triage_input == coverage
+    assert "triage_input" not in plain.model_dump(mode="json")

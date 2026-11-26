@@ -172,6 +172,12 @@ docker compose --env-file deploy/.env --profile tls -f deploy/docker-compose.pro
 
 The image builds the dashboard and installs dependencies, a one-shot `migrate` container applies
 database migrations before the app starts, and the app serves both the API and the dashboard.
+
+If you roll back the application after upgrading to revision `f29c7b41e3da`,
+keep the upgraded database and its matching migration image. The previous
+application can read reviews on that schema. Once a review has recorded which
+patches triage received, the migration refuses to drop that audit evidence.
+
 `GET /health` returns `{"status":"ok"}` once the app has booted. This confirms the app is
 running; it does not check whether the database or model provider is reachable.
 

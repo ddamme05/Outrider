@@ -1621,6 +1621,7 @@ table.details-grid .num {
 
 /* AuditFeed rows use the shared event-family palette (.ev-c-*). */
 .audit-feed {
+  container: audit / inline-size;
   border-top: 1px solid var(--line);
 }
 /* column-label header — same grid + left edge as .afrow so cells line up */
@@ -1666,6 +1667,8 @@ table.details-grid .num {
   align-items: center;
   gap: 5px;
   width: fit-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   font-family: var(--mono);
   font-size: 10.5px;
   padding: 1px 7px 1px 6px;
@@ -1696,6 +1699,33 @@ table.details-grid .num {
   color: var(--faint);
   font-size: 11px;
   text-align: right;
+}
+
+.ev-c-file .af-summary,
+.ev-c-file .ae-body {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Give the file path and skip reason a full row when the audit table narrows. */
+@container audit (max-width: 42rem) {
+  .afhead,
+  .afrow {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    gap: 4px 8px;
+  }
+  .afhead > :nth-child(4) {
+    display: none;
+  }
+  .afrow .af-summary {
+    grid-row: 2;
+    grid-column: 1 / -1;
+  }
+  .afrow .af-ts {
+    grid-row: 1;
+    grid-column: 4;
+    max-width: 11ch;
+  }
 }
 /* event-family palette: tint the row's left edge + the type chip */
 .ev-c-model {
@@ -2445,6 +2475,23 @@ table.policy tbody tr:hover {
   font-size: 12px;
   line-height: 1.5;
 }
+.tl-source-ranges,
+.tl-triage-input,
+.rejected-replies {
+  overflow-wrap: anywhere;
+  margin-bottom: 6px;
+}
+.tl-source-ranges summary,
+.tl-triage-input summary,
+.rejected-replies summary {
+  cursor: pointer;
+}
+.tl-source-ranges ul,
+.tl-triage-input ul,
+.rejected-replies ul {
+  margin: 4px 0;
+  padding-left: 20px;
+}
 .tl-c-proof {
   font-size: 11px;
   color: var(--faint);
@@ -2916,15 +2963,6 @@ tr.review-row:hover {
   .rrow {
     grid-template-columns: 96px 1fr auto;
     gap: 12px;
-  }
-
-  /* Scroll header and rows together, retaining column alignment. */
-  .audit-feed {
-    overflow-x: auto;
-  }
-  .afhead,
-  .afrow {
-    min-width: 560px;
   }
 
   /* Narrow timeline labels and scroll wide proof blocks. */

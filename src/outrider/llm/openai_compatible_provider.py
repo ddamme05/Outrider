@@ -421,6 +421,7 @@ class OpenAICompatibleProvider:
             prompt_hash=prompt_hash,
             cache_hit=(response.cache_read_tokens > 0),
             context_summary=request.context_summary,
+            triage_input=request.triage_input,
             prompt_template_version=request.prompt_template_version,
             system_prompt_hash=system_prompt_hash,
             degraded_mode=request.degraded_mode,

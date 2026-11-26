@@ -29,7 +29,7 @@ test("each row carries its --ev-* family class; unknown event types fall back to
         }),
         ev("finding", 2, { finding_type: "SQL_INJECTION", severity: "high", file_path: "a.py" }),
         ev("finding_proposal_rejected", 3),
-        ev("file_examination", 4, { file_path: "b.py" }),
+        ev("file_examination", 4, { file_path: "b.py", examination_type: "analyze", parse_status: "clean" }),
         ev("trace_decision", 5, { resolution_status: "resolved" }),
         ev("hitl_decision", 6),
         ev("publish_routing", 7),
@@ -53,6 +53,24 @@ test("each row carries its --ev-* family class; unknown event types fall back to
     "ev-c-framing",
     "ev-c-complete",
     "ev-c-framing", // unmapped → neutral fallback, never uncolored
+  ]);
+});
+
+test("file rows show the recorded intake and parse outcomes", () => {
+  const rows = [
+    { examination_type: "intake_fetch", parse_status: "skipped", skip_reason: "BINARY" },
+    { examination_type: "analyze", parse_status: "clean" },
+    { examination_type: "analyze", parse_status: "degraded" },
+    { examination_type: "analyze", parse_status: "failed" },
+  ];
+  const { container } = render(
+    <AuditFeed events={rows.map((row, i) => ev("file_examination", i + 1, { ...row, file_path: "a.py" }))} />,
+  );
+  expect([...container.querySelectorAll(".af-summary")].map((row) => row.textContent)).toEqual([
+    "Skipped at intake · binary · a.py",
+    "Examined a.py",
+    "Analysis · parse degraded · a.py",
+    "Analysis · parse failed · a.py",
   ]);
 });
 

@@ -94,6 +94,9 @@ function ReviewDetailView({ reviewId }: { reviewId: string }) {
   // Unknown counts stay visibly unknown; unavailable data does not mean zero.
   const eventsLoaded = eventsQuery.data !== undefined;
   const eventCountLabel = eventsLoaded ? String(eventsQuery.data.total) : eventsQuery.error ? "—" : "…";
+  const rejectedReplies = timelineQuery.data?.replay_equivalent
+    ? timelineQuery.data.events.filter((event) => event.event_type === "analyze_response_rejected")
+    : [];
   const findingsLoaded = findingsQuery.data !== undefined;
   const findingCountLabel = findingsLoaded
     ? String(sortedFindings.length)
@@ -245,6 +248,18 @@ function ReviewDetailView({ reviewId }: { reviewId: string }) {
           </div>
         </div>
         <div className="panel-b">
+          {rejectedReplies.length > 0 && (
+            <details className="queue-notice rejected-replies">
+              <summary>
+                Outrider could not use {rejectedReplies.length} analysis {rejectedReplies.length === 1 ? "reply" : "replies"}.
+              </summary>
+              <ul>
+                {[...new Set(rejectedReplies.map((event) => event.file_path))].map((path) => (
+                  <li key={path}><code>{path}</code></li>
+                ))}
+              </ul>
+            </details>
+          )}
           {findingsQuery.isLoading ? (
             <p>Loading findings…</p>
           ) : findingsQuery.error ? (

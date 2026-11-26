@@ -22,12 +22,23 @@ export function summarizeEvent(event: AuditEvent): string {
     }
     case "finding":
       return `${event.finding_type} · ${event.severity} · ${event.file_path}`;
+    case "analyze_response_rejected":
+      return `Rejected analysis reply · ${event.file_path}`;
     case "review_phase":
       return event.marker;
     case "review_execution_failed":
       return "Worker stopped before approval or publication";
-    case "file_examination":
-      return event.file_path;
+    case "file_examination": {
+      const intake = event.examination_type === "intake_fetch";
+      if (event.parse_status === "skipped") {
+        const reason = event.skip_reason?.toLowerCase().replaceAll("_", " ");
+        return `Skipped ${intake ? "at intake" : "in analysis"}${reason ? ` · ${reason}` : ""} · ${event.file_path}`;
+      }
+      if (event.parse_status === "clean") {
+        return `${intake ? "Fetched" : "Examined"} ${event.file_path}`;
+      }
+      return `${intake ? "Intake" : "Analysis"} · parse ${event.parse_status} · ${event.file_path}`;
+    }
     case "trace_decision":
       return event.resolution_status;
     case "agent_transition":

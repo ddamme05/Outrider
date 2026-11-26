@@ -163,6 +163,60 @@ test("clicking the replay verdict opens the explainer modal", async () => {
   ).toBeInTheDocument();
 });
 
+const rejectedReply = {
+  event_type: "analyze_response_rejected",
+  event_id: "reject-1",
+  review_id: "r1",
+  is_eval: false,
+  node_id: "analyze",
+  file_path: "src/api_request_handler.py",
+  timestamp: "2026-06-12T05:29:00.617994Z",
+  rejection_reason: "raw_response_unparseable",
+  rejection_detail: " x1",
+  response_hash: "f56257e1861561bc4f46544857f91173e9b91a2abaf37046e7a2dc1064fb1f00",
+};
+
+test("explains an unusable analysis reply beside empty findings and identifies the file in the audit", async () => {
+  const user = userEvent.setup();
+  mount({
+    detail: detail({ status: "completed" }),
+    findings: [],
+    timeline: timelineData({ events: [rejectedReply], inter_phase_events: [rejectedReply] }),
+  });
+  const empty = await screen.findByText("No findings recorded for this review.");
+  const panel = within(empty.parentElement!);
+  await user.click(await panel.findByText("Outrider could not use 1 analysis reply."));
+  expect(panel.getByText(rejectedReply.file_path)).toBeVisible();
+  expect(screen.getByText(`Rejected analysis reply · ${rejectedReply.file_path}`)).toBeVisible();
+});
+
+test("counts rejected replies, lists each affected file once, and keeps accepted findings visible", async () => {
+  const user = userEvent.setup();
+  const anotherPass = { ...rejectedReply, event_id: "reject-2", phase_key: null };
+  const anotherFile = { ...rejectedReply, event_id: "reject-3", file_path: "src/client.py" };
+  mount({
+    findings: [finding({ title: "Unexpected empty result" })],
+    timeline: timelineData({ mode: "metadata_only", events: [rejectedReply, anotherPass, anotherFile] }),
+  });
+  const toggle = await screen.findByText("Outrider could not use 3 analysis replies.");
+  await user.click(toggle);
+  const notice = within(toggle.closest("details")!);
+  expect(notice.getAllByText(rejectedReply.file_path)).toHaveLength(1);
+  expect(notice.getByText(anotherFile.file_path)).toBeVisible();
+  expect(await screen.findByText("Unexpected empty result")).toBeVisible();
+  expect(screen.queryByText("No findings recorded for this review.")).toBeNull();
+});
+
+test.each([
+  ["a valid zero-finding review", timelineData()],
+  ["events without a verified replay", timelineData({ replay_equivalent: false, phases: null, events: [rejectedReply] })],
+])("does not claim a rejected reply for %s", async (_name, timeline) => {
+  mount({ findings: [], timeline });
+  await screen.findByRole("button", { name: /what replay-equivalent means/i });
+  expect(await screen.findByText("No findings recorded for this review.")).toBeVisible();
+  expect(screen.queryByText(/Outrider could not use/)).toBeNull();
+});
+
 test("metrics strip surfaces files_examined + files_traced_beyond_diff", async () => {
   mount(); // detail() defaults: 5 examined, 2 traced beyond the diff
   const filesCard = (await screen.findByText("Files")).closest(".ms-card");
@@ -553,24 +607,29 @@ test("saved warnings link to each file's original review, including empty reused
   expect(await screen.findByText("No new model warnings were saved in this review.")).toBeVisible();
 });
 
-test.each(["retained", "expired", "unverified"])("the original exchange honors %s content", async (mode) => {
+test.each(["retained", "expired", "unverified", "missing phases"])("the original exchange honors %s content", async (mode) => {
   const user = userEvent.setup();
   const cache = "c".repeat(64);
   const phase = "file:tests/bin.js#0";
   const lookup = { event_type: "cache_lookup", node_id: "analyze", event_id: "lookup", phase_key: phase,
     outcome: "miss", cache_key: cache, file_path: "tests/bin.js" };
   const call = { event_type: "llm_call", node_id: "analyze", event_id: "wanted", phase_key: phase,
-    model: "gpt", input_tokens: 10, output_tokens: 2, cost_usd: 0 };
-  const sibling = { ...call, event_id: "sibling", phase_key: "file:tests/other.js#0" };
+    model: "gpt", input_tokens: 10, output_tokens: 2, cost_usd: mode === "expired" ? null : 0,
+    cached_tokens: 7, ...(mode === "expired" ? {} : { cache_write_tokens: 3 }),
+    context_summary: [{ file_path: "lib/bin.js", line_start: 3, line_end: 9,
+      scope_unit_name: "bucket", inclusion_reason: "captured_reference" }] };
+  const sibling = { ...call, event_id: "sibling", phase_key: "file:tests/other.js#0",
+    context_summary: [{ ...call.context_summary[0], file_path: "lib/other.js" }] };
   mount({ search: `?cache=${cache}`, timeline: timelineData({
-    replay_equivalent: mode !== "unverified", phases: mode === "unverified" ? null : [],
+    replay_equivalent: mode !== "unverified", phases: mode === "unverified" || mode === "missing phases" ? null : [],
     events: [lookup, sibling, call], llm_exchanges: [
       { event_id: "sibling", prompt: "Sibling prompt", completion: "Sibling answer", content_redacted: false },
       { event_id: "wanted", prompt: "Target prompt", completion: "Target answer", content_redacted: mode === "expired" },
     ],
   }) });
-  if (mode === "unverified") {
+  if (mode === "unverified" || mode === "missing phases") {
     expect(await screen.findByText(/original file analysis could not be identified/i)).toBeVisible();
+    expect(screen.queryByText(/Recorded source ranges/)).toBeNull();
     expect(screen.queryByText("Target answer")).toBeNull();
     return;
   }
@@ -578,6 +637,15 @@ test.each(["retained", "expired", "unverified"])("the original exchange honors %
   const section = within(heading.closest("section")!);
   await user.click(section.getByText("Model exchange for tests/bin.js"));
   expect(section.queryByText("Sibling answer")).toBeNull();
+  const tokens = mode === "expired" ? /input unavailable \/ 2 out/ : /20 in \/ 2 out/;
+  expect(section.getByText(tokens)).toHaveTextContent(mode === "expired" ? "unpriced" : "$0.00");
+  const ranges = section.getByText("Recorded source ranges (1)");
+  expect(ranges.closest("details")).not.toHaveAttribute("open");
+  await user.click(ranges);
+  expect(section.getByText("lib/bin.js:3–9")).toBeVisible();
+  expect(section.getByRole("listitem")).toHaveTextContent("Captured reference · bucket");
+  expect(section.getByRole("listitem")).not.toHaveTextContent(/HEAD|BASE/);
+  expect(section.queryByText(/lib\/other\.js/)).toBeNull();
   if (mode === "expired") {
     expect(section.getByText(/Content redacted/)).toBeVisible();
     expect(section.queryByText("Target answer")).toBeNull();

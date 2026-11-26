@@ -14,11 +14,16 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from outrider.agent import eval_driver, run_review
+from outrider.agent import eval_driver, run_review, run_review_persisting
 from outrider.agent.eval_driver import CostProbe, EvalDriverError, _FixtureScriptedProvider
+from outrider.audit.events import LLMCallEvent
+from outrider.audit.replay import AuditReplayer
 from outrider.coordinates import COORDINATES_IMPORT_PATH_RESOLVER
+from outrider.sweep.purge_expired import purge_expired
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
     from outrider.llm.base import LLMExchangePersister, LLMRequest, LLMResponse
 
 _TRACE_FIXTURE = Path(__file__).parent / "fixtures/mock_github/handler_to_model_trace.json"
@@ -55,6 +60,44 @@ def _fixture_without_responses(tmp_path: Path) -> tuple[Path, dict[str, list[str
     fixture_path = tmp_path / "provider.json"
     fixture_path.write_text(json.dumps(payload), encoding="utf-8")
     return fixture_path, responses
+
+
+async def test_scripted_triage_input_replays_after_prompt_expiry(
+    eval_db: str,
+    eval_db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    files = json.loads(_TRACE_FIXTURE.read_bytes())["files"]
+    expected = {
+        "files": [
+            {"file_path": file["path"], "patch_bytes": len(file["patch"].encode("utf-8"))}
+            for file in files
+        ],
+        "omitted_files": 0,
+    }
+    result = await run_review_persisting(_TRACE_FIXTURE, db_url=eval_db)
+    replayer = AuditReplayer(session_factory=eval_db_session_factory)
+    retained = await replayer.reconstruct(result.review_id)
+    (triage,) = (
+        e for e in retained.events if isinstance(e, LLMCallEvent) and e.node_id == "triage"
+    )
+    assert triage.triage_input is not None
+    assert triage.triage_input.model_dump(mode="json") == expected
+    assert any(x.event.event_id == triage.event_id and x.prompt for x in retained.llm_exchanges)
+    async with eval_db_session_factory.begin() as session:
+        await session.execute(
+            text(
+                "UPDATE llm_call_content SET retention_expires_at = now() - interval '1 day' "
+                "WHERE event_id = :id"
+            ),
+            {"id": triage.event_id},
+        )
+        counts = await purge_expired(await session.connection())
+        assert counts["llm_call_content"] == 1
+    replay = await replayer.reconstruct(result.review_id)
+    assert triage in replay.events
+    (exchange,) = (x for x in replay.llm_exchanges if x.event.event_id == triage.event_id)
+    assert exchange.prompt is None and exchange.completion is None
+    await replayer.assert_replay_equivalent(result.review_id)
 
 
 def test_run_review_injected_provider_drives_trace_and_closes(tmp_path: Path) -> None:

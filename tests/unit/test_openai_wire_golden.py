@@ -237,3 +237,39 @@ async def test_current_openai_models_request_and_reasoning_accounting(
     assert event.profile_contract_digest == response.profile_contract_digest
     assert event.cost_usd is None
     assert event.cost_unpriced_reason == CostUnpricedReason.BILLING_PENDING
+
+
+@pytest.mark.asyncio
+async def test_triage_input_survives_openai_exchange_without_changing_sdk_arguments() -> None:
+    from outrider.audit.events import TriageInputCoverage, TriagePatchInput
+
+    coverage = TriageInputCoverage(
+        files=(TriagePatchInput(file_path="a.py", patch_bytes=None),), omitted_files=0
+    )
+    plain = _golden_request().model_copy(
+        update={
+            "model": "gpt-6.2-sol",
+            "node_id": "triage",
+            "context_summary": (),
+            "prompt_template_version": "triage-v4",
+            "response_schema_json": None,
+        }
+    )
+    request = plain.model_copy(update={"triage_input": coverage})
+    persister = _RecordingPersister()
+    provider = OpenAICompatibleProvider(
+        api_key=SecretStr("openai-test-key"),
+        profile=OPENAI_PROFILE,
+        persister=persister,
+        models=(plain.model,),
+    )
+    mock = AsyncMock(return_value=_gpt56_completion())
+    try:
+        with patch.object(AsyncCompletions, "create", mock):
+            await provider.complete(request)
+    finally:
+        await provider.aclose()
+    assert mock.call_args.kwargs == _build_sdk_kwargs(plain, profile=OPENAI_PROFILE)
+    event, saved_request, _ = persister.calls[0]
+    assert event.triage_input == saved_request.triage_input == coverage
+    assert "triage_input" not in plain.model_dump(mode="json")
