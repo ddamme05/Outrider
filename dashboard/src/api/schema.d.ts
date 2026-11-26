@@ -1878,6 +1878,7 @@ export interface components {
             cache_hit: boolean;
             /** Context Summary */
             context_summary: components["schemas"]["ContextManifestEntry"][];
+            triage_input?: components["schemas"]["TriageInputCoverage"] | null;
             /** Prompt Template Version */
             prompt_template_version: string;
             /** System Prompt Hash */
@@ -3668,6 +3669,32 @@ export interface components {
             resolved_candidate_paths: string[];
             /** Trace Path */
             trace_path?: string[] | null;
+        };
+        /**
+         * TriageInputCoverage
+         * @description Bounded input metadata for one model exchange. Older calls have no coverage.
+         */
+        TriageInputCoverage: {
+            /** Files */
+            files: components["schemas"]["TriagePatchInput"][];
+            /**
+             * Omitted Files
+             * @description Number of rendered file entries omitted from this metadata.
+             */
+            omitted_files: number;
+        };
+        /**
+         * TriagePatchInput
+         * @description Patch data for one file in a triage request, excluding headings and fences.
+         */
+        TriagePatchInput: {
+            /** File Path */
+            file_path: string;
+            /**
+             * Patch Bytes
+             * @description UTF-8 bytes of supplied patch text, or null when the request only listed the file.
+             */
+            patch_bytes: number | null;
         };
         /**
          * TrivialityReason

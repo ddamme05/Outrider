@@ -220,14 +220,18 @@ test("flat-feed body prettifies the model slug (GLM-5.2, never the raw Fireworks
 });
 
 test("non-equivalent verdict degrades to the flat feed + banner (FUP-125)", () => {
-  const ev = llmEvent("e1", "analyze", 0.27);
+  const ev = { ...llmEvent("e1", "triage", 0.27),
+    triage_input: { files: [{ file_path: "src/bin.js", patch_bytes: 1750 }], omitted_files: 0 } };
   render(
     <ReplayFeed
-      data={data({ replay_equivalent: false, phases: null, reason: "drift", events: [ev] })}
+      data={data({ replay_equivalent: false, phases: null, reason: "drift",
+        events: [ev], llm_exchanges: [llmContent("e1")] })}
     />,
   );
   expect(screen.getByText(/phase grouping is unavailable/)).toBeInTheDocument();
   expect(screen.getByText("llm_call")).toBeInTheDocument();
+  expect(screen.queryByText(/Triage input/)).toBeNull();
+  expect(screen.queryByRole("button", { name: /llm_call/ })).toBeNull();
   expect(document.querySelector(".tl-phase")).toBeNull();
 });
 
@@ -365,6 +369,68 @@ test.each([false, true])("the opened call shows its recorded source ranges in fl
   expect(screen.getByText("old.ts:12")).toBeVisible();
   expect(screen.getByText("old.ts:12").closest("li")).toHaveTextContent("BASE · Changed scope · oldValue");
   expect(screen.getByText("new.ts:5–7").closest("li")).toHaveTextContent("HEAD · Changed region");
+});
+
+test.each([false, true])("expands the recorded D3 triage input in flat=%s replay", async (flat) => {
+  const user = userEvent.setup();
+  const call = { ...llmEvent("d3-triage", "triage", 0.01), triage_input: {
+    files: [
+      { file_path: "src/bin.js", patch_bytes: 1750 },
+      { file_path: "test/bin-test.js", patch_bytes: 1490 },
+    ],
+    omitted_files: 0,
+  } };
+  render(<ReplayFeed flat={flat} data={data({
+    events: [call], phases: [phaseWith([call], "triage")], llm_exchanges: [llmContent("d3-triage")],
+  })} />);
+  expect(screen.queryByText(/Triage input/)).toBeNull();
+  await user.click(screen.getByRole("button", { name: /llm_call/ }));
+  await user.click(screen.getByText("Triage input (2 files)"));
+  expect(screen.getByText("src/bin.js").closest("li")).toHaveTextContent(`${(1750).toLocaleString()} patch bytes`);
+  expect(screen.getByText("test/bin-test.js").closest("li")).toHaveTextContent(`${(1490).toLocaleString()} patch bytes`);
+  expect(screen.getByText("the prompt text")).toBeVisible();
+});
+
+test("redacted triage input distinguishes metadata, empty patches and omitted path details", async () => {
+  const user = userEvent.setup();
+  const call = { ...llmEvent("expired", "triage", 0.01), triage_input: {
+    files: [
+      { file_path: "metadata.txt", patch_bytes: null },
+      { file_path: "empty.txt", patch_bytes: 0 },
+      { file_path: "single.txt", patch_bytes: 1 },
+    ],
+    omitted_files: 2,
+  } };
+  render(<ReplayFeed data={data({
+    events: [call], phases: [phaseWith([call], "triage")], llm_exchanges: [
+      llmContent("expired", { content_redacted: true, prompt: null, completion: null }),
+    ],
+  })} />);
+  await user.click(screen.getByRole("button", { name: /llm_call/ }));
+  await user.click(screen.getByText("Triage input (5 files)"));
+  expect(screen.getByText("metadata.txt").closest("li")).toHaveTextContent("File metadata only");
+  expect(screen.getByText("empty.txt").closest("li")).toHaveTextContent("Empty patch (0 bytes)");
+  expect(screen.getByText("single.txt").closest("li")).toHaveTextContent("1 patch byte");
+  expect(screen.getByText("This record omits details for 2 files in the triage request.")).toBeVisible();
+  expect(screen.getByText(/Content redacted/)).toBeVisible();
+  expect(screen.queryByText("the prompt text")).toBeNull();
+});
+
+test("a recorded empty triage input is distinct from a historical call without input metadata", async () => {
+  const user = userEvent.setup();
+  const historical = llmEvent("old", "triage", 0.01);
+  const empty = { ...llmEvent("empty", "triage", 0.01), triage_input: { files: [], omitted_files: 0 } };
+  render(<ReplayFeed data={data({
+    events: [historical, empty], phases: [phaseWith([historical, empty], "triage")],
+    llm_exchanges: [llmContent("old", { prompt: "Historical prompt" }), llmContent("empty")],
+  })} />);
+  const [oldRow, emptyRow] = screen.getAllByRole("button", { name: /llm_call/ });
+  await user.click(oldRow!);
+  expect(screen.getByText("Historical prompt")).toBeVisible();
+  expect(screen.queryByText(/Triage input/)).toBeNull();
+  await user.click(emptyRow!);
+  await user.click(screen.getByText("Triage input (0 files)"));
+  expect(screen.getByText("No files were listed in this triage request.")).toBeVisible();
 });
 
 test("llm content panel omits the prompt/completion labels when those fields are null", async () => {

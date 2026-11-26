@@ -2475,14 +2475,17 @@ table.policy tbody tr:hover {
   font-size: 12px;
   line-height: 1.5;
 }
-.tl-source-ranges {
+.tl-source-ranges,
+.tl-triage-input {
   overflow-wrap: anywhere;
   margin-bottom: 6px;
 }
-.tl-source-ranges summary {
+.tl-source-ranges summary,
+.tl-triage-input summary {
   cursor: pointer;
 }
-.tl-source-ranges ul {
+.tl-source-ranges ul,
+.tl-triage-input ul {
   margin: 4px 0;
   padding-left: 20px;
 }

@@ -20,11 +20,13 @@ import { prettyModel } from "../lib/modelLabel";
 import { AuditFeed } from "./AuditFeed";
 import { AuditEventSummary } from "./AuditEventSummary";
 import { CodeBlock, ImplementationEvidence } from "./CodeBlock";
+import { TriageInput } from "./TriageInput";
 
 type TimelineData = components["schemas"]["ReplayTimelineResponse"];
 type Phase = NonNullable<TimelineData["phases"]>[number];
 type FindingContent = TimelineData["findings"][number];
 type LLMContent = TimelineData["llm_exchanges"][number];
+type LLMCall = components["schemas"]["LLMCallEvent"];
 type SourceRange = components["schemas"]["ContextManifestEntry"];
 
 const inclusionLabels: Record<SourceRange["inclusion_reason"], string> = {
@@ -168,9 +170,11 @@ function FindingContentPanel({ content, proof }: { content: FindingContent; proo
   );
 }
 
-export function LLMContentPanel({ content, ranges = [] }: { content: LLMContent; ranges: SourceRange[] }) {
+export function LLMContentPanel({ content, call }: { content: LLMContent; call: LLMCall }) {
+  const ranges = call.context_summary ?? [];
   return (
     <div className="tl-content">
+      {call.node_id === "triage" && call.triage_input && <TriageInput coverage={call.triage_input} />}
       {ranges.length > 0 ? (
         <details className="tl-source-ranges">
           <summary>Recorded source ranges ({ranges.length})</summary>
@@ -321,7 +325,7 @@ export function ReplayFeed({
         </div>
         {open && findingContent && proof ? <FindingContentPanel content={findingContent} proof={proof} /> : null}
         {open && llmContent && event.event_type === "llm_call" ? (
-          <LLMContentPanel content={llmContent} ranges={event.context_summary} />
+          <LLMContentPanel content={llmContent} call={event} />
         ) : null}
       </div>
     );
@@ -348,7 +352,7 @@ export function ReplayFeed({
         </div>
         {open && findingContent && proof ? <FindingContentPanel content={findingContent} proof={proof} /> : null}
         {open && llmContent && event.event_type === "llm_call" ? (
-          <LLMContentPanel content={llmContent} ranges={event.context_summary} />
+          <LLMContentPanel content={llmContent} call={event} />
         ) : null}
       </div>
     );

@@ -57,6 +57,12 @@ and open **Recorded source ranges**. The paths and inclusive line numbers remain
 available after the prompt expires. An exchange without a range list can still
 contain code in its saved prompt.
 
+For a triage call, **Triage input** lists the paths included in its request and
+the UTF-8 byte count of each supplied patch before prompt formatting. It
+distinguishes a file listed only by its metadata from a supplied empty patch.
+If the record omits path details, the panel shows how many. These counts and
+paths remain available after the prompt expires when the call recorded them.
+
 File events describe a different part of the review. **Fetched** means intake
 retrieved the file. **Skipped in analysis** gives the recorded reason its file
 review was skipped. Triage may already have received its diff in an earlier call.

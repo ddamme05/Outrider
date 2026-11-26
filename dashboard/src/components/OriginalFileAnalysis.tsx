@@ -28,7 +28,7 @@ export function OriginalFileAnalysis({ data, cacheKey }: { data: Timeline; cache
             <details key={call.event_id}>
               <summary>Model exchange for {lookup.file_path}</summary>
               <p>{summarizeEvent(call)}</p>
-              {content ? <LLMContentPanel content={content} ranges={call.context_summary} /> : <p>No saved exchange is available for this call.</p>}
+              {content ? <LLMContentPanel content={content} call={call} /> : <p>No saved exchange is available for this call.</p>}
             </details>
           );
         })}
