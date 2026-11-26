@@ -9,8 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import deque
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from outrider.agent.nodes.analyze_context import (
     MAX_MODULE_CONTEXT_BYTES,
@@ -18,6 +17,7 @@ from outrider.agent.nodes.analyze_context import (
     _reference_change_lines,
     _rendered_context_bytes,
 )
+from outrider.agent.nodes.head_reference_sources import HeadReferenceSources
 from outrider.ast_facts.import_references import (
     python_import_reference_excerpts,
     python_import_reference_requests,
@@ -28,7 +28,6 @@ from outrider.coordinates import (
     lookup_patched_file,
     python_relative_import_candidate_paths,
 )
-from outrider.github.fetch import fetch_file_content_at
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -38,19 +37,8 @@ if TYPE_CHECKING:
     from outrider.schemas.pr_context import ChangedFile
     from outrider.schemas.review_state import ReviewState
 
-MAX_REFERENCE_READS = 16
-MAX_REFERENCE_FILES = 4
-MAX_REFERENCE_FILE_BYTES = 128 * 1024
-MAX_REFERENCE_TOTAL_BYTES = 400 * 1024
 MAX_REFERENCE_TEXT_BYTES = 12 * 1024
 MAX_REFERENCE_DEPTH = 2
-
-
-@dataclass(frozen=True)
-class _Source:
-    status: Literal["available", "absent", "unavailable"]
-    text: str | None
-    reason: str = ""
 
 
 def omit_import_references(context: PreparedReviewContext, *, reason: str) -> PreparedReviewContext:
@@ -71,62 +59,15 @@ async def prepare_import_reference_contexts(
     base_contexts: dict[str, PreparedReviewContext],
     github_factory: Callable[[int], Awaitable[InstallationGitHubClient]],
     import_path_resolver: ImportPathResolver,
+    sources: HeadReferenceSources | None = None,
 ) -> dict[str, PreparedReviewContext]:
     """Select exact named references with shared read/file/byte and depth bounds.
 
     A 404 establishes absence. An unusable response or incomplete candidate pair
     does not establish unique resolution. Other GitHub failures propagate.
     """
-    sources = {
-        file.path: _Source("available", file.content_head)
-        for file in state.pr_context.changed_files
-        if file.content_head is not None
-    }
-    client = None
-    reads = retained_files = retained_bytes = 0
-
-    async def source_at(path: str) -> _Source:
-        nonlocal client, reads, retained_files, retained_bytes
-        if path in sources:
-            return sources[path]
-        if reads == MAX_REFERENCE_READS:
-            return _Source("unavailable", None, "read limit")
-        if client is None:
-            client = await github_factory(state.pr_context.installation_id)
-        reads += 1
-        try:
-            raw = await fetch_file_content_at(
-                client,
-                owner=state.pr_context.owner,
-                repo=state.pr_context.repo,
-                path=path,
-                ref=state.pr_context.head_sha,
-            )
-        except Exception as error:
-            if getattr(getattr(error, "response", None), "status_code", None) != 404:
-                raise
-            result = _Source("absent", None, "not present at HEAD")
-        else:
-            if raw is None:
-                result = _Source("unavailable", None, "unusable repository response")
-            elif len(raw) > MAX_REFERENCE_FILE_BYTES:
-                result = _Source("available", None, "source size limit")
-            elif (
-                retained_files == MAX_REFERENCE_FILES
-                or retained_bytes + len(raw) > MAX_REFERENCE_TOTAL_BYTES
-            ):
-                result = _Source("available", None, "retained source limit")
-            else:
-                try:
-                    text = raw.decode("utf-8")
-                except UnicodeDecodeError:
-                    result = _Source("available", None, "non-UTF8 source")
-                else:
-                    retained_files += 1
-                    retained_bytes += len(raw)
-                    result = _Source("available", text)
-        sources[path] = result
-        return result
+    if sources is None:
+        sources = HeadReferenceSources(state.pr_context, github_factory)
 
     prepared = {}
     for file in files:
@@ -169,7 +110,7 @@ async def prepare_import_reference_contexts(
                     f"{request.importer_path}:{request.line}: unsupported relative path"
                 )
                 continue
-            matches = [(path, await source_at(path)) for path in candidates]
+            matches = [(path, await sources.source_at(path)) for path in candidates]
             available = [(path, result) for path, result in matches if result.status == "available"]
             if any(result.status == "unavailable" for _, result in matches) or len(available) != 1:
                 omissions.append(
@@ -240,7 +181,7 @@ async def prepare_import_reference_contexts(
             + json.dumps(
                 {
                     "recipe": "relative-import-references-v1",
-                    "reads": reads,
+                    "reads": sources.reads,
                     "omissions_total": len(omissions),
                     "omissions_shown": shown,
                 }
