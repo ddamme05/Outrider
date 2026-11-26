@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from itertools import islice
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -153,19 +154,20 @@ def line_range_to_span(line_start: int, line_end: int, source: str) -> Span:
             kind=CoordinateErrorKind.ARGUMENT_VALIDATION_FAILED,
         )
     source_bytes = source.encode("utf-8")
-    # Each newline starts another line, including an empty final line at EOF.
-    line_starts = [0]
-    for i, byte in enumerate(source_bytes):
-        if byte == 0x0A:  # '\n'
-            line_starts.append(i + 1)
-    total_lines = len(line_starts)
-    if line_end > total_lines:
+    # Stop splitting at the requested end. The last piece then holds the
+    # untouched suffix, unless the range reaches EOF.
+    lines = source_bytes.split(b"\n", maxsplit=min(line_end, len(source_bytes)))
+    if line_end > len(lines):
         raise CoordinateError(
-            f"line_range_to_span: line_end={line_end} exceeds source line count {total_lines}",
+            f"line_range_to_span: line_end={line_end} exceeds source line count {len(lines)}",
             kind=CoordinateErrorKind.BYTE_OFFSET_INVALID,
         )
-    byte_start = line_starts[line_start - 1]
-    byte_end = line_starts[line_end] if line_end < total_lines else len(source_bytes)
+    preceding_lines = line_start - 1
+    # Each preceding line also contributed one LF byte.
+    byte_start = sum(map(len, islice(lines, preceding_lines))) + preceding_lines
+    byte_end = len(source_bytes)
+    if line_end < len(lines):
+        byte_end -= len(lines[-1])
     return Span(byte_start=byte_start, byte_end=byte_end)
 
 
