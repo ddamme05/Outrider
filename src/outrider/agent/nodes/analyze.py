@@ -100,11 +100,17 @@ from outrider.agent.nodes.finding_cap import (
     admit_with_pair_dedup,
     cap_findings_by_severity,
 )
+from outrider.agent.nodes.head_reference_sources import HeadReferenceSources
 from outrider.agent.nodes.import_reference_context import (
     omit_import_references,
     prepare_import_reference_contexts,
 )
 from outrider.agent.nodes.readme_review import MAX_DOCUMENT_BYTES, implementation_sources, is_readme
+from outrider.agent.nodes.test_launch_context import (
+    add_test_launch_context,
+    has_test_launch_import,
+    is_test_launch_file,
+)
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.analyze_bundle import extract_triviality_and_scan
 from outrider.ast_facts.models import ParseResult, SkipReason, TrivialityReason
@@ -276,6 +282,9 @@ _PRIMARY_REGION_BYTE_CAP: Final[int] = 16_384
 # Initial concurrent calls may each cache-write the prefix; that bounded
 # per-tier overhead is accepted rather than serializing the first call.
 ANALYZE_MAX_CONCURRENCY: Final[int] = 4
+
+# All optional test-package reads share this wall-clock allowance before file workers start.
+TEST_LAUNCH_LOOKUP_SECONDS: Final[float] = 2.0
 
 
 def _estimate_tokens(text: str) -> int:
@@ -781,9 +790,11 @@ async def _plan_pass_zero(
                         else "source/context limits"
                     ),
                 )
+    head_sources = None
     if import_reference_context_enabled:
         if github_factory is None:
             raise ValueError("import references require an installation-scoped GitHub factory")
+        head_sources = HeadReferenceSources(state.pr_context, github_factory)
         funded = {item.path for item in plan.allocations if item.funded}
         reference_contexts = await prepare_import_reference_contexts(
             state,
@@ -796,6 +807,7 @@ async def _plan_pass_zero(
             base_contexts=review_context_by_path,
             github_factory=github_factory,
             import_path_resolver=import_path_resolver,
+            sources=head_sources,
         )
         estimates: dict[str, int] = {}
         for allocation in plan.allocations:
@@ -850,6 +862,15 @@ async def _plan_pass_zero(
     plan = reserve_context_headroom(
         plan, documentation_estimates, per_file_cap_tokens=per_file_cap_tokens
     )
+    if supplemental_context_enabled:
+        plan = await _fund_test_launch_context(
+            plan=plan,
+            prepared_by_path=prepared_by_path,
+            review_context_by_path=review_context_by_path,
+            head_sources=head_sources or HeadReferenceSources(state.pr_context, github_factory),
+            pass_index=pass_index,
+            per_file_cap_tokens=per_file_cap_tokens,
+        )
     allocation_by_path = {a.path: a for a in plan.allocations}
     sends: list[Send] = []
     for worker_file, worker_tier in pass_zero_worklist:
@@ -888,6 +909,67 @@ async def _plan_pass_zero(
         update={"analyze_pass_started_at": started_at},
         goto=sends if sends else "analyze_aggregate",
     )
+
+
+async def _fund_test_launch_context(
+    *,
+    plan: BudgetPlan,
+    prepared_by_path: Mapping[str, _PreparedFileReview | SkipReason | None],
+    review_context_by_path: dict[str, PreparedReviewContext],
+    head_sources: HeadReferenceSources,
+    pass_index: int,
+    per_file_cap_tokens: int,
+) -> BudgetPlan:
+    contexts: dict[str, PreparedReviewContext] = {}
+    estimates: dict[str, int] = {}
+    deadline = asyncio.get_running_loop().time() + TEST_LAUNCH_LOOKUP_SECONDS
+    for allocation in plan.allocations:
+        path = allocation.path
+        if (
+            not allocation.funded
+            or allocation.allocation_tokens >= per_file_cap_tokens
+            or not (
+                plan.general_remainder_tokens
+                or (allocation.is_high_risk and plan.reserved_remainder_tokens)
+            )
+            or not is_test_launch_file(path)
+        ):
+            continue
+        prepared = prepared_by_path[path]
+        if (
+            not isinstance(prepared, _PreparedFileReview)
+            or prepared.source_side != "head"
+            or prepared.parse_result.parser_outcome != "clean"
+            or not has_test_launch_import(prepared.parse_result.imports)
+        ):
+            continue
+        owner = await head_sources.nearest_package(path, deadline=deadline)
+        if owner is None:
+            continue
+        manifest_path, source = owner
+        context = add_test_launch_context(
+            review_context_by_path[path],
+            test_path=path,
+            manifest_path=manifest_path,
+            manifest_source=source,
+            imports=prepared.parse_result.imports,
+        )
+        if context is None:
+            continue
+        contexts[path] = context
+        estimates[path] = _prepare_file_prompt(
+            prepared, file_path=path, pass_index=pass_index, review_context=context.text
+        ).estimated_tokens
+    if not contexts:
+        return plan
+    plan = reserve_context_headroom(plan, estimates, per_file_cap_tokens=per_file_cap_tokens)
+    for allocation in plan.allocations:
+        if (
+            allocation.path in contexts
+            and estimates[allocation.path] <= allocation.allocation_tokens
+        ):
+            review_context_by_path[allocation.path] = contexts[allocation.path]
+    return plan
 
 
 def _fund_python_reference_context(  # noqa: PLR0913
