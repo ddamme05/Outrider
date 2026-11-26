@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 def _event_from_row(row: AuditEvent) -> AuditEventValue:
     return reconstruct_event_from_row(
         payload=row.payload,
+        triage_input=row.triage_input,
         sequence_number=row.sequence_number,
         event_id=row.event_id,
         review_id=row.review_id,

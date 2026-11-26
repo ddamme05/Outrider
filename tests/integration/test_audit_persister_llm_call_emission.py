@@ -706,3 +706,52 @@ async def test_persist_carries_phase_key_in_payload_not_denormalized_column(
             assert row[1] == "file:src/app.py#0"  # payload is authoritative
     finally:
         await engine.dispose()
+
+
+async def test_triage_input_keeps_legacy_payload_and_retry_identity(migrated_db: str) -> None:
+    from outrider.audit.events import TriageInputCoverage, TriagePatchInput
+    from outrider.audit.persister import AuditPersisterIdempotencyConflict
+
+    engine = create_async_engine(migrated_db, hide_parameters=True)
+    try:
+        review = await _seed_installation_and_review(engine)
+        persister = _make_persister(engine)
+        legacy = _make_llm_call_event(review, node_id="triage")
+        plain = _make_llm_request(review, node_id="triage")
+        response = _make_llm_response()
+        coverage = TriageInputCoverage(
+            files=(TriagePatchInput(file_path="src/app.py", patch_bytes=2),), omitted_files=0
+        )
+        event = _make_llm_call_event(review, node_id="triage").model_copy(
+            update={"triage_input": coverage}
+        )
+        request = plain.model_copy(update={"triage_input": coverage})
+        await persister.persist(legacy, plain, response)
+        await persister.persist(event, request, response)
+        await persister.persist(event, request, response)
+        async with engine.connect() as conn:
+            payloads = await conn.scalars(
+                text("SELECT payload FROM audit_events WHERE review_id = :id"), {"id": review}
+            )
+            assert all("triage_input" not in payload for payload in payloads)
+            rows = await conn.execute(
+                text(
+                    "SELECT event_id, triage_input, triage_input IS NULL AS absent "
+                    "FROM audit_events WHERE review_id = :id"
+                ),
+                {"id": review},
+            )
+            assert {row.event_id: (row.triage_input, row.absent) for row in rows} == {
+                legacy.event_id: (None, True),
+                event.event_id: (coverage.model_dump(mode="json"), False),
+            }
+        updated_coverage = coverage.model_copy(update={"omitted_files": 1})
+        with pytest.raises(AuditPersisterIdempotencyConflict) as conflict:
+            await persister.persist(
+                event.model_copy(update={"triage_input": updated_coverage}),
+                request.model_copy(update={"triage_input": updated_coverage}),
+                response,
+            )
+        assert conflict.value.mismatched_fields == ("triage_input",)
+    finally:
+        await engine.dispose()

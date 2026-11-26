@@ -1064,6 +1064,7 @@ def _verify_row_consistent(
 def reconstruct_event_from_row(
     *,
     payload: Mapping[str, Any],
+    triage_input: Mapping[str, Any] | None,
     sequence_number: int,
     event_id: UUID,
     review_id: UUID,
@@ -1085,8 +1086,13 @@ def reconstruct_event_from_row(
     3. `_verify_row_consistent` — the row's mirrored base columns must agree with
        the payload, or the row is corrupt (raises `ReplayEquivalenceError`).
     """
+    if "triage_input" in payload:
+        raise ReplayEquivalenceError("triage_input must come from its audit column")
+    fields = {**payload, "sequence_number": sequence_number}
+    if triage_input is not None:
+        fields["triage_input"] = triage_input
     event = AuditEventAdapter.validate_python(
-        _normalize_historical_payload({**payload, "sequence_number": sequence_number}),
+        _normalize_historical_payload(fields),
         context={REPLAY_HISTORICAL_CONTEXT_KEY: True},
     )
     _verify_row_consistent(
@@ -1240,6 +1246,7 @@ class AuditReplayer:
                     AuditEventRow.is_eval,
                     AuditEventRow.phase_key,
                     AuditEventRow.payload,
+                    AuditEventRow.triage_input,
                     AuditEventRow.sequence_number,
                 )
                 .where(AuditEventRow.review_id == review_id)
@@ -1255,6 +1262,7 @@ class AuditReplayer:
                 reconstructed.append(
                     reconstruct_event_from_row(
                         payload=audit_row.payload,
+                        triage_input=audit_row.triage_input,
                         sequence_number=audit_row.sequence_number,
                         event_id=audit_row.event_id,
                         review_id=audit_row.review_id,

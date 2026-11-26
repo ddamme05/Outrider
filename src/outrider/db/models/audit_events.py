@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Identity, Index, Text, UniqueConstraint, text
+from sqlalchemy import BigInteger, CheckConstraint, Identity, Index, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import Boolean, DateTime, Uuid
@@ -20,6 +20,12 @@ from outrider.db.models._base import Base
 class AuditEvent(Base):
     __tablename__ = "audit_events"
     __table_args__ = (
+        CheckConstraint(
+            "triage_input IS NULL OR (event_type = 'llm_call' "
+            "AND (payload ->> 'node_id') IS NOT DISTINCT FROM 'triage' "
+            "AND jsonb_typeof(triage_input) = 'object')",
+            name="ck_audit_events_triage_input",
+        ),
         # UNIQUE(review_id, sequence_number) produces an implicit unique index
         # which covers replay-traversal queries; no separate Index needed for it.
         UniqueConstraint("review_id", "sequence_number", name="uq_audit_review_sequence"),
@@ -43,3 +49,6 @@ class AuditEvent(Base):
     sequence_number: Mapped[int] = mapped_column(BigInteger, Identity(always=False), nullable=False)
     is_eval: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    triage_input: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
