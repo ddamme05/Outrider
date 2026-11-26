@@ -1,7 +1,4 @@
-"""Check that startup passes the configured review-token budget to build_graph.
-
-Wrap the real builder and set OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS to verify
-configuration reaches the graph. See specs/2026-06-17-analyze-cost-fairness.md."""
+"""Check that production startup binds review budget and summary settings to the graph."""
 
 from __future__ import annotations
 
@@ -22,7 +19,7 @@ def _activate_github_app_env(github_app_env: None) -> None:  # noqa: ARG001 — 
     """Lifespan hard-requires `GitHubAppSettings()` at startup."""
 
 
-async def test_lifespan_wires_review_budget_into_build_graph(
+async def test_lifespan_wires_review_settings_into_build_graph(
     monkeypatch: pytest.MonkeyPatch,
     make_stub_llm_provider: type,
     noop_severity_policy_fingerprint_check: object,
@@ -35,6 +32,7 @@ async def test_lifespan_wires_review_budget_into_build_graph(
     # self-contained and does not depend on a sourced .env.
     monkeypatch.setenv("OUTRIDER_TRUNCATION_HMAC_SECRET", "test-secret-for-integration-01234")
     monkeypatch.setenv("OUTRIDER_ANALYZE_REVIEW_BUDGET_TOKENS", "123456")
+    monkeypatch.setenv("OUTRIDER_BRIEF_SUMMARY", "true")
 
     mock_engine = MagicMock()
     mock_engine.dispose = AsyncMock(return_value=None)
@@ -73,3 +71,4 @@ async def test_lifespan_wires_review_budget_into_build_graph(
         f"{captured['total_review_budget_tokens']} — AnalyzeConfig is not "
         "feeding build_graph"
     )
+    assert captured["brief_summary"] is True

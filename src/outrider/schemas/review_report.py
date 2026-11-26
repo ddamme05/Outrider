@@ -10,7 +10,7 @@ See DECISIONS.md#014, #030, #043 and severity-policy-versioned-for-replay.
 
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Final
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -42,12 +42,25 @@ MAX_FINDINGS_PER_REPORT: Final[int] = 200
 
 # Persisted summary sources name immutable renderers so audit can verify them.
 EMPTY_FINDINGS_SUMMARY_SOURCE: Final = "empty-findings-v1"
+RETAINED_FINDINGS_SUMMARY_SOURCE: Final = "retained-findings-v1"
+SummarySource = Literal["model", "empty-findings-v1", "retained-findings-v1"]
 
 
 def render_empty_findings_summary(overall_risk: RiskLevel) -> str:
     """State the retained count and upstream risk without inferring clean code."""
     return (
         "This review retained no findings. "
+        f"Triage classified the pull request as {overall_risk.value} risk."
+    )
+
+
+def render_retained_findings_summary(overall_risk: RiskLevel, count: int) -> str:
+    """Write a brief nonempty report from the count and risk retained in the audit."""
+    if count < 1:
+        raise ValueError("retained-findings-v1 requires a positive finding count")
+    noun = "finding" if count == 1 else "findings"
+    return (
+        f"This review retained {count} {noun}. "
         f"Triage classified the pull request as {overall_risk.value} risk."
     )
 
@@ -113,9 +126,8 @@ class ReviewReport(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    # Empty reports state the retained count and upstream risk with a fixed
-    # template. Model-written prose can miscount, so render exact metrics from
-    # metrics and the audit stream rather than parsing them from summary text.
+    # Brief and empty reports state the retained count and upstream risk.
+    # Read exact metrics from their fields or the audit stream.
     summary: str = Field(max_length=2000)
     overall_risk: RiskLevel
     # max_length is the HARD runaway ceiling (MAX_FINDINGS_HARD_CAP), NOT the soft

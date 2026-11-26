@@ -68,7 +68,10 @@ class _MeasuredSink:
 
 
 @pytest.mark.parametrize("case", _FIXTURE["cases"], ids=lambda case: case["case"])
-async def test_empty_summary_uses_facts_without_a_model_call(case: dict[str, Any]) -> None:
+@pytest.mark.parametrize("brief_summary", [False, True])
+async def test_empty_summary_uses_facts_without_a_model_call(
+    case: dict[str, Any], brief_summary: bool
+) -> None:
     state = ReviewState.model_validate(
         {**case["state_projection"], "pr_context": {**case["pr_metadata"], "changed_files": []}}
     )
@@ -79,6 +82,7 @@ async def test_empty_summary_uses_facts_without_a_model_call(case: dict[str, Any
         provider=provider,
         synthesize_model=case["request"]["model"],
         patch_model=case["request"]["model"],
+        brief_summary=brief_summary,
         patches_enabled=True,
         max_suggestions=3,
         phase_event_sink=_PhaseSink(),

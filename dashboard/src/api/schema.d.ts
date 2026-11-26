@@ -3406,10 +3406,8 @@ export interface components {
          *     display text can have outer fences removed. Historical rows omit
          *     summary_source and keep this model/raw-hash interpretation.
          *
-         *     Empty reports use the immutable empty-findings-v1 renderer, make no summary
-         *     model call and bind the rendered bytes. Audit can validate that template
-         *     from metadata without reconstructing expired model content. Other exchanges
-         *     and checkpoints keep their existing independent retention rules.
+         *     Empty reports and brief nonempty reports bind their versioned template
+         *     bytes. Audit verifies them from the retained finding count and triage risk.
          *
          *     Idempotency: event_id-PK (default per `DECISIONS.md#026`). Natural-
          *     key was rejected at pre-spec gate #1 because the natural-key
@@ -3471,7 +3469,7 @@ export interface components {
              * @default model
              * @enum {string}
              */
-            summary_source: "model" | "empty-findings-v1";
+            summary_source: "model" | "empty-findings-v1" | "retained-findings-v1";
             /** Summary Content Hash */
             summary_content_hash: string;
             overall_risk: components["schemas"]["RiskLevel"];

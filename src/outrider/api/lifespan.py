@@ -497,6 +497,7 @@ def build_lifespan(
             from outrider.agent.nodes.cache_config import CacheConfig  # noqa: PLC0415
             from outrider.agent.nodes.hitl_config import HITLConfig  # noqa: PLC0415
             from outrider.agent.nodes.patch_config import PatchConfig  # noqa: PLC0415
+            from outrider.agent.nodes.summary_config import SummaryConfig  # noqa: PLC0415
             from outrider.db.review_status_persister import ReviewStatusPersister  # noqa: PLC0415
             from outrider.dispatcher import (  # noqa: PLC0415
                 DispatchConfig,
@@ -595,6 +596,7 @@ def build_lifespan(
                 anomaly_sink=anomaly_persister,
                 hitl_config=hitl_config,
                 patch_config=patch_config,
+                brief_summary=SummaryConfig().brief_summary,
                 total_review_budget_tokens=analyze_config.review_budget_tokens,
                 analyze_max_concurrency=analyze_config.max_concurrency,
                 companion_context_enabled=analyze_config.companion_context_enabled,

@@ -2371,12 +2371,13 @@
       "kind": "assembled-summary",
       "version": "synthesize-v5",
       "empty_findings_source": "empty-findings-v1",
+      "brief_findings_source": "retained-findings-v1",
       "schema": {
         "maxLength": 2000,
         "title": "Summary",
         "type": "string"
       },
-      "notes": "Nonempty reports use plain model prose, not JSON, with no response schema. Empty reports use the versioned fixed summary without a model call. The completion event identifies the source and hashes raw model or exact template bytes. The final report bounds text. Risk and metrics come from upstream state and code."
+      "notes": "Nonempty reports use plain model prose by default. OUTRIDER_BRIEF_SUMMARY uses the retained finding count and triage risk to write a fixed summary. Empty reports always use the empty-findings template. The completion event identifies the source and hashes raw model or exact template bytes."
     },
     "PatchSuggestionBatch": {
       "source": "src/outrider/agent/nodes/patch_generation.py:PatchSuggestionBatch",

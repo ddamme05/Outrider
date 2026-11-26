@@ -214,6 +214,33 @@ def test_empty_summary_source_binds_the_exact_template(risk: RiskLevel) -> None:
     assert AuditEventAdapter.validate_python(payload) == event
 
 
+@pytest.mark.parametrize(("count", "noun"), [(1, "finding"), (4, "findings")])
+def test_brief_summary_hash_binds_count_and_risk(count: int, noun: str) -> None:
+    summary = (
+        f"This review retained {count} {noun}. Triage classified the pull request as high risk."
+    )
+    event = SynthesizeCompletedEvent(
+        **_completed_kwargs(
+            summary_source="retained-findings-v1",
+            synthesize_model=None,
+            n_findings=count,
+            overall_risk=RiskLevel.HIGH,
+            summary_content_hash=hashlib.sha256(summary.encode("utf-8")).hexdigest(),
+        )
+    )
+    payload = event.model_dump(mode="json")
+    assert payload["summary_source"] == "retained-findings-v1"
+    assert AuditEventAdapter.validate_python(payload) == event
+    for override in (
+        {"n_findings": count + 1},
+        {"n_findings": 0},
+        {"overall_risk": RiskLevel.LOW},
+        {"synthesize_model": "unexpected-model"},
+    ):
+        with pytest.raises(ValidationError, match="retained-findings-v1"):
+            AuditEventAdapter.validate_python({**payload, **override})
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [

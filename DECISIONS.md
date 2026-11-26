@@ -1907,8 +1907,10 @@ source coverage or whether more tracing was needed.
 
 **Decision.** The synthesis prompt receives only capped accepted finding details
 and upstream risk. Review metrics stay in the deterministic report and audit
-event. Reports with accepted findings make one bounded summary call. Empty
-reports use the fixed `empty-findings-v1` summary and make no summary call.
+event. Reports with accepted findings make one bounded summary call by default.
+With `OUTRIDER_BRIEF_SUMMARY=true`, the versioned `retained-findings-v1`
+template uses the final retained finding count and triage risk. Empty reports
+always use `empty-findings-v1`. Both templates skip the summary model call.
 The final metrics query follows all completed model work; the pre-call query
 and metric prompt fields are removed. Findings, severity policy, metric schemas
 and historical records keep their existing contracts.

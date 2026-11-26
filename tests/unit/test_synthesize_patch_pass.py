@@ -208,7 +208,8 @@ def _batch_json(finding_id: Any, original_line: str, replacement_line: str) -> s
 
 
 @pytest.mark.asyncio
-async def test_synthesize_sets_suggested_fix_on_report_finding() -> None:
+@pytest.mark.parametrize("brief_summary", [False, True])
+async def test_synthesize_sets_suggested_fix_on_report_finding(brief_summary: bool) -> None:
     """patches_enabled=True: the HIGH finding's `suggested_fix` is set from the patch
     batch and rides out on the canonical `review_report.findings`."""
     finding = _make_high_finding(line=2)
@@ -222,6 +223,7 @@ async def test_synthesize_sets_suggested_fix_on_report_finding() -> None:
         provider=provider,  # type: ignore[arg-type]
         synthesize_model="stub-synthesize-model",
         patch_model="stub-patch-model",
+        brief_summary=brief_summary,
         patches_enabled=True,
         max_suggestions=5,
         phase_event_sink=_StubPhaseSink(),
@@ -232,9 +234,15 @@ async def test_synthesize_sets_suggested_fix_on_report_finding() -> None:
     report = result["review_report"]
     assert len(report.findings) == 1
     assert report.findings[0].suggested_fix == "return sanitize(x)"
-    # Two provider calls: the patch call (patch-v1) + the summary call.
-    versions = [r.prompt_template_version for r in provider.requests]
-    assert patch_prompt.VERSION in versions
+    if brief_summary:
+        assert len(provider.requests) == 1
+        assert (
+            report.summary
+            == "This review retained 1 finding. Triage classified the pull request as high risk."
+        )
+    else:
+        assert len(provider.requests) == 2
+        assert report.summary == provider.summary
     # The patch call is stamped to synthesize so its cost rolls into the aggregate.
     patch_req = next(
         r for r in provider.requests if r.prompt_template_version == patch_prompt.VERSION
