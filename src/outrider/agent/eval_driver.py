@@ -667,6 +667,7 @@ class _FixtureScriptedProvider:
             ),
             cache_hit=(response.cache_read_tokens > 0),
             context_summary=request.context_summary,
+            triage_input=request.triage_input,
             prompt_template_version=request.prompt_template_version,
             system_prompt_hash=_canonical_system_prompt_hash(request.system_prompt),
             degraded_mode=request.degraded_mode,

@@ -216,6 +216,9 @@ async def test_triage_request_limits_file_ids_and_restores_original_paths(
             phase_event_sink=recording_phase_event_sink,
         )
     request = provider.received_requests[0]
+    assert request.triage_input is not None
+    assert [item.file_path for item in request.triage_input.files] == list(paths)
+    assert request.context_summary == ()
     assert request.response_schema_json is not None
     assert all(path not in request.response_schema_json for path in paths)
     validator = Draft202012Validator(json.loads(request.response_schema_json))

@@ -34,7 +34,12 @@ from pydantic import (
 )
 from pydantic_core.core_schema import SerializationInfo
 
-from outrider.audit.events import ContextManifestEntry, DegradationReason, LLMCallEvent
+from outrider.audit.events import (
+    ContextManifestEntry,
+    DegradationReason,
+    LLMCallEvent,
+    TriageInputCoverage,
+)
 from outrider.policy.canonical import SHA256_HEX_PATTERN
 
 __all__ = [
@@ -517,6 +522,9 @@ class LLMRequest(BaseModel):
     node_id: Literal["triage", "analyze", "synthesize", "trace"]
     is_eval: bool = False
     context_summary: tuple[ContextManifestEntry, ...] = ()
+    triage_input: TriageInputCoverage | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     prompt_template_version: str = Field(min_length=1)
     degraded_mode: bool
     # Every degraded call names its cause through the shared DegradationReason
@@ -693,6 +701,12 @@ class LLMRequest(BaseModel):
                 f"node_id={self.node_id!r} requires non-empty context_summary; "
                 f"the analyze node always packs per-file scope context"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _triage_input_belongs_to_triage(self) -> Self:
+        if self.triage_input is not None and self.node_id != "triage":
+            raise ValueError("Only triage calls can carry triage input coverage")
         return self
 
     @model_validator(mode="after")

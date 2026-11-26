@@ -636,6 +636,7 @@ class AuditPersisterEventRequestFieldMismatchError(ValueError, metaclass=_Frozen
             "is_eval",
             "node_id",
             "context_summary",
+            "triage_input",
             "prompt_template_version",
             "degraded_mode",
             # §0b: pair the bool with its typed reason on the cross-check

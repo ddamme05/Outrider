@@ -8,6 +8,15 @@ Untrusted metadata and code are fenced as data (webhook-strings-are-data-not-for
 from dataclasses import dataclass
 from typing import Final
 
+from pydantic import ValidationError
+
+from outrider.audit.events import (
+    TRIAGE_INPUT_MAX_BYTES,
+    TRIAGE_INPUT_MAX_FILES,
+    TriageInputCoverage,
+    TriagePatchInput,
+)
+from outrider.coordinates import CoordinateError
 from outrider.prompts.triage_schema import file_slot_ids
 from outrider.schemas.pr_context import PRContext
 
@@ -130,6 +139,7 @@ class TriagePromptParts:
 
     system_prompt: str
     user_prompt: str
+    triage_input: TriageInputCoverage | None = None
 
 
 def render(pr_context: PRContext) -> TriagePromptParts:
@@ -150,10 +160,13 @@ def render(pr_context: PRContext) -> TriagePromptParts:
         f"+{changed_file.additions}/-{changed_file.deletions})"
         for slot, changed_file in slots
     )
-    diff_summary = "\n\n".join(
-        _format_file_diff(changed_file.path, changed_file.patch)
-        for changed_file in pr_context.changed_files
-    )
+    sections = []
+    patch_sizes = []
+    for changed_file in pr_context.changed_files:
+        section, patch_bytes = _format_file_diff(changed_file.path, changed_file.patch)
+        sections.append(section)
+        patch_sizes.append((changed_file.path, patch_bytes))
+    diff_summary = "\n\n".join(sections)
     user_prompt = USER_TEMPLATE.format(
         pr_title=pr_context.pr_title,
         file_count=len(pr_context.changed_files),
@@ -162,10 +175,38 @@ def render(pr_context: PRContext) -> TriagePromptParts:
         file_list=file_list,
         diff_summary=diff_summary,
     )
-    return TriagePromptParts(system_prompt=SYSTEM_PROMPT, user_prompt=user_prompt)
+    return TriagePromptParts(
+        system_prompt=SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        triage_input=_record_patch_sizes(patch_sizes),
+    )
 
 
-def _format_file_diff(path: str, patch: str | None) -> str:
+def _record_patch_sizes(patch_sizes: list[tuple[str, int | None]]) -> TriageInputCoverage:
+    """Record exact paths within the audit limits while sending every rendered patch."""
+    total = len(patch_sizes)
+    empty = TriageInputCoverage(files=(), omitted_files=total)
+    remaining = TRIAGE_INPUT_MAX_BYTES - len(empty.model_dump_json().encode("utf-8"))
+    recorded: list[TriagePatchInput] = []
+    for path, size in patch_sizes:
+        if len(recorded) == TRIAGE_INPUT_MAX_FILES:
+            break
+        try:
+            entry = TriagePatchInput(file_path=path, patch_bytes=size)
+        except (CoordinateError, ValidationError):
+            continue
+        # Intake normally supplies canonical paths. Other callers can render a spelling
+        # the audit validator would normalize. Omit it rather than record a different path.
+        if entry.file_path != path:
+            continue
+        entry_bytes = len(entry.model_dump_json().encode("utf-8")) + 1  # Include the list comma.
+        if entry_bytes <= remaining:
+            recorded.append(entry)
+            remaining -= entry_bytes
+    return TriageInputCoverage(files=tuple(recorded), omitted_files=total - len(recorded))
+
+
+def _format_file_diff(path: str, patch: str | None) -> tuple[str, int | None]:
     """Format one file's patch for the diff_summary section.
 
     `patch` is `str | None` because GitHub's `/pulls/{number}/files` omits
@@ -184,8 +225,9 @@ def _format_file_diff(path: str, patch: str | None) -> str:
     from outrider.prompts import safe_code_fence
 
     if patch is None:
-        return f"## {path}\n[no textual diff available]"
-    return f"## {path}\n{safe_code_fence(patch, lang='diff')}"
+        return f"## {path}\n[no textual diff available]", None
+    patch_bytes = len(patch) if patch.isascii() else len(patch.encode("utf-8"))
+    return f"## {path}\n{safe_code_fence(patch, lang='diff')}", patch_bytes
 
 
 __all__ = [

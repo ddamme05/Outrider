@@ -348,6 +348,39 @@ class DegradationReason(StrEnum):
     FILE_REMOVAL = "file_removal"
 
 
+TRIAGE_INPUT_MAX_BYTES: Final = 16 * 1024
+TRIAGE_INPUT_MAX_FILES: Final = 99
+
+
+class TriagePatchInput(BaseModel):
+    """Patch data for one file in a triage request, excluding headings and fences."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    file_path: DiffPathStr
+    patch_bytes: int | None = Field(
+        ge=0,
+        description=(
+            "UTF-8 bytes of supplied patch text, or null when the request only listed the file."
+        ),
+    )
+
+
+class TriageInputCoverage(BaseModel):
+    """Bounded input metadata for one model exchange. Older calls have no coverage."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    files: tuple[TriagePatchInput, ...] = Field(max_length=TRIAGE_INPUT_MAX_FILES)
+    omitted_files: int = Field(
+        ge=0, description="Number of rendered file entries omitted from this metadata."
+    )
+
+    @model_validator(mode="after")
+    def _bound_encoded_size(self) -> Self:
+        if len(self.model_dump_json().encode("utf-8")) > TRIAGE_INPUT_MAX_BYTES:
+            raise ValueError("triage input metadata exceeds its UTF-8 byte limit")
+        return self
+
+
 class LLMCallEvent(AuditEventBase):
     """Metadata for one LLM call. Content lives in `llm_call_content` per #016.
 
@@ -396,6 +429,9 @@ class LLMCallEvent(AuditEventBase):
     prompt_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     cache_hit: bool
     context_summary: tuple[ContextManifestEntry, ...]
+    triage_input: TriageInputCoverage | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     prompt_template_version: str
     system_prompt_hash: str = Field(pattern=_SHA256_HEX_PATTERN)
     degraded_mode: bool
@@ -535,6 +571,12 @@ class LLMCallEvent(AuditEventBase):
                 f"cache_hit from cached_tokens; a divergent event row means the "
                 f"wrapper drifted mid-pipeline."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _triage_input_belongs_to_triage(self) -> Self:
+        if self.triage_input is not None and self.node_id != "triage":
+            raise ValueError("Only triage calls can carry triage input coverage")
         return self
 
     @model_validator(mode="after")
