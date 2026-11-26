@@ -8,12 +8,14 @@ constructor references follow a single declared local base, without proving MRO.
 from __future__ import annotations
 
 import ast
+import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from outrider.ast_facts.parser_outcome import should_skip
-from outrider.ast_facts.registry import get_adapter_factory, parse_source
+from outrider.ast_facts.registry import PYTHON_EXTENSIONS, get_adapter_factory, parse_source
 from outrider.coordinates import CoordinateError, line_range_to_span, validate_diff_path
 
 if TYPE_CHECKING:
@@ -408,6 +410,71 @@ def build_called_function_index(
     )
 
 
+def _python_aliased_helper_calls(
+    index: CalledFunctionIndex, file_path: str, facts: ParseResult, call_names: set[str]
+) -> set[tuple[int, str]]:
+    """Find bare calls with an unambiguous module-level import under a different name."""
+    if PurePosixPath(file_path).suffix.lower() not in PYTHON_EXTENSIONS:
+        return set()
+    possible = call_names & index.definitions.keys()
+    imports = [
+        ref
+        for ref in facts.imports
+        if ref.import_kind in {"from", "relative"} and possible.intersection(ref.names)
+    ]
+    if not imports:
+        return set()
+    source = index.sources[file_path]
+    lines = source.split(b"\n")
+    # An unaliased single-line import needs no second parser. Leave all
+    # continued imports to the parser, including comments between their names.
+    if not any(re.search(rb"\bas\b|[\\(]", lines[ref.line - 1]) for ref in imports):
+        return set()
+    module = _parse_context_source(source.decode("utf-8"), file_path)
+    if module is None:
+        return set()
+
+    possible.difference_update(
+        name for node in ast.walk(module) if isinstance(node, ast.Global) for name in node.names
+    )
+    aliases = set()
+    for statement in module.body:
+        if not isinstance(statement, ast.ImportFrom):
+            continue
+        bindings = [alias.asname or alias.name for alias in statement.names]
+        for alias in statement.names:
+            name = alias.asname
+            if not name or name == alias.name or name not in possible or bindings.count(name) != 1:
+                continue
+            other_statements = [s for s in module.body if s is not statement]
+            if not _parent_binding_conflict(other_statements, name, None):
+                aliases.add(name)
+    if not aliases:
+        return set()
+
+    # Methods see module imports, even when their class binds a name of its own.
+    # Leave closures and expressions in decorators/default arguments to the usual matcher.
+    bodies = [module.body, *(cls.body for cls in module.body if isinstance(cls, ast.ClassDef))]
+    omitted: set[tuple[int, str]] = set()
+    for body in bodies:
+        for fn in body:
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            calls = [
+                (node.lineno, node.func.id)
+                for node in _own_body_nodes(fn.body)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in aliases
+            ]
+            unshadowed = _unshadowed_call_names(fn, {name for _, name in calls})
+            omitted.update((line, name) for line, name in calls if name in unshadowed)
+    # CallSite has a line but no column. Two calls with the same spelling on
+    # one line can belong to different bindings, e.g. inside and outside a lambda.
+    occurrences = Counter((call.line, call.callee_name) for call in facts.call_sites)
+    return {key for key in omitted if occurrences[key] == 1}
+
+
 def called_function_context(
     index: CalledFunctionIndex,
     *,
@@ -419,7 +486,8 @@ def called_function_context(
 
     Calls owned by changed leaf scopes take priority over enclosing-scope calls.
     Separate priority lines exclude anchors added only for reference eligibility.
-    Matches use a call's final name, not receiver or import resolution. Ambiguous
+    Matches use a call's final name. Skip unambiguous bare calls through
+    module-level Python import aliases that rename the definition. Ambiguous
     names, test implementations and helpers already in primary scopes add nothing.
     """
     facts = index.parsed.get(file_path)
@@ -445,13 +513,20 @@ def called_function_context(
             if scope.unit_id not in containing_parent_ids
         )
     ordered_calls = sorted(
-        facts.call_sites,
+        (
+            call
+            for call in facts.call_sites
+            if any(scope.line_start <= call.line <= scope.line_end for scope in primary_scopes)
+        ),
         key=lambda call: (call.enclosing_scope_id not in changed_leaf_scope_ids, call.line),
+    )
+    aliased_calls = _python_aliased_helper_calls(
+        index, file_path, facts, {call.callee_name for call in ordered_calls}
     )
     references = []
     seen_names = set()
     for call in ordered_calls:
-        if not any(scope.line_start <= call.line <= scope.line_end for scope in primary_scopes):
+        if (call.line, call.callee_name) in aliased_calls:
             continue
         name = call.callee_name.rsplit(".", 1)[-1]
         if name in seen_names:
