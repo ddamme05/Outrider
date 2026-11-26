@@ -701,16 +701,23 @@ async def test_overlapping_workers_keep_distinct_receipts_and_usage(tmp_path) ->
 
 
 @pytest.mark.asyncio
-async def test_workflow_setup_failure_stops_before_any_provider(tmp_path) -> None:
+@pytest.mark.parametrize("alias", ["anthropic-sonnet-5-5", "openai-sol"])
+async def test_workflow_setup_failure_stops_before_any_provider(
+    tmp_path, monkeypatch, alias
+) -> None:
+    target = refresh.TARGETS[alias]
+    monkeypatch.setenv("OUTRIDER_MODEL_ANALYZE_MODEL", "claude-haiku-4-5")
     plan = comparison.build_plan(
-        refresh.TARGETS["anthropic-sonnet-5-5"],
+        target,
         reps=1,
         calls_per_review=4,
         case_ids=("starlette-933",),
     )
     constructions = []
+    workflow_models = []
 
-    def unavailable_workflow(*_args, **_kwargs):
+    def unavailable_workflow(*_args, **kwargs):
+        workflow_models.append((kwargs["host"], set(kwargs["model_config"].model_dump().values())))
         raise RuntimeError("injected workflow setup failure")
 
     def recording_factory(_target, persister):
@@ -726,6 +733,7 @@ async def test_workflow_setup_failure_stops_before_any_provider(tmp_path) -> Non
         workflow_runner=unavailable_workflow,
     )
     assert constructions == []
+    assert workflow_models == [(target.host, {target.model})]
     assert report["status"] == "incomplete"
     assert len(report["cases"]) == 1
     assert report["cases"][0]["status"] == "prerequisite-failed"

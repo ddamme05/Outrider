@@ -11,6 +11,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -2097,10 +2098,7 @@ class _OpenAIContextScriptedProvider(_ScriptedProvider):
 async def test_analyze_recomputation_survives_openai_context_response(
     _adjudicate_openai: None,
 ) -> None:
-    """The REAL analyze caller (run_analyze_under_model drives analyze →
-    analyze_file → analyze_aggregate, whose cost recomputation is
-    analyze.py's compute_cost_usd site) prices an openai default-tier
-    response without raising (priced path under adjudicated billing)."""
+    """File analysis admits the finding when a default-tier response has a price."""
     finds, n_rejected = await run_analyze_under_model(
         _build_state(),
         provider=_OpenAIContextScriptedProvider(_FINDS_RESPONSE),
@@ -2197,22 +2195,12 @@ async def test_openai_analyze_aggregate_cost_and_context_spy(
     monkeypatch: pytest.MonkeyPatch,
     _adjudicate_openai: None,
 ) -> None:
-    """Round-5 closures 1+2: the ordinary analyze pricing call receives BOTH
-    context arguments (spied at the call site — omitting billed alone would
-    otherwise still price flat and stay green), and the emitted
-    AnalyzeCompletedEvent.total_cost_usd equals an INDEPENDENTLY computed
-    figure from the raw RATE_TABLE rates."""
+    """Check the billing context and the aggregate against independent token rates."""
     import outrider.agent.nodes.analyze as analyze_mod
     from outrider.llm.pricing import RATE_TABLE
 
-    recorded: list[tuple[str, str, dict[str, object]]] = []
-    real_compute = analyze_mod.compute_cost_usd
-
-    def spy(profile_id: str, model: str, **kwargs: object):  # type: ignore[no-untyped-def]
-        recorded.append((profile_id, model, kwargs))
-        return real_compute(profile_id, model, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(analyze_mod, "compute_cost_usd", spy)
+    price = Mock(wraps=analyze_mod.compute_cost_outcome)
+    monkeypatch.setattr(analyze_mod, "compute_cost_outcome", price)
     finds, completed_event = await _run_analyze_capture_round(
         _build_state(),
         provider=_OpenAIContextScriptedProvider(_FINDS_RESPONSE),
@@ -2221,11 +2209,16 @@ async def test_openai_analyze_aggregate_cost_and_context_spy(
     assert len(finds) >= 1
     assert completed_event is not None
 
-    openai_calls = [(p, m, k) for (p, m, k) in recorded if p == "openai"]
-    assert len(openai_calls) == 1
-    _, _, kwargs = openai_calls[0]
-    assert kwargs["billed_prompt_tokens"] == 100
-    assert kwargs["service_tier"] == "default"
+    price.assert_called_once_with(
+        "openai",
+        "gpt-5.6-sol",
+        input_tokens=100,
+        output_tokens=50,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        billed_prompt_tokens=100,
+        service_tier="default",
+    )
 
     rates = RATE_TABLE[("openai", "gpt-5.6-sol")]
     independent = float(rates.in_per_token * 100 + rates.out_per_token * 50)
@@ -2237,10 +2230,7 @@ async def test_openai_trace_expansion_recomputation_passes_context(
     monkeypatch: pytest.MonkeyPatch,
     _adjudicate_openai: None,
 ) -> None:
-    """Round-5 closure 3: the trace-expansion recomputation
-    (`_process_one_trace_fetched_file`, analyze.py's SECOND compute_cost_usd
-    site) forwards the complete pricing context — spied at the call site while
-    driving the real pass-1 function."""
+    """Trace expansion forwards the fetched file's billing context to pricing."""
     from uuid import uuid4 as _uuid4
 
     import outrider.agent.nodes.analyze as analyze_mod
@@ -2257,14 +2247,8 @@ async def test_openai_trace_expansion_recomputation_passes_context(
     )
     assert finds, "pass-0 fixture must admit a source finding"
 
-    recorded: list[tuple[str, str, dict[str, object]]] = []
-    real_compute = analyze_mod.compute_cost_usd
-
-    def spy(profile_id: str, model: str, **kwargs: object):  # type: ignore[no-untyped-def]
-        recorded.append((profile_id, model, kwargs))
-        return real_compute(profile_id, model, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(analyze_mod, "compute_cost_usd", spy)
+    price = Mock(wraps=analyze_mod.compute_cost_outcome)
+    monkeypatch.setattr(analyze_mod, "compute_cost_outcome", price)
     sink = _NullSink()
     outcome = await _process_one_trace_fetched_file(
         fetched_file=TraceFetchedFile(
@@ -2287,8 +2271,13 @@ async def test_openai_trace_expansion_recomputation_passes_context(
         remaining_budget_tokens=100_000,
     )
     assert outcome is not None
-    openai_calls = [(p, m, k) for (p, m, k) in recorded if p == "openai"]
-    assert len(openai_calls) == 1, "the trace-expansion site must price exactly one call"
-    _, _, kwargs = openai_calls[0]
-    assert kwargs["billed_prompt_tokens"] == 100
-    assert kwargs["service_tier"] == "default"
+    price.assert_called_once_with(
+        "openai",
+        "gpt-5.6-sol",
+        input_tokens=100,
+        output_tokens=50,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        billed_prompt_tokens=100,
+        service_tier="default",
+    )

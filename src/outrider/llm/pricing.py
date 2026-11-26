@@ -26,6 +26,7 @@ __all__ = [
     "Priced",
     "PricingOutcome",
     "Unpriced",
+    "add_exact_cost",
     "compute_cost_outcome",
     "compute_cost_usd",
     "min_cacheable_tokens",
@@ -91,10 +92,10 @@ version-keyed cost aggregation.
 
 # Version the host-qualified rates (DECISIONS.md#056) together with long-context,
 # service-tier and unpriced-outcome policy (specs/2026-07-18-openai-native-host.md).
-# The digest-pinning test rejects unversioned changes. Retain older model rows
-# for replay and saved baselines. Current rates are verified against the official
-# pricing pages; saved events retain their recorded version and cost.
-PRICING_VERSION: Final[str] = "v8"
+# Verify current rates against the official pricing pages. The digest-pinning
+# test rejects unversioned changes. Saved events keep their pricing version and
+# cost. Use the capture's Outrider revision to look up its original rates.
+PRICING_VERSION: Final[str] = "v9"
 if not re.fullmatch(PRICING_VERSION_PATTERN, PRICING_VERSION):
     raise RuntimeError(
         f"PRICING_VERSION must match {PRICING_VERSION_PATTERN!r} "
@@ -223,17 +224,13 @@ RATE_TABLE: Final[Mapping[tuple[str, str], ModelPricing]] = MappingProxyType(
             cache_read_per_token=Decimal("0.00000003"),
             out_per_token=Decimal("0.0000005"),
         ),
-        ("openai", "gpt-6.1-sol"): ModelPricing(
+        # Standard Chat Completions with 30-minute cache writes.
+        # https://developers.openai.com/api/docs/models/gpt-6.2-sol
+        ("openai", "gpt-6.2-sol"): ModelPricing(
             in_per_token=Decimal("0.000002"),
             cache_write_per_token=Decimal("0.0000025"),
             cache_read_per_token=Decimal("0.0000001"),
             out_per_token=Decimal("0.00001"),
-        ),
-        ("openai", "gpt-6.1-terra"): ModelPricing(
-            in_per_token=Decimal("0.000001"),
-            cache_write_per_token=Decimal("0.00000125"),
-            cache_read_per_token=Decimal("0.00000005"),
-            out_per_token=Decimal("0.000005"),
         ),
         ("openai", "gpt-6-luna"): ModelPricing(
             in_per_token=Decimal("0.0000001"),
@@ -302,8 +299,7 @@ MIN_CACHEABLE_TOKENS: Final[Mapping[tuple[str, str], int | None]] = MappingProxy
         ("baseten", "zai-org/GLM-5.3-Flash"): None,
         ("fireworks", "accounts/fireworks/models/glm-5p3"): None,
         ("fireworks", "accounts/fireworks/models/glm-5p3-flash"): None,
-        ("openai", "gpt-6.1-sol"): 1024,
-        ("openai", "gpt-6.1-terra"): 1024,
+        ("openai", "gpt-6.2-sol"): 1024,
         ("openai", "gpt-6-luna"): 1024,
     }
 )
@@ -391,8 +387,7 @@ LONG_CONTEXT_POLICY: Final[Mapping[tuple[str, str], LongContextPolicy]] = Mappin
             ("openai", "gpt-5.6-sol"),
             ("openai", "gpt-5.6-terra"),
             ("openai", "gpt-5.6-luna"),
-            ("openai", "gpt-6.1-sol"),
-            ("openai", "gpt-6.1-terra"),
+            ("openai", "gpt-6.2-sol"),
             ("openai", "gpt-6-luna"),
         )
     }
@@ -525,6 +520,13 @@ def compute_cost_outcome(
                 + rates.out_per_token * output_tokens
             )
         return Priced(cost * tier_mult)
+
+
+def add_exact_cost(total: Decimal | None, amount: Decimal | None) -> Decimal | None:
+    """A pass has an exact total only when all contributing calls are priced."""
+    if total is None or amount is None:
+        return None
+    return total + amount
 
 
 def compute_cost_usd(

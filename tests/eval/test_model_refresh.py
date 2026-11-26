@@ -91,6 +91,16 @@ def test_nonfinite_or_nonpositive_caps_cannot_authorize_calls(value: str) -> Non
         refresh.Budget(Decimal(value), 3)
 
 
+def test_sol_aliases_reserve_for_the_62_input_limit() -> None:
+    target = refresh.parse_target("openai-sol-6-2")
+    assert target == refresh.Target("openai", "gpt-6.2-sol", "research")
+    assert refresh.parse_target("openai-sol") == target
+    assert refresh.context_limit(target) == 922_000
+    # At standard tier the worst input class is a long-context 30-minute
+    # cache write ($5/M). Long-context output costs $15/M.
+    assert refresh.reservation_usd(target, 1024) == Decimal("4.62536000")
+
+
 def test_nonlegacy_plans_do_not_depend_on_legacy_holdout_novelty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

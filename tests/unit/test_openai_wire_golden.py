@@ -47,7 +47,7 @@ GOLDEN_KWARGS: dict[str, Any] = {
     "reasoning_effort": "none",
     "service_tier": "default",
     # The contract digest rotates when supported request behavior changes.
-    "prompt_cache_key": "outrider:07554de94696bea1:analyze@1.0.0",
+    "prompt_cache_key": "outrider:f59cc87d1c5453de:analyze@1.0.0",
     "response_format": {"type": "json_object"},
 }
 # §8a writes-reported (SHAPER v4, capture-pinned): prompt(100) INCLUDES both
@@ -65,7 +65,7 @@ GOLDEN_RESPONSE_ACCOUNTING: dict[str, int] = {
 # $0.00189. openai cost is Unpriced(BILLING_PENDING) until FUP-247 confirms the equation, so
 # this value is a reference for the eventual adjudication, not a pinned expectation.
 GOLDEN_COST_USD: float = 0.00189
-GOLDEN_PRICING_VERSION = "v8"
+GOLDEN_PRICING_VERSION = "v9"
 
 _FIXED_REVIEW_ID = UUID("00000000-0000-0000-0000-0000000000ab")
 
@@ -183,9 +183,8 @@ async def test_openai_wire_golden_request_accounting_and_event() -> None:
 @pytest.mark.parametrize(
     ("model", "effort", "cache_key", "reasoning"),
     [
-        ("gpt-6.1-sol", "low", "outrider:449759b03c651d18:analyze@1.0.0", True),
-        ("gpt-6.1-terra", "none", "outrider:07554de94696bea1:analyze@1.0.0", False),
-        ("gpt-6-luna", "none", "outrider:07554de94696bea1:analyze@1.0.0", False),
+        ("gpt-6.2-sol", "low", "outrider:e0c3c521926f5014:analyze@1.0.0", True),
+        ("gpt-6-luna", "none", "outrider:f59cc87d1c5453de:analyze@1.0.0", False),
     ],
 )
 @pytest.mark.asyncio

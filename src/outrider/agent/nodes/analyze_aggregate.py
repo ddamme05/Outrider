@@ -25,7 +25,7 @@ from outrider.agent.nodes.finding_cap import (
 from outrider.anomaly.rule_names import AnomalyRuleName, AnomalySeverity
 from outrider.ast_facts.models import SkipReason
 from outrider.audit.events import AnalyzeCompletedEvent, ReviewPhaseEvent
-from outrider.llm.pricing import PRICING_VERSION
+from outrider.llm.pricing import PRICING_VERSION, add_exact_cost
 from outrider.policy.canonical import compute_phase_id, compute_round_id
 from outrider.policy.publish_eligibility import verification_hold_finding_ids
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
@@ -89,7 +89,7 @@ class AggregateFold:
     total_output_tokens: int
     total_cache_read_tokens: int
     total_cache_write_tokens: int
-    total_cost: Decimal
+    total_cost: Decimal | None
     budget_skip_count: int
     gated_overflow: bool
     standard_tier_llm_used: bool
@@ -142,7 +142,7 @@ def fold_worker_outcomes(
     served_count_before_dedup = 0
     producer_count_before_dedup = 0
     input_tokens = output_tokens = cache_read_tokens = cache_write_tokens = 0
-    total_cost = Decimal("0")
+    total_cost: Decimal | None = Decimal("0")
     budget_skip_count = 0
     standard_tier_llm_used = False
 
@@ -188,7 +188,7 @@ def fold_worker_outcomes(
         output_tokens += outcome.output_tokens
         cache_read_tokens += outcome.cache_read_tokens
         cache_write_tokens += outcome.cache_write_tokens
-        total_cost += outcome.cost
+        total_cost = add_exact_cost(total_cost, outcome.cost)
         # Share the admission key with sequential pass-1 accumulation.
         admit_with_pair_dedup(outcome.admitted_findings, admitted_findings, admitted_finding_keys)
         trace_candidates.extend(outcome.trace_candidates)
@@ -363,7 +363,7 @@ async def analyze_aggregate(
         total_cache_write_tokens=fold.total_cache_write_tokens,
         total_output_tokens=fold.total_output_tokens,
         # Sum costs as Decimal; convert to float only at the event boundary.
-        total_cost_usd=float(fold.total_cost),
+        total_cost_usd=float(fold.total_cost) if fold.total_cost is not None else None,
         pricing_version=PRICING_VERSION,
         policy_version=active_policy_version,
         analyze_model=analyze_model,

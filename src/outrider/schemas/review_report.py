@@ -96,8 +96,7 @@ class ReviewMetrics(BaseModel):
     # JSONB (some JSONB configs reject non-standard JSON `Infinity`).
     # le=100.0 is "this would already be a runaway"; real V1 reviews land
     # well under $1. Cap is policy-driven, not architectural — bump if
-    # average cost rises. Optional+None per the same read-compat
-    # rationale as the token fields above.
+    # average cost rises. Also None when any completed call is unpriced.
     total_cost_usd: float | None = Field(default=None, ge=0, le=100.0)
     # Wall-clock IS deterministically computable from node-side
     # time.monotonic() delta — not a placeholder.

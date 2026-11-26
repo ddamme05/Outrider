@@ -130,7 +130,27 @@ def test_zero_outcomes_folds_the_valid_empty_pass() -> None:
     assert fold.round.findings == ()
     assert fold.n_files_analyzed == 0
     assert fold.n_llm_calls == 0
+    assert fold.total_cost == Decimal("0")
     assert fold.round.pass_index == 0
+
+
+@pytest.mark.parametrize("unpriced_path", ["src/a.py", "src/z.py"])
+def test_mixed_worker_prices_keep_usage_and_withhold_exact_total(unpriced_path: str) -> None:
+    paid = _parser_outcome("src/m.py")
+    pending = _parser_outcome(unpriced_path, cost=None)
+    served = AnalyzeWorkerOutcome(
+        path="src/c.py",
+        pass_index=0,
+        source="cache_serve",
+        parse_status="clean",
+        review_tier=ReviewTier.DEEP,
+    )
+    assert _fold((served,)).total_cost == Decimal("0")
+    fold = _fold((paid, pending, served))
+    assert fold.total_cost is None
+    assert fold.n_llm_calls == 2
+    assert fold.total_input_tokens == 200
+    assert fold.total_output_tokens == 100
 
 
 def test_mixed_passes_and_duplicate_paths_fail_loud() -> None:

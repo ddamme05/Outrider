@@ -29,7 +29,6 @@ from outrider.agent.nodes.analyze import ANALYZE_MAX_CONCURRENCY, DEFAULT_REVIEW
 from outrider.coordinates import COORDINATES_IMPORT_PATH_RESOLVER
 from outrider.eval_support import assert_test_url_is_isolated, require_eval_mode
 from outrider.llm.base import INCLUDE_TEXT_OPT_IN
-from outrider.llm.config import ModelConfig
 from outrider.llm.host_profiles import resolve_host_identity, validate_available_models
 from outrider.llm.pricing import PRICING_VERSION
 from outrider.prompts import analyze, synthesize, trace, triage
@@ -662,19 +661,7 @@ async def collect(
         recorders[arm] = ExchangeRecorder(directory, target)
     first_requests, results = {}, []
     cases = {case["id"]: case for case in plan["cases"]}
-    config = ModelConfig(
-        **dict.fromkeys(
-            (
-                "triage_model",
-                "analyze_model",
-                "standard_analyze_model",
-                "trace_model",
-                "synthesize_model",
-                "patch_model",
-            ),
-            target.model,
-        )
-    )
+    config = target.workflow_models()
     prerequisite_failed = False
     for scheduled in plan["schedule"]:
         case = cases[scheduled["case_id"]]

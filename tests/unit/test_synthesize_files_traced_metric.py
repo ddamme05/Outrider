@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from outrider.agent.nodes.synthesize import _compute_files_traced_beyond_diff
 
 
@@ -71,7 +73,10 @@ def _make_state_stub(
     return _StateStub()
 
 
-def test_compute_metrics_populates_llm_aggregates() -> None:
+@pytest.mark.parametrize("unpriced_calls, expected_cost", [(0, 0.05), (1, None)])
+def test_compute_metrics_populates_llm_aggregates(
+    unpriced_calls: int, expected_cost: float | None
+) -> None:
     """FUP-093 exit pin: `_compute_metrics` carries the audit-stream LLM
     aggregates onto `ReviewMetrics` (the synthesize node queries them and
     passes them in). Guards against a regression that re-hardcodes `None`."""
@@ -86,12 +91,14 @@ def test_compute_metrics_populates_llm_aggregates() -> None:
             total_input_tokens=300,
             total_output_tokens=150,
             total_cost_usd=0.05,
+            unpriced_call_count=unpriced_calls,
+            cost_complete=unpriced_calls == 0,
         ),
     )
     assert metrics.llm_calls_made == 3
     assert metrics.total_input_tokens == 300
     assert metrics.total_output_tokens == 150
-    assert metrics.total_cost_usd == 0.05
+    assert metrics.total_cost_usd == expected_cost
     assert metrics.wall_clock_seconds == 1.5
     assert metrics.files_examined == 0
     assert metrics.files_traced_beyond_diff == 0

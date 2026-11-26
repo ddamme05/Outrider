@@ -118,7 +118,7 @@ class AnalyzeWorkerOutcome(BaseModel):
     output_tokens: int = Field(default=0, ge=0)
     cache_read_tokens: int = Field(default=0, ge=0)
     cache_write_tokens: int = Field(default=0, ge=0)
-    cost: Decimal = Field(default=Decimal("0"), ge=0)
+    cost: Decimal | None = Field(default=Decimal("0"), ge=0)
     estimated_tokens: int = Field(default=0, ge=0)
 
     @field_validator("path")
@@ -196,7 +196,7 @@ def _check_source_capabilities(outcome: AnalyzeWorkerOutcome) -> None:
             or outcome.output_tokens
             or outcome.cache_read_tokens
             or outcome.cache_write_tokens
-            or outcome.cost
+            or outcome.cost != 0
         ):
             raise ValueError("AnalyzeWorkerOutcome: provider spend requires source='parser'")
         # #055 records exist on BOTH non-skip paths: the parser merge

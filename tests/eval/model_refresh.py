@@ -23,7 +23,12 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from outrider.llm.base import INCLUDE_TEXT_OPT_IN, LLMProviderError, LLMRefusalError
-from outrider.llm.host_profiles import resolve_host_identity, validate_available_models
+from outrider.llm.config import ModelConfig
+from outrider.llm.host_profiles import (
+    resolve_host_identity,
+    resolve_host_profile,
+    validate_available_models,
+)
 from outrider.llm.pricing import (
     COST_UNADJUDICATED_PROFILE_IDS,
     LONG_CONTEXT_POLICY,
@@ -63,7 +68,17 @@ class Target:
     def name(self) -> str:
         return f"{self.host}:{self.model}:{self.role}"
 
+    def workflow_models(self) -> ModelConfig:
+        """Use the explicit comparison target for every review step."""
+        roles = dict.fromkeys(ModelConfig.model_fields, self.model)
+        validate_available_models(self.host, (self.model,))
+        if self.host == "anthropic":
+            return ModelConfig.model_validate(roles)
+        resolve_host_profile(self.host).for_models((self.model,))
+        return ModelConfig.for_host(self.host).model_copy(update=roles)
 
+
+_OPENAI_SOL_62 = Target("openai", "gpt-6.2-sol", "research")
 TARGETS = {
     "anthropic-sonnet-5": Target("anthropic", "claude-sonnet-5", "baseline-deep"),
     "anthropic-haiku-4-5": Target("anthropic", "claude-haiku-4-5", "baseline-cheap"),
@@ -73,7 +88,8 @@ TARGETS = {
     "fireworks-glm-5-3-flash": Target(
         "fireworks", "accounts/fireworks/models/glm-5p3-flash", "candidate"
     ),
-    "openai-sol": Target("openai", "gpt-6.1-sol", "research"),
+    "openai-sol": _OPENAI_SOL_62,
+    "openai-sol-6-2": _OPENAI_SOL_62,
     "openai-luna": Target("openai", "gpt-6-luna", "research"),
 }
 
@@ -222,7 +238,10 @@ def context_limit(target: Target) -> int:
             return 1_000_000
     if target.host in {"fireworks", "baseten"} and "glm-5" in target.model.lower():
         return 1_048_576
-    if target.host == "openai" and target.model in {"gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"}:
+    if target.host == "openai" and target.model == "gpt-6.2-sol":
+        # The 1,050,000-token combined window accepts at most 922,000 input tokens.
+        return 922_000
+    if target.host == "openai" and target.model == "gpt-6-luna":
         return 1_050_000
     raise ValueError(f"no reviewed context bound for {target.host}:{target.model}")
 
@@ -243,8 +262,6 @@ def maximum_rates(target: Target) -> tuple[Decimal, Decimal]:
     )
     tier = Decimal(1)
     if target.host == "openai":
-        from outrider.llm.host_profiles import resolve_host_profile
-
         requested = (
             resolve_host_profile(target.host).for_models((target.model,)).requested_service_tier
         )
@@ -614,23 +631,10 @@ def create_provider(target: Target, recorder: ExchangeRecorder) -> LLMProvider:
         raise ValueError(f"resolved {key_name} is required for the selected host")
     if target.host == "anthropic":
         from outrider.llm.anthropic_provider import AnthropicProvider
-        from outrider.llm.config import ModelConfig
 
-        config = ModelConfig(
-            **dict.fromkeys(
-                (
-                    "triage_model",
-                    "analyze_model",
-                    "standard_analyze_model",
-                    "synthesize_model",
-                    "trace_model",
-                    "patch_model",
-                ),
-                target.model,
-            )
+        return AnthropicProvider(
+            api_key=SecretStr(value), model_config=target.workflow_models(), persister=recorder
         )
-        return AnthropicProvider(api_key=SecretStr(value), model_config=config, persister=recorder)
-    from outrider.llm.host_profiles import resolve_host_profile
     from outrider.llm.openai_compatible_provider import OpenAICompatibleProvider
 
     return OpenAICompatibleProvider(

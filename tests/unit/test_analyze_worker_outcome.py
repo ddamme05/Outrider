@@ -177,6 +177,8 @@ def test_parser_only_facts_require_parser() -> None:
     with pytest.raises(ValidationError, match="provider spend"):
         _cache_serve(input_tokens=100)
     with pytest.raises(ValidationError, match="provider spend"):
+        _cache_serve(cost=None)
+    with pytest.raises(ValidationError, match="provider spend"):
         _observed_skip(cost=Decimal("0.01"))
 
 

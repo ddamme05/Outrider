@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from difflib import unified_diff
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
@@ -33,6 +33,7 @@ from outrider.ast_facts.models import SkipReason
 from outrider.audit.persister import _lift_finding_event
 from outrider.llm.anthropic_provider import _ANTHROPIC_CONTRACT_DIGEST, _ANTHROPIC_PROFILE_ID
 from outrider.llm.base import LLMRequest, LLMResponse
+from outrider.llm.host_profiles import OPENAI_PROFILE
 from outrider.policy.findings import EvidenceTier
 from outrider.policy.severity import ACTIVE_POLICY_VERSION, FindingSeverity
 from outrider.schemas import ReviewState
@@ -472,6 +473,37 @@ async def run_analyze_pass_kw(state: ReviewState, **deps: Any) -> dict[str, Any]
 # ---------------------------------------------------------------------------
 # Scenario 1 — clean file admits one finding
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_billing_pending_preserves_the_finding_and_usage(deps: dict[str, Any]) -> None:
+    model = "gpt-5.6-sol"
+    provider = AsyncMock()
+    provider.complete.return_value = LLMResponse(
+        text=_build_finding_proposal_json(),
+        model=model,
+        input_tokens=3,
+        output_tokens=175,
+        cache_read_tokens=2042,
+        cache_write_tokens=0,
+        billed_prompt_tokens=2045,
+        service_tier_actual="default",
+        finish_reason="end_turn",
+        latency_ms=50,
+        profile_id="openai",
+        reasoning_enabled=False,
+        profile_contract_digest=OPENAI_PROFILE.profile_contract_digest,
+    )
+    deps.update(provider=provider, analyze_model=model, standard_analyze_model=model)
+
+    result = await run_analyze_pass(_build_review_state(), deps)
+
+    provider.complete.assert_awaited_once()
+    assert len(result["analysis_rounds"][0].findings) == 1
+    (event,) = deps["analyze_event_sink"].completed
+    assert event.total_cost_usd is None
+    assert (event.total_input_tokens, event.total_output_tokens) == (3, 175)
+    assert (event.total_cache_read_tokens, event.total_cache_write_tokens) == (2042, 0)
 
 
 @pytest.mark.asyncio

@@ -79,26 +79,17 @@ def _require_approved_baselines(deep_baseline: str, standard_baseline: str) -> N
 
 
 def _require_openai_billing_adjudicated() -> None:
-    """Pre-spend billing preflight for the paid GPT-5.6 scorecard (FUP-247).
+    """Require reconciled OpenAI billing before spending on the admission scorecard.
 
-    The scorecard cannot produce evidence while openai cost is WITHHELD — analyze's
-    `compute_cost_usd` sites (analyze.py:2821/3416) RAISE on `Unpriced(BILLING_PENDING)`
-    AFTER the billed provider call, and that `ValueError` is not an `LLMProviderError`
-    so the runner's transient isolation does not demote it — the run would spend, then
-    abort. The caller has explicitly opted into real spend (the `OUTRIDER_EVAL_REAL_MODELS`
-    skipif gates ordinary CI), so a missing prerequisite FAILS, never skips — a silent
-    skip would read as a clean run (mirrors `_require_probe_manifest`). A LIVE module
-    read, so billing adjudication (removing `"openai"` from the set) re-enables the run
-    without touching this preflight; module-level so the zero-spend pins drive the exact
-    branch the paid test uses."""
+    An ordinary review can finish with measured usage and an unknown cost. This
+    scorecard needs a verified cost for its comparison (FUP-247).
+    """
     import outrider.llm.pricing as _pricing_mod  # noqa: PLC0415
 
     if "openai" in _pricing_mod.COST_UNADJUDICATED_PROFILE_IDS:
         pytest.fail(
-            "openai billing is unadjudicated (FUP-247) — the analyze compute_cost_usd "
-            "sites raise Unpriced(BILLING_PENDING) after the paid call, so this scorecard "
-            "cannot produce evidence. Bless the SHAPER v4 equation via a billing export "
-            "and remove 'openai' from COST_UNADJUDICATED_PROFILE_IDS to enable it."
+            "openai billing is unadjudicated (FUP-247). The paid admission scorecard "
+            "requires a cost verified against a billing export."
         )
 
 

@@ -54,7 +54,7 @@ def worker_outcome_from_parser(
     output_tokens: int,
     cache_read_tokens: int,
     cache_write_tokens: int,
-    cost: Decimal,
+    cost: Decimal | None,
     estimated_tokens: int,
     native_candidates: tuple[NativeCandidateRef, ...] = (),
 ) -> AnalyzeWorkerOutcome:

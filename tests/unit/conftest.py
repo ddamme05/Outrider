@@ -51,7 +51,7 @@ finally:
 
 @pytest.fixture
 def arc2_reviewed_analyzer(monkeypatch: pytest.MonkeyPatch) -> tuple[RowMeasurement, ...]:
-    """Use the November 1 Arc 2 system message and return its recorded measurements."""
+    """Rebuild the November 1 Arc 2 packets with their reviewed prompt and cache identity."""
     from spikes.openai.arc2 import plan
     from spikes.openai.arc2.contracts import RowMeasurement
 
@@ -59,6 +59,21 @@ def arc2_reviewed_analyzer(monkeypatch: pytest.MonkeyPatch) -> tuple[RowMeasurem
 
     fixtures = Path(__file__).resolve().parents[1] / "fixtures"
     system_prompt = (fixtures / "arc2-reviewed-v13-system.txt").read_bytes().decode("utf-8")
+
+    monkeypatch.setattr(plan, "MODEL", "gpt-5.6-sol")
+    build_request = plan.production_kwargs
+    current_digest = plan.OPENAI_PROFILE.for_models((plan.MODEL,)).profile_contract_digest
+
+    def reviewed_request(**kwargs: Any) -> dict[str, Any]:
+        packet = build_request(**kwargs)
+        # Each v13 request hash includes its then-current cache partition.
+        # Restore only that field's recorded prefix and verify the whole packet.
+        packet["prompt_cache_key"] = packet["prompt_cache_key"].replace(
+            current_digest[:16], "07554de94696bea1", 1
+        )
+        return packet
+
+    monkeypatch.setattr(plan, "production_kwargs", reviewed_request)
 
     def render(**kwargs: Any) -> AnalyzePromptParts:
         return replace(analyze.render(**kwargs), system_prompt=system_prompt)

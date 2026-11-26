@@ -592,7 +592,7 @@ def registered_locked_contract() -> LockedProbeContract:
     return LockedProbeContract(
         contract_version=STRICT_PROBE_CONTRACT_VERSION,
         model=MODEL,
-        profile_contract_digest=OPENAI_PROFILE.profile_contract_digest,
+        profile_contract_digest=OPENAI_PROFILE.for_models((MODEL,)).profile_contract_digest,
         strict_schema_digest=schema_digest(derive_strict_analyze_schema()),
         analyze_prompt_version=analyze_prompt.VERSION,
         evaluation_contract_digest=registered_evaluation_contract().digest,
