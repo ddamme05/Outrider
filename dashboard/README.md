@@ -52,6 +52,15 @@ When Outrider reuses a file review, open its **Original review** link in this
 panel or the audit feed. The source review shows the model exchange for that
 file, including the retention notice if its content has expired.
 
+To see which code a particular model call received, expand its `llm_call` row
+and open **Recorded source ranges**. The paths and inclusive line numbers remain
+available after the prompt expires. An exchange without a range list can still
+contain code in its saved prompt.
+
+File events describe a different part of the review. **Fetched** means intake
+retrieved the file. **Skipped in analysis** gives the recorded reason its file
+review was skipped. Triage may already have received its diff in an earlier call.
+
 ## Know where each responsibility lives
 
 - [api/client.ts](src/api/client.ts) loads data and submits changes using the API's
