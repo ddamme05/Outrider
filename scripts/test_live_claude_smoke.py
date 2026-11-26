@@ -11,8 +11,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 _SCRIPTS = Path(__file__).resolve().parent
 _ROOT = _SCRIPTS.parent
@@ -148,6 +151,28 @@ def test_demo_decision_single_finding_gets_the_override() -> None:
     assert decision.decisions[0].outcome == PerFindingOutcome.SEVERITY_OVERRIDE
 
 
+def test_restored_demo_seed_migrates_before_another_review() -> None:
+    import seed_demo  # noqa: PLC0415 - standalone script with its own import path
+
+    db = "postgresql+psycopg://demo@localhost/seed"
+    with tempfile.TemporaryDirectory() as temp:
+        dump = Path(temp) / "seed.sql"
+        dump.write_text("-- Demo snapshot")
+        with (
+            patch.object(seed_demo.subprocess, "run") as restore,
+            patch.object(seed_demo, "_migrate") as migrate,
+        ):
+            restore.return_value = subprocess.CompletedProcess([], 0)
+            assert seed_demo._load_sql(db, dump)
+            migrate.assert_called_once_with(db)
+            migrate.reset_mock()
+            restore.return_value = subprocess.CompletedProcess(
+                [], 1, stderr="expected restore error"
+            )
+            assert not seed_demo._load_sql(db, dump)
+            migrate.assert_not_called()
+
+
 def main() -> int:
     tests = [
         test_factory_is_awaitable,
@@ -156,6 +181,7 @@ def main() -> int:
         test_wrong_installation_id_rejected,
         test_demo_decision_constructs_a_valid_hitl_decision,
         test_demo_decision_single_finding_gets_the_override,
+        test_restored_demo_seed_migrates_before_another_review,
         _b64_roundtrip_sanity,
     ]
     for t in tests:

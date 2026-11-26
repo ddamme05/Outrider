@@ -3,6 +3,12 @@
 # credentials live on this box. Launch: `docker compose -f docker-compose.demo.yml up -d --build`
 name: outrider-demo
 
+x-app-image: &app-image
+  image: outrider-demo-app:latest
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+
 services:
   postgres:
     image: postgres:18.7-bookworm@sha256:ece55f7868da684e400f82f1030a050718adbdd65c23aa500c486f6e2950dc0f
@@ -18,7 +24,7 @@ services:
     healthcheck:
       # -h 127.0.0.1 forces a TCP check. During initdb/seed restore Postgres runs a
       # temporary SOCKET-ONLY server, so a bare pg_isready would report healthy mid-restore
-      # and let the app (depends_on: service_healthy) connect before the real TCP server is up.
+      # and let migrations start before the seed has finished restoring.
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U outrider -d outrider_demo"]
       interval: 5s
       timeout: 5s
@@ -26,17 +32,25 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  app:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+  migrate:
+    <<: *app-image
+    command: ["/app/.venv/bin/alembic", "upgrade", "head"]
     environment:
-      OUTRIDER_DEMO_MODE: "1"
-      OUTRIDER_ADMIN_API_KEY: ${OUTRIDER_ADMIN_API_KEY:?set OUTRIDER_ADMIN_API_KEY in .env}
-      DATABASE_URL: postgresql+psycopg://outrider:${POSTGRES_PASSWORD}@postgres:5432/outrider_demo
+      DATABASE_URL: &database-url postgresql+psycopg://outrider:${POSTGRES_PASSWORD}@postgres:5432/outrider_demo
     depends_on:
       postgres:
         condition: service_healthy
+    restart: "no"
+
+  app:
+    <<: *app-image
+    environment:
+      OUTRIDER_DEMO_MODE: "1"
+      OUTRIDER_ADMIN_API_KEY: ${OUTRIDER_ADMIN_API_KEY:?set OUTRIDER_ADMIN_API_KEY in .env}
+      DATABASE_URL: *database-url
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     # No published ports — only Caddy reaches the app over the internal network.
 

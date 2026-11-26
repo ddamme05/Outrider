@@ -494,8 +494,7 @@ def _pg_dump(db_url: str, out_path: Path) -> bool:
 
 
 def _load_sql(db_url: str, in_path: Path) -> bool:
-    """Restore a SQL dump INTO the demo DB via in-container psql (version-matched,
-    same reasoning as `_pg_dump`). ON_ERROR_STOP so a bad restore fails loud."""
+    """Restore a seed or retry checkpoint and upgrade its schema before running reviews."""
     url = make_url(db_url)
     exec_argv = [
         "docker",
@@ -527,6 +526,7 @@ def _load_sql(db_url: str, in_path: Path) -> bool:
     if proc.returncode != 0:
         print(f"  checkpoint restore failed: {proc.stderr.strip()}", flush=True)
         return False
+    _migrate(db_url)
     return True
 
 

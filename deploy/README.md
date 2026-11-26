@@ -2,9 +2,10 @@
 
 The demo server runs Outrider in DEMO_MODE, with a read-only dashboard showing
 saved example reviews. It holds no Anthropic / GitHub / Slack credentials and runs
-no reviews. Three containers run on one DigitalOcean server (a droplet):
+no reviews. The following services run on one DigitalOcean server (a droplet).
 
 - **postgres** restores the demo database from `demo_seed.sql` on first boot.
+- **migrate** upgrades the restored or existing database to the app's schema and exits.
 - **app** runs FastAPI in DEMO_MODE (only `OUTRIDER_ADMIN_API_KEY` + `DATABASE_URL`).
 - **web** runs Caddy, which serves the dashboard, forwards `/api` requests to the
   app, and provides HTTPS.
@@ -50,7 +51,9 @@ bash up.sh    # preflight-checks the seed + .env, then `docker compose up -d --b
 ```
 
 First boot builds the app and dashboard images, and Postgres restores the saved
-reviews. `up.sh` stops with an error if `deploy/demo_seed.sql` is missing. Without
+reviews. The API starts after the schema upgrade succeeds. On later launches,
+the migration uses the existing volume and preserves its reviews.
+`up.sh` stops with an error if `deploy/demo_seed.sql` is missing. Without
 that check, Docker would create a root-owned directory there and Postgres would
 keep crashing. For a domain, Caddy fetches a Let's Encrypt certificate for
 `DEMO_DOMAIN` automatically.
