@@ -333,37 +333,36 @@ def _render_review_body(
     """Render the recovery marker first, then eligible concerns and a dashboard count.
 
     The caller supplies only eligibility-approved findings (DECISIONS.md#050).
-    Tail truncation preserves the offset-zero marker used by GitHub crash recovery.
-    apply_size_cap reads the HMAC secret only if truncation is needed."""
+    Explanations use space left after the location and link for every concern.
+    Tail truncation preserves the recovery marker when the listing itself is too large."""
     from outrider.policy.output_sanitizer import (  # noqa: PLC0415
         GITHUB_REVIEW_BODY_MAX,
         apply_size_cap,
+        sanitize_display_string,
     )
 
-    sections: list[str] = [body_marker]
-
-    if review_body_findings:
-        entries: list[str] = []
-        removed_entries: list[str] = []
-        for related_finding, related_severity in review_body_findings:
-            target = removed_entries if related_finding.source_side == "base" else entries
-            target.append(
-                _render_related_concern_entry(
-                    related_finding,
-                    effective_severity=related_severity,
-                    deep_link=_review_deep_link(
-                        dashboard_base_url, review_id, related_finding.finding_id
-                    ),
-                )
+    parts = [body_marker]
+    descriptions: list[tuple[int, str]] = []
+    for side, heading in (
+        ("head", "## Related concerns"),
+        (
+            "base",
+            "## Removed-file concerns\n\n"
+            "These findings use removed BASE evidence. The files are absent from HEAD.",
+        ),
+    ):
+        concerns = [(f, severity) for f, severity in review_body_findings if f.source_side == side]
+        if not concerns:
+            continue
+        parts.append(f"\n\n{heading}\n")
+        for finding, severity in concerns:
+            entry = _render_related_concern_entry(
+                finding,
+                effective_severity=severity,
+                deep_link=_review_deep_link(dashboard_base_url, review_id, finding.finding_id),
             )
-        if entries:
-            sections.append("## Related concerns\n\n" + "\n".join(entries))
-        if removed_entries:
-            sections.append(
-                "## Removed-file concerns\n\n"
-                "These findings use removed BASE evidence. The files are absent from HEAD.\n\n"
-                + "\n".join(removed_entries)
-            )
+            parts.append(f"\n{entry}")
+            descriptions.append((len(parts) - 1, finding.description))
 
     if dashboard_only_findings:
         finding_count = len(dashboard_only_findings)
@@ -377,11 +376,22 @@ def _render_review_body(
             if aggregate_link
             else f"View {pronoun} in the Outrider dashboard."
         )
-        sections.append(
-            f"Outrider found {finding_count} additional concern"
+        parts.append(
+            f"\n\nOutrider found {finding_count} additional concern"
             f"{'s' if finding_count != 1 else ''} in "
             f"{file_count} file{'s' if file_count != 1 else ''} "
             f"it couldn't comment on inline. {where}"
         )
 
-    return apply_size_cap("\n\n".join(sections), max_bytes=GITHUB_REVIEW_BODY_MAX)
+    # Reserve all finding locations, dashboard links and the aggregate count first.
+    remaining = GITHUB_REVIEW_BODY_MAX - sum(len(part.encode("utf-8")) for part in parts)
+    for index, description in descriptions:
+        text = " ".join(sanitize_display_string(description).splitlines()).strip()
+        if not text:
+            continue
+        detail = f"\n  {text}"
+        size = len(detail.encode("utf-8"))
+        if size <= remaining:
+            parts[index] += detail
+            remaining -= size
+    return apply_size_cap("".join(parts), max_bytes=GITHUB_REVIEW_BODY_MAX)
