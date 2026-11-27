@@ -8,6 +8,12 @@ import { type CacheServeEvent, OriginalReviewLink } from "./AuditEventSummary";
 type CandidateView = components["schemas"]["CandidateView"];
 type Assessment = components["schemas"]["CandidateAssessmentRef"];
 
+const CITATION_FAILURE_LABELS: Record<NonNullable<Assessment["citation_failure"]>["reason"], string> = {
+  quote_mismatch: "quotes text that differs from the supplied source lines.",
+  outside_snippet: "has an invalid line range for the supplied excerpt.",
+  unknown_snippet: "refers to an unrecognized source excerpt.",
+};
+
 const HEAD_LABELS: Record<NonNullable<Assessment["head_assessment"]>, string> = {
   supports: "supported",
   refutes: "refuted",
@@ -49,6 +55,7 @@ const DRAFT_LABELS: Record<CandidateView["draft_disposition"], string> = {
 function SavedCandidate({ item, reviewId }: { item: CandidateView; reviewId: string }) {
   const original = item.original;
   const assessment = item.assessment;
+  const citationFailure = assessment?.citation_failure;
   return (
     <article className="finding">
       <h3>{original?.title ?? "Saved model warning"}</h3>
@@ -79,6 +86,9 @@ function SavedCandidate({ item, reviewId }: { item: CandidateView; reviewId: str
       {assessment ? (
         <div>
           <p>Follow-up check: {assessment.status} · {assessment.outcome.replaceAll("_", " ")}</p>
+          {assessment.outcome === "invalid_response" && citationFailure ? (
+            <p>Citation {citationFailure.position} {CITATION_FAILURE_LABELS[citationFailure.reason]}</p>
+          ) : null}
           {assessment.head_assessment && assessment.change_assessment ? (
             <p>
               Local bug: {HEAD_LABELS[assessment.head_assessment]}

@@ -17,13 +17,12 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from outrider.agent.candidate_checks import VERSION, assess_candidate_response
+from outrider.agent.candidate_checks import VERSION, finish_candidate_assessment
 from outrider.eval_support import require_eval_mode
 from outrider.llm.host_profiles import resolve_host_identity
 from outrider.llm.pricing import PRICING_VERSION
 from outrider.policy.publish_eligibility import verification_hold_finding_ids
 from outrider.policy.severity import ACTIVE_POLICY_VERSION
-from outrider.schemas.native_candidate import CandidateAssessmentRef
 
 from .model_refresh import (
     ROOT,
@@ -43,6 +42,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from outrider.llm.base import LLMProvider, LLMRequest
+    from outrider.schemas.native_candidate import CandidateAssessmentRef
 
 SCHEMA = "review-check-retry-v1"
 
@@ -272,19 +272,13 @@ async def collect_checks(
                 },
             )
             response = await provider.complete(prepared.request)
-            try:
-                assessment = assess_candidate_response(
-                    prepared, response, policy_version=triage.policy_version
-                )
-            except (ValueError, TypeError):
-                assessment = CandidateAssessmentRef(
-                    candidate_id=prepared.check.candidate_id,
-                    attempt_id=prepared.check.attempt_id,
-                    assessment_exchange_event_id=response.exchange_event_id,
-                    status="uncertain",
-                    outcome="invalid_response",
-                    policy_version=triage.policy_version,
-                )
+            assessment = finish_candidate_assessment(
+                prepared.check,
+                prepared,
+                response,
+                policy_version=triage.policy_version,
+                outcome="completed",
+            )
             assessments.append(assessment)
             write_json(calls / f"{index:06d}.assessment.json", assessment.model_dump(mode="json"))
         else:

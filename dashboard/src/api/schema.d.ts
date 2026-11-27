@@ -1036,6 +1036,7 @@ export interface components {
              * @default []
              */
             citations: components["schemas"]["CandidateCitationRef"][];
+            citation_failure?: components["schemas"]["CandidateCitationFailure"] | null;
             /** Reason Hash */
             reason_hash?: string | null;
             /** Reason Length */
@@ -1105,6 +1106,19 @@ export interface components {
              */
             node_id: "trace";
             check: components["schemas"]["CandidateCheckStarted"];
+        };
+        /**
+         * CandidateCitationFailure
+         * @description Identify the first citation rejected by the source check, in reply order.
+         */
+        CandidateCitationFailure: {
+            /** Position */
+            position: number;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "unknown_snippet" | "outside_snippet" | "quote_mismatch";
         };
         /** CandidateCitationRef */
         CandidateCitationRef: {

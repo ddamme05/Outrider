@@ -45,6 +45,7 @@ from outrider.policy.severity import ACTIVE_POLICY_VERSION, SEVERITY_POLICY
 from outrider.schemas.native_candidate import (
     CandidateAssessmentRef,
     CandidateCheckStarted,
+    CandidateCitationFailure,
     CandidateCitationRef,
     CandidateSnippetRef,
     ChangeAssessment,
@@ -681,28 +682,39 @@ def assess_candidate_response(
     )
 
 
+class _InvalidCitationError(CandidateIntegrityError):
+    def __init__(self, message: str, failure: CandidateCitationFailure) -> None:
+        super().__init__(message)
+        self.failure = failure
+
+
 def _validate_assessment_citations(
     prepared: CandidateCheckEvidence, raw_citations: tuple[_Citation, ...]
 ) -> list[CandidateCitationRef]:
     """Validate quotes against served source and return their citation references."""
     citations = []
     by_id = {snippet.snippet_id: snippet for snippet in prepared.check.snippets}
-    for citation in raw_citations:
+    for position, citation in enumerate(raw_citations, start=1):
         snippet = by_id.get(citation.snippet_id)
-        if (
-            snippet is None
-            or not snippet.line_start
-            <= citation.line_start
-            <= citation.line_end
-            <= snippet.line_end
-        ):
-            raise CandidateIntegrityError("citation is outside the actual supplied snippet")
+        if snippet is None:
+            raise _InvalidCitationError(
+                "citation names an unknown supplied snippet",
+                CandidateCitationFailure(position=position, reason="unknown_snippet"),
+            )
+        if not snippet.line_start <= citation.line_start <= citation.line_end <= snippet.line_end:
+            raise _InvalidCitationError(
+                "citation is outside the actual supplied snippet",
+                CandidateCitationFailure(position=position, reason="outside_snippet"),
+            )
         sources = prepared.base_sources if snippet.source_side == "base" else prepared.sources
         text = extract_line_range_body(
             citation.line_start, citation.line_end, sources[snippet.file_path]
         ).removesuffix("\n")
         if text != citation.quote:
-            raise CandidateIntegrityError("citation differs from its exact captured complete lines")
+            raise _InvalidCitationError(
+                "citation differs from its exact captured complete lines",
+                CandidateCitationFailure(position=position, reason="quote_mismatch"),
+            )
         citations.append(
             CandidateCitationRef(
                 snippet_id=snippet.snippet_id,
@@ -716,7 +728,7 @@ def _validate_assessment_citations(
     return citations
 
 
-def _finish_assessment(
+def finish_candidate_assessment(
     check: CandidateCheckStarted,
     prepared: CandidateCheckEvidence | None,
     response: LLMResponse | None,
@@ -726,9 +738,14 @@ def _finish_assessment(
         "completed", "interrupted", "content_unavailable", "provider_failed", "invalid_response"
     ],
 ) -> CandidateAssessmentRef:
+    """Record the validation outcome for a new or recovered checker attempt."""
+    citation_failure = None
     if prepared is not None and response is not None:
         try:
             return assess_candidate_response(prepared, response, policy_version=policy_version)
+        except _InvalidCitationError as error:
+            outcome = "invalid_response"
+            citation_failure = error.failure
         except (ValueError, TypeError):
             outcome = "invalid_response"
     return CandidateAssessmentRef(
@@ -737,6 +754,7 @@ def _finish_assessment(
         assessment_exchange_event_id=None if response is None else response.exchange_event_id,
         status="uncertain",
         outcome=outcome,
+        citation_failure=citation_failure,
         policy_version=policy_version,
     )
 
@@ -802,7 +820,7 @@ async def investigate_native_candidates(
             outcome = "content_unavailable"
         elif receipt.exchange is None:
             outcome = "interrupted"
-        assessment = _finish_assessment(
+        assessment = finish_candidate_assessment(
             check, prepared, response, policy_version=policy_version, outcome=outcome
         )
         await _record_assessment(state, sink, assessment)
@@ -851,7 +869,7 @@ async def investigate_native_candidates(
             response = await provider.complete(prepared.request)
         except LLMProviderError:
             call_outcome = "provider_failed"
-        assessment = _finish_assessment(
+        assessment = finish_candidate_assessment(
             prepared.check,
             prepared,
             response,

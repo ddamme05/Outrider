@@ -2019,6 +2019,16 @@
             "title": "Citations",
             "default": []
           },
+          "citation_failure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CandidateCitationFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "reason_hash": {
             "anyOf": [
               {
@@ -2183,6 +2193,33 @@
         ],
         "title": "CandidateCheckStartedEvent",
         "description": "Record a check before a model call so interruption never silently rebills."
+      },
+      "CandidateCitationFailure": {
+        "properties": {
+          "position": {
+            "type": "integer",
+            "maximum": 8.0,
+            "minimum": 1.0,
+            "title": "Position"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "unknown_snippet",
+              "outside_snippet",
+              "quote_mismatch"
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "position",
+          "reason"
+        ],
+        "title": "CandidateCitationFailure",
+        "description": "Identify the first citation rejected by the source check, in reply order."
       },
       "CandidateCitationRef": {
         "properties": {

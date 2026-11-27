@@ -22,6 +22,7 @@ _MODEL_TYPES: tuple[tuple[str, str], ...] = (
     ("outrider.schemas.hitl", "PerFindingDecision"),
     ("outrider.schemas.native_candidate", "NativeCandidateRef"),
     ("outrider.schemas.native_candidate", "CandidateAssessmentRef"),
+    ("outrider.schemas.native_candidate", "CandidateCitationFailure"),
     ("outrider.schemas.native_candidate", "CandidateCitationRef"),
     ("outrider.schemas.observed_subsumption", "ObservedSubsumedMatch"),
     ("outrider.schemas.pr_context", "ChangedFile"),

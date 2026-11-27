@@ -253,6 +253,15 @@ class CandidateCheckStarted(BaseModel):
     )
 
 
+class CandidateCitationFailure(BaseModel):
+    """Identify the first citation rejected by the source check, in reply order."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    position: int = Field(ge=1, le=8, strict=True)
+    reason: Literal["unknown_snippet", "outside_snippet", "quote_mismatch"]
+
+
 class CandidateAssessmentRef(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -284,11 +293,18 @@ class CandidateAssessmentRef(BaseModel):
     suggested_severity: FindingSeverity | None = None
     policy_version: str = Field(pattern=BARE_SEMVER_PATTERN)
     citations: tuple[CandidateCitationRef, ...] = Field(default=(), max_length=8)
+    citation_failure: CandidateCitationFailure | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     reason_hash: str | None = Field(default=None, pattern=SHA256_HEX_PATTERN)
     reason_length: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def completed_assessment_shape(self) -> CandidateAssessmentRef:
+        if self.citation_failure is not None and (
+            self.outcome != "invalid_response" or self.assessment_exchange_event_id is None
+        ):
+            raise ValueError("a citation failure requires an invalid response with an exchange")
         if (self.head_assessment is None) != (self.change_assessment is None):
             raise ValueError("HEAD and change assessments must be present together")
         if self.impact_assessment is not None and self.head_assessment is None:
