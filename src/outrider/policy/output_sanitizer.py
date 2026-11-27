@@ -13,6 +13,7 @@ import hmac
 import os
 import re
 from hashlib import sha256
+from itertools import groupby
 from typing import Final
 from urllib.parse import urlparse
 
@@ -117,9 +118,8 @@ _NUL_CHAR: Final[str] = "\x00"
 
 # Inline-character escape map. Each maps to its backslash-escaped form,
 # which markdown renders as the literal character. The set deliberately
-# omits `*` and `_` because mid-word emphasis-suppression would break
-# legitimate prose (e.g., `my_variable`); leading-position list markers
-# are handled separately (`_LEADING_BLOCK_MARKER_REGEX`).
+# leaves single underscores in names like `my_variable` alone. Identifier-shaped
+# double-underscore names and leading list markers are handled separately.
 _MARKDOWN_INLINE_ESCAPES: Final[dict[str, str]] = {
     "\\": "\\\\",  # MUST be first; later escapes inject backslashes
     "`": "\\`",
@@ -218,6 +218,22 @@ def sanitize_display_string(text: str) -> str:
     return text
 
 
+def _escape_double_underscore_names(text: str) -> str:
+    """Keep names like Symbol.__new__ visible while preserving multiword emphasis."""
+    if "__" not in text:
+        return text
+    parts = []
+    # A leading underscore lets isidentifier recognize continuation characters,
+    # including digits and combining marks. Punctuation separates dotted names.
+    for _, characters in groupby(text, key=lambda char: ("_" + char).isidentifier()):
+        token = "".join(characters)
+        name = token.strip("_")
+        if name and token == f"__{name}__":
+            token = token.replace("_", r"\_")
+        parts.append(token)
+    return "".join(parts)
+
+
 def escape_markdown_prose(text: str) -> str:
     """Escape inline characters and leading block markers in prose.
 
@@ -226,6 +242,7 @@ def escape_markdown_prose(text: str) -> str:
     # get doubly-escaped.
     for char, escaped in _MARKDOWN_INLINE_ESCAPES.items():
         text = text.replace(char, escaped)
+    text = _escape_double_underscore_names(text)
     # Leading-position block markers: escape per line.
     text = _LEADING_BLOCK_MARKER_REGEX.sub(r"\1\\\2 ", text)
     return text
