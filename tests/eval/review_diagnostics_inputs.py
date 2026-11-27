@@ -241,7 +241,10 @@ def load_source(
             for name in (native_name, direct_name):
                 _check_exchange_profile(directory, name, target, profile)
         regenerated = direct_review.render_request(
-            fixture, model=target.model, review_id=direct.review_id
+            fixture,
+            model=target.model,
+            review_id=direct.review_id,
+            template_version=direct.prompt_template_version,
         )
         if fields(regenerated) != fields(direct):
             raise ValueError("original direct request no longer regenerates exactly")
