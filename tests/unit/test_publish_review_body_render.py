@@ -49,6 +49,7 @@ def _make_finding(
     line_end: int | None = None,
     title: str = "t",
     finding_id: UUID | None = None,
+    description: str = "d",
 ) -> ReviewFinding:
     finding_type = _FINDING_TYPE_BY_SEVERITY[severity]
     line_end = line_end if line_end is not None else line_start
@@ -62,7 +63,7 @@ def _make_finding(
         line_start=line_start,
         line_end=line_end,
         title=title,
-        description="d",
+        description=description,
         evidence="e",
         dimension=lookup_dimension(finding_type),
         evidence_tier=EvidenceTier.JUDGED,
@@ -188,6 +189,50 @@ def test_body_marker_at_offset_zero_when_empty() -> None:
         dashboard_base_url=None,
     )
     assert body == _MARKER  # nothing else — no sections
+
+
+def test_review_body_keeps_sanitized_explanation_with_its_finding() -> None:
+    finding = _make_finding(
+        file_path="package.json",
+        title="Published package omits the helper",
+        description=(
+            "Installing the tarball fails because @scope/helper is missing.\nInput: x  y. See #42."
+        ),
+    )
+    body = _render_review_body(
+        body_marker=_MARKER,
+        review_body_findings=((finding, FindingSeverity.MEDIUM),),
+        dashboard_only_findings=(),
+        review_id=uuid4(),
+        dashboard_base_url=None,
+    )
+    assert "Installing the tarball fails because \\@scope/helper is missing." in body
+    assert "Input: x  y. See \\#42." in body
+
+
+def test_explanation_budget_preserves_other_concerns_and_dashboard_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _make_finding(title="First issue", description="長" * 100)
+    second = _make_finding(title="Second issue", description="Second explanation.")
+    dashboard = _make_finding(title="Private title", description="Private detail")
+    monkeypatch.setattr("outrider.policy.output_sanitizer.GITHUB_REVIEW_BODY_MAX", 410)
+    body = _render_review_body(
+        body_marker=_MARKER,
+        review_body_findings=(
+            (first, FindingSeverity.MEDIUM),
+            (second, FindingSeverity.MEDIUM),
+        ),
+        dashboard_only_findings=(dashboard,),
+        review_id=uuid4(),
+        dashboard_base_url=None,
+    )
+    assert body.startswith(_MARKER)
+    assert len(body.encode()) <= 410
+    assert "First issue" in body and "Second issue" in body
+    assert "1 additional concern in 1 file" in body
+    assert "長" not in body and "Second explanation." in body
+    assert "Private" not in body
 
 
 def test_body_includes_related_concerns_section() -> None:
