@@ -21,7 +21,8 @@ if TYPE_CHECKING:
 
     from outrider.agent.eval_driver import EvalFixture
 
-VERSION = "direct-pr-review-v1"
+VERSION = "direct-pr-review-v2"
+_LEGACY_VERSION = "direct-pr-review-v1"
 REPRESENTATION_RECIPE = "numbered-heads-and-authentic-diffs-v1"
 MAX_INPUT_BYTES = 2_000_000
 MAX_TOKENS = 8192
@@ -119,6 +120,7 @@ def render_context(fixture: EvalFixture) -> tuple[str, tuple[ContextManifestEntr
             contexts.append(
                 ContextManifestEntry(
                     file_path=file.path,
+                    source_side=side,
                     scope_unit_name=f"direct_full_file_{side}",
                     line_start=1,
                     line_end=len(content.splitlines()),
@@ -147,8 +149,20 @@ def render_context(fixture: EvalFixture) -> tuple[str, tuple[ContextManifestEntr
     return "\n\n".join(sections), tuple(contexts)
 
 
-def render_request(fixture: EvalFixture, *, model: str, review_id: UUID) -> LLMRequest:
+def render_request(
+    fixture: EvalFixture, *, model: str, review_id: UUID, template_version: str = VERSION
+) -> LLMRequest:
+    if template_version not in (VERSION, _LEGACY_VERSION):
+        raise ValueError(f"unknown direct review version: {template_version}")
     user, contexts = render_context(fixture)
+    if template_version == _LEGACY_VERSION:
+        # V1 showed the removed source but omitted its side from the saved manifest.
+        contexts = tuple(
+            entry.model_copy(update={"source_side": "head"})
+            if entry.source_side == "base"
+            else entry
+            for entry in contexts
+        )
     if len(user.encode()) > MAX_INPUT_BYTES:
         raise ValueError("full direct-review input exceeds its declared byte cap; no truncation")
     if not contexts:
@@ -164,7 +178,7 @@ def render_request(fixture: EvalFixture, *, model: str, review_id: UUID) -> LLMR
         review_id=review_id,
         node_id="analyze",
         is_eval=True,
-        prompt_template_version=VERSION,
+        prompt_template_version=template_version,
         degraded_mode=False,
         context_summary=contexts,
     )
@@ -188,8 +202,9 @@ def assess_response(text: str, fixture: EvalFixture) -> dict[str, Any]:
         }
     if len(raw["findings"]) > 100:
         return {"status": "invalid-response", "findings": [], "invalid_response": "finding-limit"}
-    contents = {file.path: file.content_head for file in fixture.files}
+    contents = {file.path: file.content_head for file in fixture.files if file.status != "removed"}
     contents.update(fixture.repository_contents_head)
+    removed = {file.path: file.content_base for file in fixture.files if file.status == "removed"}
     findings, invalid = [], []
     for index, item in enumerate(raw["findings"]):
         try:
@@ -198,6 +213,16 @@ def assess_response(text: str, fixture: EvalFixture) -> dict[str, Any]:
             invalid.append({"index": index, "errors": [error["type"] for error in exc.errors()]})
             continue
         content = contents.get(finding.file_path)
+        base_checks: dict[str, Any] = {}
+        if finding.file_path in removed:
+            base = removed[finding.file_path]
+            base_checks = {
+                "source_side": "base",
+                "location_in_captured_base": None
+                if base is None
+                else finding.line_end <= len(base.splitlines()),
+                "quote_in_captured_base": None if base is None else finding.evidence in base,
+            }
         findings.append(
             {
                 "index": index,
@@ -206,6 +231,7 @@ def assess_response(text: str, fixture: EvalFixture) -> dict[str, Any]:
                 if content is None
                 else finding.line_end <= len(content.splitlines()),
                 "quote_in_captured_head": None if content is None else finding.evidence in content,
+                **base_checks,
                 "semantic_verdict": "needs-independent-adjudication",
             }
         )

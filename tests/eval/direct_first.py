@@ -274,7 +274,10 @@ def prepare_saved(report: Path, *, output: Path, case_ids: tuple[str, ...] = ())
         exchange = _json(exchange_bytes.decode())
         request_data = exchange["request"]
         request = direct_review.render_request(
-            fixture, model=plan["target"]["model"], review_id=UUID(request_data["review_id"])
+            fixture,
+            model=plan["target"]["model"],
+            review_id=UUID(request_data["review_id"]),
+            template_version=request_data["prompt_template_version"],
         )
         if request.model_dump(mode="json", context=INCLUDE_TEXT_OPT_IN) != request_data:
             raise ValueError("current direct request does not reproduce this captured baseline")
