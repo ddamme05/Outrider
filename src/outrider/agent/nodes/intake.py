@@ -194,6 +194,11 @@ async def intake(
             changed_file for changed_file in changed_file_results if changed_file is not None
         )
 
+        if not changed_files:
+            await _set_review_status(db_factory, state.review_id, "skipped")
+            await _emit_phase_end(phase_event_sink, state, phase_id)
+            return Command(goto=END)  # type: ignore[arg-type]
+
         # Revalidate the updated context; model_copy(update=...) bypasses validators.
         new_pr_context = pr_context.__class__.model_validate(
             {**pr_context.model_dump(), "changed_files": changed_files}

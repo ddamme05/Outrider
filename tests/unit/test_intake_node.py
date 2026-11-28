@@ -684,13 +684,48 @@ async def test_per_file_malformed_utf8_emits_skip_not_corruption() -> None:
         file_examination_sink=file_sink,
     )
 
-    assert result.goto == "triage"
-    assert result.update is not None
-    assert result.update["pr_context"].changed_files == ()
+    assert result.goto == END
+    assert result.update is None
     assert len(file_sink.events) == 1
     skipped = file_sink.events[0]
     assert skipped.parse_status == "skipped"
     assert skipped.skip_reason == SkipReason.BINARY
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("files", "expected_skip_reasons"),
+    [
+        pytest.param([], [], id="no-files"),
+        pytest.param(
+            [_StubFileMeta(filename="large.ts", status="added", additions=1, deletions=0)],
+            ["OVERSIZED"],
+            id="oversized-only",
+        ),
+    ],
+)
+async def test_no_admitted_files_skips_review_before_triage(
+    files: list[_StubFileMeta], expected_skip_reasons: list[str]
+) -> None:
+    github = _StubGitHub(files_metadata=files, content_by_key={})
+    sessions = _StubSessionFactoryV2()
+    phases = _RecordingPhaseEventSink()
+    examinations = _RecordingFileExaminationSink()
+
+    result = await intake(
+        _build_state(total_additions=sum(f.additions for f in files), total_deletions=0),
+        github_factory=_stub_github_factory(github),
+        installation_authorizer=_stub_authorizer(),
+        db_factory=sessions,  # type: ignore[arg-type]
+        phase_event_sink=phases,
+        file_examination_sink=examinations,
+    )
+
+    assert result.goto == END
+    assert [e.marker for e in phases.events] == ["start", "end"]
+    assert [e.skip_reason for e in examinations.events] == expected_skip_reasons
+    writes = [stmt for stmt in sessions.recording.executed if isinstance(stmt, Update)]
+    assert [stmt.compile().params["status"] for stmt in writes] == ["skipped"]
 
 
 # ===========================================================================
