@@ -3724,3 +3724,39 @@ async def test_full_declaration_quote_from_scoped_diff(deps: dict[str, Any]) -> 
     )
     [finding] = result["analysis_rounds"][0].findings
     assert (finding.evidence, finding.line_start, finding.line_end) == (declaration, 3, 3)
+
+
+@pytest.mark.asyncio
+async def test_quote_from_hunk_ending_on_blank_context_line(deps: dict[str, Any]) -> None:
+    opening = "const options = (input = {}) => ({\n"
+    tail = "\n  enabled: true,\n});\n"
+    before = opening + "  mode: 'default',\n  ...input,\n" + tail
+    evidence = opening + "  ...input,\n  mode: 'default',"
+    after = evidence + "\n" + tail
+    # GitHub can end its patch on the context marker without a final framing LF.
+    hunk = f"@@ -1,4 +1,4 @@\n {opening}-  mode: 'default',\n   ...input,\n+  mode: 'default',\n "
+    changed = _build_changed_file(
+        path="options.js", content=after.encode(), content_base=before, patch=hunk
+    )
+    state = _build_review_state(
+        pr_context=_build_pr_context(changed_files=(changed,)),
+        triage_result=_build_triage_result(file_tiers={changed.path: ReviewTier.STANDARD}),
+    )
+    proposal = json.loads(
+        _build_finding_proposal_json(finding_type="correctness_bug", line_start=3, line_end=3)
+    )
+    proposal["findings"][0].update(
+        evidence=evidence,
+        title="The default overwrites the caller's mode",
+        description="Passing a custom mode now returns the default value.",
+    )
+    deps["provider"] = _StubLLMProvider(json.dumps(proposal))
+
+    result = await run_analyze_pass(state, deps)
+
+    [request] = deps["provider"].calls
+    assert " const options = (input = {}) => ({" in request.user_prompt
+    assert [
+        (finding.evidence, finding.line_start, finding.line_end)
+        for finding in result["analysis_rounds"][0].findings
+    ] == [(evidence, 3, 3)]

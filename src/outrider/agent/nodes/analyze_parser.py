@@ -75,7 +75,7 @@ if TYPE_CHECKING:
 # SUBSUMES_DIGEST and from_import_map_digest separately key the subsumption
 # relation and import map; this version covers the rules that use them.
 # Keep this version beside the parser, never injected through configuration.
-ANALYZE_PARSER_VERSION: Final = "analyze-parser-v16"
+ANALYZE_PARSER_VERSION: Final = "analyze-parser-v17"
 
 # Keep these values aligned with `FindingProposalRejectedEvent.rejection_reason`
 # in `audit/events.py`; the node lifts parser rejections into that event.

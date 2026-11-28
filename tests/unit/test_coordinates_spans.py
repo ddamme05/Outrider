@@ -1028,6 +1028,20 @@ def test_cache_identity_tracks_shown_prefixes_independently_of_unseen_bytes() ->
     assert not scoped_diff_evidence("a.js", patch, b"ignored\nanswer\nignored\ntail\n").mismatches
 
 
+def test_hunk_ending_in_empty_context_keeps_only_bytes_shown() -> None:
+    from outrider.coordinates.spans import scoped_diff_evidence
+
+    patch = "@@ -1,2 +1,2 @@\n-old\n+new\n "
+    result = scoped_diff_evidence("a.js", patch, b"new\n\nmore\n")
+    assert result.head_byte_ranges == ((0, len(b"new\n")),)
+    assert not result.fully_matches_head
+    assert not result.mismatches  # All shown bytes are available for exact quotation.
+    for stale_head in (b"old\n\nmore\n", b"new\n \nmore\n", b"new\n\r\nmore\n"):
+        stale = scoped_diff_evidence("a.js", patch, stale_head)
+        assert stale.head_byte_ranges == ()
+        assert stale.mismatches == ((0, 0),)
+
+
 @pytest.mark.parametrize(
     "hunk",
     [
