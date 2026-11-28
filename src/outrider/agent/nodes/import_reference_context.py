@@ -85,6 +85,7 @@ async def prepare_import_reference_contexts(
             content_base=file.content_base,
             patched_file=patch,
             import_path_resolver=import_path_resolver,
+            function_edits_only=True,
         )
         initial = python_import_reference_requests(
             file.content_head, file_path=file.path, changed_lines=changed

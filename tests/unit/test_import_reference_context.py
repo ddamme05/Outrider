@@ -51,8 +51,9 @@ class _RepositoryContents:
         return SimpleNamespace(parsed_data=data)
 
 
-def _changed(path: str, head: str) -> ChangedFile:
-    before = head.replace("return ", "return None # ", 1)
+def _changed(path: str, head: str, *, before: str | None = None) -> ChangedFile:
+    if before is None:
+        before = head.replace("return ", "return None # ", 1)
     patch = "".join(
         list(
             difflib.unified_diff(
@@ -66,8 +67,8 @@ def _changed(path: str, head: str) -> ChangedFile:
     return ChangedFile(
         path=path,
         status="modified",
-        additions=1,
-        deletions=1,
+        additions=sum(line.startswith("+") for line in patch.splitlines()),
+        deletions=sum(line.startswith("-") for line in patch.splitlines()),
         patch=patch,
         content_base=before,
         content_head=head,
@@ -315,3 +316,54 @@ async def test_already_supplied_head_source_is_reused_without_refetching_the_cha
     assert [request[2] for request in github.requests] == ["pkg/decoder/__init__.py"]
     assert any(item.file_path == decoder.path for item in context.manifest)
     assert state.model_dump_json() == before
+
+
+@pytest.mark.parametrize("uses_decoder", [False, True], ids=["no-import", "uses-decoder"])
+async def test_unchanged_method_cannot_trigger_a_reference_read(uses_decoder: bool):
+    result = "decode(value)" if uses_decoder else "value"
+    primary = _changed(
+        "pkg/model.py",
+        "from .decoder import decode\n"
+        "from .formatter import format_value\n\n"
+        "class Model:\n"
+        "    def edited(self, value):\n"
+        f"        return {result}\n\n"
+        "    def unchanged(self, value):\n"
+        "        return format_value(value)\n",
+    )
+    github = _RepositoryContents(
+        {
+            "pkg/decoder.py": "def decode(value):\n    return value + 1\n",
+            "pkg/formatter.py": "def format_value(value):\n    return str(value)\n",
+        }
+    )
+
+    prepared = await _prepare(_review(primary), (primary,), github)
+
+    expected_reads = ["pkg/decoder.py", "pkg/decoder/__init__.py"] if uses_decoder else []
+    assert [path for _, _, path, _ in github.requests] == expected_reads
+    assert "def format_value(" not in prepared[primary.path].text
+    assert ("def decode(" in prepared[primary.path].text) is uses_decoder
+
+
+async def test_removal_in_method_with_multiline_decorator_keeps_its_import():
+    head = (
+        "from .decoder import decode\n\n"
+        "class Model:\n"
+        "    @(\n"
+        "        wrap\n"
+        "    )\n"
+        "    def edited(self, value):\n"
+        "        return decode(value)\n"
+    )
+    before = head.replace("        return", "        check(value)\n        return")
+    primary = _changed("pkg/model.py", head, before=before)
+    github = _RepositoryContents({"pkg/decoder.py": "def decode(value):\n    return value + 1\n"})
+
+    prepared = await _prepare(_review(primary), (primary,), github)
+
+    assert [path for _, _, path, _ in github.requests] == [
+        "pkg/decoder.py",
+        "pkg/decoder/__init__.py",
+    ]
+    assert "def decode(" in prepared[primary.path].text

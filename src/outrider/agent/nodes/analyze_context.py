@@ -42,6 +42,7 @@ from outrider.coordinates import (
     line_range_within_scope_unit,
     lookup_patched_file,
     patched_file_has_removed_lines,
+    python_function_header_line,
     scope_unit_has_changed_lines,
 )
 from outrider.prompts import analyze as analyze_prompt
@@ -590,7 +591,7 @@ def _reference_change_lines(
     patched_file: PatchedFile,
     import_path_resolver: ImportPathResolver,
     prepared_scopes: PreparedReferenceScopes | None = None,
-    related_tests_only: bool = False,
+    function_edits_only: bool = False,
 ) -> frozenset[int]:
     """Include retained scopes with owned removals in reference selection.
 
@@ -630,11 +631,13 @@ def _reference_change_lines(
         for scope in head_scopes
         if scope_unit_has_changed_lines(scope, patched_file, base_scope_units=base_scopes)
     )
-    if related_tests_only:
-        # An edit in a class also changes its enclosing scope. Only a surviving
-        # function's own edit can make it a changed test.
+    if function_edits_only:
+        # An edit in a class also changes its enclosing scope. Only mark a
+        # function for these references when the function itself owns an edit.
         return changed_lines | frozenset(
-            scope.line_start for scope in changed_owners if scope.kind in ("function", "method")
+            python_function_header_line(scope)
+            for scope in changed_owners
+            if scope.kind in ("function", "method")
         )
     return changed_lines | frozenset(
         line
@@ -923,7 +926,7 @@ def _append_related_changed_test_context(
                 content_base=changed_file.content_base,
                 patched_file=patched_file,
                 import_path_resolver=import_path_resolver,
-                related_tests_only=True,
+                function_edits_only=True,
             ),
             file_path=changed_file.path,
             max_chars=_TEST_CHAR_CAP,

@@ -171,6 +171,19 @@ def line_range_to_span(line_start: int, line_end: int, source: str) -> Span:
     return Span(byte_start=byte_start, byte_end=byte_end)
 
 
+def python_function_header_line(scope: ScopeUnit) -> int:
+    """Choose a line inside the function's header in both Python AST and Tree-sitter.
+
+    Tree-sitter includes the opening @ of a multiline decorator. Python's
+    decorator expression can start later, but includes the last line of the
+    first decorator in the function's range. This keeps the anchor above
+    nested definitions, even when one ends on the function's last line.
+    """
+    if scope.decorators:
+        return scope.line_start + scope.decorators[0].count("\n")
+    return scope.line_start
+
+
 def scope_unit_has_added_lines(scope_unit: ScopeUnit, patched_file: PatchedFile) -> bool:
     """Test for an added target line inside the scope's inclusive line bounds.
 
