@@ -114,3 +114,39 @@ async def test_parenthesized_decorator_is_complete_or_omitted() -> None:
         assert (entries[0].line_start, entries[0].line_end) == (1, len(after.splitlines()))
     else:
         assert "def test_normalize(" not in request.user_prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("replacement", "has_edited_test"),
+    [
+        pytest.param("        assert normalize(' a ') == 'a'\n", True, id="replace-assertion"),
+        pytest.param("", True, id="delete-assertion"),
+        pytest.param(None, False, id="remove-method"),
+    ],
+)
+async def test_related_context_skips_unchanged_sibling_methods(
+    replacement: str | None, has_edited_test: bool
+) -> None:
+    siblings = (
+        "class TestNormalize:\n"
+        "    def test_empty(self):\n"
+        "        assert normalize('') == ''\n\n"
+        "    def test_letter(self):\n"
+        "        assert normalize('a') == 'a'\n"
+    )
+    method = "\n    def test_spaces(self):\n        assert normalize(' ') == ''\n"
+    before = siblings + method + "        assert normalize('a ') == 'a'\n"
+    after = siblings if replacement is None else siblings + method + replacement
+
+    request = await _request_with_test(before, after)
+    test_ranges = [
+        (entry.line_start, entry.line_end)
+        for entry in request.context_summary
+        if entry.file_path == "tests/test_normalize.py"
+    ]
+    assert test_ranges == ([(8, len(after.splitlines()))] if has_edited_test else [])
+    assert "def test_empty(" not in request.user_prompt
+    assert "def test_letter(" not in request.user_prompt
+    if has_edited_test:
+        assert after.split("    def test_spaces", 1)[1] in request.user_prompt
