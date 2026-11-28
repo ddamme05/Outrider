@@ -555,7 +555,7 @@ def scoped_diff_evidence(file_path: str, rendered_diff: str, head: bytes) -> Sco
             fully_matches_head = False
             # Either GitHub's patch or the file may omit the last LF. Count only
             # the bytes both supplied. A different line body cannot prove a quote.
-            if source.removesuffix(b"\n") != shown.removesuffix(b"\n"):
+            if source != shown + b"\n" and shown != source + b"\n":
                 mismatches.append((index, 0))
                 continue
             high = low + min(len(source), len(shown))
