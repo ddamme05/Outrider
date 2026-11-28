@@ -105,6 +105,8 @@ class PRContext(BaseModel):
     head_sha: str
     author: str
     changed_files: tuple[ChangedFile, ...]
+    # Older checkpoints and contexts built before intake have no coverage count.
+    omitted_file_count: int | None = Field(default=None, ge=0)
     total_additions: int = Field(ge=0)
     total_deletions: int = Field(ge=0)
 

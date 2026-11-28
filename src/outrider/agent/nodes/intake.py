@@ -196,7 +196,11 @@ async def intake(
 
         # Revalidate the updated context; model_copy(update=...) bypasses validators.
         new_pr_context = pr_context.__class__.model_validate(
-            {**pr_context.model_dump(), "changed_files": changed_files}
+            {
+                **pr_context.model_dump(),
+                "changed_files": changed_files,
+                "omitted_file_count": len(files_metadata) - len(changed_files),
+            }
         )
 
         await _emit_phase_end(phase_event_sink, state, phase_id)

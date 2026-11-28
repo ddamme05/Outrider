@@ -20,7 +20,7 @@ from outrider.coordinates import CoordinateError
 from outrider.prompts.triage_schema import file_slot_ids
 from outrider.schemas.pr_context import PRContext
 
-VERSION: Final[str] = "triage-v4"
+VERSION: Final[str] = "triage-v5"
 MAX_TOKENS: Final[int] = 2048
 TEMPERATURE: Final[float] = 0.0
 
@@ -119,7 +119,7 @@ invent IDs or produce "skip".
 USER_TEMPLATE: Final[str] = """\
 PR title: {pr_title}
 
-Changed files ({file_count} total, +{total_additions}/-{total_deletions} lines):
+{file_coverage}
 {file_list}
 
 Diff summary:
@@ -142,6 +142,21 @@ class TriagePromptParts:
     triage_input: TriageInputCoverage | None = None
 
 
+def _file_coverage(pr_context: PRContext) -> str:
+    available = len(pr_context.changed_files)
+    omitted = pr_context.omitted_file_count
+    lines = f"+{pr_context.total_additions}/-{pr_context.total_deletions} lines"
+    if omitted is None:
+        return f"Files available for triage: {available}. The whole PR has {lines}."
+    if omitted == 0:
+        return f"Changed files ({available} total, {lines}):"
+    return (
+        f"Files available for triage: {available} of {available + omitted} changed files. "
+        f"The whole PR has {lines}.\n"
+        "The omitted changes are unknown. Classify only the listed file IDs."
+    )
+
+
 def render(pr_context: PRContext) -> TriagePromptParts:
     """Render only the permitted PR metadata and diff fields.
 
@@ -149,7 +164,7 @@ def render(pr_context: PRContext) -> TriagePromptParts:
     (DECISIONS#013 point 4, spec §9.5). The wrapper owns cache behavior.
 
     Egress include list (DECISIONS#013 point 1, Amended 2026-07-16): PR title;
-    changed-file paths, patches, status and line counts; aggregate line counts.
+    retained file paths, patches, status and line counts; aggregate file and line counts.
     PR body and author are carried in PRContext but are not sent. Branch names and
     commit messages are not carried here. Installation ID, SHAs and repository
     coordinates remain out of the prompt (DECISIONS#013 point 2). Adding fields
@@ -169,9 +184,7 @@ def render(pr_context: PRContext) -> TriagePromptParts:
     diff_summary = "\n\n".join(sections)
     user_prompt = USER_TEMPLATE.format(
         pr_title=pr_context.pr_title,
-        file_count=len(pr_context.changed_files),
-        total_additions=pr_context.total_additions,
-        total_deletions=pr_context.total_deletions,
+        file_coverage=_file_coverage(pr_context),
         file_list=file_list,
         diff_summary=diff_summary,
     )

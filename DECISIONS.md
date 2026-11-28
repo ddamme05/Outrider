@@ -404,6 +404,10 @@ Specific default TTL values (reviews, audit events, installation grace window) a
 
 **Amended 2026-07-16 — include list narrowed to actual production egress (see #015's same-date amendment for the corrected user-facing statement).** Point 1's "minimum set needed" list included PR body, commit messages, branch names, and author login; production sends none of them (verified at the triage prompt's egress-eligibility table, `PRContext`'s fields, and every downstream prompt), so a minimum-necessary list cannot contain them. They are REMOVED from the include list rather than preserved as dormant permissions: sending any of them in the future requires a new privacy-contract amendment first. The include list additionally gains the categories the stage inventory shows actually egress: structural query identifiers, trace candidate identifiers/import strings/reasons, scope bodies from uniquely resolved related files, finding identifiers/metadata/text, suggested-fix target source lines, and the risk classification and metrics consumed by synthesis. Point 2's "or any secret material" close is superseded by: Outrider does not add its OPERATOR credentials to model prompts through configuration paths (GitHub App private key, webhook secret, installation tokens, webhook signatures, Slack tokens, operator environment variables) — but Outrider does not secret-scan repository content before review, so credentials committed inside reviewed code can appear in the diff patches and scope text sent to the provider like any other code.
 
+Triage may send aggregate counts of available and omitted changed files with the
+whole-PR line counts. It lists paths and supplies patches only for files retained
+by intake.
+
 ---
 
 ## 014. Audit events are metadata-only; content purge targets `reviews` and `findings`
