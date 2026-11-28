@@ -458,7 +458,11 @@ class _FixtureScriptedProvider:
                     f"this node). Add the response to the fixture's llm_responses."
                 ) from exc
             self._counts[node] = idx + 1
-        if node == "triage" and request.prompt_template_version in {"triage-v3", "triage-v4"}:
+        if node == "triage" and request.prompt_template_version in {
+            "triage-v3",
+            "triage-v4",
+            "triage-v5",
+        }:
             if self._triage_paths is None:
                 raise EvalDriverError("numbered triage fixtures require ordered triage_paths")
             payload = json.loads(text_out)

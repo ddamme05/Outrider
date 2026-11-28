@@ -143,7 +143,12 @@ Schema. Model output and the assembled report have different contracts.
 
 ### Triage: what gets reviewed
 
-The prompt numbers the changed files, such as `file_1: app.py`. The model returns:
+The prompt numbers the files retained by intake, such as `file_1: app.py`.
+When intake omits files, triage sees how many of the PR's changed files are
+available. The model assigns tiers only to those files. Line totals cover the entire PR.
+Older checkpoints can supply the number of available files alone.
+
+The model returns:
 
 ```json
 {
@@ -492,7 +497,7 @@ Current Anthropic defaults use Sonnet 5.5 for deep analysis and Haiku 5.5 for
 standard analysis, triage, summaries, trace ranking and suggested patches.
 Evaluations that also use Sonnet 5.5 for standard analysis override these defaults.
 Prompt versions are
-`triage-v4`, `analyze-v19`, `analyze-readme-v1`, `trace-v2`, `synthesize-v5`, `patch-v1`, and optional
+`triage-v5`, `analyze-v19`, `analyze-readme-v1`, `trace-v2`, `synthesize-v5`, `patch-v1`, and optional
 `native-candidate-check-v5`. Settings can change; source and regenerated schemas
 remain the implementation reference.
 

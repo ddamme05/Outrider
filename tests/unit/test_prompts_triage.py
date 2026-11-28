@@ -87,8 +87,8 @@ def _build_pr_context(
 # ---------------------------------------------------------------------------
 
 
-def test_version_identifies_readme_triage_guidance() -> None:
-    assert VERSION == "triage-v4"
+def test_version_identifies_intake_coverage() -> None:
+    assert VERSION == "triage-v5"
 
 
 def test_max_tokens_bounded_within_llm_request_limit() -> None:
@@ -120,9 +120,7 @@ def test_user_template_has_required_placeholders() -> None:
     pins the placeholder set so additions go through a coordinated edit."""
     expected_placeholders = {
         "pr_title",
-        "file_count",
-        "total_additions",
-        "total_deletions",
+        "file_coverage",
         "file_list",
         "diff_summary",
     }
@@ -402,6 +400,20 @@ def test_render_handles_binary_patch_none() -> None:
     assert "no textual diff" in parts.user_prompt.lower()
 
 
+def test_legacy_context_reports_only_the_known_file_count() -> None:
+    fields = _build_pr_context().model_dump(exclude={"omitted_file_count"})
+    restored = PRContext.model_validate(fields)
+    assert (
+        "Files available for triage: 1. The whole PR has +5/-2 lines."
+        in render(restored).user_prompt
+    )
+
+
+def test_complete_intake_keeps_the_original_file_header() -> None:
+    complete = _build_pr_context().model_copy(update={"omitted_file_count": 0})
+    assert "Changed files (1 total, +5/-2 lines):" in render(complete).user_prompt
+
+
 def test_render_reports_total_lines_in_user_prompt() -> None:
     """Total additions/deletions appear in the file-list header so the
     LLM has the PR-size context."""
@@ -436,7 +448,7 @@ def test_render_handles_empty_changed_files() -> None:
     pr_context = _build_pr_context(changed_files=(), total_additions=0, total_deletions=0)
     parts = render(pr_context)
     assert parts.user_prompt  # non-empty
-    assert "0 total" in parts.user_prompt
+    assert "Files available for triage: 0." in parts.user_prompt
 
 
 def test_render_handles_pr_body_none() -> None:

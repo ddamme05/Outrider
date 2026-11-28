@@ -29,6 +29,7 @@ from outrider.audit.events import (  # noqa: TC001 — used in runtime list[X] a
     ReviewPhaseEvent,
 )
 from outrider.github.authz import LiveAuthOutcome, LiveAuthResult
+from outrider.prompts import triage as triage_prompt
 from outrider.schemas.pr_context import PRContext
 
 if TYPE_CHECKING:
@@ -582,6 +583,9 @@ async def test_per_file_oversize_emits_skipped_event_drops_from_changed_files() 
     new_ctx: PRContext = update_payload["pr_context"]
     assert len(new_ctx.changed_files) == 1
     assert new_ctx.changed_files[0].path == "small.py"
+    prompt = triage_prompt.render(new_ctx).user_prompt
+    assert "1 of 2 changed files" in prompt
+    assert "huge.py" not in prompt
 
     # Two FileExaminationEvents: one clean (small.py), one skipped (huge.py).
     statuses = sorted((e.parse_status, e.file_path) for e in file_sink.events)
@@ -637,6 +641,9 @@ async def test_per_file_binary_content_skipped_not_silently_corrupted() -> None:
     new_ctx: PRContext = update_payload["pr_context"]
     # Only the text file survives; the binary blob is dropped.
     assert [cf.path for cf in new_ctx.changed_files] == ["text.py"]
+    prompt = triage_prompt.render(new_ctx).user_prompt
+    assert "1 of 2 changed files" in prompt
+    assert "blob.bin" not in prompt
 
     # Two FileExaminationEvents: clean (text.py), skipped+BINARY (blob.bin).
     by_path = {e.file_path: e for e in file_sink.events}

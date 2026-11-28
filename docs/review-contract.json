@@ -692,6 +692,19 @@
             "title": "Changed Files",
             "type": "array"
           },
+          "omitted_file_count": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Omitted File Count"
+          },
           "total_additions": {
             "minimum": 0,
             "title": "Total Additions",
@@ -801,13 +814,13 @@
         "title": "TriageResult",
         "type": "object"
       },
-      "version": "triage-v4",
+      "version": "triage-v5",
       "notes": "Live responses use numbered file IDs, decoded to the supplied paths before constructing this state record. Policy rejects SKIP, missing/unknown paths and inactive policy versions; reasoning is clamped. Historical records keep path keys."
     },
     "TriageResponseWire": {
       "source": "src/outrider/prompts/triage_schema.py:response_schema_json",
       "kind": "constrained-decoding-schema",
-      "version": "triage-v4",
+      "version": "triage-v5",
       "example_file_count": 2,
       "schema": {
         "type": "object",

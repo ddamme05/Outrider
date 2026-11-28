@@ -623,7 +623,7 @@ async def test_triage_invocation_merges_partial_state_and_preserves_pr_context(
 ) -> None:
     """Default reducer overwrites; triage returns {'triage_result': ...};
     the result dict has triage_result populated AND pr_context survives
-    byte-for-byte unchanged. The PEP 544 isinstance gate at build time
+    with the coverage count that intake recorded. The PEP 544 isinstance gate at build time
     already passed for the sink; this test verifies the runtime contract.
     """
     state = _build_valid_seed_state()
@@ -641,15 +641,14 @@ async def test_triage_invocation_merges_partial_state_and_preserves_pr_context(
     # "contract violated".
     assert "triage_result" in result, "triage_result missing from merged state"
     assert "pr_context" in result, "pr_context dropped from merged state"
-    # pr_context survives unchanged (compare model_dump shapes; the dict
-    # may contain Pydantic instances or dicts depending on LangGraph version)
-    original_pr_context_dump = state.pr_context.model_dump(mode="json")
+    # Intake retained the seed's only file. Later nodes preserve its enriched context.
+    expected_pr_context = {**state.pr_context.model_dump(mode="json"), "omitted_file_count": 0}
     result_pr_context = result["pr_context"]
     if isinstance(result_pr_context, PRContext):
-        assert result_pr_context.model_dump(mode="json") == original_pr_context_dump
+        assert result_pr_context.model_dump(mode="json") == expected_pr_context
     else:
         # dict-shaped — direct compare after re-serializing the original
-        assert result_pr_context == original_pr_context_dump
+        assert result_pr_context == expected_pr_context
 
     # Phase events were emitted: every node that ran fired its start+end pair
     # (phase-events-bound-work). Property-based assertion — count reflects
